@@ -1,0 +1,11 @@
+{
+  "name": "mona-jacinta-demon",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "db:check": "node scripts/check-databases.mjs"
+  },
+  "devDependencies": {
+    "pg": "^8.13.1"
+  }
+}
