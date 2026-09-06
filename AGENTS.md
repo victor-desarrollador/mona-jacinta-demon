@@ -43,7 +43,7 @@ These will be created later in **this** repository according to the approved imp
 | `admin/`  | Backoffice (MANAGER / ADMIN)                        | React 19 + Vite 7 + TypeScript + Tailwind 4 |
 | `api/`    | New source-of-truth backend                          | Express + TypeScript + PostgreSQL + Prisma |
 
-Node 18+ required.
+Node.js 22 LTS (minimum 22.12) required.
 
 ---
 
@@ -426,7 +426,7 @@ Jean Slim
 Azul / 42
 Quantity: 1
 
-TOTAL: ARS 165000
+TOTAL: ARS 165.000,00 (16500000 centavos)
 ```
 
 Seller presses:
@@ -463,8 +463,8 @@ Cashier opens the sale.
 Registers:
 
 ```text
-Transfer: ARS 100000
-Cash:     ARS 65000
+Transfer: ARS 100.000,00 (10000000 centavos)
+Cash:     ARS 65.000,00 (6500000 centavos)
 ```
 
 The total paid equals the sale total.
@@ -721,15 +721,15 @@ Example:
 
 ```text
 Sale V-000154
-Total: ARS 165000
+Total: ARS 165.000,00 (16500000 centavos)
 
 Payments:
 
 TRANSFER
-ARS 100000
+ARS 100.000,00 (10000000 centavos)
 
 CASH
-ARS 65000
+ARS 65.000,00 (6500000 centavos)
 ```
 
 A sale becomes paid according to the approved payment rules when accepted payments satisfy the total owed.
@@ -749,19 +749,19 @@ changeAmount
 Example:
 
 ```text
-Remaining: ARS 35000
+Remaining: ARS 35.000,00 (3500000 centavos)
 
 Customer gives:
-ARS 40000
+ARS 40.000,00 (4000000 centavos)
 
 amount:
-ARS 35000
+ARS 35.000,00 (3500000 centavos)
 
 receivedAmount:
-ARS 40000
+ARS 40.000,00 (4000000 centavos)
 
 changeAmount:
-ARS 5000
+ARS 5.000,00 (500000 centavos)
 ```
 
 Returned change is not additional revenue.
@@ -1094,13 +1094,13 @@ CASHIER attempts admin-only endpoint:
 
 ```text
 Sale total:
-165000
+16500000 centavos (ARS 165.000,00)
 
 Transfer:
-100000
+10000000
 
 Cash:
-65000
+6500000
 
 Expected:
 PAID
@@ -1109,7 +1109,8 @@ PAID
 Partial payment:
 
 ```text
-100000 + 60000
+10000000 + 6000000
+(16000000 centavos = ARS 160.000,00 < 16500000)
 ```
 
 must not mark the sale paid.
@@ -1296,7 +1297,7 @@ Use a dedicated feature branch or worktree.
 Current target migration branch:
 
 ```text
-feat/mona-demo-v2
+feat/demo-v2
 ```
 
 Rules:
