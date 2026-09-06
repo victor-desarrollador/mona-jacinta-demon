@@ -308,7 +308,7 @@ On cancellation, or when an operation detects an expired active reservation (see
 ## 13. Testing strategy
 
 - Tools: Vitest + Supertest.
-- Runs against a dedicated PostgreSQL test database with per-test `TRUNCATE ... RESTART IDENTITY CASCADE` (not transaction rollback — Supertest performs real HTTP requests against the app's own connections). DB-backed test files run **sequentially** (`fileParallelism: false`): truncation isolation is unsafe across parallel workers.
+- Runs against a physically isolated hosted PostgreSQL test database — a separate Supabase project (`mona-jacinta-test`), never the development/demo database; dev/test isolation is proven before any destructive operation by a multi-signal, fail-closed identity check (see §18). Per-test `TRUNCATE ... RESTART IDENTITY CASCADE` (not transaction rollback — Supertest performs real HTTP requests against the app's own connections). DB-backed test files run **sequentially** (`fileParallelism: false`): truncation isolation is unsafe across parallel workers.
 - Priority coverage (money in minor units / centavos):
   - Authorization: SELLER on cashier-only endpoint → 403; SELLER on the cashier queue (`sale.queue.view`) → 403; CASHIER on admin-only endpoint → 403.
   - Split payment: `"10000000" + "6000000"` (of `"16500000"`) → not paid; `"10000000" + "6500000"` → paid.
@@ -351,6 +351,9 @@ On cancellation, or when an operation detects an expired active reservation (see
 - Advanced reporting.
 - Public ecommerce storefront.
 - Monorepo/workspace restructuring, microservices, Kubernetes.
+- Local or Docker PostgreSQL installation/runtime (database hosting is Supabase — see §18).
+- Deployment to, or any dependency on, Tuculandia-server.
+- Supabase platform features beyond hosted PostgreSQL (Supabase Auth, Realtime, Storage, Edge Functions, client SDKs, direct frontend→database access).
 
 ---
 
@@ -364,3 +367,40 @@ These are intentionally deferred to later phases and do **not** block Demo V2:
 - Multi-register cash handling beyond the single-register-per-branch seed.
 - Seller discount authorization workflow.
 - MongoDB → PostgreSQL historical data migration.
+
+---
+
+## 18. Database hosting and deployment boundary (amendment)
+
+**Decision:** Demo V2 uses hosted Supabase PostgreSQL instead of local or Docker PostgreSQL. Supabase plays the same infrastructure role MongoDB Atlas played in the legacy Tesis project:
+
+```text
+Legacy Tesis:  Express -> Mongoose -> MongoDB Atlas
+Mona Jacinta:  client/admin -> Express -> Prisma -> Supabase PostgreSQL
+```
+
+- Two physically separated Supabase PostgreSQL projects:
+  - `mona-jacinta-demo` → `DATABASE_URL` — development and deterministic demo data.
+  - `mona-jacinta-test` → `TEST_DATABASE_URL` — Vitest + Supertest integration tests; destructive `TRUNCATE ... RESTART IDENTITY CASCADE` targets only this database.
+- `DATABASE_URL` and `TEST_DATABASE_URL` are **server-only** secrets: tracked only as `.env.example` placeholders, kept locally in untracked env files, never exposed as `NEXT_PUBLIC_*`/`VITE_*` variables, never reachable from `client/` or `admin/`.
+- Supabase provides PostgreSQL hosting **only**. Express + Prisma is the sole application database client. No Supabase Auth, Realtime, Storage, Edge Functions, client SDKs, or direct frontend→database access.
+- Prisma 7 reads its datasource URL from `prisma.config.ts` (created when `api/` is bootstrapped). The same Supabase connection must serve Prisma migrations and the persistent Express server; the authoritative migration-compatibility gate is the first migration run against the hosted database (`npx prisma validate`, `npx prisma generate`, `npx prisma migrate dev --name init`, `npx prisma migrate status`). If the Supabase dashboard offers multiple connection modes, the selected mode is verified by that gate — never silently assumed.
+- **Destructive-test safety (fail closed, multi-signal):** before any truncation the test bootstrap (1) requires both env vars, (2) requires the raw strings to differ, (3) compares parsed non-secret URL components — hostname, port, database name, username/project-qualified username — without logging credentials, and (4) connects to both databases and compares live metadata (`current_database()`, `current_user`, `inet_server_addr()`, `inet_server_port()`, `version()`). A cluster/system identifier (e.g. from `pg_control_system()`) may be used as an additional signal when permissions allow, but is never required. If distinct Supabase project/database identities cannot be established — for example because pooled connection modes mask server metadata — the suite **fails closed**. Passwords, full URLs, and secret query parameters are never logged.
+- Deployment boundary:
+
+  ```text
+  Today (development):              Later (deployment):
+
+  Laptop                            Online frontend(s)
+    client/admin/API dev                │
+    processes                           v
+        │                           Online Express API
+        v                               │
+      Prisma                            v
+        │                             Prisma
+        v                               │
+    Supabase PostgreSQL                 v
+                                    Supabase PostgreSQL
+  ```
+
+  Tuculandia-server is not part of Demo V2 infrastructure: nothing depends on or deploys to it. The future Express hosting provider is intentionally not chosen in this amendment.

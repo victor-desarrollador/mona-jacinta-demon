@@ -160,6 +160,10 @@ Rules:
 * Use `.env.example` containing variable names and safe placeholder values.
 * Do not use `git add .` blindly while secret-bearing or generated files may exist.
 * Before committing repository-cleanup changes, explicitly inspect staged files.
+* `DATABASE_URL` and `TEST_DATABASE_URL` are server-only PostgreSQL credentials for two physically separated hosted Supabase projects (`mona-jacinta-demo` for development/demo, `mona-jacinta-test` for integration tests). They must never appear as `NEXT_PUBLIC_*`/`VITE_*` variables and must never reach `client/` or `admin/`.
+* Supabase provides hosted PostgreSQL infrastructure only — no Supabase Auth, Realtime, Storage, Edge Functions, client SDKs, or direct frontend→database access. Express + Prisma is the sole database client; Prisma 7 datasource configuration lives in `prisma.config.ts`.
+* Demo V2 requires no local or Docker PostgreSQL. Destructive integration tests may run only against `TEST_DATABASE_URL`, behind a multi-signal, fail-closed identity check proving it is a different database than `DATABASE_URL` (see `docs/architecture/mona-demo-v2.md` §18).
+* Tuculandia-server is outside Demo V2 infrastructure; nothing depends on or deploys to it.
 
 ---
 
@@ -190,7 +194,7 @@ Conceptually:
                Express + TypeScript
                           │
                           ▼
-                     PostgreSQL
+              PostgreSQL (hosted — Supabase)
 ```
 
 PostgreSQL will become the source of truth for the new transactional domain.

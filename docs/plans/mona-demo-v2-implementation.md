@@ -6,13 +6,13 @@
 
 **Architecture:** Clean bootstrap of three apps in this repository: `api/` (Express + TypeScript + PostgreSQL + Prisma), `client/` (Next.js 16 App Router + React 19 + Tailwind 4), `admin/` (React 19 + Vite 7 + TypeScript + Tailwind 4). Legacy code in `../Tesis/` is read-only reference; selectively port UI primitives and POS interaction patterns only. Money is integer minor units (cents) as `BigInt` across database, API, and frontend. Demo V2 scope is strictly the vertical flow in AGENTS.md §"Demo V2 Main Scenario".
 
-**Tech Stack:** Node.js 22 LTS (minimum 22.12), PostgreSQL 16+, Prisma 7.10.x (pinned; do not float to Prisma 8/latest), Express 5, TypeScript 5, Zod, JWT (jose), bcrypt, Socket.IO, Vitest, Supertest, Next.js 16, React 19, Tailwind 4, Vite 7, Radix UI, Zustand, React Hook Form.
+**Tech Stack:** Node.js 22 LTS (minimum 22.12), PostgreSQL 16+ hosted on Supabase (two physically isolated projects — development/demo and integration test; see Task 2), Prisma 7.10.x (pinned; do not float to Prisma 8/latest; datasource URL configured via `prisma.config.ts`), Express 5, TypeScript 5, Zod, JWT (jose), bcrypt, Socket.IO, Vitest, Supertest, Next.js 16, React 19, Tailwind 4, Vite 7, Radix UI, Zustand, React Hook Form.
 
 **Spec:** `docs/architecture/mona-demo-v2.md` (approved), `AGENTS.md` (root)
 
 ## Global Constraints
 
-- Runtime/versions: Node.js 22 LTS (minimum 22.12) for every app; PostgreSQL 16+; Prisma pinned at 7.10.x; Next.js 16; React 19.
+- Runtime/versions: Node.js 22 LTS (minimum 22.12) for every app; PostgreSQL 16+ hosted on Supabase (physically isolated development/demo and test projects — no local or Docker PostgreSQL; see Task 2); Prisma pinned at 7.10.x; Next.js 16; React 19.
 - PostgreSQL is the source of truth; MongoDB legacy backend is frozen in `../Tesis/`.
 - Money: integer **minor units (centavos)** as `BigInt` in Prisma/PostgreSQL. Examples: ARS 165,000.00 = `16500000` cents; ARS 100,000.00 = `10000000` cents; ARS 65,000.00 = `6500000` cents. JSON transport uses string representation (`"16500000"`); frontend parses to `bigint` for all arithmetic and formats for display only.
 - No floating-point arithmetic for money anywhere.
@@ -27,7 +27,7 @@
 - No external network calls inside database transactions.
 - Payment idempotency: `registerPayment` requires a client-generated UUID v4 key, stored with **sale-scoped** uniqueness (`SalePayment @@unique([saleId, idempotencyKey])`); `completeSale` needs **no** client key — its idempotency comes from the locked persisted status transition (`PAID → COMPLETED`).
 - Sale numbers: branch-scoped, allocated from a `SaleNumberCounter` row locked `FOR UPDATE` inside the send-to-cashier transaction (never derived by scanning past sales); final DB guard is `Sale @@unique([branchId, saleNumber])`. Commercial numbering is independent from future ARCA (`pointOfSaleNumber`, `voucherNumber`, `CAE`).
-- Test isolation: dedicated PostgreSQL test database with `TRUNCATE ... RESTART IDENTITY CASCADE` per test. DB-backed integration tests run **sequentially** (Vitest `fileParallelism: false`); truncation isolation is not safe across parallel workers.
+- Test isolation: physically separate hosted Supabase PostgreSQL test database (`TEST_DATABASE_URL`, conceptual project `mona-jacinta-test`) with `TRUNCATE ... RESTART IDENTITY CASCADE` per test. DB-backed integration tests run **sequentially** (Vitest `fileParallelism: false`); truncation isolation is not safe across parallel workers. Destructive operations run against `TEST_DATABASE_URL` only, after a multi-signal, fail-closed identity check proves it is a different database than `DATABASE_URL` (see Tasks 2 and 6). `DATABASE_URL` and `TEST_DATABASE_URL` are server-only secrets and are never exposed as `NEXT_PUBLIC_*`/`VITE_*` variables.
 - Deterministic seed/reset via `prisma/seed.ts` and `scripts/reset-demo.ts`.
 - No production secrets committed; `.env.example` with placeholders only.
 - Code identifiers in English; UI strings in Spanish.
@@ -72,39 +72,54 @@ git check-ignore -v node_modules api/dist 2>/dev/null || true
 
 ---
 
-### Task 2: PostgreSQL Local Development Environment
+### Task 2: Supabase PostgreSQL Environment and Connection Safety
 
-**Objective:** Provide a reproducible local PostgreSQL instance for development and testing.
+**Objective:** Provide two physically isolated hosted Supabase PostgreSQL projects — development/demo (`DATABASE_URL`, conceptual project `mona-jacinta-demo`) and integration test (`TEST_DATABASE_URL`, conceptual project `mona-jacinta-test`) — with a server-only environment contract, a documented hosted-database workflow, and proven connection safety (reachability, supported PostgreSQL version, and multi-signal fail-closed dev/test isolation) before any schema or test work begins. No local or Docker PostgreSQL is used. Supabase provides hosted PostgreSQL **only** — no Supabase Auth, Realtime, Storage, Edge Functions, or client SDKs; Express + Prisma is the only database client. Prisma CLI connectivity is **not** part of this task: Task 2 runs before `api/`, `prisma/schema.prisma`, and `prisma.config.ts` exist, so connection verification here uses only the Node.js + `pg` safety script; Task 4's first `prisma migrate dev` is the authoritative Prisma migration-compatibility gate.
 
-**Dependencies:** Task 1.
+**Dependencies:** Task 1 (`.gitignore` already excludes `.env*`; `.env.example` exists).
 
 **Files/Directories:**
-- Create: `docker-compose.yml`, `docker-compose.test.yml`, `scripts/wait-for-db.sh`, `.env.development` (gitignored, copied from `.env.example`)
+- Modify: `.env.example` (placeholder `DATABASE_URL` / `TEST_DATABASE_URL` only — no real host, project reference, or password)
+- Create (untracked, local): `.env.development` — real connection strings; never committed
+- Create: `docs/development/database.md`
+- Create: `scripts/check-databases.mjs`; modify root `package.json` (`db:check` script + `pg` devDependency)
+- Explicitly do **not** create: `docker-compose.yml`, `docker-compose.test.yml`, `scripts/wait-for-db.sh`, any Docker or local-PostgreSQL artifact, any Supabase SDK/Auth/Realtime/Storage/Edge-Functions code
 
 **Implementation Steps:**
-- [ ] Write `docker-compose.yml` with PostgreSQL 16+ service (`postgres:16` image), healthcheck, named volume for persistence.
-- [ ] Write `docker-compose.test.yml` with separate database/port for test runs.
-- [ ] Create `scripts/wait-for-db.sh` to wait for PostgreSQL readiness before migrations.
-- [ ] Document local DB setup in `docs/development/local-db.md`.
-- [ ] Verify connection with `psql` or Prisma `db push`.
+- [ ] Create two separate Supabase projects (conceptual names `mona-jacinta-demo` and `mona-jacinta-test`) in the Supabase dashboard.
+- [ ] Copy each project's PostgreSQL connection string into the untracked `.env.development` (`DATABASE_URL` = demo project, `TEST_DATABASE_URL` = test project). Credentials never leave the local untracked file.
+- [ ] Update `.env.example` (placeholder DB vars only, marked server-only — no real host, project reference, or password).
+- [ ] Write `docs/development/database.md` documenting: (a) one Supabase project for development/demo and a physically separate one for integration tests; (b) where connection info is obtained (Supabase project connection settings); (c) credentials live only in untracked local env files, never in Git; (d) Prisma (via the Express `api/`) is the only database client — frontends never talk to PostgreSQL; (e) the chosen connection URL must work with Prisma migrations and a persistent Express server — if the Supabase dashboard offers multiple connection modes, the selection must be verified, never silently assumed (Task 2 verifies reachability/identity/version via the Node script; Task 4's first `prisma migrate dev` in Prisma 7.10.x is the authoritative migration-compatibility gate); (f) destructive-test safety: `TEST_DATABASE_URL` only, behind the fail-closed isolation check (reused by Task 6).
+- [ ] Implement `scripts/check-databases.mjs` (Node 22 built-ins + `pg` as a root devDependency) — the **only** database connectivity proof in this task. The script must, in order:
+  1. Fail fast unless both `DATABASE_URL` and `TEST_DATABASE_URL` exist.
+  2. Require the raw strings to differ.
+  3. Parse both PostgreSQL URLs and compare normalized, non-secret identity components — hostname, port, database name, and username (including the project-qualified username when the Supabase connection mode encodes one). Never print passwords, full URLs, or secret query parameters.
+  4. Open live connections to **both** and query safe metadata: `current_database()`, `current_user`, `inet_server_addr()`, `inet_server_port()`, `version()`; compare the resulting tuples.
+  5. If a reliable cluster/system identifier (e.g. from `pg_control_system()`) is readable with the available permissions, use it as an **additional** signal; the check must never depend on privileged access being available.
+  6. **Fail closed** (exit non-zero) whenever it cannot establish that the two configured connections represent distinct Supabase project/database identities — no single signal is trusted alone, and pooled connection modes that mask server metadata must produce failure, not a pass.
+  7. Verify both servers report a PostgreSQL version supported by Prisma 7.10.x (16+).
+  8. Print only a redacted summary (host, port, database name, username, server version) per side.
+- [ ] Run `npm run db:check` and record the successful result (both connections reachable; distinct identities proven; supported versions).
 
-**Tests:** None.
+**Tests:** None in this task (the Task 6 destructive-test bootstrap reuses this same isolation check before any `TRUNCATE`).
 
 **Verification Commands:**
 ```bash
-docker compose up -d
-./scripts/wait-for-db.sh
-docker compose exec postgres psql -U postgres -c "SELECT version();"
+npm run db:check      # exit 0 only if BOTH DBs reachable, identities proven distinct, versions supported
+git status --short    # .env.development is ignored; no docker-compose files; no new tracked secrets
 ```
 
-**Expected Result:** PostgreSQL running locally on port 5432 (dev) and 5433 (test), accessible to Prisma.
+**Expected Result:** Two physically isolated Supabase PostgreSQL databases are provisioned and reachable; their distinct identities are proven by multiple independent signals; both run a supported PostgreSQL version; the environment contract is documented and placeholder-only in Git.
 
 **Acceptance Criteria:**
-- `docker compose up -d` starts healthy PostgreSQL container.
-- Connection string from `.env.development` works with Prisma.
-- Test database on a separate port so the test suite never touches development data (tests run sequentially — see Task 6; the separate DB is for dev/test separation, not parallelism).
+- No Docker/local-PostgreSQL artifacts or instructions remain (`docker-compose*`, `wait-for-db.sh`, `postgres:16`, `localhost:5432`/`localhost:5433`, Docker healthchecks, local-install requirements).
+- `.env.example` holds placeholder-only `DATABASE_URL` / `TEST_DATABASE_URL`; no real host/ref/secret; no `NEXT_PUBLIC_DATABASE_URL` / `VITE_DATABASE_URL` exists anywhere.
+- `docs/development/database.md` covers the six documentation points above.
+- `npm run db:check` exits 0 only when both connections respond, distinct identities are proven via multiple independent signals, and versions are supported (PostgreSQL 16+, compatible with Prisma 7.10.x); it fails closed otherwise.
+- No Prisma CLI connectivity is required in this task (Prisma 7 reads its datasource URL from `prisma.config.ts`, which does not exist yet); Task 4 is the authoritative Prisma migration gate.
+- The checker never logs passwords, full connection URLs, or secret query parameters.
 
-**Suggested Commit:** `chore(db): add local PostgreSQL via Docker Compose`
+**Suggested Commit:** `chore(db): add Supabase PostgreSQL environment and connection safety`
 
 ---
 
@@ -115,12 +130,12 @@ docker compose exec postgres psql -U postgres -c "SELECT version();"
 **Dependencies:** Task 1, Task 2.
 
 **Files/Directories:**
-- Create: `api/package.json`, `api/tsconfig.json`, `api/.env.example`, `api/src/app.ts`, `api/src/server.ts`, `api/src/config/env.ts`, `api/src/config/prisma.ts`, `api/src/middleware/errorHandler.ts`, `api/src/middleware/validation.ts`, `api/src/middleware/auth.ts`, `api/src/middleware/rateLimit.ts`, `api/src/shared/json-safe.ts`, `api/src/shared/errors.ts`, `api/src/modules/` (directory), `api/prisma/schema.prisma`, `api/vitest.config.ts`, `api/.eslintrc.cjs`, `api/.prettierrc`
+- Create: `api/package.json`, `api/tsconfig.json`, `api/.env.example`, `api/prisma.config.ts` (Prisma 7 datasource URL comes from here — `DATABASE_URL` from the server-only env), `api/src/app.ts`, `api/src/server.ts`, `api/src/config/env.ts`, `api/src/config/prisma.ts`, `api/src/middleware/errorHandler.ts`, `api/src/middleware/validation.ts`, `api/src/middleware/auth.ts`, `api/src/middleware/rateLimit.ts`, `api/src/shared/json-safe.ts`, `api/src/shared/errors.ts`, `api/src/modules/` (directory), `api/prisma/schema.prisma`, `api/vitest.config.ts`, `api/.eslintrc.cjs`, `api/.prettierrc`
 
 **Implementation Steps:**
 - [ ] Initialize `api/` with `npm init`; set `"engines": { "node": ">=22.12" }`. Install dependencies: `express`, `zod`, `@prisma/client@7.10.0` (exact 7.10.x — do not install `latest`), `prisma@7.10.0` (dev), `typescript`, `tsx` (dev), `vitest`, `supertest`, `@types/supertest`, `@types/express`, `jose`, `bcryptjs`, `socket.io`, `cors`, `helmet`, `pino`, `pino-pretty`, `dotenv`.
 - [ ] Configure TypeScript (ESM, strict, path aliases `@/*`).
-- [ ] Create `api/src/config/env.ts` with Zod-validated env schema (all required vars).
+- [ ] Create `api/src/config/env.ts` with Zod-validated env schema (all required vars; `DATABASE_URL` and `TEST_DATABASE_URL` are server-only and are never exposed to `client/` or `admin/` environment variables).
 - [ ] Create `api/src/config/prisma.ts` exporting plain singleton `PrismaClient` (no per-model serialization extension).
 - [ ] Implement `api/src/shared/json-safe.ts` — the **single** recursive JSON-boundary normalizer:
 
@@ -205,7 +220,7 @@ cd api && npm run lint         # passes
   ```
   Keep the Prisma schema as the structural source of truth; this index is the one intentional hand-written SQL addition. Future `prisma migrate dev` runs must not try to drop it (verify with `prisma migrate diff` if drift is suspected).
 - [ ] The commercial sale number (`<BRANCH_CODE>-V-<SEQ>`, e.g. `CEN-V-000154`) is purely internal: it has no relationship to future ARCA concepts (`pointOfSaleNumber`, `voucherNumber`, `CAE`), which are out of scope for Demo V2.
-- [ ] Run `npx prisma migrate dev --name init` to create migration.
+- [ ] Run `npx prisma migrate dev --name init` to create the migration. Prisma 7 reads the datasource URL from `prisma.config.ts` (created in Task 3), i.e. the hosted `DATABASE_URL` provisioned in Task 2. **This first migration against the hosted development/demo database is the authoritative Prisma migration-compatibility gate** for the chosen Supabase connection; if it fails, fix the connection mode per `docs/development/database.md` — never silently switch to a different endpoint mode.
 - [ ] Run `npx prisma generate` to regenerate client.
 - [ ] **Migration verification (Prisma 7.10.x):** use `npx prisma validate` (schema), `npx prisma generate`, `npx prisma migrate status` (migration state), and the automated tests. Do **not** run `prisma db pull` to verify migrations — introspection is not migration verification, and re-introspecting would also lose the hand-written SQL below.
 - [ ] Every field referenced by later tasks exists **in this initial schema**: `Branch.code`; `SaleNumberCounter.{branchId,nextValue}`; `Sale.saleNumber` + `@@unique([branchId, saleNumber])`; `SalePayment.idempotencyKey` + `@@unique([saleId, idempotencyKey])`; `CashSession.{registerId,status}` (backing the partial unique index); all BigInt monetary/quantity fields. No later task references a column that does not exist here — the only hand-written SQL is the partial unique index above.
@@ -299,14 +314,20 @@ cd api && npm run test -- tests/seed.test.ts
 **Implementation Steps:**
 - [ ] Configure `vitest.config.ts`: `environment: 'node'`, `setupFiles: ['tests/setup.ts']`, `testTimeout: 30000`, coverage config.
 - [ ] **Chosen configuration (explicit):** set `fileParallelism: false` in `api/vitest.config.ts`. All DB-backed integration test files run sequentially in a single process, because every test truncates and reseeds the same test database. `TRUNCATE`-based isolation is **not** safe across parallel workers/files, so we do not enable workers; pure unit tests that never touch PostgreSQL may still live in the same suite — they will simply also run sequentially (acceptable at Demo V2 size). Document this exact choice in `docs/testing/strategy.md`.
-- [ ] Create `tests/setup.ts`: set `process.env.NODE_ENV = 'test'`, load test `.env`, connect to test DB.
+- [ ] Create `tests/setup.ts`: set `process.env.NODE_ENV = 'test'`, load test `.env`, and run the fail-closed dev/test isolation guard (next step) **before any database mutation**.
 - [ ] Create `tests/helpers/test-db.ts`:
-  - Export `createTestPrismaClient()` pointing to test DATABASE_URL.
-  - Export `truncateAllTables(prisma)` using raw `TRUNCATE ... CASCADE` in FK order (or `DELETE` with `ON DELETE CASCADE`).
+  - Export `createTestPrismaClient()` pointing to `TEST_DATABASE_URL` (the physically separate test project — never `DATABASE_URL`).
+  - Export `truncateAllTables(prisma)` using raw `TRUNCATE ... CASCADE` in FK order (or `DELETE` with `ON DELETE CASCADE`). Every destructive/reset helper accepts only the `TEST_DATABASE_URL`-backed client.
   - Export `withTransaction(prisma, fn)` for tests needing transaction (not for HTTP tests).
+- [ ] Implement the fail-closed dev/test isolation guard (same multi-signal design as `scripts/check-databases.mjs` from Task 2), executed before any `TRUNCATE`:
+  1. `TEST_DATABASE_URL` and `DATABASE_URL` must both exist.
+  2. Their raw strings must differ.
+  3. Parse both URLs (without logging secrets) and compare normalized non-secret identity components (hostname, port, database name, username/project-qualified username).
+  4. Connect to BOTH and compare live metadata tuples (`current_database()`, `current_user`, `inet_server_addr()`, `inet_server_port()`, `version()`); a cluster/system identifier is an optional extra signal, never a privileged dependency.
+  5. If distinct Supabase project/database identities cannot be established, throw and abort the entire suite — fail closed. No destructive operation may ever target the development/demo database.
 - [ ] Create `tests/helpers/auth.ts`: `createTestUser(role, branch)`, `getAuthToken(user)` returning JWT for test requests.
 - [ ] Create `tests/helpers/factories.ts`: factory functions for creating test entities (branch, product, variant, inventory, sale, etc.) via Prisma.
-- [ ] Document test isolation strategy in `docs/testing/strategy.md`: **per-test truncation** (not transaction rollback) because Supertest makes real HTTP requests outside the test's transaction. Each test truncates all tables before/after.
+- [ ] Document test isolation strategy in `docs/testing/strategy.md`: **per-test truncation** (not transaction rollback) because Supertest makes real HTTP requests outside the test's transaction. Each test truncates all tables before/after. Document the fail-closed multi-signal dev/test isolation guard in the same file.
 
 **Tests:**
 - [ ] `api/tests/infrastructure.test.ts`: verify test DB connection, truncation works, auth helper produces valid JWT.
@@ -323,6 +344,7 @@ cd api && npm run test:coverage # coverage report generated
 - Vitest runs with Supertest against real test PostgreSQL.
 - `vitest.config.ts` sets `fileParallelism: false`; DB-backed integration test files run sequentially in one process.
 - `truncateAllTables` leaves DB empty between tests; `beforeEach` truncates and the test creates only the fixtures it needs.
+- Destructive truncation is impossible without proven isolation: the suite fails closed when `TEST_DATABASE_URL` is missing, equals `DATABASE_URL`, or resolves to the same database identity as the development/demo database.
 - `createTestUser` + `getAuthToken` allows authenticated requests in tests.
 - Factories create valid entities with correct relations.
 
@@ -1435,7 +1457,7 @@ git status --short  # verify no untracked secrets/generated files
 - Create/Update: `README.md`, `docs/development/getting-started.md`, `docs/testing/strategy.md`, `docs/api/endpoints.md`
 
 **Implementation Steps:**
-- [ ] Update root `README.md` with: project overview, architecture diagram, quick start (docker-compose, seed, run all three apps independently), demo credentials, two-browser test instructions.
+- [ ] Update root `README.md` with: project overview, architecture diagram, quick start (Supabase database setup per `docs/development/database.md`, seed, run all three apps independently), demo credentials, two-browser test instructions.
 - [ ] Document API endpoints in `docs/api/endpoints.md` (or OpenAPI/Swagger if added).
 - [ ] Document test strategy in `docs/testing/strategy.md`.
 - [ ] Key architectural decisions are already recorded in `docs/architecture/mona-demo-v2.md` and its amendments — no separate ADR process is introduced.
@@ -1484,7 +1506,7 @@ cat README.md  # verify completeness
 | No network calls in transactions | All tasks: external calls only after commit |
 | Sale-number concurrency | Task 12: `SaleNumberCounter` row locked `FOR UPDATE` per branch + `Sale @@unique([branchId, saleNumber])` guard |
 | Single OPEN cash session | Task 14 + Task 4: partial unique index `cash_session_one_open_per_register`; `P2002` → 409 |
-| Test DB races | Task 6: `fileParallelism: false`; integration tests sequential against the dedicated test DB |
+| Test DB races | Task 6: `fileParallelism: false`; integration tests sequential against a physically isolated, identity-checked Supabase test database |
 
 ---
 
@@ -1516,7 +1538,7 @@ The same helper guards `AuditLog.before/after` (Task 20) and Socket.IO payloads 
 **Solution:** Per-test database truncation plus **sequential execution** of DB-backed tests.
 - `vitest.config.ts` sets `fileParallelism: false` (Vitest's explicit switch to run test **files** sequentially in a single process). Rationale: every integration test truncates shared tables; truncation-based isolation is **not** safe if two test files run against the same database concurrently — so they never do.
 - `beforeEach`: `await truncateAllTables(testPrisma)` — `TRUNCATE ... RESTART IDENTITY CASCADE` — then create only the fixtures that test needs.
-- Test database is separate from dev database (Docker Compose test service on port 5433); it exists for dev/test separation, not parallelism.
+- The test database is a physically separate hosted Supabase PostgreSQL project (`mona-jacinta-test`), never the development/demo project; the test bootstrap proves the two are different database identities via a multi-signal check and fails closed otherwise. It exists for dev/test separation, not parallelism.
 - Pure unit tests that never touch PostgreSQL get no special treatment for Demo V2 (they simply run sequentially too); if the suite grows, a separate `vitest.unit.config.ts` without DB setup may re-enable parallelism for pure tests only.
 - This ensures full isolation at cost of ~50-100ms per test — acceptable for Demo V2 scope.
 
@@ -1535,7 +1557,7 @@ TRUNCATE TABLE "AuditLog", "CashMovement", "CashSession", "CashRegister",
 ## Implementation Order Summary
 
 1. **Repository Hygiene** (Task 1)
-2. **PostgreSQL Local** (Task 2)
+2. **Supabase PostgreSQL + Connection Safety** (Task 2)
 3. **API Bootstrap** (Task 3)
 4. **Prisma Schema** (Task 4)
 5. **Seed/Reset** (Task 5)
