@@ -13,6 +13,7 @@ import { sendJson } from './shared/json-safe.js';
 import { logger } from './shared/logger.js';
 import { createAuthRouter } from './modules/auth/auth.routes.js';
 import { createProductsRouter, createVariantsRouter } from './modules/products/products.routes.js';
+import { createInventoryRouter } from './modules/inventory/inventory.routes.js';
 
 export function createApp(database: PrismaClient = defaultPrisma) {
   const app = express();
@@ -42,6 +43,7 @@ export function createApp(database: PrismaClient = defaultPrisma) {
   app.use('/api/v1', createRequireAuth(database));
   app.use('/api/v1/products', createProductsRouter(database));
   app.use('/api/v1/variants', createVariantsRouter(database));
+  app.use('/api/v1/inventory', createInventoryRouter(database));
   app.use((_req, _res, next) => {
     next(new AppError(404, 'NOT_FOUND', 'No se encontró el recurso.'));
   });
