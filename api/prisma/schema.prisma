@@ -9,3 +9,367 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+enum SaleStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PAID
+  COMPLETED
+  CANCELLED
+}
+
+enum StockMovementType {
+  SALE
+}
+
+enum StockReservationStatus {
+  ACTIVE
+  RELEASED
+  CONSUMED
+}
+
+enum PaymentMethod {
+  CASH
+  TRANSFER
+  CARD_DEBIT
+  CARD_CREDIT
+  QR
+}
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+}
+
+enum CashMovementType {
+  OPENING
+  SALE_INCOME
+  CLOSING
+  MANUAL
+}
+
+// UUID strings preserve compatibility with the plan's parameterized raw SQL locks.
+// Monetary amounts are BigInt centavos; quantities/counters are also BigInt.
+// Restrict deletion of referenced records to preserve commercial/audit history.
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+
+  branchRoles        UserBranchRole[]
+  sales              Sale[]
+  stockMovements     StockMovement[]
+  openedCashSessions CashSession[]    @relation("CashSessionOpenedBy")
+  closedCashSessions CashSession[]    @relation("CashSessionClosedBy")
+  cashMovements      CashMovement[]
+  auditLogs          AuditLog[]
+}
+
+model Role {
+  id   String @id @default(uuid())
+  code String @unique
+  name String
+
+  permissions RolePermission[]
+  branchUsers UserBranchRole[]
+}
+
+model Permission {
+  id   String @id @default(uuid())
+  code String @unique
+
+  roles RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Restrict)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model Branch {
+  id                String @id @default(uuid())
+  name              String
+  code              String @unique
+  address           String
+  pointOfSaleNumber Int
+
+  userRoles         UserBranchRole[]
+  inventory         Inventory[]
+  stockMovements    StockMovement[]
+  stockReservations StockReservation[]
+  sales             Sale[]
+  cashRegisters     CashRegister[]
+  auditLogs         AuditLog[]
+  // Task 5 creates the counter with the branch; branchId uniqueness prevents duplicates.
+  saleNumberCounter SaleNumberCounter?
+}
+
+model UserBranchRole {
+  id       String @id @default(uuid())
+  userId   String
+  branchId String
+  roleId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  role     Role   @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, branchId, roleId])
+  @@index([branchId])
+  @@index([roleId])
+}
+
+model Category {
+  id   String @id @default(uuid())
+  name String @unique
+
+  products Product[]
+}
+
+model Brand {
+  id   String @id @default(uuid())
+  name String @unique
+
+  products Product[]
+}
+
+model Product {
+  id          String   @id @default(uuid())
+  name        String
+  slug        String   @unique
+  description String?
+  categoryId  String
+  brandId     String
+  isActive    Boolean  @default(true)
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  brand       Brand    @relation(fields: [brandId], references: [id], onDelete: Restrict)
+
+  variants  ProductVariant[]
+  saleItems SaleItem[]
+
+  @@index([categoryId])
+  @@index([brandId])
+}
+
+model ProductVariant {
+  id        String  @id @default(uuid())
+  productId String
+  sku       String  @unique
+  barcode   String  @unique
+  color     String?
+  size      String?
+  price     BigInt
+  costPrice BigInt
+  isActive  Boolean @default(true)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  inventory         Inventory[]
+  stockReservations StockReservation[]
+  saleItems         SaleItem[]
+
+  @@index([productId])
+}
+
+model Inventory {
+  id        String         @id @default(uuid())
+  variantId String
+  branchId  String
+  physical  BigInt         @default(0)
+  reserved  BigInt         @default(0)
+  variant   ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  branch    Branch         @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  stockMovements StockMovement[]
+
+  @@unique([variantId, branchId])
+  @@index([branchId])
+}
+
+model StockMovement {
+  id            String            @id @default(uuid())
+  inventoryId   String
+  type          StockMovementType
+  quantityDelta BigInt
+  saleId        String?
+  userId        String
+  branchId      String
+  timestamp     DateTime          @default(now()) @db.Timestamptz(3)
+  inventory     Inventory         @relation(fields: [inventoryId], references: [id], onDelete: Restrict)
+  sale          Sale?             @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  user          User              @relation(fields: [userId], references: [id], onDelete: Restrict)
+  branch        Branch            @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([inventoryId, timestamp])
+  @@index([saleId])
+  @@index([userId])
+  @@index([branchId, timestamp])
+}
+
+model StockReservation {
+  id        String                 @id @default(uuid())
+  saleId    String
+  variantId String
+  branchId  String
+  quantity  BigInt
+  expiresAt DateTime               @db.Timestamptz(3)
+  status    StockReservationStatus @default(ACTIVE)
+  sale      Sale                   @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  variant   ProductVariant         @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  branch    Branch                 @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([saleId, status])
+  @@index([variantId, branchId])
+  @@index([branchId])
+  @@index([status, expiresAt])
+}
+
+model Sale {
+  id            String     @id @default(uuid())
+  // Allocated at DRAFT -> PENDING_PAYMENT; unrelated to fiscal/ARCA numbering.
+  saleNumber    String?
+  branchId      String
+  sellerId      String
+  status        SaleStatus @default(DRAFT)
+  subtotal      BigInt     @default(0)
+  discountTotal BigInt     @default(0)
+  total         BigInt     @default(0)
+  createdAt     DateTime   @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
+  branch        Branch     @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  seller        User       @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+
+  items             SaleItem[]
+  payments          SalePayment[]
+  stockReservations StockReservation[]
+  stockMovements    StockMovement[]
+
+  @@unique([branchId, saleNumber])
+  @@index([branchId, status, createdAt])
+  @@index([sellerId, status, createdAt])
+  @@index([status, createdAt])
+}
+
+model SaleItem {
+  id          String         @id @default(uuid())
+  saleId      String
+  variantId   String
+  productId   String
+  productName String
+  variantName String
+  sku         String
+  quantity    BigInt
+  unitPrice   BigInt
+  subtotal    BigInt
+  sale        Sale           @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  variant     ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  product     Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([saleId])
+  @@index([variantId])
+  @@index([productId])
+}
+
+model SalePayment {
+  id             String        @id @default(uuid())
+  saleId         String
+  method         PaymentMethod
+  amount         BigInt
+  receivedAmount BigInt?
+  changeAmount   BigInt?
+  cashSessionId  String?
+  idempotencyKey String
+  paidAt         DateTime      @default(now()) @db.Timestamptz(3)
+  sale           Sale          @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  cashSession    CashSession?  @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+
+  cashMovement CashMovement?
+
+  @@unique([saleId, idempotencyKey])
+  @@index([cashSessionId])
+}
+
+model CashRegister {
+  id       String @id @default(uuid())
+  branchId String
+  name     String
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  sessions CashSession[]
+
+  // Register names identify a register within its branch, not globally.
+  @@unique([branchId, name])
+}
+
+model CashSession {
+  id           String            @id @default(uuid())
+  registerId   String
+  openedById   String
+  openedAt     DateTime          @default(now()) @db.Timestamptz(3)
+  closedById   String?
+  closedAt     DateTime?         @db.Timestamptz(3)
+  startingCash BigInt
+  status       CashSessionStatus @default(OPEN)
+  register     CashRegister      @relation(fields: [registerId], references: [id], onDelete: Restrict)
+  openedBy     User              @relation("CashSessionOpenedBy", fields: [openedById], references: [id], onDelete: Restrict)
+  closedBy     User?             @relation("CashSessionClosedBy", fields: [closedById], references: [id], onDelete: Restrict)
+
+  payments  SalePayment[]
+  movements CashMovement[]
+
+  // The initial migration adds cash_session_one_open_per_register as a partial
+  // unique index. CLOSED sessions must remain unlimited for each register.
+  @@index([registerId, status])
+  @@index([openedById])
+  @@index([closedById])
+}
+
+model CashMovement {
+  id            String           @id @default(uuid())
+  sessionId     String
+  type          CashMovementType
+  amount        BigInt
+  // A payment can produce at most one income movement, including under retries.
+  salePaymentId String?          @unique
+  userId        String
+  timestamp     DateTime         @default(now()) @db.Timestamptz(3)
+  session       CashSession      @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  salePayment   SalePayment?     @relation(fields: [salePaymentId], references: [id], onDelete: Restrict)
+  user          User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([sessionId, timestamp])
+  @@index([userId])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String
+  branchId   String
+  action     String
+  entityType String
+  entityId   String
+  // Task 20 normalizes BigInt values via toJsonSafe before writing these JSON fields.
+  before     Json?
+  after      Json?
+  timestamp  DateTime @default(now()) @db.Timestamptz(3)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([branchId, timestamp])
+  @@index([entityType, entityId, timestamp])
+  @@index([userId, timestamp])
+}
+
+model SaleNumberCounter {
+  id        String @id @default(uuid())
+  branchId  String @unique
+  nextValue BigInt @default(1)
+  branch    Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+}
