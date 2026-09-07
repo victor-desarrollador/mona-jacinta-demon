@@ -164,5 +164,39 @@ export function createSalesService(database: SaleDatabase) {
     return loadSale(saleId);
   }
 
-  return { createDraftSale, addItem, updateItem, removeItem, getDraft, listDrafts, sendToCashier };
+  async function listPendingSales(branchIds: string[]) {
+    const sales = await database.sale.findMany({
+      where: { status: 'PENDING_PAYMENT', branchId: { in: branchIds } },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true, saleNumber: true, subtotal: true, total: true,
+        seller: { select: { name: true } },
+        // Historical item snapshots only; never join the current catalog.
+        items: {
+          orderBy: { id: 'asc' },
+          select: {
+            id: true, productId: true, variantId: true,
+            productName: true, variantName: true, sku: true,
+            quantity: true, unitPrice: true, subtotal: true,
+          },
+        },
+        payments: { select: { amount: true } },
+      },
+    });
+    return sales.map((sale) => {
+      const paidAmount = sale.payments.reduce((sum, payment) => sum + payment.amount, 0n);
+      return {
+        saleId: sale.id,
+        saleNumber: sale.saleNumber,
+        sellerName: sale.seller.name,
+        items: sale.items,
+        subtotal: sale.subtotal,
+        total: sale.total,
+        paidAmount,
+        remainingBalance: sale.total - paidAmount,
+      };
+    });
+  }
+
+  return { createDraftSale, addItem, updateItem, removeItem, getDraft, listDrafts, sendToCashier, listPendingSales };
 }

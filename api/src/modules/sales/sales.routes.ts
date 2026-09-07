@@ -21,6 +21,7 @@ export function createSalesRouter(database: PrismaClient): Router {
       }))?.branchId,
   });
   router.get('/', viewPermission, controller.list);
+  router.get('/pending', requirePermission(PERMISSIONS.SALE_QUEUE_VIEW), controller.pending);
   router.post('/', validate(createDraftSaleDto), createPermission, controller.create);
   router.get('/:saleId', validate(saleIdDto, 'params'), viewPermission, controller.get);
   router.post('/:saleId/items', validate(saleIdDto, 'params'), validate(addSaleItemDto), createPermission, controller.addItem);
