@@ -26,5 +26,8 @@ export function createSalesController(database: PrismaClient) {
     removeItem: (async (req, res) => {
       sendJson(res, await service.removeItem(req, userId(req), String(req.params.saleId), String(req.params.itemId)));
     }) as RequestHandler,
+    sendToCashier: (async (req, res) => {
+      sendJson(res, await service.sendToCashier(String(req.params.saleId), userId(req), req.auth!.branchIds));
+    }) as RequestHandler,
   };
 }

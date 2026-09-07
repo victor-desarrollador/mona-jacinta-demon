@@ -12,11 +12,20 @@ export function createSalesRouter(database: PrismaClient): Router {
   const controller = createSalesController(database);
   const createPermission = requirePermission(PERMISSIONS.SALE_CREATE);
   const viewPermission = requirePermission(PERMISSIONS.SALE_VIEW);
+  const sendPermission = requirePermission(PERMISSIONS.SALE_CREATE, {
+    branchScope: 'own',
+    resolveResourceBranch: async (req) =>
+      (await database.sale.findUnique({
+        where: { id: String(req.params.saleId) },
+        select: { branchId: true },
+      }))?.branchId,
+  });
   router.get('/', viewPermission, controller.list);
   router.post('/', validate(createDraftSaleDto), createPermission, controller.create);
   router.get('/:saleId', validate(saleIdDto, 'params'), viewPermission, controller.get);
   router.post('/:saleId/items', validate(saleIdDto, 'params'), validate(addSaleItemDto), createPermission, controller.addItem);
   router.patch('/:saleId/items/:itemId', validate(saleItemParamsDto, 'params'), validate(updateSaleItemDto), createPermission, controller.updateItem);
   router.delete('/:saleId/items/:itemId', validate(saleItemParamsDto, 'params'), createPermission, controller.removeItem);
+  router.post('/:saleId/send-to-cashier', validate(saleIdDto, 'params'), sendPermission, controller.sendToCashier);
   return router;
 }

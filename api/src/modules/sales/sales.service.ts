@@ -3,8 +3,9 @@ import { assertBranchAccess } from '../../middleware/authorization.js';
 import { AppError } from '../../shared/errors.js';
 import { createInventoryService } from '../inventory/inventory.service.js';
 import type { AddSaleItemInput, UpdateSaleItemInput } from './dto/sale-item.dto.js';
+import { createReservationService } from './reservation.service.js';
 
-type SaleDatabase = Pick<PrismaClient, 'sale' | 'productVariant' | 'inventory' | '$transaction'>;
+type SaleDatabase = PrismaClient;
 
 const saleInclude = {
   items: {
@@ -60,6 +61,7 @@ async function recalculateTotals(tx: Prisma.TransactionClient, saleId: string) {
 
 export function createSalesService(database: SaleDatabase) {
   const inventory = createInventoryService(database);
+  const reservations = createReservationService(database);
 
   async function loadSale(saleId: string) {
     const sale = await database.sale.findUnique({ where: { id: saleId }, include: saleInclude });
@@ -157,5 +159,10 @@ export function createSalesService(database: SaleDatabase) {
     });
   }
 
-  return { createDraftSale, addItem, updateItem, removeItem, getDraft, listDrafts };
+  async function sendToCashier(saleId: string, userId: string, branchIds: string[]) {
+    await reservations.sendToCashier(saleId, userId, branchIds);
+    return loadSale(saleId);
+  }
+
+  return { createDraftSale, addItem, updateItem, removeItem, getDraft, listDrafts, sendToCashier };
 }
