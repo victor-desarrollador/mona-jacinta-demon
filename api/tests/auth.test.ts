@@ -2,15 +2,25 @@ import express from 'express';
 import { SignJWT } from 'jose';
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import type { PrismaClient } from '../src/generated/prisma/client.js';
 import { env } from '../src/config/env.js';
-import { requireAuth } from '../src/middleware/auth.js';
+import { createRequireAuth } from '../src/middleware/auth.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
 import { sendJson } from '../src/shared/json-safe.js';
 
 const key = new TextEncoder().encode(env.JWT_SECRET);
 const now = Math.floor(Date.now() / 1000);
 const app = express();
-app.get('/private', requireAuth, (req, res) => {
+const testDatabase = {
+  user: {
+    findUnique: async () => ({
+      id: 'test-user',
+      isActive: true,
+      branchRoles: [],
+    }),
+  },
+} as unknown as PrismaClient;
+app.get('/private', createRequireAuth(testDatabase), (req, res) => {
   sendJson(res, {
     userId: req.userId,
     role: Reflect.get(req, 'role'),
