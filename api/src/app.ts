@@ -6,6 +6,7 @@ import { env } from './config/env.js';
 import { prisma as defaultPrisma } from './config/prisma.js';
 import type { PrismaClient } from './generated/prisma/client.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { createRequireAuth } from './middleware/auth.js';
 import { createRateLimiter } from './middleware/rateLimit.js';
 import { AppError } from './shared/errors.js';
 import { sendJson } from './shared/json-safe.js';
@@ -36,6 +37,8 @@ export function createApp(database: PrismaClient = defaultPrisma) {
     sendJson(res, { status: 'ok' });
   });
   app.use('/api/v1/auth', createAuthRouter(database));
+  // Every future API route is private by default; login remains public above.
+  app.use('/api/v1', createRequireAuth(database));
   app.use((_req, _res, next) => {
     next(new AppError(404, 'NOT_FOUND', 'No se encontró el recurso.'));
   });
