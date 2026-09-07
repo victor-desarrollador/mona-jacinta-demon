@@ -24,7 +24,8 @@ database credentials. Add your own random `JWT_SECRET` (at least 32 characters),
 Development loads that root file relative to the module, independent of the current
 directory. Existing process environment values always win. Production and tests use
 process environment only. Configuration errors report variable names, never values.
-Tests supply synthetic configuration and make no PostgreSQL connections.
+Bootstrap tests supply synthetic configuration and make no PostgreSQL connections.
+The Task 5 seed integration test uses the dedicated test database as described below.
 
 `GET http://localhost:3001/health` returns `200 {"status":"ok"}`. The health endpoint
 does not check the database. Socket.IO uses this same HTTP server; it has no domain
@@ -34,8 +35,8 @@ database authorization to later tasks.
 
 ## Prisma and TLS
 
-`prisma.config.ts` owns the datasource URL. The schema contains only the ESM client
-generator and PostgreSQL datasource, with no models or migrations. The generated
+`prisma.config.ts` owns the datasource URL. Task 4 added the 21 domain models and
+the initial migration. The generated
 TypeScript client lives in ignored `src/generated/prisma/`; build emits it into
 ignored `dist/generated/prisma/`.
 
@@ -46,10 +47,42 @@ Hostname verification remains enabled. Environment validation rejects TLS URL qu
 options that could replace the explicit SSL configuration. URLs are never rewritten.
 See the approved [database safety documentation](../docs/development/database.md).
 
-Only `prisma validate` and `prisma generate` are Task 3 CLI operations. The
-`db:push`, `db:migrate`, `db:seed` and `db:studio` scripts are future entrypoints;
-they were not executed. Seed configuration/implementation is intentionally absent.
-Task 4 owns domain models and the first migration.
+The Prisma migration CLI uses the same CA with its native engine's
+`sslmode=require`, `sslaccept=strict`, and `sslcert` options.
+
+## Task 5 demo seed and reset
+
+From `api/`, run `npm run db:seed` to populate/repeat the deterministic seed, or
+`npm run db:reset` to delete domain rows in FK order and seed in one transaction.
+Stop the API before maintenance. Reset preserves the schema and migration history.
+Seed refuses existing sales, cash sessions, stock movements, reservations or audit
+history so it cannot silently rewind operational stock/counters; use reset explicitly.
+
+These local maintenance commands read both URLs directly from the ignored root
+`.env.development`. They reject conflicting shell URL overrides and non-development
+`NODE_ENV`. Before writing, they require the configured Supabase session endpoints,
+verified TLS, distinct parsed identities and distinct live server identities. An
+unreachable or ambiguous target fails closed. Keep the local file's DEV/TEST labels
+correct: configuration is the operator's source of target identity.
+
+Demo logins are `admin@demo.local`, `manager01@demo.local`, `seller01@demo.local`
+and `cashier01@demo.local`, all with the public **demo-only** password `demo123`.
+Only bcrypt hashes are stored. User-approved point-of-sale metadata is 1–6 in
+the documented branch order. ADMIN has all 12 permissions and all six demo branch
+assignments; global authorization resolution remains Task 8's responsibility.
+
+Seed creates six variants, 36 inventory rows (20 physical units per branch/variant,
+50 at Depósito Central, zero reserved), six registers and six counters starting at 1.
+Remera Negro/M costs 4500000 centavos; Jean Azul/42 costs 7500000 centavos, making
+the demo sale total exactly 16500000 centavos. IDs and business values are stable;
+bcrypt salts intentionally vary. Demo catalog identifiers must not be repurposed.
+
+`npm test` now requires both configured databases for read-only isolation checks.
+Only `tests/seed.test.ts` writes, exclusively to TEST. If TEST is empty it applies
+the existing initial migration with `migrate deploy` after isolation succeeds;
+otherwise it requires matching migration history. It then transactionally clears
+and seeds TEST. Do not run concurrent integration-test processes. No global Task 6
+test bootstrap, shadow database or development-data test setup is introduced.
 
 ## Verification
 
