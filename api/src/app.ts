@@ -19,8 +19,9 @@ import { createSalesRouter } from './modules/sales/sales.routes.js';
 import { createPaymentsRouter } from './modules/payments/payments.routes.js';
 import { createReservationAdminRouter } from './modules/sales/cancellation.routes.js';
 import { createAuditRouter } from './modules/audit/audit.routes.js';
+import { createNoopRealtimeEmitter, type RealtimeEmitter } from './realtime/socket.js';
 
-export function createApp(database: PrismaClient = defaultPrisma) {
+export function createApp(database: PrismaClient = defaultPrisma, realtime: RealtimeEmitter = createNoopRealtimeEmitter()) {
   const app = express();
   app.disable('x-powered-by');
   app.use(helmet());
@@ -49,10 +50,10 @@ export function createApp(database: PrismaClient = defaultPrisma) {
   app.use('/api/v1/products', createProductsRouter(database));
   app.use('/api/v1/variants', createVariantsRouter(database));
   app.use('/api/v1/inventory', createInventoryRouter(database));
-  app.use('/api/v1/sales', createSalesRouter(database));
-  app.use('/api/v1/sales', createPaymentsRouter(database));
+  app.use('/api/v1/sales', createSalesRouter(database, realtime));
+  app.use('/api/v1/sales', createPaymentsRouter(database, realtime));
   app.use('/api/v1/cash', createCashRouter(database));
-  app.use('/api/v1/admin', createReservationAdminRouter(database));
+  app.use('/api/v1/admin', createReservationAdminRouter(database, realtime));
   app.use('/api/v1/audit', createAuditRouter(database));
   app.use((_req, _res, next) => {
     next(new AppError(404, 'NOT_FOUND', 'No se encontró el recurso.'));

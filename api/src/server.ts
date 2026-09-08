@@ -1,13 +1,13 @@
 import { createServer } from 'node:http';
-import { Server } from 'socket.io';
 import { createApp } from './app.js';
 import { env } from './config/env.js';
 import { prisma } from './config/prisma.js';
 import { logger } from './shared/logger.js';
+import { createRealtime } from './realtime/socket.js';
 
-const httpServer = createServer(createApp());
-const io = new Server(httpServer, { cors: { origin: env.CORS_ORIGINS } });
-// Task 21 adds authenticated rooms and domain notifications to this transport.
+const httpServer = createServer();
+const { io, emitter } = createRealtime(httpServer, prisma);
+httpServer.on('request', createApp(prisma, emitter));
 
 let stopping = false;
 async function shutdown(exitCode: number): Promise<void> {

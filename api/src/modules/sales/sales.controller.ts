@@ -3,8 +3,10 @@ import type { PrismaClient } from '../../generated/prisma/client.js';
 import { sendJson } from '../../shared/json-safe.js';
 import { AppError } from '../../shared/errors.js';
 import { createSalesService } from './sales.service.js';
+import type { RealtimeEmitter } from '../../realtime/socket.js';
+import { REALTIME_EVENTS } from '../../realtime/socket.js';
 
-export function createSalesController(database: PrismaClient) {
+export function createSalesController(database: PrismaClient, realtime?: RealtimeEmitter) {
   const service = createSalesService(database);
   const userId = (req: Parameters<RequestHandler>[0]) => req.auth!.userId;
   return {
@@ -35,10 +37,15 @@ export function createSalesController(database: PrismaClient) {
       sendJson(res, await service.removeItem(req, userId(req), String(req.params.saleId), String(req.params.itemId)));
     }) as RequestHandler,
     sendToCashier: (async (req, res) => {
-      sendJson(res, await service.sendToCashier(String(req.params.saleId), userId(req), req.auth!.branchIds));
+      const sale = await service.sendToCashier(String(req.params.saleId), userId(req), req.auth!.branchIds);
+      realtime?.emit(REALTIME_EVENTS.salePendingPayment, { branchId: sale.branchId, saleId: sale.id, saleNumber: sale.saleNumber, status: sale.status });
+      sendJson(res, sale);
     }) as RequestHandler,
     complete: (async (req, res) => {
-      sendJson(res, await service.completeSale(req, userId(req), String(req.params.saleId)));
+      const sale = await service.completeSale(req, userId(req), String(req.params.saleId));
+      realtime?.emit(REALTIME_EVENTS.saleCompleted, { branchId: sale.branchId, saleId: sale.id, saleNumber: sale.saleNumber, status: sale.status });
+      realtime?.emit(REALTIME_EVENTS.inventoryUpdated, { branchId: sale.branchId, saleId: sale.id, status: sale.status });
+      sendJson(res, sale);
     }) as RequestHandler,
   };
 }

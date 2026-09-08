@@ -62,7 +62,7 @@ export function createPaymentsService(database: PrismaClient) {
       });
       if (existing) {
         if (!sameIntent(existing, input)) throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD', 'La clave de idempotencia ya fue utilizada con otro pago.');
-        return { payment: existing, replayed: true };
+        return { payment: existing, replayed: true, saleId, branchId: sale.branchId, resultingStatus: sale.status };
       }
       if (sale.status !== 'PENDING_PAYMENT') throw invalidState();
 
@@ -116,7 +116,7 @@ export function createPaymentsService(database: PrismaClient) {
         after: { saleId, status: resultingStatus, method: payment.method, amount: payment.amount,
           receivedAmount: payment.receivedAmount, changeAmount: payment.changeAmount },
       });
-      return { payment, replayed: false };
+      return { payment, replayed: false, saleId, branchId: sale.branchId, resultingStatus };
     }, { isolationLevel: 'Serializable', timeout: 30000 });
   }
 
@@ -130,7 +130,8 @@ export function createPaymentsService(database: PrismaClient) {
           const existing = await findExisting(input.idempotencyKey, saleId);
           if (existing) {
             if (!sameIntent(existing, input)) throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD', 'La clave de idempotencia ya fue utilizada con otro pago.');
-            return { payment: existing, replayed: true };
+            const sale = await database.sale.findUniqueOrThrow({ where: { id: saleId }, select: { branchId: true, status: true } });
+            return { payment: existing, replayed: true, saleId, branchId: sale.branchId, resultingStatus: sale.status };
           }
           throw error;
         }

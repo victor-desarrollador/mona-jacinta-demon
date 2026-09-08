@@ -7,11 +7,12 @@ import { createSalesController } from './sales.controller.js';
 import { createCancellationRouter } from './cancellation.routes.js';
 import { createDraftSaleDto, saleIdDto } from './dto/sale.dto.js';
 import { addSaleItemDto, saleItemParamsDto, updateSaleItemDto } from './dto/sale-item.dto.js';
+import type { RealtimeEmitter } from '../../realtime/socket.js';
 
-export function createSalesRouter(database: PrismaClient): Router {
+export function createSalesRouter(database: PrismaClient, realtime?: RealtimeEmitter): Router {
   const router = Router();
-  const controller = createSalesController(database);
-  router.use('/', createCancellationRouter(database));
+  const controller = createSalesController(database, realtime);
+  router.use('/', createCancellationRouter(database, realtime));
   const createPermission = requirePermission(PERMISSIONS.SALE_CREATE);
   const viewPermission = requirePermission(PERMISSIONS.SALE_VIEW);
   const sendPermission = requirePermission(PERMISSIONS.SALE_CREATE, {
