@@ -84,15 +84,15 @@ cart quantity management, payment modal), but:
 
 ## 4. PostgreSQL domain model
 
-Identifiers are UUIDs; money values are `BigInt` cents.
+Identifiers are UUIDs; money values are `BigInt` **minor units (centavos)** — ARS 165,000.00 is `16500000`, never `165000`. At JSON boundaries money is a decimal string (`"16500000"`); a single recursive `toJsonSafe` helper converts `bigint` → string (arrays/objects recursively, `Date` preserved) for API responses, Socket.IO payloads, and Prisma `Json` fields such as `AuditLog.before/after` — native `bigint` never crosses a JSON boundary.
 
-Core tables (Prisma):
+Core tables (Prisma) — exactly **21 models**:
 
 - **User** — id, name, email (unique), passwordHash, isActive, timestamps.
 - **Role** — id, code (`SELLER`, `CASHIER`, `MANAGER`, `ADMIN`), name.
 - **Permission** — id, code (e.g. `sale.create`, `sale.charge`, `inventory.manage`).
 - **RolePermission** — (role, permission) join.
-- **Branch** — id, name, address, pointOfSaleNumber.
+- **Branch** — id, name, `code` (unique short commercial prefix used in sale numbers, e.g. `CEN`), address, pointOfSaleNumber.
 - **UserBranchRole** — (user, branch, role). A user may hold roles across branches.
 - **Product** — id, name, slug, description, categoryId, brandId, isActive.
 - **Category** / **Brand** — minimal catalogs.
@@ -100,13 +100,16 @@ Core tables (Prisma):
 - **Inventory** — id, variantId, branchId, physical (BigInt), reserved (BigInt); unique (variantId, branchId).
 - **StockMovement** — id, inventoryId, type (`SALE`), quantityDelta, saleId?, userId, branchId, timestamp.
 - **StockReservation** — id, saleId, variantId, branchId, quantity, expiresAt, status (`ACTIVE` | `RELEASED` | `CONSUMED`).
-- **Sale** — id, saleNumber (branch-scoped), branchId, sellerId, status (`DRAFT` | `PENDING_PAYMENT` | `PAID` | `COMPLETED` | `CANCELLED`), subtotal, discountTotal, total (cents), timestamps.
+- **Sale** — id, saleNumber (branch-scoped; `unique(branchId, saleNumber)`), branchId, sellerId, status (`DRAFT` | `PENDING_PAYMENT` | `PAID` | `COMPLETED` | `CANCELLED`), subtotal, discountTotal, total (cents), timestamps.
+- **SaleNumberCounter** — id, branchId (unique FK to Branch), nextValue (BigInt, starts at 1). The per-branch persisted counter behind `saleNumber`; its row is locked `FOR UPDATE` during send-to-cashier, read, and incremented in the same transaction. The next number is **never** derived by scanning previous sales.
 - **SaleItem** — id, saleId, variantId, productId, productName (snapshot), variantName, sku, quantity, unitPrice (cents), subtotal (cents).
-- **SalePayment** — id, saleId, method (`CASH` | `TRANSFER` | `CARD_DEBIT` | `CARD_CREDIT` | `QR`), amount (cents), receivedAmount?, changeAmount?, cashSessionId?, paidAt.
+- **SalePayment** — id, saleId, method (`CASH` | `TRANSFER` | `CARD_DEBIT` | `CARD_CREDIT` | `QR`), amount (cents), receivedAmount?, changeAmount?, cashSessionId?, `idempotencyKey` (client UUID v4 per payment intent; `unique(saleId, idempotencyKey)` — sale-scoped; the constraint is the final race guard), paidAt.
 - **CashRegister** — id, branchId, name.
 - **CashSession** — id, registerId, openedById, openedAt, closedById?, closedAt?, startingCash, status (`OPEN` | `CLOSED`).
 - **CashMovement** — id, sessionId, type (`OPENING` | `SALE_INCOME` | `CLOSING` | `MANUAL`), amount (cents), salePaymentId?, userId, timestamp.
-- **AuditLog** — id, userId, branchId, action, entityType, entityId, before/after (JSON), timestamp.
+- **AuditLog** — id, userId, branchId, action, entityType, entityId, before/after (JSON; bigint values normalized to decimal strings via `toJsonSafe` before write), timestamp.
+
+**Deliberately absent in Demo V2:** there is no refresh-token model/table — authentication is access-token-only (see §8).
 
 **Inventory invariants:**
 
@@ -128,7 +131,8 @@ BEGIN
   validate available >= qty for all items
   increment Inventory.reserved
   create StockReservation(ACTIVE) per item
-  generate branch-scoped sale number (concurrency-safe)
+  allocate branch-scoped sale number from the SaleNumberCounter row
+    (locked FOR UPDATE in this same transaction; increment nextValue)
   transition Sale: DRAFT -> PENDING_PAYMENT
   write AuditLog
 COMMIT
@@ -162,7 +166,8 @@ COMMIT
 
 - A sale becomes `PAID` **only** when `Σ accepted payments = total`. Partial sums never mark it paid.
 - For `CASH`, `SalePayment` distinguishes `amount` (what counts toward the sale), `receivedAmount` (gross handed over), and `changeAmount` (received − amount). Returned change is not revenue; the sale revenue is `amount`.
-- `registerPayment` must be idempotent by design: a retry of the same accepted payment must not create a second `CashMovement(SALE_INCOME)` or double-count the accepted total.
+- `registerPayment` must be idempotent by design: a retry of the same accepted payment must not create a second `CashMovement(SALE_INCOME)` or double-count the accepted total. Mechanism: client-generated `idempotencyKey` with `unique(saleId, idempotencyKey)`; same key + same payload returns the existing accepted payment, same key + different payload is rejected (`409 IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD`); the unique constraint — not a find-then-create check — is the final race protection.
+- Financial acceptance is serialized per sale by locking the `Sale` row (`SELECT ... FOR UPDATE`) and re-validating `amount <= remaining` inside that transaction, so concurrent payments can never exceed `Sale.total`.
 
 ### 5.3 Complete sale — `PAID → COMPLETED`
 
@@ -190,6 +195,11 @@ COMMIT
 physical inventory is actually decremented. Payment (`PAID`) and inventory finalization
 (`COMPLETED`) are intentionally separated.
 
+The Sale row is locked `FOR UPDATE` first. If the status is already `COMPLETED`, the call
+returns the authoritative persisted sale with **zero** further changes (no repeated
+physical/reserved decrement, no second `StockMovement`, reservations stay `CONSUMED`) —
+exactly one physical finalization can ever occur, and no client idempotency key is needed.
+
 ### 5.4 Failure / compensation behavior
 
 If payment succeeds but `completeSale` fails:
@@ -206,12 +216,20 @@ Semantics: **PAID = financial obligation satisfied. COMPLETED = operational/inve
 
 ### 5.5 Cancellation / reservation release
 
-On cancellation, or when an operation detects an expired active reservation:
+Cancellation is payment-gated:
+
+- `DRAFT` → cancellation allowed (no reservations exist yet).
+- `PENDING_PAYMENT` with `acceptedPaymentTotal == 0` → allowed; reservations are released.
+- `PENDING_PAYMENT` with any accepted payment → **forbidden** (`409 PAYMENT_ALREADY_ACCEPTED`).
+- `PAID` / `COMPLETED` → never cancelled in Demo V2.
+- A sale that holds accepted payments can therefore never reach `CANCELLED`; refunds, reversals, and chargebacks are out of scope.
+
+On cancellation, or when an operation detects an expired active reservation (see §7):
 
 - `physical` stays unchanged.
 - `reserved` decreases.
 - `StockReservation` transitions to `RELEASED`.
-- The release is audited, but **not** represented as a physical stock movement.
+- The release is audited (AuditLog in the same transaction), but **not** represented as a physical stock movement.
 
 ---
 
@@ -220,7 +238,7 @@ On cancellation, or when an operation detects an expired active reservation:
 - Model: `Branch → CashRegister → CashSession`.
 - `CashRegister` is an explicit entity (not "one session per branch"), so a branch can later have multiple registers without schema redesign.
 - Seed **one** `CashRegister` per branch for Demo V2.
-- At most **one** `CashSession` with status `OPEN` per `CashRegister` at a time.
+- At most **one** `CashSession` with status `OPEN` per `CashRegister` at a time, enforced at the database level by a partial unique index `UNIQUE ("registerId") WHERE status = 'OPEN'` (hand-written SQL in the initial migration; Prisma schema cannot express partial indexes). Concurrent opens are resolved by the database, not by a find-then-create check.
 - `CashMovement` types: `OPENING`, `SALE_INCOME`, `CLOSING`, `MANUAL`.
 
 ---
@@ -229,13 +247,15 @@ On cancellation, or when an operation detects an expired active reservation:
 
 - `StockReservation(saleId, variantId, branchId, quantity, expiresAt, status)`.
 - Lifecycle: `ACTIVE → RELEASED` (cancel/expiry) or `ACTIVE → CONSUMED` (completeSale).
-- Expiration is **manual/lazy** for Demo V2: the `expiresAt` field exists, released on cancellation or when an expired active reservation is detected. **No cron/worker.** Automatic expiration is a future enhancement.
+- Expiration is **manual/lazy** for Demo V2: there is **no cron/worker**. A lazy release is applied only when **all** hold: parent sale is `PENDING_PAYMENT`, that sale's `acceptedPaymentTotal == 0`, the reservation is `ACTIVE`, and `expiresAt < now()`.
+- A `PENDING_PAYMENT` sale with any accepted payment is never touched by expiry. A `PAID` sale's `ACTIVE` reservation is never released because `expiresAt` elapsed — `completeSale` consumes it (`ACTIVE → CONSUMED`) regardless of the timestamp.
 
 ---
 
 ## 8. RBAC and branch-scoped authorization
 
-- JWT carries `userId`; the backend resolves roles and branches for the authenticated user on each request. Client-provided role/branch values are **never** trusted.
+- JWT carries **identity only** (`sub`, `iat`, `exp`, optional `jti`) — never roles, permissions, or branch lists. The backend resolves roles, permissions, and branches from PostgreSQL on **every** HTTP request, and from PostgreSQL again at each Socket.IO connection before joining branch rooms. Client-provided role/branch values are **never** trusted; a resource's branch (e.g. `Sale.branchId`) is derived from the persisted row.
+- Demo V2 uses **short-lived access tokens only** — no refresh tokens, no rotation, no refresh endpoint or cookie. On expiry the user logs in again.
 - Authorization via explicit permission checks (`requirePermission(perm, branchScope)`) → 403. Avoid scattered `if (user.role === "admin")`.
 - Branch scope: SELLER/CASHIER scoped to their branch; MANAGER to their branch(es); ADMIN global.
 - The authorization matrix in `AGENTS.md` is authoritative.
@@ -250,16 +270,16 @@ On cancellation, or when an operation detects an expired active reservation:
 - The `require Sale = PAID` status check is the idempotency guard against double-completion.
 - Reservation validation uses row locks so two sellers cannot reserve the last physical unit.
 - No slow external network calls inside a transaction.
-- Sale numbers are generated safely under concurrency (per-branch sequence with a unique constraint and retry, within the send-to-cashier transaction).
+- Sale numbers are allocated within the send-to-cashier transaction by locking the branch's `SaleNumberCounter` row (`SELECT ... FOR UPDATE`), reading `nextValue`, and incrementing it; `unique(branchId, saleNumber)` on `Sale` is the final database guard. The counter's BigInt is formatted via decimal string padding, never coerced through JavaScript `Number`.
 
 ---
 
 ## 10. Realtime (Socket.IO)
 
-- Rooms keyed by `branch:<id>`.
+- Rooms keyed by `branch:<id>`; room membership is authorized from the user's current DB-resolved branches (ADMIN via global permission) — never from a client-requested room name.
 - Events: `sale.pending_payment`, `sale.paid`, `sale.completed`, `inventory.updated`.
-- Events are **notifications**, emitted **after commit** (out-of-band or post-commit hook).
-- PostgreSQL remains the source of truth. Clients refetch authoritative API state after receiving an event.
+- Events are **notifications**, emitted **after commit** with the simplest reliable mechanism: the service awaits the transaction promise (which resolves only after COMMIT, returning an event descriptor), and the caller then emits `io.to(branch:*).emit(...)` outside the transaction. No fake ORM "after commit" hooks; no outbox table for Demo V2 realtime (outbox remains the future pattern for durable external integrations such as ARCA).
+- A failed or missed emit never rolls back or mutates committed state. PostgreSQL remains the source of truth; clients refetch authoritative API state after receiving an event.
 - The system must function correctly if an event is delayed, duplicated, or missed.
 
 ---
@@ -275,7 +295,7 @@ On cancellation, or when an operation detects an expired active reservation:
 ## 12. Seed / demo data
 
 - `prisma/seed.ts` is deterministic and idempotent.
-- Branches: Centro, Yerba Buena, Tafí Viejo, Banda, Concepción, Depósito Central.
+- Branches: Centro (`CEN`), Yerba Buena (`YB`), Tafí Viejo (`TV`), Banda (`BAN`), Concepción (`CON`), Depósito Central (`DEP`); one `SaleNumberCounter` per branch (`nextValue = 1`).
 - Roles and permissions for SELLER/CASHIER/MANAGER/ADMIN.
 - Demo users: `admin` (ADMIN), `manager01` (MANAGER, Centro), `seller01` (SELLER, Centro), `cashier01` (CASHIER, Centro).
 - Products/variants: Remera Básica, Jean Slim, Campera Jean (with color/size variants, SKU, barcode).
@@ -288,23 +308,24 @@ On cancellation, or when an operation detects an expired active reservation:
 ## 13. Testing strategy
 
 - Tools: Vitest + Supertest.
-- Runs against a real PostgreSQL test database with per-test transaction rollback.
-- Priority coverage:
-  - Authorization: SELLER on cashier-only endpoint → 403; CASHIER on admin-only endpoint → 403.
-  - Split payment: `100000 + 60000` (of `165000`) → not paid; `100000 + 65000` → paid.
-  - Duplicate completion: two `completeSale` calls deduct stock only once.
+- Runs against a physically isolated hosted PostgreSQL test database — a separate Supabase project (`mona-jacinta-test`), never the development/demo database; dev/test isolation is proven before any destructive operation by a multi-signal, fail-closed identity check (see §18). Per-test `TRUNCATE ... RESTART IDENTITY CASCADE` (not transaction rollback — Supertest performs real HTTP requests against the app's own connections). DB-backed test files run **sequentially** (`fileParallelism: false`): truncation isolation is unsafe across parallel workers.
+- Priority coverage (money in minor units / centavos):
+  - Authorization: SELLER on cashier-only endpoint → 403; SELLER on the cashier queue (`sale.queue.view`) → 403; CASHIER on admin-only endpoint → 403.
+  - Split payment: `"10000000" + "6000000"` (of `"16500000"`) → not paid; `"10000000" + "6500000"` → paid.
+  - Payment concurrency: two concurrent payments for the same remaining balance → exactly one accepted; total never exceeded.
+  - Duplicate completion: sequential and concurrent `completeSale` calls → exactly one physical finalization.
   - Stock concurrency: available = 1, two reservations → only one succeeds.
   - Transaction rollback: a mid-transaction failure leaves consistent persisted state.
-  - `registerPayment` idempotency: no duplicate `CashMovement(SALE_INCOME)`.
+  - `registerPayment` idempotency: no duplicate `CashMovement(SALE_INCOME)`; key reuse with a different payload → 409.
 
 ---
 
 ## 14. Sale numbering
 
-- Branch-scoped internal commercial number, e.g. `CEN-V-000154`, `YB-V-000087`.
+- Branch-scoped internal commercial number, e.g. `CEN-V-000154`, `YB-V-000087` — `<BRANCH.code>-V-<SEQ>`.
+- Sequence comes from the persisted per-branch `SaleNumberCounter` (row locked `FOR UPDATE`, incremented inside the send-to-cashier transaction); `unique(branchId, saleNumber)` is the final guard.
 - This is **not** an ARCA fiscal voucher number.
 - Commercial numbering stays separated from future fiscal numbering (`pointOfSaleNumber`, `voucherNumber`, `CAE`).
-- Generated safely under concurrency.
 
 ---
 
@@ -325,10 +346,14 @@ On cancellation, or when an operation detects an expired active reservation:
 - Seller discount workflows (a `discountTotal` field may exist, defaulting to zero; no authorization or UI required).
 - Full Users/Roles/Branches CRUD (read-only views are acceptable if inexpensive).
 - Commercial reservations/señas, exchanges/returns, marketing loans.
+- Refunds, reversals, chargebacks, or any payment compensation flow.
 - Mobile app.
 - Advanced reporting.
 - Public ecommerce storefront.
 - Monorepo/workspace restructuring, microservices, Kubernetes.
+- Local or Docker PostgreSQL installation/runtime (database hosting is Supabase — see §18).
+- Deployment to, or any dependency on, Tuculandia-server.
+- Supabase platform features beyond hosted PostgreSQL (Supabase Auth, Realtime, Storage, Edge Functions, client SDKs, direct frontend→database access).
 
 ---
 
@@ -342,3 +367,40 @@ These are intentionally deferred to later phases and do **not** block Demo V2:
 - Multi-register cash handling beyond the single-register-per-branch seed.
 - Seller discount authorization workflow.
 - MongoDB → PostgreSQL historical data migration.
+
+---
+
+## 18. Database hosting and deployment boundary (amendment)
+
+**Decision:** Demo V2 uses hosted Supabase PostgreSQL instead of local or Docker PostgreSQL. Supabase plays the same infrastructure role MongoDB Atlas played in the legacy Tesis project:
+
+```text
+Legacy Tesis:  Express -> Mongoose -> MongoDB Atlas
+Mona Jacinta:  client/admin -> Express -> Prisma -> Supabase PostgreSQL
+```
+
+- Two physically separated Supabase PostgreSQL projects:
+  - `mona-jacinta-demo` → `DATABASE_URL` — development and deterministic demo data.
+  - `mona-jacinta-test` → `TEST_DATABASE_URL` — Vitest + Supertest integration tests; destructive `TRUNCATE ... RESTART IDENTITY CASCADE` targets only this database.
+- `DATABASE_URL` and `TEST_DATABASE_URL` are **server-only** secrets: tracked only as `.env.example` placeholders, kept locally in untracked env files, never exposed as `NEXT_PUBLIC_*`/`VITE_*` variables, never reachable from `client/` or `admin/`.
+- Supabase provides PostgreSQL hosting **only**. Express + Prisma is the sole application database client. No Supabase Auth, Realtime, Storage, Edge Functions, client SDKs, or direct frontend→database access.
+- Prisma 7 reads its datasource URL from `prisma.config.ts` (created when `api/` is bootstrapped). The same Supabase connection must serve Prisma migrations and the persistent Express server; the authoritative migration-compatibility gate is the first migration run against the hosted database (`npx prisma validate`, `npx prisma generate`, `npx prisma migrate dev --name init`, `npx prisma migrate status`). If the Supabase dashboard offers multiple connection modes, the selected mode is verified by that gate — never silently assumed.
+- **Destructive-test safety (fail closed, multi-signal):** before any truncation the test bootstrap (1) requires both env vars, (2) requires the raw strings to differ, (3) compares parsed non-secret URL components — hostname, port, database name, username/project-qualified username — without logging credentials, and (4) connects to both databases and compares live metadata (`current_database()`, `current_user`, `inet_server_addr()`, `inet_server_port()`, `version()`). A cluster/system identifier (e.g. from `pg_control_system()`) may be used as an additional signal when permissions allow, but is never required. If distinct Supabase project/database identities cannot be established — for example because pooled connection modes mask server metadata — the suite **fails closed**. Passwords, full URLs, and secret query parameters are never logged.
+- Deployment boundary:
+
+  ```text
+  Today (development):              Later (deployment):
+
+  Laptop                            Online frontend(s)
+    client/admin/API dev                │
+    processes                           v
+        │                           Online Express API
+        v                               │
+      Prisma                            v
+        │                             Prisma
+        v                               │
+    Supabase PostgreSQL                 v
+                                    Supabase PostgreSQL
+  ```
+
+  Tuculandia-server is not part of Demo V2 infrastructure: nothing depends on or deploys to it. The future Express hosting provider is intentionally not chosen in this amendment.

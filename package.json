@@ -1,0 +1,13 @@
+{
+  "name": "mona-jacinta-demon",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "db:check": "node scripts/check-databases.mjs",
+    "demo:reset": "npm --prefix api run db:reset",
+    "demo:seed": "npm --prefix api run db:seed"
+  },
+  "devDependencies": {
+    "pg": "^8.13.1"
+  }
+}
