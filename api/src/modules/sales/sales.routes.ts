@@ -28,5 +28,6 @@ export function createSalesRouter(database: PrismaClient): Router {
   router.patch('/:saleId/items/:itemId', validate(saleItemParamsDto, 'params'), validate(updateSaleItemDto), createPermission, controller.updateItem);
   router.delete('/:saleId/items/:itemId', validate(saleItemParamsDto, 'params'), createPermission, controller.removeItem);
   router.post('/:saleId/send-to-cashier', validate(saleIdDto, 'params'), sendPermission, controller.sendToCashier);
+  router.post('/:saleId/complete', validate(saleIdDto, 'params'), requirePermission(PERMISSIONS.SALE_COMPLETE), controller.complete);
   return router;
 }

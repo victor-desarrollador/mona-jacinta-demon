@@ -37,5 +37,8 @@ export function createSalesController(database: PrismaClient) {
     sendToCashier: (async (req, res) => {
       sendJson(res, await service.sendToCashier(String(req.params.saleId), userId(req), req.auth!.branchIds));
     }) as RequestHandler,
+    complete: (async (req, res) => {
+      sendJson(res, await service.completeSale(req, userId(req), String(req.params.saleId)));
+    }) as RequestHandler,
   };
 }
