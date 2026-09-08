@@ -1,6 +1,6 @@
 import type { CashSession, Prisma, PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
-import { toJsonSafe } from '../../shared/json-safe.js';
+import { createAuditLog } from '../../shared/audit.js';
 
 const conflict = (opening: boolean) => new AppError(409,
   opening ? 'CASH_SESSION_ALREADY_OPEN' : 'CASH_SESSION_ALREADY_CLOSED',
@@ -58,10 +58,10 @@ export function createCashService(database: PrismaClient) {
         if (await tx.cashSession.findFirst({ where: { registerId, status: 'OPEN' } })) throw conflict(true);
         const session = await tx.cashSession.create({ data: { registerId, openedById: userId, startingCash, status: 'OPEN' } });
         await tx.cashMovement.create({ data: { sessionId: session.id, type: 'OPENING', amount: startingCash, salePaymentId: null, userId } });
-        await tx.auditLog.create({ data: {
+        await createAuditLog(tx, {
           userId, branchId: register.branchId, action: 'CASH_SESSION_OPENED', entityType: 'CashSession', entityId: session.id,
-          after: toJsonSafe(summary(session, register.branchId)) as Prisma.InputJsonValue,
-        } });
+          after: summary(session, register.branchId),
+        });
         return summary(session, register.branchId);
       });
     },
@@ -76,11 +76,11 @@ export function createCashService(database: PrismaClient) {
         if (locked.status !== 'OPEN') throw conflict(false);
         await tx.cashMovement.create({ data: { sessionId, type: 'CLOSING', amount: closingCash, salePaymentId: null, userId } });
         const session = await tx.cashSession.update({ where: { id: sessionId }, data: { status: 'CLOSED', closedById: userId, closedAt: new Date() } });
-        await tx.auditLog.create({ data: {
+        await createAuditLog(tx, {
           userId, branchId: register.branchId, action: 'CASH_SESSION_CLOSED', entityType: 'CashSession', entityId: sessionId,
           before: { status: 'OPEN' },
-          after: toJsonSafe({ ...summary(session, register.branchId), closingCash }) as Prisma.InputJsonValue,
-        } });
+          after: { ...summary(session, register.branchId), closingCash },
+        });
         return { ...summary(session, register.branchId), closingCash };
       });
     },

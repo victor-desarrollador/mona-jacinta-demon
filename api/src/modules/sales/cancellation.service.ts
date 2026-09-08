@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
-import { toJsonSafe } from '../../shared/json-safe.js';
+import { createAuditLog } from '../../shared/audit.js';
 
 type AuthScope = { userId: string; branchIds: string[] };
 type LockedSale = { id: string; branchId: string; status: string };
@@ -93,11 +93,11 @@ export function createCancellationService(database: PrismaClient) {
         ? await releaseReservations(tx, sale, reservations)
         : [];
       await tx.sale.update({ where: { id: saleId }, data: { status: 'CANCELLED' } });
-      await tx.auditLog.create({ data: {
+      await createAuditLog(tx, {
         userId: scope.userId, branchId: sale.branchId, action: 'SALE_CANCELLED', entityType: 'Sale', entityId: saleId,
-        before: toJsonSafe({ status: sale.status }) as Prisma.InputJsonValue,
-        after: toJsonSafe({ status: 'CANCELLED', released }) as Prisma.InputJsonValue,
-      } });
+        before: { status: sale.status },
+        after: { status: 'CANCELLED', released },
+      });
       return { saleId, branchId: sale.branchId, status: 'CANCELLED', released };
     });
   }
@@ -128,10 +128,10 @@ export function createCancellationService(database: PrismaClient) {
         `;
         const quantities = await releaseReservations(tx, sale, reservations);
         if (quantities.length === 0) continue;
-        await tx.auditLog.create({ data: {
+        await createAuditLog(tx, {
           userId: scope.userId, branchId: sale.branchId, action: 'RESERVATION_RELEASED', entityType: 'Sale', entityId: sale.id,
-          after: toJsonSafe({ saleId: sale.id, released: quantities, reason: 'EXPIRED' }) as Prisma.InputJsonValue,
-        } });
+          after: { saleId: sale.id, released: quantities, reason: 'EXPIRED' },
+        });
         released.push({ saleId: sale.id, branchId: sale.branchId, quantities });
       }
       return { released };

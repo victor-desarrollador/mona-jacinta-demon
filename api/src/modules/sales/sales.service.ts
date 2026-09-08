@@ -1,7 +1,7 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { assertBranchAccess } from '../../middleware/authorization.js';
 import { AppError } from '../../shared/errors.js';
-import { toJsonSafe } from '../../shared/json-safe.js';
+import { createAuditLog } from '../../shared/audit.js';
 import { createInventoryService } from '../inventory/inventory.service.js';
 import type { AddSaleItemInput, UpdateSaleItemInput } from './dto/sale-item.dto.js';
 import { createReservationService } from './reservation.service.js';
@@ -99,9 +99,25 @@ export function createSalesService(database: SaleDatabase) {
     const branchId = requestedBranchId ?? (req.auth?.branchIds.length === 1 ? req.auth.branchIds[0] : undefined);
     if (!branchId) throw new AppError(400, 'BRANCH_REQUIRED', 'Debe indicar una sucursal autorizada.');
     assertBranchAccess(req, branchId);
-    return database.sale.create({
-      data: { sellerId: userId, branchId, status: 'DRAFT', subtotal: 0n, discountTotal: 0n, total: 0n },
-      include: saleInclude,
+    return database.$transaction(async (tx) => {
+      const sale = await tx.sale.create({
+        data: { sellerId: userId, branchId, status: 'DRAFT', subtotal: 0n, discountTotal: 0n, total: 0n },
+        include: saleInclude,
+      });
+      await createAuditLog(tx, {
+        userId,
+        branchId,
+        action: 'SALE_CREATED',
+        entityType: 'Sale',
+        entityId: sale.id,
+        after: {
+          status: sale.status,
+          subtotal: sale.subtotal,
+          discountTotal: sale.discountTotal,
+          total: sale.total,
+        },
+      });
+      return sale;
     });
   }
 
@@ -331,16 +347,14 @@ export function createSalesService(database: SaleDatabase) {
       where: { saleId, status: 'ACTIVE' },
       data: { status: 'CONSUMED' },
     });
-    await tx.auditLog.create({
-      data: {
-        userId,
-        branchId: sale.branchId,
-        action: 'SALE_COMPLETED',
-        entityType: 'Sale',
-        entityId: saleId,
-        before: toJsonSafe({ status: 'PAID' }) as Prisma.InputJsonValue,
-        after: toJsonSafe({ status: 'COMPLETED', inventory: finalizedInventory }) as Prisma.InputJsonValue,
-      },
+    await createAuditLog(tx, {
+      userId,
+      branchId: sale.branchId,
+      action: 'SALE_COMPLETED',
+      entityType: 'Sale',
+      entityId: saleId,
+      before: { status: 'PAID' },
+      after: { status: 'COMPLETED', inventory: finalizedInventory },
     });
     await tx.sale.update({ where: { id: saleId }, data: { status: 'COMPLETED' } });
     return tx.sale.findUniqueOrThrow({ where: { id: saleId }, include: saleInclude });

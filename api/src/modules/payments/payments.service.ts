@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient, SalePayment } from '../../generated/prisma/client.js';
 import { assertBranchAccess } from '../../middleware/authorization.js';
 import { AppError } from '../../shared/errors.js';
-import { toJsonSafe } from '../../shared/json-safe.js';
+import { createAuditLog } from '../../shared/audit.js';
 import type { RegisterPaymentInput } from './dto/payment.dto.js';
 
 type RequestLike = Parameters<typeof assertBranchAccess>[0];
@@ -109,13 +109,13 @@ export function createPaymentsService(database: PrismaClient) {
       if (resultingStatus === 'PAID') {
         await tx.sale.update({ where: { id: saleId }, data: { status: 'PAID' } });
       }
-      await tx.auditLog.create({ data: {
+      await createAuditLog(tx, {
         userId, branchId: sale.branchId, action: 'PAYMENT_REGISTERED',
         entityType: 'SalePayment', entityId: payment.id,
-        before: toJsonSafe({ saleId, status: sale.status }) as Prisma.InputJsonValue,
-        after: toJsonSafe({ saleId, status: resultingStatus, method: payment.method, amount: payment.amount,
-          receivedAmount: payment.receivedAmount, changeAmount: payment.changeAmount }) as Prisma.InputJsonValue,
-      } });
+        before: { saleId, status: sale.status },
+        after: { saleId, status: resultingStatus, method: payment.method, amount: payment.amount,
+          receivedAmount: payment.receivedAmount, changeAmount: payment.changeAmount },
+      });
       return { payment, replayed: false };
     }, { isolationLevel: 'Serializable', timeout: 30000 });
   }

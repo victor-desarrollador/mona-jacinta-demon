@@ -1,6 +1,6 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
-import { toJsonSafe } from '../../shared/json-safe.js';
+import { createAuditLog } from '../../shared/audit.js';
 
 type ReservationDatabase = Pick<
   PrismaClient,
@@ -104,12 +104,10 @@ async function reserveInTransaction(
   const commercialNumber = formatSaleNumber(counter.nextValue, counter.code);
   await tx.saleNumberCounter.update({ where: { id: counter.id }, data: { nextValue: { increment: 1n } } });
   await tx.sale.update({ where: { id: saleId }, data: { status: 'PENDING_PAYMENT', saleNumber: commercialNumber } });
-  await tx.auditLog.create({
-    data: {
-      userId, branchId: sale.branchId, action: 'SALE_SENT_TO_CASHIER', entityType: 'Sale', entityId: saleId,
-      before: toJsonSafe({ status: 'DRAFT', saleNumber: null }) as Prisma.InputJsonValue,
-      after: toJsonSafe({ status: 'PENDING_PAYMENT', saleNumber: commercialNumber }) as Prisma.InputJsonValue,
-    },
+  await createAuditLog(tx, {
+    userId, branchId: sale.branchId, action: 'SALE_SENT_TO_CASHIER', entityType: 'Sale', entityId: saleId,
+    before: { status: 'DRAFT', saleNumber: null },
+    after: { status: 'PENDING_PAYMENT', saleNumber: commercialNumber },
   });
   return { saleId, branchId: sale.branchId, saleNumber: commercialNumber };
 }
