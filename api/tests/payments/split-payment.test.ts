@@ -3,7 +3,7 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
-import type { PrismaClient } from '../../src/generated/prisma/client.js';
+import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 import { getAuthToken } from '../helpers/auth.js';
 
@@ -185,7 +185,7 @@ describe('split payments', () => {
     await openCashSession();
     const sale = await createSale(10n);
     const transaction = db.$transaction.bind(db);
-    vi.spyOn(db, '$transaction').mockImplementation(((callback: (tx: any) => Promise<unknown>, options: object) =>
+    vi.spyOn(db, '$transaction').mockImplementation(((callback: (tx: Prisma.TransactionClient) => Promise<unknown>, options: object) =>
       transaction(async (tx) => {
         vi.spyOn(tx.auditLog, 'create').mockRejectedValueOnce(new Error('forced audit failure'));
         return callback(tx);
