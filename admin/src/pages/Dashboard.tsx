@@ -16,11 +16,11 @@ export function Dashboard() {
     api
       .dashboard(token, logout)
       .then(setSummary)
-      .catch((cause) => setError(cause instanceof Error ? cause.message : 'No se pudo cargar dashboard.'))
+      .catch((cause) => setError(cause instanceof Error ? cause.message : 'No se pudo cargar el panel principal.'))
       .finally(() => setLoading(false));
   }, [token, logout]);
 
-  if (loading) return <p className="muted">Cargando dashboard...</p>;
+  if (loading) return <p className="muted">Cargando panel principal...</p>;
   if (error) return <p className="error-banner">{error}</p>;
   if (!summary) return <p className="muted">Sin datos disponibles.</p>;
 
@@ -36,7 +36,7 @@ export function Dashboard() {
       <div className="section-heading">
         <div>
           <p className="eyebrow">Resumen</p>
-          <h2>Operacion actual</h2>
+          <h2>Operación actual</h2>
         </div>
       </div>
       <div className="metric-grid">

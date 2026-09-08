@@ -160,6 +160,15 @@ function assertAllowed(method: string, path: string) {
   }
 }
 
+function userFacingError(message: string | undefined, fallback: string) {
+  const labels: Record<string, string> = {
+    Unauthorized: 'No autorizado.',
+    Forbidden: 'No tenés permiso para realizar esta acción.',
+    'Invalid credentials': 'Usuario o contraseña incorrectos.',
+  };
+  return message ? (labels[message] ?? message) : fallback;
+}
+
 async function request<T>(
   path: string,
   options: RequestInit & { token?: string | null; onUnauthorized?: () => void } = {},
@@ -176,7 +185,13 @@ async function request<T>(
   if (response.status === 401) options.onUnauthorized?.();
   if (!response.ok) {
     const candidate = body as { message?: string; error?: { message?: string } };
-    throw new ApiError(response.status, candidate.message ?? candidate.error?.message ?? 'Error de API.');
+    const fallback =
+      response.status === 401
+        ? 'No autorizado.'
+        : response.status === 403
+          ? 'No tenés permiso para realizar esta acción.'
+          : 'Error de API.';
+    throw new ApiError(response.status, userFacingError(candidate.message ?? candidate.error?.message, fallback));
   }
   return body as T;
 }

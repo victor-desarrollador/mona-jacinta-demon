@@ -2,6 +2,7 @@ import { LockKeyhole } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { ApiError, api, type BackofficeUser } from '../lib/api';
+import { roleLabel } from '../lib/utils';
 
 export function Users({ forbidden = false }: { forbidden?: boolean }) {
   const { token, logout } = useAuth();
@@ -33,7 +34,7 @@ export function Users({ forbidden = false }: { forbidden?: boolean }) {
         <LockKeyhole size={24} />
         <p className="eyebrow">Usuarios</p>
         <h2>Sin permiso USER_MANAGE</h2>
-        <p>El backend no habilita esta pantalla para la sesion actual.</p>
+        <p>El backend no habilita esta pantalla para la sesión actual.</p>
       </section>
     );
   }
@@ -42,7 +43,7 @@ export function Users({ forbidden = false }: { forbidden?: boolean }) {
     <div className="page-stack">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Administracion</p>
+          <p className="eyebrow">Administración</p>
           <h2>Usuarios</h2>
         </div>
       </div>
@@ -53,7 +54,7 @@ export function Users({ forbidden = false }: { forbidden?: boolean }) {
           <thead>
             <tr>
               <th>Nombre</th>
-              <th>Email</th>
+              <th>Correo</th>
               <th>Estado</th>
               <th>Roles</th>
               <th>Sucursales</th>
@@ -65,7 +66,7 @@ export function Users({ forbidden = false }: { forbidden?: boolean }) {
                 <td>{user.name}</td>
                 <td>{user.email}</td>
                 <td>{user.isActive ? 'Activo' : 'Inactivo'}</td>
-                <td>{user.roles.map((role) => role.code).join(', ')}</td>
+                <td>{user.roles.map((role) => roleLabel(role.code)).join(', ')}</td>
                 <td>{user.branches.map((branch) => branch.code).join(', ')}</td>
               </tr>
             ))}

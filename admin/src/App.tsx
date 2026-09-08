@@ -17,9 +17,9 @@ function ProtectedLayout() {
     return (
       <main className="screen-center">
         <section className="empty-card">
-          <p className="eyebrow">Backoffice</p>
-          <h1>Cargando sesion</h1>
-          <p>Validando credenciales con el backend.</p>
+          <p className="eyebrow">Administración</p>
+          <h1>Cargando sesión</h1>
+          <p>Validando credenciales con el servidor.</p>
         </section>
       </main>
     );

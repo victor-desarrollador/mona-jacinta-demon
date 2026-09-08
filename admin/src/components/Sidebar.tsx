@@ -5,7 +5,7 @@ import { cn } from '../lib/utils';
 import { useAuth } from '../hooks/useAuth';
 
 const baseItems = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { to: '/', label: 'Panel principal', icon: LayoutDashboard },
   { to: '/ventas', label: 'Ventas', icon: ReceiptText },
   { to: '/inventario', label: 'Inventario', icon: PackageSearch },
   { to: '/sucursales', label: 'Sucursales', icon: Building2 },
@@ -23,7 +23,7 @@ export function Sidebar() {
         <div className="brand-mark">MJ</div>
         <div>
           <strong>Mona Jacinta</strong>
-          <span>Backoffice</span>
+          <span>Administración</span>
         </div>
       </div>
       <nav className="nav-list">
@@ -41,7 +41,7 @@ export function Sidebar() {
       </nav>
       <div className="sidebar-footer">
         <BarChart3 size={18} />
-        <span>Datos leidos desde Backoffice API</span>
+        <span>Datos leídos desde la API de administración</span>
       </div>
     </aside>
   );

@@ -18,7 +18,7 @@ export function Login() {
     try {
       await login(email, password);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'No se pudo iniciar sesion.');
+      setError(cause instanceof Error ? cause.message : 'No se pudo iniciar sesión.');
     } finally {
       setSubmitting(false);
     }
@@ -28,16 +28,16 @@ export function Login() {
     <main className="login-screen">
       <section className="login-panel">
         <div className="brand-mark">MJ</div>
-        <p className="eyebrow">Mona Jacinta Backoffice</p>
+        <p className="eyebrow">Mona Jacinta Administración</p>
         <h1>Ingreso gerencial</h1>
-        <p>Usa tu usuario MANAGER o ADMIN para consultar ventas, inventario y sucursales.</p>
+        <p>Usá tu usuario de gerente o administrador para consultar ventas, inventario y sucursales.</p>
         <form onSubmit={submit} className="login-form">
           <label>
             Correo
             <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" required />
           </label>
           <label>
-            Contrasena
+            Contraseña
             <input
               value={password}
               onChange={(event) => setPassword(event.target.value)}

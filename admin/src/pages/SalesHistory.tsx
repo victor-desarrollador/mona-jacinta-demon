@@ -2,7 +2,7 @@ import { Eye } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { api, type Branch, type SaleDetail, type SaleSummary } from '../lib/api';
-import { cn, formatARS, formatDateTime, statusBadge } from '../lib/utils';
+import { cn, formatARS, formatDateTime, paymentMethodLabel, statusBadge, statusLabel } from '../lib/utils';
 
 const LIMIT = 20;
 
@@ -122,7 +122,7 @@ export function SalesHistory() {
                   <td>{formatARS(sale.total)}</td>
                   <td>
                     {formatARS(sale.paymentSummary.paidAmount)}
-                    <small>{sale.paymentSummary.methods.join(', ') || 'Sin pagos'}</small>
+                    <small>{sale.paymentSummary.methods.map(paymentMethodLabel).join(', ') || 'Sin pagos'}</small>
                   </td>
                   <td>
                     <button className="icon-button" onClick={() => openDetail(sale.id)} aria-label="Ver detalle">
@@ -140,7 +140,7 @@ export function SalesHistory() {
         <button className="secondary-button" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - LIMIT))}>
           Anterior
         </button>
-        <span>Pagina {Math.floor(offset / LIMIT) + 1}</span>
+        <span>Página {Math.floor(offset / LIMIT) + 1}</span>
         <button className="secondary-button" disabled={sales.length < LIMIT} onClick={() => setOffset(offset + LIMIT)}>
           Siguiente
         </button>
@@ -154,7 +154,7 @@ export function SalesHistory() {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  return <span className={cn(statusBadge({ status: status as never }))}>{status}</span>;
+  return <span className={cn(statusBadge({ status: status as never }))}>{statusLabel(status)}</span>;
 }
 
 function SaleDetailPanel({
@@ -184,7 +184,7 @@ function SaleDetailPanel({
       </div>
       <div className="split-grid">
         <section>
-          <h3>Items</h3>
+          <h3>Artículos</h3>
           {sale.items.map((item) => (
             <div className="line-row" key={item.id}>
               <span>
@@ -202,7 +202,7 @@ function SaleDetailPanel({
           {sale.payments.map((payment) => (
             <div className="line-row" key={payment.id}>
               <span>
-                <strong>{payment.method}</strong>
+                <strong>{paymentMethodLabel(payment.method)}</strong>
                 <small>{formatDateTime(payment.paidAt)}</small>
               </span>
               <strong>{formatARS(payment.amount)}</strong>

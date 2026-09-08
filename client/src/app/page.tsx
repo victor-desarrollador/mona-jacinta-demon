@@ -150,7 +150,48 @@ function toQuantity(value: string) {
 }
 
 function variantLabel(variant: Pick<Variant, "color" | "size">) {
-  return [variant.color, variant.size].filter(Boolean).join(" / ") || "Unica";
+  return [variant.color, variant.size].filter(Boolean).join(" / ") || "Única";
+}
+
+function statusLabel(status: SaleStatus) {
+  const labels: Record<SaleStatus, string> = {
+    DRAFT: "Borrador",
+    PENDING_PAYMENT: "Pendiente de pago",
+    PAID: "Pagada",
+    COMPLETED: "Completada",
+    CANCELLED: "Cancelada",
+  };
+  return labels[status];
+}
+
+function paymentMethodLabel(method: PaymentMethod) {
+  const labels: Record<PaymentMethod, string> = {
+    CASH: "Efectivo",
+    TRANSFER: "Transferencia",
+    CARD_DEBIT: "Tarjeta de débito",
+    CARD_CREDIT: "Tarjeta de crédito",
+    QR: "QR",
+  };
+  return labels[method];
+}
+
+function roleLabel(role: string) {
+  const labels: Record<string, string> = {
+    SELLER: "Vendedor",
+    CASHIER: "Cajero",
+    MANAGER: "Gerente",
+    ADMIN: "Administrador",
+  };
+  return labels[role] ?? role;
+}
+
+function userFacingError(message: string | undefined, fallback: string) {
+  const labels: Record<string, string> = {
+    Unauthorized: "No autorizado.",
+    Forbidden: "No tenés permiso para realizar esta acción.",
+    "Invalid credentials": "Usuario o contraseña incorrectos.",
+  };
+  return message ? (labels[message] ?? message) : fallback;
 }
 
 function arsToCents(input: string) {
@@ -192,9 +233,13 @@ async function apiRequest<T>(
 
   if (!response.ok) {
     const apiError = body as ApiError;
-    throw new Error(
-      apiError.message ?? apiError.error?.message ?? "No se pudo completar la operacion.",
-    );
+    const fallback =
+      response.status === 401
+        ? "No autorizado."
+        : response.status === 403
+          ? "No tenés permiso para realizar esta acción."
+          : "No se pudo completar la operación.";
+    throw new Error(userFacingError(apiError.message ?? apiError.error?.message, fallback));
   }
 
   return body as T;
@@ -252,7 +297,7 @@ export default function OperationsPage() {
       setBranchId(result.user.branchIds[0] ?? "");
       setMode(hasRole(result.user, "CASHIER") ? "cashier" : "seller");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudo iniciar sesion.");
+      setError(cause instanceof Error ? cause.message : "No se pudo iniciar sesión.");
     } finally {
       setActionLoading(false);
     }
@@ -272,7 +317,7 @@ export default function OperationsPage() {
         <section className="auth-panel">
           <div className="brand-mark">MJ</div>
           <p className="eyebrow">Mona Jacinta Operaciones</p>
-          <h1>Cargando sesion</h1>
+          <h1>Cargando sesión</h1>
           <p className="muted">Estamos preparando el punto de venta.</p>
         </section>
       </main>
@@ -286,7 +331,7 @@ export default function OperationsPage() {
           <div className="brand-mark">MJ</div>
           <p className="eyebrow">Mona Jacinta Operaciones</p>
           <h1>Punto de venta</h1>
-          <p className="muted">Ingresa con tu usuario para operar ventas y caja.</p>
+          <p className="muted">Ingresá con tu usuario para operar ventas y caja.</p>
 
           <form className="login-form" onSubmit={login}>
             <label>
@@ -300,7 +345,7 @@ export default function OperationsPage() {
               />
             </label>
             <label>
-              Contrasena
+              Contraseña
               <input
                 autoComplete="current-password"
                 type="password"
@@ -333,7 +378,7 @@ export default function OperationsPage() {
           </span>
         </div>
 
-        <div className="mode-tabs" role="tablist" aria-label="Modo de operacion">
+        <div className="mode-tabs" role="tablist" aria-label="Modo de operación">
           {canCashier ? (
             <button
               className={mode === "cashier" ? "mode-tab active" : "mode-tab"}
@@ -355,7 +400,7 @@ export default function OperationsPage() {
         <div className="user-menu">
           <span>
             {user.name}
-            <small>{user.roles.join(" / ")}</small>
+            <small>{user.roles.map(roleLabel).join(" / ")}</small>
           </span>
           <button className="text-button" onClick={logout}>
             Salir
@@ -487,7 +532,7 @@ function SellerWorkspace({
       });
       setSale(nextSale);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudo agregar el articulo.");
+      setError(cause instanceof Error ? cause.message : "No se pudo agregar el artículo.");
     } finally {
       setActionLoading(false);
     }
@@ -510,7 +555,7 @@ function SellerWorkspace({
             });
       setSale(nextSale);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudo actualizar el articulo.");
+      setError(cause instanceof Error ? cause.message : "No se pudo actualizar el artículo.");
     } finally {
       setActionLoading(false);
     }
@@ -549,7 +594,7 @@ function SellerWorkspace({
             <p className="eyebrow">Venta vendedor</p>
             <h1>Productos y variantes</h1>
           </div>
-          <span className="status-pill">API conectada</span>
+          <span className="status-pill">Conectado</span>
         </div>
 
         <div className="toolbar">
@@ -564,7 +609,7 @@ function SellerWorkspace({
             <input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Producto, SKU, color, talle o codigo"
+              placeholder="Producto, SKU, color, talle o código"
             />
           </label>
         </div>
@@ -582,9 +627,9 @@ function SellerWorkspace({
             <div>
               <p className="eyebrow">Venta enviada a caja</p>
               <h2>{sentSale.saleNumber ?? sentSale.id}</h2>
-              <p>La venta quedo en estado PENDING_PAYMENT y ya puede cobrarla caja.</p>
+              <p>La venta quedó en estado pendiente de pago y ya puede cobrarla caja.</p>
             </div>
-            <span className="state-pill">{sentSale.status}</span>
+            <span className="state-pill">{statusLabel(sentSale.status)}</span>
             <button className="secondary-button" onClick={startSale} disabled={actionLoading}>
               Nueva venta
             </button>
@@ -594,18 +639,18 @@ function SellerWorkspace({
         {!sale ? (
           <div className="empty-sale">
             <h2>Abrir borrador de venta</h2>
-            <p>Selecciona la sucursal autorizada y crea una venta DRAFT para cargar articulos.</p>
+            <p>Seleccioná la sucursal autorizada y creá una venta en borrador para cargar artículos.</p>
             <button className="primary-button" onClick={startSale} disabled={actionLoading || !branchId}>
-              Abrir venta DRAFT
+              Abrir venta
             </button>
           </div>
         ) : (
           <>
             <div className="sale-strip">
               <span>
-                Venta DRAFT <strong>{shortId(sale.id)}</strong>
+                Venta en borrador <strong>{shortId(sale.id)}</strong>
               </span>
-              <span>{saleItemCount} articulos</span>
+              <span>{saleItemCount} artículos</span>
               {demoReady ? <span className="demo-pill">Demo ARS 165.000 lista</span> : null}
             </div>
 
@@ -662,7 +707,7 @@ function SellerWorkspace({
 
         {!sale ? (
           <div className="cart-empty">
-            <span>DRAFT</span>
+            <span>Borrador</span>
             <p>No hay venta abierta</p>
             <small>Abre una venta para cargar productos.</small>
           </div>
@@ -827,7 +872,7 @@ function CashierWorkspace({
     setCashReceived(centsToArsInput(defaultAmount));
     setCompletedSale(null);
     setRetryIntent(null);
-    // Avoid resetting typed payment amounts on queue polling; reset only when selection changes.
+    // Evita pisar importes escritos durante el refresco automatico de la cola.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSaleId]);
 
@@ -835,7 +880,7 @@ function CashierWorkspace({
     if (!token || !register) return;
     const amount = arsToCents(startingCash);
     if (!amount) {
-      setError("Ingresa un monto inicial valido.");
+      setError("Ingresá un monto inicial válido.");
       return;
     }
 
@@ -847,7 +892,7 @@ function CashierWorkspace({
         body: JSON.stringify({ registerId: register.id, startingCash: amount }),
       });
       setCashSession(session);
-      setNotice("Sesion de caja abierta.");
+      setNotice("Sesión de caja abierta.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo abrir caja.");
     } finally {
@@ -859,7 +904,7 @@ function CashierWorkspace({
     if (!token || !cashSession) return;
     const amount = arsToCents(closingCash);
     if (!amount) {
-      setError("Ingresa un monto de cierre valido.");
+      setError("Ingresá un monto de cierre válido.");
       return;
     }
 
@@ -908,7 +953,7 @@ function CashierWorkspace({
     const received = paymentMethod === "CASH" ? arsToCents(cashReceived) : null;
 
     if (!amount || cents(amount) <= ZERO) {
-      setError("Ingresa un importe de pago valido.");
+      setError("Ingresá un importe de pago válido.");
       return;
     }
     if (cents(amount) > remaining) {
@@ -928,7 +973,7 @@ function CashierWorkspace({
         receivedAmount: paymentMethod === "CASH" ? received : null,
         idempotencyKey: crypto.randomUUID(),
       },
-      label: `${paymentMethod} ${formatMoney(amount)}`,
+      label: `${paymentMethodLabel(paymentMethod)} ${formatMoney(amount)}`,
     };
 
     await submitPayment(intent);
@@ -945,7 +990,7 @@ function CashierWorkspace({
         method: "POST",
       });
       setCompletedSale(completed);
-      setNotice(`Venta ${completed.saleNumber ?? completed.id} COMPLETED.`);
+      setNotice(`Venta ${completed.saleNumber ?? completed.id} completada.`);
       await refreshQueue();
       setSelectedPayments([]);
     } catch (cause) {
@@ -1007,7 +1052,7 @@ function CashierWorkspace({
           ) : pendingSales.length === 0 ? (
             <div className="queue-empty">
               <h2>Sin ventas pendientes</h2>
-              <p>No hay ventas PENDING_PAYMENT para el alcance autorizado actual.</p>
+              <p>No hay ventas pendientes de pago para el alcance autorizado actual.</p>
             </div>
           ) : (
             pendingSales.map((sale) => (
@@ -1033,9 +1078,9 @@ function CashierWorkspace({
       <section className="cashier-detail">
         {!displaySale ? (
           <div className="detail-empty">
-            <span>PENDING_PAYMENT</span>
-            <h2>Selecciona una venta</h2>
-            <p>La venta seleccionada mostrara items, pagos y saldo restante.</p>
+            <span>Pendiente de pago</span>
+            <h2>Seleccioná una venta</h2>
+            <p>La venta seleccionada mostrará artículos, pagos y saldo restante.</p>
           </div>
         ) : (
           <>
@@ -1046,7 +1091,7 @@ function CashierWorkspace({
                 <p>{displaySale.sellerName || "Vendedor no informado"}</p>
               </div>
               <span className={selectedStatus === "PAID" || selectedStatus === "COMPLETED" ? "paid-pill" : "state-pill"}>
-                {selectedStatus}
+                {statusLabel(selectedStatus)}
               </span>
             </div>
 
@@ -1057,10 +1102,10 @@ function CashierWorkspace({
 
             <div className="detail-grid">
               <section>
-                <h3>Articulos</h3>
+                <h3>Artículos</h3>
                 <div className="readonly-items">
                   {displaySale.items.length === 0 ? (
-                    <p className="muted">La venta no contiene articulos.</p>
+                    <p className="muted">La venta no contiene artículos.</p>
                   ) : (
                     displaySale.items.map((item) => (
                       <div className="readonly-item" key={item.id}>
@@ -1083,12 +1128,12 @@ function CashierWorkspace({
                 <h3>Pagos</h3>
                 <div className="payments-list">
                   {selectedPayments.length === 0 ? (
-                    <p className="muted">Todavia no hay pagos registrados.</p>
+                    <p className="muted">Todavía no hay pagos registrados.</p>
                   ) : (
                     selectedPayments.map((payment) => (
                       <div className="payment-row" key={payment.id}>
                         <span>
-                          <strong>{payment.method}</strong>
+                          <strong>{paymentMethodLabel(payment.method)}</strong>
                           <small>{payment.idempotencyKey}</small>
                         </span>
                         <span>
@@ -1120,9 +1165,9 @@ function CashierWorkspace({
 
         {!displaySale ? (
           <div className="cart-empty">
-            <span>COBRO</span>
+            <span>Cobro</span>
             <p>Sin venta seleccionada</p>
-            <small>Selecciona una venta pendiente para cobrar.</small>
+            <small>Seleccioná una venta pendiente para cobrar.</small>
           </div>
         ) : (
           <>
@@ -1142,7 +1187,7 @@ function CashierWorkspace({
             </div>
 
             <label>
-              Metodo
+              Método
               <select
                 value={paymentMethod}
                 onChange={(event) => setPaymentMethod(event.target.value as PaymentMethod)}
@@ -1150,8 +1195,8 @@ function CashierWorkspace({
               >
                 <option value="CASH">Efectivo</option>
                 <option value="TRANSFER">Transferencia</option>
-                <option value="CARD_DEBIT">Debito</option>
-                <option value="CARD_CREDIT">Credito</option>
+                <option value="CARD_DEBIT">Tarjeta de débito</option>
+                <option value="CARD_CREDIT">Tarjeta de crédito</option>
                 <option value="QR">QR</option>
               </select>
             </label>
@@ -1223,7 +1268,7 @@ function CashierWorkspace({
               onClick={completeSale}
               disabled={!isPaid || selectedStatus === "COMPLETED" || completeLoading || paymentLoading}
             >
-              {completeLoading ? "Finalizando..." : "Completar venta"}
+              {completeLoading ? "Finalizando..." : "Finalizar venta"}
             </button>
           </>
         )}
@@ -1277,7 +1322,7 @@ function SaleItemsList({
   return (
     <div className="cart-items">
       {items.length === 0 ? (
-        <p className="muted">Todavia no hay articulos en el carrito.</p>
+        <p className="muted">Todavía no hay artículos en el carrito.</p>
       ) : (
         items.map((item) => (
           <div className="cart-item" key={item.id}>

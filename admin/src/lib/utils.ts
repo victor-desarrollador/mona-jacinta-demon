@@ -24,7 +24,7 @@ export function formatDateTime(value: string) {
 }
 
 export function formatVariant(color?: string | null, size?: string | null) {
-  return [color, size].filter(Boolean).join(' / ') || 'Unica';
+  return [color, size].filter(Boolean).join(' / ') || 'Única';
 }
 
 export function isLowStock(available: string) {
@@ -43,3 +43,35 @@ export const statusBadge = cva('status-badge', {
     },
   },
 });
+
+export function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    DRAFT: 'Borrador',
+    PENDING_PAYMENT: 'Pendiente de pago',
+    PAID: 'Pagada',
+    COMPLETED: 'Completada',
+    CANCELLED: 'Cancelada',
+  };
+  return labels[status] ?? status;
+}
+
+export function paymentMethodLabel(method: string) {
+  const labels: Record<string, string> = {
+    CASH: 'Efectivo',
+    TRANSFER: 'Transferencia',
+    CARD_DEBIT: 'Tarjeta de débito',
+    CARD_CREDIT: 'Tarjeta de crédito',
+    QR: 'QR',
+  };
+  return labels[method] ?? method;
+}
+
+export function roleLabel(role: string) {
+  const labels: Record<string, string> = {
+    SELLER: 'Vendedor',
+    CASHIER: 'Cajero',
+    MANAGER: 'Gerente',
+    ADMIN: 'Administrador',
+  };
+  return labels[role] ?? role;
+}
