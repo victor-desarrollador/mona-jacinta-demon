@@ -66,6 +66,17 @@ export function createPaymentsService(database: PrismaClient) {
       }
       if (sale.status !== 'PENDING_PAYMENT') throw invalidState();
 
+      // Cancellation/expiry serializes on Sale. If this sale has reservations,
+      // payment is only valid while they are still ACTIVE. This closes the
+      // payment-vs-expiry race without changing payment amounts.
+      const reservationStates = await tx.stockReservation.findMany({
+        where: { saleId },
+        select: { status: true },
+      });
+      if (reservationStates.length > 0 && reservationStates.some(({ status }) => status !== 'ACTIVE')) {
+        throw new AppError(409, 'INVALID_RESERVATION', 'La venta ya no tiene reservas activas.');
+      }
+
       const payments = await tx.salePayment.findMany({ where: { saleId }, select: { amount: true } });
       const accepted = payments.reduce((sum, payment) => sum + payment.amount, 0n);
       const remaining = sale.total - accepted;

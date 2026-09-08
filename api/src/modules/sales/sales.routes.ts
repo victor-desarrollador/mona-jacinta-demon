@@ -4,12 +4,14 @@ import { requirePermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
 import { PERMISSIONS } from '../../shared/permissions.js';
 import { createSalesController } from './sales.controller.js';
+import { createCancellationRouter } from './cancellation.routes.js';
 import { createDraftSaleDto, saleIdDto } from './dto/sale.dto.js';
 import { addSaleItemDto, saleItemParamsDto, updateSaleItemDto } from './dto/sale-item.dto.js';
 
 export function createSalesRouter(database: PrismaClient): Router {
   const router = Router();
   const controller = createSalesController(database);
+  router.use('/', createCancellationRouter(database));
   const createPermission = requirePermission(PERMISSIONS.SALE_CREATE);
   const viewPermission = requirePermission(PERMISSIONS.SALE_VIEW);
   const sendPermission = requirePermission(PERMISSIONS.SALE_CREATE, {

@@ -17,6 +17,7 @@ import { createInventoryRouter } from './modules/inventory/inventory.routes.js';
 import { createCashRouter } from './modules/cash/cash.routes.js';
 import { createSalesRouter } from './modules/sales/sales.routes.js';
 import { createPaymentsRouter } from './modules/payments/payments.routes.js';
+import { createReservationAdminRouter } from './modules/sales/cancellation.routes.js';
 
 export function createApp(database: PrismaClient = defaultPrisma) {
   const app = express();
@@ -50,6 +51,7 @@ export function createApp(database: PrismaClient = defaultPrisma) {
   app.use('/api/v1/sales', createSalesRouter(database));
   app.use('/api/v1/sales', createPaymentsRouter(database));
   app.use('/api/v1/cash', createCashRouter(database));
+  app.use('/api/v1/admin', createReservationAdminRouter(database));
   app.use((_req, _res, next) => {
     next(new AppError(404, 'NOT_FOUND', 'No se encontró el recurso.'));
   });
