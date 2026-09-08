@@ -2,7 +2,7 @@
 
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type User = {
   id: string;
@@ -34,6 +34,8 @@ type Variant = {
   inventory: Inventory[];
 };
 
+type SaleStatus = "DRAFT" | "PENDING_PAYMENT" | "PAID" | "COMPLETED" | "CANCELLED";
+
 type SaleItem = {
   id: string;
   variantId: string;
@@ -49,7 +51,7 @@ type Sale = {
   id: string;
   branchId: string;
   saleNumber: string | null;
-  status: "DRAFT" | "PENDING_PAYMENT" | "PAID" | "COMPLETED" | "CANCELLED";
+  status: SaleStatus;
   subtotal: string;
   discountTotal: string;
   total: string;
@@ -58,7 +60,61 @@ type Sale = {
   items: SaleItem[];
 };
 
-type ApiError = { message?: string };
+type PendingSale = {
+  saleId: string;
+  saleNumber: string | null;
+  sellerName: string;
+  items: SaleItem[];
+  subtotal: string;
+  total: string;
+  paidAmount: string;
+  remainingBalance: string;
+};
+
+type PaymentMethod = "CASH" | "TRANSFER" | "CARD_DEBIT" | "CARD_CREDIT" | "QR";
+
+type SalePayment = {
+  id: string;
+  saleId: string;
+  method: PaymentMethod;
+  amount: string;
+  receivedAmount: string | null;
+  changeAmount: string | null;
+  cashSessionId: string | null;
+  idempotencyKey: string;
+  paidAt: string;
+};
+
+type CashRegister = {
+  id: string;
+  branchId: string;
+  name: string;
+};
+
+type CashSession = {
+  sessionId: string;
+  registerId: string;
+  branchId: string;
+  openedById: string;
+  closedById: string | null;
+  startingCash: string;
+  status: "OPEN" | "CLOSED";
+  openedAt: string;
+  closedAt: string | null;
+  closingCash?: string;
+};
+
+type ApiError = { message?: string; error?: { message?: string } };
+type PaymentIntent = {
+  saleId: string;
+  body: {
+    method: PaymentMethod;
+    amount: string;
+    receivedAmount?: string | null;
+    idempotencyKey: string;
+  };
+  label: string;
+};
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api/v1";
 const TOKEN_KEY = "mona-jacinta-token";
@@ -71,21 +127,55 @@ const ZERO = BigInt(0);
 const ONE = BigInt(1);
 const ONE_HUNDRED = BigInt(100);
 
-function formatMoney(cents: string) {
-  const pesos = BigInt(cents) / ONE_HUNDRED;
+function cents(value: string) {
+  return BigInt(value);
+}
+
+function formatMoney(value: string) {
+  const pesos = cents(value) / ONE_HUNDRED;
   return money.format(Number(pesos));
 }
 
-function toQuantity(value: string) {
-  return Number(BigInt(value));
+function formatSignedMoney(value: string) {
+  const amount = cents(value);
+  return amount < ZERO ? `-${formatMoney((-amount).toString())}` : formatMoney(value);
 }
 
 function shortId(value: string) {
   return value.slice(0, 8).toUpperCase();
 }
 
+function toQuantity(value: string) {
+  return Number(cents(value));
+}
+
 function variantLabel(variant: Pick<Variant, "color" | "size">) {
   return [variant.color, variant.size].filter(Boolean).join(" / ") || "Unica";
+}
+
+function arsToCents(input: string) {
+  const normalized = input.trim().replace(/\s/g, "");
+  if (!normalized) return null;
+  if (!/^[0-9.,]+$/.test(normalized)) return null;
+
+  const comma = normalized.lastIndexOf(",");
+  const dot = normalized.lastIndexOf(".");
+  const decimalIndex = comma > dot ? comma : dot;
+  const hasDecimal = decimalIndex >= 0 && normalized.length - decimalIndex - 1 <= 2;
+
+  const wholePart = hasDecimal ? normalized.slice(0, decimalIndex) : normalized;
+  const decimalPart = hasDecimal ? normalized.slice(decimalIndex + 1) : "";
+  const wholeDigits = wholePart.replace(/[.,]/g, "");
+
+  if (!/^\d+$/.test(wholeDigits) || (decimalPart && !/^\d{1,2}$/.test(decimalPart))) {
+    return null;
+  }
+
+  return (BigInt(wholeDigits) * ONE_HUNDRED + BigInt(decimalPart.padEnd(2, "0") || "0")).toString();
+}
+
+function centsToArsInput(value: string) {
+  return (cents(value) / ONE_HUNDRED).toString();
 }
 
 async function apiRequest<T>(
@@ -101,24 +191,27 @@ async function apiRequest<T>(
   const body = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error((body as ApiError).message ?? "No se pudo completar la operacion.");
+    const apiError = body as ApiError;
+    throw new Error(
+      apiError.message ?? apiError.error?.message ?? "No se pudo completar la operacion.",
+    );
   }
 
   return body as T;
 }
 
-export default function SellerSalesPage() {
+function hasRole(user: User, role: string) {
+  return user.roles.includes(role);
+}
+
+export default function OperationsPage() {
   const [token, setToken] = useState<string | null>(null);
-  const [email, setEmail] = useState("seller01@demo.local");
+  const [email, setEmail] = useState("cashier01@demo.local");
   const [password, setPassword] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [branchId, setBranchId] = useState("");
-  const [variants, setVariants] = useState<Variant[]>([]);
-  const [sale, setSale] = useState<Sale | null>(null);
-  const [sentSale, setSentSale] = useState<Sale | null>(null);
-  const [search, setSearch] = useState("");
+  const [mode, setMode] = useState<"seller" | "cashier">("cashier");
   const [authLoading, setAuthLoading] = useState(true);
-  const [catalogLoading, setCatalogLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -134,6 +227,7 @@ export default function SellerSalesPage() {
       .then(({ user: currentUser }) => {
         setUser(currentUser);
         setBranchId(currentUser.branchIds[0] ?? "");
+        setMode(hasRole(currentUser, "CASHIER") ? "cashier" : "seller");
       })
       .catch(() => {
         window.localStorage.removeItem(TOKEN_KEY);
@@ -141,6 +235,166 @@ export default function SellerSalesPage() {
       })
       .finally(() => setAuthLoading(false));
   }, []);
+
+  async function login(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setActionLoading(true);
+    setError("");
+
+    try {
+      const result = await apiRequest<{ accessToken: string; user: User }>("/auth/login", null, {
+        method: "POST",
+        body: JSON.stringify({ email, password }),
+      });
+      window.localStorage.setItem(TOKEN_KEY, result.accessToken);
+      setToken(result.accessToken);
+      setUser(result.user);
+      setBranchId(result.user.branchIds[0] ?? "");
+      setMode(hasRole(result.user, "CASHIER") ? "cashier" : "seller");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo iniciar sesion.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  function logout() {
+    window.localStorage.removeItem(TOKEN_KEY);
+    setToken(null);
+    setUser(null);
+    setBranchId("");
+    setError("");
+  }
+
+  if (authLoading) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-panel">
+          <div className="brand-mark">MJ</div>
+          <p className="eyebrow">Mona Jacinta Operaciones</p>
+          <h1>Cargando sesion</h1>
+          <p className="muted">Estamos preparando el punto de venta.</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-panel">
+          <div className="brand-mark">MJ</div>
+          <p className="eyebrow">Mona Jacinta Operaciones</p>
+          <h1>Punto de venta</h1>
+          <p className="muted">Ingresa con tu usuario para operar ventas y caja.</p>
+
+          <form className="login-form" onSubmit={login}>
+            <label>
+              Correo
+              <input
+                autoComplete="email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+              />
+            </label>
+            <label>
+              Contrasena
+              <input
+                autoComplete="current-password"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                required
+              />
+            </label>
+            {error ? <p className="error-banner">{error}</p> : null}
+            <button className="primary-button" disabled={actionLoading}>
+              {actionLoading ? "Ingresando..." : "Ingresar"}
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
+  const canCashier = hasRole(user, "CASHIER") || hasRole(user, "MANAGER") || hasRole(user, "ADMIN");
+  const canSeller = hasRole(user, "SELLER") || hasRole(user, "MANAGER") || hasRole(user, "ADMIN");
+
+  return (
+    <main className="pos-shell">
+      <header className="topbar">
+        <div className="topbar-brand">
+          <span className="brand-mark small">MJ</span>
+          <span>
+            Mona Jacinta
+            <small>OPERACIONES</small>
+          </span>
+        </div>
+
+        <div className="mode-tabs" role="tablist" aria-label="Modo de operacion">
+          {canCashier ? (
+            <button
+              className={mode === "cashier" ? "mode-tab active" : "mode-tab"}
+              onClick={() => setMode("cashier")}
+            >
+              Caja
+            </button>
+          ) : null}
+          {canSeller ? (
+            <button
+              className={mode === "seller" ? "mode-tab active" : "mode-tab"}
+              onClick={() => setMode("seller")}
+            >
+              Venta
+            </button>
+          ) : null}
+        </div>
+
+        <div className="user-menu">
+          <span>
+            {user.name}
+            <small>{user.roles.join(" / ")}</small>
+          </span>
+          <button className="text-button" onClick={logout}>
+            Salir
+          </button>
+        </div>
+      </header>
+
+      {mode === "cashier" ? (
+        <CashierWorkspace
+          token={token}
+          user={user}
+          branchId={branchId}
+          onBranchChange={setBranchId}
+        />
+      ) : (
+        <SellerWorkspace token={token} user={user} branchId={branchId} onBranchChange={setBranchId} />
+      )}
+    </main>
+  );
+}
+
+function SellerWorkspace({
+  token,
+  user,
+  branchId,
+  onBranchChange,
+}: {
+  token: string | null;
+  user: User;
+  branchId: string;
+  onBranchChange: (branchId: string) => void;
+}) {
+  const [variants, setVariants] = useState<Variant[]>([]);
+  const [sale, setSale] = useState<Sale | null>(null);
+  const [sentSale, setSentSale] = useState<Sale | null>(null);
+  const [search, setSearch] = useState("");
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     if (!token || !branchId) return;
@@ -179,7 +433,7 @@ export default function SellerSalesPage() {
 
   const demoReady = useMemo(() => {
     const remera = sale?.items.find(
-      (item) => item.productName === "Remera Basica" || item.productName === "Remera Básica",
+      (item) => item.productName === "Remera Basica" || item.productName === "Remera Basica",
     );
     const jean = sale?.items.find((item) => item.productName === "Jean Slim");
     return (
@@ -194,53 +448,16 @@ export default function SellerSalesPage() {
   }, [sale]);
 
   function stockForBranch(variant: Variant) {
-    return BigInt(
-      variant.inventory.find((item) => item.branchId === branchId)?.available ?? "0",
-    );
+    return cents(variant.inventory.find((item) => item.branchId === branchId)?.available ?? "0");
   }
 
   function lineQuantityInSale(variantId: string) {
     const item = sale?.items.find((candidate) => candidate.variantId === variantId);
-    return BigInt(item?.quantity ?? "0");
-  }
-
-  async function login(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setActionLoading(true);
-    setError("");
-
-    try {
-      const result = await apiRequest<{ accessToken: string; user: User }>("/auth/login", null, {
-        method: "POST",
-        body: JSON.stringify({ email, password }),
-      });
-      window.localStorage.setItem(TOKEN_KEY, result.accessToken);
-      setToken(result.accessToken);
-      setUser(result.user);
-      setBranchId(result.user.branchIds[0] ?? "");
-      setSale(null);
-      setSentSale(null);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "No se pudo iniciar sesion.");
-    } finally {
-      setActionLoading(false);
-    }
-  }
-
-  function logout() {
-    window.localStorage.removeItem(TOKEN_KEY);
-    setToken(null);
-    setUser(null);
-    setBranchId("");
-    setVariants([]);
-    setSale(null);
-    setSentSale(null);
-    setError("");
+    return cents(item?.quantity ?? "0");
   }
 
   async function startSale() {
     if (!token || !branchId) return;
-
     setActionLoading(true);
     setError("");
 
@@ -260,7 +477,6 @@ export default function SellerSalesPage() {
 
   async function addVariant(variant: Variant) {
     if (!token || !sale || stockForBranch(variant) <= lineQuantityInSale(variant.id)) return;
-
     setActionLoading(true);
     setError("");
 
@@ -279,7 +495,6 @@ export default function SellerSalesPage() {
 
   async function updateItem(item: SaleItem, nextQuantity: bigint) {
     if (!token || !sale) return;
-
     setActionLoading(true);
     setError("");
 
@@ -303,7 +518,6 @@ export default function SellerSalesPage() {
 
   async function sendToCashier() {
     if (!token || !sale || sale.items.length === 0) return;
-
     setActionLoading(true);
     setError("");
 
@@ -313,30 +527,6 @@ export default function SellerSalesPage() {
       });
       setSentSale(sent);
       setSale(null);
-      setVariants((items) =>
-        items.map((variant) => ({
-          ...variant,
-          inventory: variant.inventory.map((row) =>
-            row.branchId === sent.branchId
-              ? {
-                  ...row,
-                  reserved: (
-                    BigInt(row.reserved) +
-                    BigInt(
-                      sent.items.find((item) => item.variantId === variant.id)?.quantity ?? "0",
-                    )
-                  ).toString(),
-                  available: (
-                    BigInt(row.available) -
-                    BigInt(
-                      sent.items.find((item) => item.variantId === variant.id)?.quantity ?? "0",
-                    )
-                  ).toString(),
-                }
-              : row,
-          ),
-        })),
-      );
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo enviar la venta a caja.");
     } finally {
@@ -345,296 +535,870 @@ export default function SellerSalesPage() {
   }
 
   function changeBranch(nextBranchId: string) {
-    setBranchId(nextBranchId);
+    onBranchChange(nextBranchId);
     setSale(null);
     setSentSale(null);
     setError("");
   }
 
-  if (authLoading) {
-    return (
-      <main className="auth-shell">
-        <section className="auth-panel">
-          <div className="brand-mark">MJ</div>
-          <p className="eyebrow">Mona Jacinta Operaciones</p>
-          <h1>Cargando sesion</h1>
-          <p className="muted">Estamos preparando el punto de venta.</p>
-        </section>
-      </main>
+  return (
+    <div className="workspace">
+      <section className="catalog-column">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">Venta vendedor</p>
+            <h1>Productos y variantes</h1>
+          </div>
+          <span className="status-pill">API conectada</span>
+        </div>
+
+        <div className="toolbar">
+          <BranchSelect
+            value={branchId}
+            branchIds={user.branchIds}
+            disabled={actionLoading}
+            onChange={changeBranch}
+          />
+          <label className="search-box">
+            Buscar
+            <input
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Producto, SKU, color, talle o codigo"
+            />
+          </label>
+        </div>
+
+        <div className="branch-context">
+          <strong>{selectedBranchLabel}</strong>
+          <span>{variants.length} variantes visibles para esta sucursal</span>
+        </div>
+
+        {error ? <p className="error-banner">{error}</p> : null}
+
+        {sentSale ? (
+          <section className="success-panel">
+            <div className="success-icon">OK</div>
+            <div>
+              <p className="eyebrow">Venta enviada a caja</p>
+              <h2>{sentSale.saleNumber ?? sentSale.id}</h2>
+              <p>La venta quedo en estado PENDING_PAYMENT y ya puede cobrarla caja.</p>
+            </div>
+            <span className="state-pill">{sentSale.status}</span>
+            <button className="secondary-button" onClick={startSale} disabled={actionLoading}>
+              Nueva venta
+            </button>
+          </section>
+        ) : null}
+
+        {!sale ? (
+          <div className="empty-sale">
+            <h2>Abrir borrador de venta</h2>
+            <p>Selecciona la sucursal autorizada y crea una venta DRAFT para cargar articulos.</p>
+            <button className="primary-button" onClick={startSale} disabled={actionLoading || !branchId}>
+              Abrir venta DRAFT
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="sale-strip">
+              <span>
+                Venta DRAFT <strong>{shortId(sale.id)}</strong>
+              </span>
+              <span>{saleItemCount} articulos</span>
+              {demoReady ? <span className="demo-pill">Demo ARS 165.000 lista</span> : null}
+            </div>
+
+            <div className="product-grid">
+              {catalogLoading ? (
+                <p className="muted">Cargando catalogo...</p>
+              ) : variants.length === 0 ? (
+                <p className="muted">No hay variantes para esta busqueda o sucursal.</p>
+              ) : (
+                variants.map((variant) => {
+                  const stock = stockForBranch(variant);
+                  const inCart = lineQuantityInSale(variant.id);
+                  const canAdd = stock > inCart;
+
+                  return (
+                    <article className="product-card" key={variant.id}>
+                      <div className="product-art">{variant.product.name.slice(0, 2).toUpperCase()}</div>
+                      <div className="product-info">
+                        <h3>{variant.product.name}</h3>
+                        <p>{variantLabel(variant)}</p>
+                        <small>{variant.sku}</small>
+                      </div>
+                      <div className="product-bottom">
+                        <strong>{formatMoney(variant.price)}</strong>
+                        <span className={stock > ZERO ? "stock" : "stock out"}>
+                          {stock > ZERO ? `${stock.toString()} disponibles` : "Sin stock"}
+                        </span>
+                      </div>
+                      {inCart > ZERO ? <p className="in-cart">{inCart.toString()} en venta actual</p> : null}
+                      <button
+                        className="add-button"
+                        onClick={() => addVariant(variant)}
+                        disabled={actionLoading || !canAdd}
+                      >
+                        Agregar
+                      </button>
+                    </article>
+                  );
+                })
+              )}
+            </div>
+          </>
+        )}
+      </section>
+
+      <aside className="cart-panel">
+        <div className="cart-heading">
+          <div>
+            <p className="eyebrow">Carrito</p>
+            <h2>Venta actual</h2>
+          </div>
+          <span className="cart-count">{saleItemCount}</span>
+        </div>
+
+        {!sale ? (
+          <div className="cart-empty">
+            <span>DRAFT</span>
+            <p>No hay venta abierta</p>
+            <small>Abre una venta para cargar productos.</small>
+          </div>
+        ) : (
+          <>
+            <SaleItemsList
+              items={sale.items}
+              actionLoading={actionLoading}
+              onDecrease={(item) => updateItem(item, cents(item.quantity) - ONE)}
+              onIncrease={(item) => updateItem(item, cents(item.quantity) + ONE)}
+              onRemove={(item) => updateItem(item, ZERO)}
+            />
+            <SaleTotals subtotal={sale.subtotal} discountTotal={sale.discountTotal} total={sale.total} />
+            <button
+              className="send-button"
+              onClick={sendToCashier}
+              disabled={actionLoading || sale.items.length === 0}
+            >
+              Enviar a caja
+              <span>-&gt;</span>
+            </button>
+            <p className="cart-note">Al enviar, el backend valida y reserva stock.</p>
+          </>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function CashierWorkspace({
+  token,
+  user,
+  branchId,
+  onBranchChange,
+}: {
+  token: string | null;
+  user: User;
+  branchId: string;
+  onBranchChange: (branchId: string) => void;
+}) {
+  const [register, setRegister] = useState<CashRegister | null>(null);
+  const [cashSession, setCashSession] = useState<CashSession | null>(null);
+  const [pendingSales, setPendingSales] = useState<PendingSale[]>([]);
+  const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null);
+  const [selectedPayments, setSelectedPayments] = useState<SalePayment[]>([]);
+  const [completedSale, setCompletedSale] = useState<Sale | null>(null);
+  const [startingCash, setStartingCash] = useState("0");
+  const [closingCash, setClosingCash] = useState("0");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [cashReceived, setCashReceived] = useState("");
+  const [retryIntent, setRetryIntent] = useState<PaymentIntent | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [completeLoading, setCompleteLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+
+  const selectedSale = useMemo(
+    () => pendingSales.find((sale) => sale.saleId === selectedSaleId) ?? null,
+    [pendingSales, selectedSaleId],
+  );
+  const completedSnapshot = useMemo<PendingSale | null>(() => {
+    if (!completedSale || completedSale.id !== selectedSaleId) return null;
+    return {
+      saleId: completedSale.id,
+      saleNumber: completedSale.saleNumber,
+      sellerName: completedSale.seller?.name ?? "Vendedor no informado",
+      items: completedSale.items,
+      subtotal: completedSale.subtotal,
+      total: completedSale.total,
+      paidAmount: completedSale.total,
+      remainingBalance: "0",
+    };
+  }, [completedSale, selectedSaleId]);
+  const displaySale = selectedSale ?? completedSnapshot;
+
+  const paidAmount = useMemo(
+    () => selectedPayments.reduce((sum, payment) => sum + cents(payment.amount), ZERO),
+    [selectedPayments],
+  );
+
+  const saleTotal = displaySale ? cents(displaySale.total) : ZERO;
+  const effectivePaidAmount = completedSnapshot ? saleTotal : paidAmount;
+  const remaining = displaySale ? saleTotal - effectivePaidAmount : ZERO;
+  const isPaid = Boolean(displaySale && saleTotal > ZERO && remaining === ZERO);
+  const selectedStatus = completedSale?.id === selectedSaleId ? "COMPLETED" : isPaid ? "PAID" : "PENDING_PAYMENT";
+  const cashReceivedCents = arsToCents(cashReceived);
+  const paymentAmountCents = arsToCents(paymentAmount);
+  const changeAmount =
+    paymentMethod === "CASH" && cashReceivedCents && paymentAmountCents
+      ? cents(cashReceivedCents) - cents(paymentAmountCents)
+      : ZERO;
+
+  const loadPayments = useCallback(
+    async (saleId: string) => {
+      if (!token) return;
+      const response = await apiRequest<{ items: SalePayment[] }>(`/sales/${saleId}/payments`, token);
+      setSelectedPayments(response.items);
+    },
+    [token],
+  );
+
+  const refreshQueue = useCallback(async () => {
+    if (!token) return;
+    const response = await apiRequest<{ items: PendingSale[] }>("/sales/pending", token);
+    setPendingSales(response.items);
+    setSelectedSaleId((current) => {
+      if (current && response.items.some((sale) => sale.saleId === current)) return current;
+      return response.items[0]?.saleId ?? current;
+    });
+  }, [token]);
+
+  const refreshCash = useCallback(async () => {
+    if (!token || !branchId) return;
+    const query = new URLSearchParams({ branchId });
+    const currentRegister = await apiRequest<CashRegister>(`/cash/register?${query.toString()}`, token);
+    const currentSession = await apiRequest<CashSession | null>(`/cash/current?${query.toString()}`, token);
+    setRegister(currentRegister);
+    setCashSession(currentSession);
+  }, [token, branchId]);
+
+  const refreshAll = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      await Promise.all([refreshCash(), refreshQueue()]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo actualizar caja.");
+    } finally {
+      setLoading(false);
+    }
+  }, [refreshCash, refreshQueue]);
+
+  useEffect(() => {
+    refreshAll();
+  }, [refreshAll]);
+
+  useEffect(() => {
+    if (!selectedSaleId) {
+      setSelectedPayments([]);
+      return;
+    }
+    loadPayments(selectedSaleId).catch((cause) =>
+      setError(cause instanceof Error ? cause.message : "No se pudieron cargar los pagos."),
     );
+  }, [selectedSaleId, loadPayments]);
+
+  useEffect(() => {
+    if (!token) return;
+    const timer = window.setInterval(() => {
+      refreshQueue().catch(() => undefined);
+      if (selectedSaleId) loadPayments(selectedSaleId).catch(() => undefined);
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [token, selectedSaleId, refreshQueue, loadPayments]);
+
+  useEffect(() => {
+    if (!selectedSale) return;
+    const defaultAmount = remaining > ZERO ? remaining.toString() : selectedSale.remainingBalance;
+    setPaymentAmount(centsToArsInput(defaultAmount));
+    setCashReceived(centsToArsInput(defaultAmount));
+    setCompletedSale(null);
+    setRetryIntent(null);
+    // Avoid resetting typed payment amounts on queue polling; reset only when selection changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSaleId]);
+
+  async function openCashSession() {
+    if (!token || !register) return;
+    const amount = arsToCents(startingCash);
+    if (!amount) {
+      setError("Ingresa un monto inicial valido.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    try {
+      const session = await apiRequest<CashSession>("/cash/sessions/open", token, {
+        method: "POST",
+        body: JSON.stringify({ registerId: register.id, startingCash: amount }),
+      });
+      setCashSession(session);
+      setNotice("Sesion de caja abierta.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo abrir caja.");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  if (!user) {
-    return (
-      <main className="auth-shell">
-        <section className="auth-panel">
-          <div className="brand-mark">MJ</div>
-          <p className="eyebrow">Mona Jacinta Operaciones</p>
-          <h1>Punto de venta</h1>
-          <p className="muted">Ingresa con tu usuario de vendedor para comenzar.</p>
+  async function closeCashSession() {
+    if (!token || !cashSession) return;
+    const amount = arsToCents(closingCash);
+    if (!amount) {
+      setError("Ingresa un monto de cierre valido.");
+      return;
+    }
 
-          <form className="login-form" onSubmit={login}>
-            <label>
-              Correo
-              <input
-                autoComplete="email"
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                required
-              />
-            </label>
-            <label>
-              Contrasena
-              <input
-                autoComplete="current-password"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                required
-              />
-            </label>
-            {error ? <p className="error-banner">{error}</p> : null}
-            <button className="primary-button" disabled={actionLoading}>
-              {actionLoading ? "Ingresando..." : "Ingresar"}
-            </button>
-          </form>
-        </section>
-      </main>
-    );
+    setLoading(true);
+    setError("");
+    try {
+      const closed = await apiRequest<CashSession>(`/cash/sessions/${cashSession.sessionId}/close`, token, {
+        method: "POST",
+        body: JSON.stringify({ closingCash: amount }),
+      });
+      setCashSession(null);
+      setNotice(`Caja cerrada con ${formatMoney(closed.closingCash ?? amount)}.`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo cerrar caja.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submitPayment(intent: PaymentIntent) {
+    if (!token) return;
+    setPaymentLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      await apiRequest<SalePayment>(`/sales/${intent.saleId}/payments`, token, {
+        method: "POST",
+        body: JSON.stringify(intent.body),
+      });
+      setRetryIntent(null);
+      await loadPayments(intent.saleId);
+      await refreshQueue();
+      setNotice(`${intent.label} registrado.`);
+    } catch (cause) {
+      setRetryIntent(intent);
+      setError(cause instanceof Error ? cause.message : "No se pudo registrar el pago.");
+    } finally {
+      setPaymentLoading(false);
+    }
+  }
+
+  async function registerPayment() {
+    if (!selectedSale) return;
+    const amount = arsToCents(paymentAmount);
+    const received = paymentMethod === "CASH" ? arsToCents(cashReceived) : null;
+
+    if (!amount || cents(amount) <= ZERO) {
+      setError("Ingresa un importe de pago valido.");
+      return;
+    }
+    if (cents(amount) > remaining) {
+      setError("El importe supera el saldo pendiente.");
+      return;
+    }
+    if (paymentMethod === "CASH" && (!received || cents(received) < cents(amount))) {
+      setError("El efectivo recibido no puede ser menor al importe.");
+      return;
+    }
+
+    const intent: PaymentIntent = {
+      saleId: selectedSale.saleId,
+      body: {
+        method: paymentMethod,
+        amount,
+        receivedAmount: paymentMethod === "CASH" ? received : null,
+        idempotencyKey: crypto.randomUUID(),
+      },
+      label: `${paymentMethod} ${formatMoney(amount)}`,
+    };
+
+    await submitPayment(intent);
+  }
+
+  async function completeSale() {
+    if (!token || !selectedSale || !isPaid) return;
+    setCompleteLoading(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const completed = await apiRequest<Sale>(`/sales/${selectedSale.saleId}/complete`, token, {
+        method: "POST",
+      });
+      setCompletedSale(completed);
+      setNotice(`Venta ${completed.saleNumber ?? completed.id} COMPLETED.`);
+      await refreshQueue();
+      setSelectedPayments([]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo completar la venta.");
+    } finally {
+      setCompleteLoading(false);
+    }
+  }
+
+  function changeBranch(nextBranchId: string) {
+    onBranchChange(nextBranchId);
+    setSelectedSaleId(null);
+    setSelectedPayments([]);
+    setCompletedSale(null);
+    setError("");
+    setNotice("");
   }
 
   return (
-    <main className="pos-shell">
-      <header className="topbar">
-        <div className="topbar-brand">
-          <span className="brand-mark small">MJ</span>
-          <span>
-            Mona Jacinta
-            <small>OPERACIONES</small>
-          </span>
-        </div>
-        <div className="user-menu">
-          <span>
-            {user.name}
-            <small>{user.roles.join(" / ")}</small>
-          </span>
-          <button className="text-button" onClick={logout}>
-            Salir
+    <div className="cashier-workspace">
+      <section className="queue-column">
+        <div className="page-heading">
+          <div>
+            <p className="eyebrow">Caja</p>
+            <h1>Ventas pendientes</h1>
+          </div>
+          <button className="secondary-button" onClick={refreshAll} disabled={loading}>
+            Actualizar
           </button>
         </div>
-      </header>
 
-      <div className="workspace">
-        <section className="catalog-column">
-          <div className="page-heading">
-            <div>
-              <p className="eyebrow">Venta vendedor</p>
-              <h1>Productos y variantes</h1>
+        <div className="toolbar">
+          <BranchSelect
+            value={branchId}
+            branchIds={user.branchIds}
+            disabled={loading || paymentLoading || completeLoading}
+            onChange={changeBranch}
+          />
+        </div>
+
+        <CashSessionPanel
+          register={register}
+          session={cashSession}
+          startingCash={startingCash}
+          closingCash={closingCash}
+          loading={loading}
+          onStartingCashChange={setStartingCash}
+          onClosingCashChange={setClosingCash}
+          onOpen={openCashSession}
+          onClose={closeCashSession}
+        />
+
+        {error ? <p className="error-banner">{error}</p> : null}
+        {notice ? <p className="notice-banner">{notice}</p> : null}
+
+        <div className="queue-list">
+          {loading && pendingSales.length === 0 ? (
+            <p className="muted">Cargando cola...</p>
+          ) : pendingSales.length === 0 ? (
+            <div className="queue-empty">
+              <h2>Sin ventas pendientes</h2>
+              <p>No hay ventas PENDING_PAYMENT para el alcance autorizado actual.</p>
             </div>
-            <span className="status-pill">API conectada</span>
-          </div>
-
-          <div className="toolbar">
-            <label className="branch-select">
-              Sucursal autorizada
-              <select
-                value={branchId}
-                onChange={(event) => changeBranch(event.target.value)}
-                disabled={user.branchIds.length === 0 || actionLoading}
+          ) : (
+            pendingSales.map((sale) => (
+              <button
+                key={sale.saleId}
+                className={selectedSaleId === sale.saleId ? "queue-card active" : "queue-card"}
+                onClick={() => setSelectedSaleId(sale.saleId)}
               >
-                {user.branchIds.map((id) => (
-                  <option key={id} value={id}>
-                    {sale?.branch?.id === id ? `${sale.branch.name} (${sale.branch.code})` : shortId(id)}
-                  </option>
-                ))}
+                <span>
+                  <strong>{sale.saleNumber ?? shortId(sale.saleId)}</strong>
+                  <small>{sale.sellerName || "Vendedor no informado"}</small>
+                </span>
+                <span>
+                  <strong>{formatMoney(sale.total)}</strong>
+                  <small>{formatSignedMoney(sale.remainingBalance)} pendiente</small>
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </section>
+
+      <section className="cashier-detail">
+        {!displaySale ? (
+          <div className="detail-empty">
+            <span>PENDING_PAYMENT</span>
+            <h2>Selecciona una venta</h2>
+            <p>La venta seleccionada mostrara items, pagos y saldo restante.</p>
+          </div>
+        ) : (
+          <>
+            <div className="detail-header">
+              <div>
+                <p className="eyebrow">Venta seleccionada</p>
+                <h2>{displaySale.saleNumber ?? shortId(displaySale.saleId)}</h2>
+                <p>{displaySale.sellerName || "Vendedor no informado"}</p>
+              </div>
+              <span className={selectedStatus === "PAID" || selectedStatus === "COMPLETED" ? "paid-pill" : "state-pill"}>
+                {selectedStatus}
+              </span>
+            </div>
+
+            <div className="remaining-card">
+              <span>Saldo pendiente</span>
+              <strong>{formatSignedMoney(remaining.toString())}</strong>
+            </div>
+
+            <div className="detail-grid">
+              <section>
+                <h3>Articulos</h3>
+                <div className="readonly-items">
+                  {displaySale.items.length === 0 ? (
+                    <p className="muted">La venta no contiene articulos.</p>
+                  ) : (
+                    displaySale.items.map((item) => (
+                      <div className="readonly-item" key={item.id}>
+                        <span>
+                          <strong>{item.productName}</strong>
+                          <small>
+                            {item.variantName} | {item.sku}
+                          </small>
+                        </span>
+                        <span>{item.quantity} x {formatMoney(item.unitPrice)}</span>
+                        <strong>{formatMoney(item.subtotal)}</strong>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <SaleTotals subtotal={displaySale.subtotal} discountTotal="0" total={displaySale.total} />
+              </section>
+
+              <section>
+                <h3>Pagos</h3>
+                <div className="payments-list">
+                  {selectedPayments.length === 0 ? (
+                    <p className="muted">Todavia no hay pagos registrados.</p>
+                  ) : (
+                    selectedPayments.map((payment) => (
+                      <div className="payment-row" key={payment.id}>
+                        <span>
+                          <strong>{payment.method}</strong>
+                          <small>{payment.idempotencyKey}</small>
+                        </span>
+                        <span>
+                          <strong>{formatMoney(payment.amount)}</strong>
+                          {payment.method === "CASH" ? (
+                            <small>
+                              Recibido {formatMoney(payment.receivedAmount ?? "0")} | Vuelto{" "}
+                              {formatMoney(payment.changeAmount ?? "0")}
+                            </small>
+                          ) : null}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </div>
+          </>
+        )}
+      </section>
+
+      <aside className="payment-panel">
+        <div className="cart-heading">
+          <div>
+            <p className="eyebrow">Cobro</p>
+            <h2>Registrar pago</h2>
+          </div>
+        </div>
+
+        {!displaySale ? (
+          <div className="cart-empty">
+            <span>COBRO</span>
+            <p>Sin venta seleccionada</p>
+            <small>Selecciona una venta pendiente para cobrar.</small>
+          </div>
+        ) : (
+          <>
+            <div className="payment-summary">
+              <div>
+                <span>Total</span>
+                <strong>{formatMoney(displaySale.total)}</strong>
+              </div>
+              <div>
+                <span>Pagado</span>
+                <strong>{formatMoney(effectivePaidAmount.toString())}</strong>
+              </div>
+              <div className="total-line">
+                <span>Pendiente</span>
+                <strong>{formatSignedMoney(remaining.toString())}</strong>
+              </div>
+            </div>
+
+            <label>
+              Metodo
+              <select
+                value={paymentMethod}
+                onChange={(event) => setPaymentMethod(event.target.value as PaymentMethod)}
+                disabled={paymentLoading || isPaid}
+              >
+                <option value="CASH">Efectivo</option>
+                <option value="TRANSFER">Transferencia</option>
+                <option value="CARD_DEBIT">Debito</option>
+                <option value="CARD_CREDIT">Credito</option>
+                <option value="QR">QR</option>
               </select>
             </label>
-            <label className="search-box">
-              Buscar
+
+            <label>
+              Importe ARS
               <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Producto, SKU, color, talle o codigo"
+                inputMode="decimal"
+                value={paymentAmount}
+                onChange={(event) => setPaymentAmount(event.target.value)}
+                disabled={paymentLoading || isPaid}
+                placeholder="65000"
               />
             </label>
-          </div>
 
-          <div className="branch-context">
-            <strong>{selectedBranchLabel}</strong>
-            <span>{variants.length} variantes visibles para esta sucursal</span>
-          </div>
+            {paymentMethod === "CASH" ? (
+              <>
+                <label>
+                  Recibido ARS
+                  <input
+                    inputMode="decimal"
+                    value={cashReceived}
+                    onChange={(event) => setCashReceived(event.target.value)}
+                    disabled={paymentLoading || isPaid}
+                    placeholder="100000"
+                  />
+                </label>
+                <div className="change-box">
+                  <span>Vuelto</span>
+                  <strong>{changeAmount > ZERO ? formatMoney(changeAmount.toString()) : formatMoney("0")}</strong>
+                </div>
+              </>
+            ) : null}
 
-          {error ? <p className="error-banner">{error}</p> : null}
-
-          {sentSale ? (
-            <section className="success-panel">
-              <div className="success-icon">OK</div>
-              <div>
-                <p className="eyebrow">Venta enviada a caja</p>
-                <h2>{sentSale.saleNumber ?? sentSale.id}</h2>
-                <p>La venta quedo en estado PENDING_PAYMENT y ya puede cobrarla caja.</p>
-              </div>
-              <span className="state-pill">{sentSale.status}</span>
-              <button className="secondary-button" onClick={startSale} disabled={actionLoading}>
-                Nueva venta
-              </button>
-            </section>
-          ) : null}
-
-          {!sale ? (
-            <div className="empty-sale">
-              <h2>Abrir borrador de venta</h2>
-              <p>Selecciona la sucursal autorizada y crea una venta DRAFT para cargar articulos.</p>
+            {retryIntent ? (
               <button
-                className="primary-button"
-                onClick={startSale}
-                disabled={actionLoading || !branchId}
+                className="secondary-button retry-button"
+                onClick={() => submitPayment(retryIntent)}
+                disabled={paymentLoading}
               >
-                Abrir venta DRAFT
+                Reintentar mismo pago
+              </button>
+            ) : null}
+
+            <button
+              className="send-button"
+              onClick={registerPayment}
+              disabled={
+                paymentLoading ||
+                completeLoading ||
+                isPaid ||
+                selectedStatus === "COMPLETED" ||
+                remaining <= ZERO ||
+                (paymentMethod === "CASH" && !cashSession)
+              }
+            >
+              {paymentLoading ? "Registrando..." : "Registrar pago"}
+              <span>-&gt;</span>
+            </button>
+
+            {paymentMethod === "CASH" && !cashSession ? (
+              <p className="cart-note">Abre caja antes de registrar pagos en efectivo.</p>
+            ) : (
+              <p className="cart-note">Cada nuevo intento genera un UUID v4 de idempotencia.</p>
+            )}
+
+            <button
+              className="complete-button"
+              onClick={completeSale}
+              disabled={!isPaid || selectedStatus === "COMPLETED" || completeLoading || paymentLoading}
+            >
+              {completeLoading ? "Finalizando..." : "Completar venta"}
+            </button>
+          </>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function BranchSelect({
+  value,
+  branchIds,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  branchIds: string[];
+  disabled: boolean;
+  onChange: (branchId: string) => void;
+}) {
+  return (
+    <label className="branch-select">
+      Sucursal autorizada
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={branchIds.length === 0 || disabled}
+      >
+        {branchIds.map((id) => (
+          <option key={id} value={id}>
+            {shortId(id)}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function SaleItemsList({
+  items,
+  actionLoading,
+  onDecrease,
+  onIncrease,
+  onRemove,
+}: {
+  items: SaleItem[];
+  actionLoading: boolean;
+  onDecrease: (item: SaleItem) => void;
+  onIncrease: (item: SaleItem) => void;
+  onRemove: (item: SaleItem) => void;
+}) {
+  return (
+    <div className="cart-items">
+      {items.length === 0 ? (
+        <p className="muted">Todavia no hay articulos en el carrito.</p>
+      ) : (
+        items.map((item) => (
+          <div className="cart-item" key={item.id}>
+            <div className="cart-item-copy">
+              <strong>{item.productName}</strong>
+              <span>
+                {item.variantName} | {item.sku}
+              </span>
+              <small>Unitario {formatMoney(item.unitPrice)}</small>
+            </div>
+            <div className="quantity-control" aria-label={`Cantidad ${item.productName}`}>
+              <button onClick={() => onDecrease(item)} disabled={actionLoading}>
+                -
+              </button>
+              <span>{item.quantity}</span>
+              <button onClick={() => onIncrease(item)} disabled={actionLoading}>
+                +
               </button>
             </div>
-          ) : (
-            <>
-              <div className="sale-strip">
-                <span>
-                  Venta DRAFT <strong>{shortId(sale.id)}</strong>
-                </span>
-                <span>{saleItemCount} articulos</span>
-                {demoReady ? <span className="demo-pill">Demo ARS 165.000 lista</span> : null}
-              </div>
-
-              <div className="product-grid">
-                {catalogLoading ? (
-                  <p className="muted">Cargando catalogo...</p>
-                ) : variants.length === 0 ? (
-                  <p className="muted">No hay variantes para esta busqueda o sucursal.</p>
-                ) : (
-                  variants.map((variant) => {
-                    const stock = stockForBranch(variant);
-                    const inCart = lineQuantityInSale(variant.id);
-                    const canAdd = stock > inCart;
-
-                    return (
-                      <article className="product-card" key={variant.id}>
-                        <div className="product-art">{variant.product.name.slice(0, 2).toUpperCase()}</div>
-                        <div className="product-info">
-                          <h3>{variant.product.name}</h3>
-                          <p>{variantLabel(variant)}</p>
-                          <small>{variant.sku}</small>
-                        </div>
-                        <div className="product-bottom">
-                          <strong>{formatMoney(variant.price)}</strong>
-                          <span className={stock > ZERO ? "stock" : "stock out"}>
-                            {stock > ZERO ? `${stock.toString()} disponibles` : "Sin stock"}
-                          </span>
-                        </div>
-                        {inCart > ZERO ? (
-                          <p className="in-cart">{inCart.toString()} en venta actual</p>
-                        ) : null}
-                        <button
-                          className="add-button"
-                          onClick={() => addVariant(variant)}
-                          disabled={actionLoading || !canAdd}
-                        >
-                          Agregar
-                        </button>
-                      </article>
-                    );
-                  })
-                )}
-              </div>
-            </>
-          )}
-        </section>
-
-        <aside className="cart-panel">
-          <div className="cart-heading">
-            <div>
-              <p className="eyebrow">Carrito</p>
-              <h2>Venta actual</h2>
-            </div>
-            <span className="cart-count">{saleItemCount}</span>
+            <strong>{formatMoney(item.subtotal)}</strong>
+            <button
+              className="remove-button"
+              onClick={() => onRemove(item)}
+              disabled={actionLoading}
+              aria-label={`Eliminar ${item.productName}`}
+            >
+              x
+            </button>
           </div>
+        ))
+      )}
+    </div>
+  );
+}
 
-          {!sale ? (
-            <div className="cart-empty">
-              <span>DRAFT</span>
-              <p>No hay venta abierta</p>
-              <small>Abre una venta para cargar productos.</small>
-            </div>
-          ) : (
-            <>
-              <div className="cart-items">
-                {sale.items.length === 0 ? (
-                  <p className="muted">Todavia no hay articulos en el carrito.</p>
-                ) : (
-                  sale.items.map((item) => (
-                    <div className="cart-item" key={item.id}>
-                      <div className="cart-item-copy">
-                        <strong>{item.productName}</strong>
-                        <span>
-                          {item.variantName} | {item.sku}
-                        </span>
-                        <small>Unitario {formatMoney(item.unitPrice)}</small>
-                      </div>
-                      <div className="quantity-control" aria-label={`Cantidad ${item.productName}`}>
-                        <button
-                          onClick={() => updateItem(item, BigInt(item.quantity) - ONE)}
-                          disabled={actionLoading}
-                        >
-                          -
-                        </button>
-                        <span>{item.quantity}</span>
-                        <button
-                          onClick={() => updateItem(item, BigInt(item.quantity) + ONE)}
-                          disabled={actionLoading}
-                        >
-                          +
-                        </button>
-                      </div>
-                      <strong>{formatMoney(item.subtotal)}</strong>
-                      <button
-                        className="remove-button"
-                        onClick={() => updateItem(item, ZERO)}
-                        disabled={actionLoading}
-                        aria-label={`Eliminar ${item.productName}`}
-                      >
-                        x
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              <div className="totals">
-                <div>
-                  <span>Subtotal</span>
-                  <strong>{formatMoney(sale.subtotal)}</strong>
-                </div>
-                <div>
-                  <span>Descuentos</span>
-                  <strong>{formatMoney(sale.discountTotal)}</strong>
-                </div>
-                <div className="total-line">
-                  <span>Total</span>
-                  <strong>{formatMoney(sale.total)}</strong>
-                </div>
-              </div>
-
-              <button
-                className="send-button"
-                onClick={sendToCashier}
-                disabled={actionLoading || sale.items.length === 0}
-              >
-                Enviar a caja
-                <span>-&gt;</span>
-              </button>
-              <p className="cart-note">Al enviar, el backend valida y reserva stock.</p>
-            </>
-          )}
-        </aside>
+function SaleTotals({
+  subtotal,
+  discountTotal,
+  total,
+}: {
+  subtotal: string;
+  discountTotal: string;
+  total: string;
+}) {
+  return (
+    <div className="totals">
+      <div>
+        <span>Subtotal</span>
+        <strong>{formatMoney(subtotal)}</strong>
       </div>
-    </main>
+      <div>
+        <span>Descuentos</span>
+        <strong>{formatMoney(discountTotal)}</strong>
+      </div>
+      <div className="total-line">
+        <span>Total</span>
+        <strong>{formatMoney(total)}</strong>
+      </div>
+    </div>
+  );
+}
+
+function CashSessionPanel({
+  register,
+  session,
+  startingCash,
+  closingCash,
+  loading,
+  onStartingCashChange,
+  onClosingCashChange,
+  onOpen,
+  onClose,
+}: {
+  register: CashRegister | null;
+  session: CashSession | null;
+  startingCash: string;
+  closingCash: string;
+  loading: boolean;
+  onStartingCashChange: (value: string) => void;
+  onClosingCashChange: (value: string) => void;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <section className={session ? "cash-session open" : "cash-session"}>
+      <div>
+        <p className="eyebrow">Estado de caja</p>
+        <h2>{session ? "Caja abierta" : "Caja cerrada"}</h2>
+        <p>{register ? register.name : "Buscando caja de la sucursal..."}</p>
+      </div>
+      {session ? (
+        <div className="cash-controls">
+          <label>
+            Cierre ARS
+            <input
+              inputMode="decimal"
+              value={closingCash}
+              onChange={(event) => onClosingCashChange(event.target.value)}
+              disabled={loading}
+            />
+          </label>
+          <button className="secondary-button" onClick={onClose} disabled={loading}>
+            Cerrar caja
+          </button>
+        </div>
+      ) : (
+        <div className="cash-controls">
+          <label>
+            Inicial ARS
+            <input
+              inputMode="decimal"
+              value={startingCash}
+              onChange={(event) => onStartingCashChange(event.target.value)}
+              disabled={loading || !register}
+            />
+          </label>
+          <button className="primary-button" onClick={onOpen} disabled={loading || !register}>
+            Abrir caja
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
