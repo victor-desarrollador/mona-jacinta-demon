@@ -14,7 +14,7 @@
 - At JSON boundaries, amounts are serialized as **decimal strings** using the `toJsonSafe` helper (see Demo V2 `api/src/shared/json-safe.ts`).  Clients parse strings back to `BigInt` for calculations.
 
 ## Inventory
-- Inventory is scoped to a **Location** (`Branch` or `Warehouse`).  Model fields:
+- Inventory is scoped to a **Location** (`Branch` or `Warehouse`).  Inventory tracks:
   - `physical`-total units on hand.
   - `reserved`-units held for pending sales (technical hold from seller→cashier flow).
   - `inTransit`-units that have been dispatched from a origin location but not yet received at destination (transfer workflow).
@@ -30,7 +30,7 @@
 
 ## StockReservation / Technical Hold (Seller → Cashier)
 - Created when a seller **sends a draft sale to cashier** (technical hold, not commercial reservation).
-- Columns: `saleId`, `variantId`, `branchId`, `quantity`, `expiresAt`, `status` (`ACTIVE`/`RELEASED`/`CONSUMED`).
+- Tracks: `saleId`, `variantId`, `branchId`, `quantity`, `expiresAt`, `status` (`ACTIVE`/`RELEASED`/`CONSUMED`).
 - Lifecycle:
   1. `ACTIVE` on creation (short-term expiry).
   2. `RELEASED` on expiry or cancellation (if no payments were made).
@@ -40,7 +40,7 @@
 
 ## StockReservation / Commercial SEÑA (Customer Reservation)
 - Separate concept from technical hold; represents a customer deposit to hold merchandise.
-- Columns: `customerId` (optional), `variantId`, `branchId`, `quantity`, `depositAmount`, `createdAt`, `expiresAt` (exactly 24 hours from creation), `status` (`ACTIVE`/`EXPIRED`/`FULFILLED`/`CANCELLED`).
+- Tracks: `customerId` (optional), `variantId`, `branchId`, `quantity`, `depositAmount`, `createdAt`, `expiresAt` (exactly 24 hours from creation), `status` (`ACTIVE`/`EXPIRED`/`FULFILLED`/`CANCELLED`).
 - Lifecycle:
   1. `ACTIVE` on creation (deposit accepted, merchandise reserved).
   2. On expiry (`expiresAt` < now()): transitions to `EXPIRED`; operational list no longer shows it; merchandise hold is released (increases `physical` or `available` per business rules).
@@ -51,7 +51,7 @@
 
 ## GoodsReceipt
 - A receipt aggregates incoming goods for a **Warehouse**.
-- Fields: `supplierId`, `expectedBultos`, `receivedBultos`, `status` (`IN_PROGRESS`, `COMPLETED`), timestamps, optional media (photos/PDF).
+- Tracks: `supplierId`, `expectedBultos`, `receivedBultos`, `status` (`IN_PROGRESS`, `COMPLETED`), timestamps, optional media (photos/PDF).
 - Editable while `IN_PROGRESS`; locked after `COMPLETED`.
 - On completion:
   - Inventory `physical` is incremented for each line item.
@@ -60,7 +60,7 @@
 
 ## Transfer Workflow
 - Transfer entities track movement of stock between locations.
-- Fields: `originId`, `destinationId`, `status`, timestamps, `requestedItems`, `approvedItems`, `dispatchedItems`, `receivedItems`, observations.
+- Tracks: `originId`, `destinationId`, `status`, timestamps, `requestedItems`, `approvedItems`, `dispatchedItems`, `receivedItems`, observations.
 - At `DISPATCHED`:
   - Origin `physical` decremented (sellable stock reduced).
   - `inTransit` incremented by the dispatched quantity.
@@ -112,7 +112,7 @@
 
 ## AuditLog
 - Every critical operation writes an `AuditLog` entry within the same DB transaction.
-- Fields: `userId`, `branchId`, `action`, `entityType`, `entityId`, `before`, `after`, `timestamp`.
+- Tracks: `userId`, `branchId`, `action`, `entityType`, `entityId`, `before`, `after`, `timestamp`.
 - `before`/`after` are JSON objects with monetary values serialized as decimal strings via `toJsonSafe`.
 - No passwords, tokens, or secret data are ever recorded.
 

@@ -21,24 +21,26 @@ The following functional requirements (FR) are **traceable**, **testable**, and 
 | **FR-PRIC-002** | For CONSUMER_FINAL: `listPrice` minus `cashDiscount` (percentage or fixed monetary amount) equals `cashPrice`. | MUST |
 | **FR-PRIC-003** | For WHOLESALE: price equals `wholesalePrice`. | MUST |
 | **FR-PRIC-004** | Pricing rules are validated in the backend; frontend-provided totals/prices are never authoritative. | MUST |
-| **FR-PRIC-005** | For CONSUMER_FINAL: if 100% of the sale is paid using payment methods eligible for cash discount (e.g., CASH, eligible TRANSFER), the cash-discounted price applies; if any card/credit component participates, the list price applies. WHOLESALE sales use the wholesale price. The backend/domain is authoritative; SaleItem must preserve the price snapshot actually used. | MUST
-| **FR-INV-001** | Inventory is tracked per ProductVariant × Location (Branch or Warehouse). It distinguishes physical stock on hand and reserved/held stock (technical hold from seller→cashier flow). | MUST
-| **FR-INV-002** | Sellable/available stock is a business invariant derived from physical stock, reserved/held stock, in-transit stock, and temporarily-out/publication stock. The exact persistence and computation method are deferred to Architecture/ERD. | MUST
+| **FR-PRIC-005** | For CONSUMER_FINAL: if 100% of the sale is paid using payment methods eligible for cash discount (e.g., CASH, eligible TRANSFER), the cash-discounted price applies; if any card/credit component participates, the list price applies. WHOLESALE sales use the wholesale price. The backend/domain is authoritative; SaleItem must preserve the price snapshot actually used. | MUST |
+| **FR-INV-001** | Inventory is tracked per ProductVariant × Location (Branch or Warehouse). It distinguishes physical stock on hand and reserved/held stock (technical hold from seller→cashier flow). | MUST |
+| **FR-INV-002** | Sellable/available stock is a business invariant derived from physical stock, reserved/held stock, in-transit stock, and temporarily-out/publication stock. The exact persistence and computation method are deferred to Architecture/ERD. | MUST |
 | **FR-INV-003** | Explicitly track additional stock dimensions: `inTransit` (stock in transit between locations) and `temporarilyOut` (stock checked out for publication/photo merchandise). | MUST |
-| **FR-INV-004** | Sellable/available stock is a business invariant that must be computed from physical stock, reserved/held stock, in-transit stock, and temporarily-out/publication stock. The exact persistence formula is deferred to Architecture/ERD. | MUST
+| **FR-INV-004** | Sellable/available stock is a business invariant that must be computed from physical stock, reserved/held stock, in-transit stock, and temporarily-out/publication stock. The exact persistence formula is deferred to Architecture/ERD. | MUST |
 | **FR-INV-005** | Inventory history (`StockMovement`) records every adjustment with: company, location, variant, qty change, before/after, operation type, related document, user, timestamp, notes. | MUST |
 | **FR-REC-001** | Warehouse creates a **Goods Receipt** before completion, attaching supplier, package count, photos/PDFs, and line items. Receipt is editable while `status = IN_PROGRESS`. | MUST |
 | **FR-REC-002** | Upon receipt `COMPLETED`, inventory is updated (`physical` increased), `StockMovement` entries of type `GOODS_RECEIPT` are generated, and the receipt becomes immutable. | MUST |
 | **FR-REC-003** | Goods receipt supports progressive loading of merchandise during receiving. | MUST |
-| **FR-SUP-001** | Supplier entity with identity, contact data, product catalog (supplied products), and payable balance. | MUST |
-| **FR-SUP-002** | Supplier invoices are recorded and linked to payments; supplier account movements are auditable. | MUST |
-| **FR-SUP-003** | Basic import foundation: ability to create new Products and Variants during goods receipt. | MUST |
+| **FR-SUP-001** | Supplier identity/contact management. | MUST |
+| **FR-SUP-002** | Supplier association with goods receipts/purchases, supplied products where needed, and basic operational history. | MUST |
+| **FR-SUP-003** | Supplier invoices, accounts payable, payment allocation, payable balance and supplier current-account depth. | SHOULD |
+| **FR-IMPORT-001** | Day 25 import foundation anticipates CSV/XLSX import with: column mapping, validation, preview, row-level errors, explicit confirmation, auditable initial stock import. Initial stock must ultimately produce INITIAL_STOCK inventory history. | MUST |
+| **FR-IMPORT-002** | Final real-business import/migration completion, cleanup and reconciliation may continue during Day 26-35. Creating Products/Variants during GoodsReceipt remains a receiving capability, not the import subsystem itself. | SHOULD |
 | **FR-TRANS-001** | Transfer workflow states: REQUESTED → APPROVED → PREPARING → DISPATCHED → RECEIVED → (RECEIVED_WITH_DIFFERENCE) → CANCELLED. | MUST |
 | **FR-TRANS-002** | Transfer tracks: requesting user, origin, destination, requested quantities, approved quantities, dispatched quantities, received quantities, timestamps, observations. | MUST |
 | **FR-TRANS-003** | At `DISPATCHED`: decrement origin `physical` stock, increment `inTransit`. | MUST |
 | **FR-TRANS-004** | At `RECEIVED`: decrement `inTransit`, increment destination `physical`. | MUST |
 | **FR-TRANS-005** | Transfer discrepancies (`RECEIVED_WITH_DIFFERENCE`) are recorded, generate audit entry, and notify administration/owner. | MUST |
-| **FR-PAY-004** | Transfer payment records customer-origin institution: MACRO, BBVA, NACION, GALICIA, MERCADO_PAGO, or OTHER (free-text name). This is required for reporting and audit. | MUST
+| **FR-PAY-004** | Transfer payment records customer-origin institution: MACRO, BBVA, NACION, GALICIA, MERCADO_PAGO, or OTHER (free-text name). This is required for reporting and audit. | MUST |
 | **FR-REMITO-001** | Transfer dispatch generates a delivery note/remito with: sequential number, origin, destination, items, quantities, date/time, responsible users, and link to transfer. | MUST |
 | **FR-LABEL-001** | Label generation for products: includes Code 128 barcode (product-level), human-readable barcode value, short product description, black border, approximately 70 mm × 37 mm. | MUST |
 | **FR-LABEL-002** | Labels print on ordinary self-adhesive A4 sheets, manual guillotine cutting, configurable quantity, reprinting allowed. | MUST |
@@ -62,13 +64,13 @@ The following functional requirements (FR) are **traceable**, **testable**, and 
 | **FR-PUB-002** | Publication return: `PUBLICATION_RETURN` with condition `GOOD` (stock becomes sellable again), `DAMAGED` (auditable damage/write-off), `LOSS` (auditable loss/missing). | MUST |
 | **FR-NOTIF-001** | Owner / Admin receive high-priority notifications for: manual stock adjustments, write-offs, damage/loss, transfer discrepancies, completed goods receipts, low stock (configurable), significant price modifications, sensitive inventory changes. | MUST |
 | **FR-NOTIF-002** | Normal sale activity generates only low-priority audit/events (e.g., `sale.pending_payment`, `sale.completed`); these do NOT create noisy high-priority admin notifications by default. | MUST |
-| **FR-NOTIF-003** | Sales greater than ARS 500,000 trigger an in‑app administrative notification to OWNER or appropriately authorized ADMIN users. Normal sales do not generate noisy high‑priority notifications. The threshold may later become configurable, but the approved initial threshold is ARS 500,000. | MUST
-| **FR-PRIC-006** | Only OWNER or ADMIN with explicit PRICE_MANAGE permission and appropriate scope may change product prices (listPrice, cashDiscount, wholesalePrice). SELLER, CASHIER, and WAREHOUSE have no default price‑change authority. | MUST
+| **FR-NOTIF-003** | Sales greater than ARS 500,000 trigger an in‑app administrative notification to OWNER or appropriately authorized ADMIN users. Normal sales do not generate noisy high‑priority notifications. The threshold may later become configurable, but the approved initial threshold is ARS 500,000. | MUST |
+| **FR-PRIC-006** | Only OWNER or ADMIN with explicit PRICE_MANAGE permission and appropriate scope may change product prices (listPrice, cashDiscount, wholesalePrice). SELLER, CASHIER, and WAREHOUSE have no default price‑change authority. Price management covers individual price changes, category/group price changes, and bulk/mass price changes. Only OWNER and authorized ADMIN users may change prices. | MUST |
 | **FR-AUDIT-001** | Audit log records: user, role, branch, operation, entity type, entity id, timestamp, relevant before/after state (when appropriate). No passwords, tokens, secrets stored. | MUST |
 | **FR-DASH-001** | Essential dashboard/reports: sales summary, inventory alerts, cash session status, pending transfers. | MUST |
 | **FR-REPORT-001** | Transfer payment report filterable by date range and bank; export to XLSX or PDF. | MUST |
-| **FR-REPORT-002** | Report includes at minimum columns: date, bank, amount. | MUST |
-| **FR-ARCA-001** | ARCA integration capability: fiscal provider interface decoupled via FiscalProvider → ARCAProvider. ARCA is a required Production V1 project capability; it is not on the critical path for the Day 25 operational milestone; Day 26-35 targets real ARCA homologation when credentials/configuration are available. Never fabricate CAE; never begin testing against ARCA production. ARCA failure must not corrupt Sale, Payment, Cash, or Inventory state. | SHOULD
+| **FR-REPORT-002** | Report includes at minimum columns: date, bank, amount, aggregate total. | MUST |
+| **FR-ARCA-001** | ARCA integration capability: fiscal provider interface decoupled via FiscalProvider → ARCAProvider. ARCA is a required Production V1 project capability; it is not on the critical path for the Day 25 operational milestone; Day 26-35 targets real ARCA homologation when credentials/configuration are available. Never fabricate CAE; never begin testing against ARCA production. ARCA failure must not corrupt Sale, Payment, Cash, or Inventory state. | SHOULD |
 | **FR-ARCA-002** | ARCA homologation testing with provided credentials (Day 26-35). | SHOULD |
 | **FR-TREAS-001** | Treasury, accounts receivable/payable, operational accounting (Day 26-35). | SHOULD |
 | **FR-TRAIN-001** | Training and production preparation (Day 26-35). | SHOULD |

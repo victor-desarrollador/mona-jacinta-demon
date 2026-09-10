@@ -8,14 +8,12 @@ Operational users – `OWNER`, `ADMIN`, `CASHIER`, `SELLER`, `WAREHOUSE` interac
 
 **Production V1 scope**
 
-- One barcode per **Product** (internal Code 128), stored on the `Product` table.  
+- One barcode per **Product** (internal Code 128).
   The barcode resolves to a product; the seller then selects the exact variant (colour + size) before adding to a sale.
 - **ProductVariant** holds:
   - `sku` (unique string, e.g. `JEA-OXF-AZU-42`).
   - `color` (enumerated, plus free-text `OTHER`).
   - `size` (enumerated families: **BABY**, **CHILD**, **ADULT-LETTER**, **ADULT-NUMERIC**, **SPECIAL**).
-  - `price` (minor-unit `BigInt`).
-  - `costPrice` (minor-unit `BigInt`).
   - `isActive` flag.
 - **Optional primary image**-A Product may have zero or one primary image (binary data stored externally, e.g. object storage). Authorized users may upload, replace, or remove the image. UI shows a neutral placeholder when no image exists. Product creation/receiving must not fail due to missing image.
 - **Pricing / customer codes**-Two pricing tiers:
@@ -31,4 +29,4 @@ Operational users – `OWNER`, `ADMIN`, `CASHIER`, `SELLER`, `WAREHOUSE` interac
 
 **Explicit non-goals**-No multi-barcode per variant, no external barcode generation service, no EAN-13 handling.
 
-**Assumptions / dependencies**-Relies on the `Product` / `ProductVariant` tables defined in the Prisma schema (see Demo V2 `schema.prisma`). The single barcode constraint is enforced by a unique index on `Product.barcode`.
+**Assumptions / dependencies**-Relies on the `Product` / `ProductVariant` tables defined in the Prisma schema (see Demo V2 `schema.prisma`). The single barcode constraint is enforced at the domain level.

@@ -3,8 +3,8 @@
 **Permission names**-All permissions are defined as constant strings (e.g. `SALE_CREATE`).  They are stored in the `Permission` table and referenced by `RolePermission`.
 
 | Permission | Description | Default granted to role |
-| `PRICE_MANAGE` | Authorized price changes (individual, category, bulk). | -
-|------------|-------------|--------------------------|
+|------------|-------------|-------------------------|
+| `PRICE_MANAGE` | Authorized price changes (individual, category, bulk). Price management covers individual price changes, category/group price changes, and bulk/mass price changes. Only OWNER and authorized ADMIN users may change prices. | OWNER, ADMIN |
 | `SALE_CREATE` | Create a draft sale (seller). | SELLER, ADMIN |
 | `SALE_CHARGE` | Register a payment for a sale (cashier). | CASHIER, ADMIN |
 | `SALE_COMPLETE` | Complete a sale transaction (cashier). | CASHIER, ADMIN |
@@ -18,12 +18,12 @@
 | `REPORT_VIEW` | Access reports and analytics. | ADMIN |
 | `AUDIT_VIEW` | View audit logs. | ADMIN |
 | `SUPPLIER_MANAGE` | CRUD suppliers, link products. | ADMIN |
-| `TRANSFER_REQUEST` | Request a stock transfer (warehouse or approved requester). | WAREHOUSE, ADMIN |
-| `TRANSFER_VIEW` | View transfer details. | SELLER, CASHIER, WAREHOUSE, ADMIN
-| `TRANSFER_APPROVE` | Approve a transfer request and modify quantities if needed. | WAREHOUSE, ADMIN |
+| `TRANSFER_REQUEST` | Request a stock transfer. | SELLER, CASHIER, WAREHOUSE, ADMIN |
+| `TRANSFER_VIEW` | View transfer details. | SELLER, CASHIER, WAREHOUSE, ADMIN |
+| `TRANSFER_APPROVE` | Approve a transfer request and modify quantities if needed. | CASHIER, WAREHOUSE, ADMIN |
 | `TRANSFER_PREPARE` | Prepare items for dispatch (pick, pack). | WAREHOUSE, ADMIN |
-| `TRANSFER_DISPATCH` | Dispatch transfer, update in-transit stock, generate remito. | WAREHOUSE, ADMIN |
-| `TRANSFER_RECEIVE` | Receive transfer, reconcile in-transit, update destination stock. | WAREHOUSE, ADMIN |
+| `TRANSFER_DISPATCH` | Dispatch transfer, update in-transit stock, generate remito. | CASHIER, WAREHOUSE, ADMIN |
+| `TRANSFER_RECEIVE` | Receive transfer, reconcile in-transit, update destination stock. | CASHIER, WAREHOUSE, ADMIN |
 | `EXCHANGE_MANAGE` | Process exchanges/returns. | CASHIER, ADMIN |
 | `PUBLICATION_CHECKOUT` | Checkout merchandise for publication. | CASHIER, ADMIN |
 | `PUBLICATION_RETURN` | Return publication merchandise. | CASHIER, ADMIN |
@@ -41,7 +41,7 @@
 
 **Branch scope**-All non-OWNER users, including ADMIN, are evaluated against authoritative permissions and authorized scopes. OWNER is the only Production V1 role with unrestricted company-wide scope by business definition.
 
-**Warehouse scope**-Transfer-related permissions (`TRANSFER_REQUEST`, `TRANSFER_APPROVE`, `TRANSFER_PREPARE`, `TRANSFER_DISPATCH`, `TRANSFER_RECEIVE`) are scoped to the central warehouse/depot location unless a specific branch warehouse is defined in future phases.  `SUPPLIER_MANAGE` may also be warehouse-scoped.
+**Warehouse scope**-Transfer-related permissions (`TRANSFER_VIEW`, `TRANSFER_REQUEST`, `TRANSFER_APPROVE`, `TRANSFER_PREPARE`, `TRANSFER_DISPATCH`, `TRANSFER_RECEIVE`) are scoped to the central warehouse/depot location unless a specific branch warehouse is defined in future phases.  `SUPPLIER_MANAGE` may also be warehouse-scoped.
 
 **Authorization source**-The **authoritative** source is the `Permission` ↔ `RolePermission` ↔ `UserBranchRole` data in PostgreSQL.  The JWT never contains role or branch information; the backend resolves it on each request.
 
