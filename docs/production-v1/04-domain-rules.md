@@ -1,7 +1,7 @@
 # 04-domain-rules
 
 ## Product / ProductVariant / Barcode
-- `Product` has a **single internal Code 128 barcode** (`barcode` column, unique).  The barcode resolves to a product; the seller then selects a variant (colour + size).
+- Product has a single internal Code 128 barcode. The barcode resolves to a product; the seller then selects a variant (colour+size).
 - `ProductVariant` has a unique `sku`.  No barcode is generated per variant.
 - Variant attributes:
   - `color`: enum of predefined colours plus `OTHER` (free-text).
@@ -32,7 +32,7 @@
 - Created when a seller **sends a draft sale to cashier** (technical hold, not commercial reservation).
 - Columns: `saleId`, `variantId`, `branchId`, `quantity`, `expiresAt`, `status` (`ACTIVE`/`RELEASED`/`CONSUMED`).
 - Lifecycle:
-  1. `ACTIVE` on creation (short-term expiry, e.g. 30 minutes).
+  1. `ACTIVE` on creation (short-term expiry).
   2. `RELEASED` on expiry or cancellation (if no payments were made).
   3. `CONSUMED` when the sale is completed (`PAID → COMPLETED`).
 - Expiration is **lazy**: the system checks for expired reservations only when a sale is accessed or a new reservation is attempted.
@@ -84,7 +84,7 @@
 - Payments are **idempotent**; a retry with the same `idempotencyKey` returns the existing record without side effects.
 
 ## Cash Register / Cash Session / Cash Movement
-- Each branch has one `CashRegister` (can be expanded later).
+- A branch may have one or more CashRegisters; each CashRegister belongs to a branch.
 - `CashSession` lifecycle: `OPEN` → `CLOSED`.  Only one `OPEN` session per register (enforced by a partial unique index).
 - `CashMovement` types:
   - `OPENING`, `SALE_INCOME`, `CLOSING`, `MANUAL`, `DEPOSIT`, `WITHDRAWAL`, `ADJUSTMENT`.
@@ -124,6 +124,6 @@
 
 ## Derived vs Authoritative Fields
 - **Authoritative** (stored): all `BigInt` monetary/quantity fields, status enums, timestamps.
-- **Derived** (computed on read): sellable/available stock (based on physical, reserved, inTransit, temporarilyOut), `saleNumber` (generated, not stored in a separate field), monetary string serialization.
+ - **Derived** (computed on read): sellable/available stock is a business invariant (exact persistence deferred to Architecture/ERD). **Authoritative** (stored): saleNumber (once allocated, it is persistent and authoritative). Monetary values stored as BigInt and serialized as decimal strings at JSON boundaries.
 
 These invariants and transitions must be enforced in the backend (transactions, row locks, validation) to guarantee data integrity across concurrent operations.

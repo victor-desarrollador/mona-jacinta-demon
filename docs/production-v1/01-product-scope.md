@@ -27,7 +27,7 @@ Operational users – `OWNER`, `ADMIN`, `CASHIER`, `SELLER`, `WAREHOUSE` interac
 
 **Day 25 committed milestone**-Product CRUD (soft-delete only) and read-only endpoints, variant lookup, barcode scanning, pricing calculation, and optional product image upload/replacement/removal are fully functional.
 
-**Day 26-35 completion milestone**-Supplier-linked product import, bulk price updates, and barcode label generation are added (future work, not covered here).
+**Day 26-35 completion milestone**-Supplier-linked product import and advanced import/migration tooling are added (future work, not covered here). Authorized price changes (individual, category, bulk) are part of Day 25 operational core. Barcode label generation is a Day 25 MUST.
 
 **Explicit non-goals**-No multi-barcode per variant, no external barcode generation service, no EAN-13 handling.
 

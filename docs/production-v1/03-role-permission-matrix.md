@@ -3,6 +3,7 @@
 **Permission names**-All permissions are defined as constant strings (e.g. `SALE_CREATE`).  They are stored in the `Permission` table and referenced by `RolePermission`.
 
 | Permission | Description | Default granted to role |
+| `PRICE_MANAGE` | Authorized price changes (individual, category, bulk). | -
 |------------|-------------|--------------------------|
 | `SALE_CREATE` | Create a draft sale (seller). | SELLER, ADMIN |
 | `SALE_CHARGE` | Register a payment for a sale (cashier). | CASHIER, ADMIN |
@@ -18,6 +19,7 @@
 | `AUDIT_VIEW` | View audit logs. | ADMIN |
 | `SUPPLIER_MANAGE` | CRUD suppliers, link products. | ADMIN |
 | `TRANSFER_REQUEST` | Request a stock transfer (warehouse or approved requester). | WAREHOUSE, ADMIN |
+| `TRANSFER_VIEW` | View transfer details. | SELLER, CASHIER, WAREHOUSE, ADMIN
 | `TRANSFER_APPROVE` | Approve a transfer request and modify quantities if needed. | WAREHOUSE, ADMIN |
 | `TRANSFER_PREPARE` | Prepare items for dispatch (pick, pack). | WAREHOUSE, ADMIN |
 | `TRANSFER_DISPATCH` | Dispatch transfer, update in-transit stock, generate remito. | WAREHOUSE, ADMIN |

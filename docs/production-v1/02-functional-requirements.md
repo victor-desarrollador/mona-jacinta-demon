@@ -21,10 +21,11 @@ The following functional requirements (FR) are **traceable**, **testable**, and 
 | **FR-PRIC-002** | For CONSUMER_FINAL: `listPrice` minus `cashDiscount` (percentage or fixed monetary amount) equals `cashPrice`. | MUST |
 | **FR-PRIC-003** | For WHOLESALE: price equals `wholesalePrice`. | MUST |
 | **FR-PRIC-004** | Pricing rules are validated in the backend; frontend-provided totals/prices are never authoritative. | MUST |
-| **FR-INV-001** | Inventory is tracked per `ProductVariant` × `Location` (Branch or Warehouse). Fields: `physical` (BigInt) and `reserved` (BigInt). | MUST |
-| **FR-INV-002** | Compute `available = physical - reserved` on read; never store `available`. | MUST |
+| **FR-PRIC-005** | For CONSUMER_FINAL: if 100% of the sale is paid using payment methods eligible for cash discount (e.g., CASH, eligible TRANSFER), the cash-discounted price applies; if any card/credit component participates, the list price applies. WHOLESALE sales use the wholesale price. The backend/domain is authoritative; SaleItem must preserve the price snapshot actually used. | MUST
+| **FR-INV-001** | Inventory is tracked per ProductVariant × Location (Branch or Warehouse). It distinguishes physical stock on hand and reserved/held stock (technical hold from seller→cashier flow). | MUST
+| **FR-INV-002** | Sellable/available stock is a business invariant derived from physical stock, reserved/held stock, in-transit stock, and temporarily-out/publication stock. The exact persistence and computation method are deferred to Architecture/ERD. | MUST
 | **FR-INV-003** | Explicitly track additional stock dimensions: `inTransit` (stock in transit between locations) and `temporarilyOut` (stock checked out for publication/photo merchandise). | MUST |
-| **FR-INV-004** | Sellable/available stock = `physical - reserved - inTransit - temporarilyOut` (never stored, computed on read). | MUST |
+| **FR-INV-004** | Sellable/available stock is a business invariant that must be computed from physical stock, reserved/held stock, in-transit stock, and temporarily-out/publication stock. The exact persistence formula is deferred to Architecture/ERD. | MUST
 | **FR-INV-005** | Inventory history (`StockMovement`) records every adjustment with: company, location, variant, qty change, before/after, operation type, related document, user, timestamp, notes. | MUST |
 | **FR-REC-001** | Warehouse creates a **Goods Receipt** before completion, attaching supplier, package count, photos/PDFs, and line items. Receipt is editable while `status = IN_PROGRESS`. | MUST |
 | **FR-REC-002** | Upon receipt `COMPLETED`, inventory is updated (`physical` increased), `StockMovement` entries of type `GOODS_RECEIPT` are generated, and the receipt becomes immutable. | MUST |
@@ -37,6 +38,7 @@ The following functional requirements (FR) are **traceable**, **testable**, and 
 | **FR-TRANS-003** | At `DISPATCHED`: decrement origin `physical` stock, increment `inTransit`. | MUST |
 | **FR-TRANS-004** | At `RECEIVED`: decrement `inTransit`, increment destination `physical`. | MUST |
 | **FR-TRANS-005** | Transfer discrepancies (`RECEIVED_WITH_DIFFERENCE`) are recorded, generate audit entry, and notify administration/owner. | MUST |
+| **FR-PAY-004** | Transfer payment records customer-origin institution: MACRO, BBVA, NACION, GALICIA, MERCADO_PAGO, or OTHER (free-text name). This is required for reporting and audit. | MUST
 | **FR-REMITO-001** | Transfer dispatch generates a delivery note/remito with: sequential number, origin, destination, items, quantities, date/time, responsible users, and link to transfer. | MUST |
 | **FR-LABEL-001** | Label generation for products: includes Code 128 barcode (product-level), human-readable barcode value, short product description, black border, approximately 70 mm × 37 mm. | MUST |
 | **FR-LABEL-002** | Labels print on ordinary self-adhesive A4 sheets, manual guillotine cutting, configurable quantity, reprinting allowed. | MUST |
@@ -60,6 +62,8 @@ The following functional requirements (FR) are **traceable**, **testable**, and 
 | **FR-PUB-002** | Publication return: `PUBLICATION_RETURN` with condition `GOOD` (stock becomes sellable again), `DAMAGED` (auditable damage/write-off), `LOSS` (auditable loss/missing). | MUST |
 | **FR-NOTIF-001** | Owner / Admin receive high-priority notifications for: manual stock adjustments, write-offs, damage/loss, transfer discrepancies, completed goods receipts, low stock (configurable), significant price modifications, sensitive inventory changes. | MUST |
 | **FR-NOTIF-002** | Normal sale activity generates only low-priority audit/events (e.g., `sale.pending_payment`, `sale.completed`); these do NOT create noisy high-priority admin notifications by default. | MUST |
+| **FR-NOTIF-003** | Sales greater than ARS 500,000 trigger an in‑app administrative notification to OWNER or appropriately authorized ADMIN users. Normal sales do not generate noisy high‑priority notifications. The threshold may later become configurable, but the approved initial threshold is ARS 500,000. | MUST
+| **FR-PRIC-006** | Only OWNER or ADMIN with explicit PRICE_MANAGE permission and appropriate scope may change product prices (listPrice, cashDiscount, wholesalePrice). SELLER, CASHIER, and WAREHOUSE have no default price‑change authority. | MUST
 | **FR-AUDIT-001** | Audit log records: user, role, branch, operation, entity type, entity id, timestamp, relevant before/after state (when appropriate). No passwords, tokens, secrets stored. | MUST |
 | **FR-DASH-001** | Essential dashboard/reports: sales summary, inventory alerts, cash session status, pending transfers. | MUST |
 | **FR-REPORT-001** | Transfer payment report filterable by date range and bank; export to XLSX or PDF. | MUST |
