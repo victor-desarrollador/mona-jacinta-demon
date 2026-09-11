@@ -9,6 +9,9 @@
 - `02-functional-requirements.md`-traceable FR IDs (MUST/SHOULD/LATER) covering authentication, RBAC, POS flow, inventory, cash, transfers, suppliers, exchanges, publications, notifications, reports, and ARCA.
 - `03-role-permission-matrix.md`-canonical permission list, default role grants, branch/warehouse scope, and OWNER semantics.
 - `04-domain-rules.md`-invariants, state transitions, and derived vs authoritative fields for every aggregate.
+- `05-architecture.md`-modular monolith architecture, deployment topology, module boundaries, RBAC/scope model, transaction/concurrency strategy, ARCA boundary, migration strategy.
+- `06-erd-data-model.md`-logical ERD with Mermaid diagram, entity definitions (PK/FK/unique/indexes/delete policy), status (NEW/ALTER/REUSED/KEEP), migration gap analysis.
+- `07-inventory-ledger.md`-dual balance+ledger model, sellable semantics, logical holds (technical vs SEÑA), all movement types, transaction rules, reconciliation, worked examples A–G, migration steps.
 
 **Source-of-truth hierarchy**
 
@@ -28,6 +31,8 @@
 - Demo V2 does not implement ARCA; Production V1 treats ARCA as a required capability behind a `FiscalProvider` interface.
 - Demo V2 uses Socket.IO for realtime; Production V1 defines the business behavior for notifications but leaves the technology choice to Architecture V1.
 
+**Block 2 Status**: Architecture (05), ERD (06), and Inventory Ledger (07) documents created and reviewed; entity count corrected to 45; all cross-references validated.
+
 **Relationship to Demo V2 documentation**-Links are provided throughout each document. When a Demo V2 artifact already satisfies a Production V1 requirement, the corresponding section cites the Demo V2 implementation as the reference implementation.
 
-**Next steps**-After these documents are reviewed, we will proceed to the Architecture / ERD work (not part of this block).
+**Next steps**-After these documents are reviewed, we will proceed to implementation planning and code generation (not part of this block).
