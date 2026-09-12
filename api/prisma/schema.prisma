@@ -48,6 +48,46 @@ enum CashMovementType {
   MANUAL
 }
 
+enum LocationType {
+  RETAIL_BRANCH
+  CENTRAL_WAREHOUSE
+}
+
+// Phase 1A (Production V1): additive Company/Location foundation, introduced
+// alongside — not replacing — the Demo V2 Branch model. Existing Branch-keyed
+// consumers (Sale, Inventory, StockMovement, CashRegister, AuditLog,
+// UserBranchRole, SaleNumberCounter) are untouched; see
+// docs/production-v1/08-implementation-roadmap.md Phase 1A/1C.
+// Single-company root tenant; never physically deleted; immutable after
+// creation at the service level (docs/production-v1/06-erd-data-model.md).
+model Company {
+  id        String   @id @default(uuid())
+  name      String
+  cuit      String   @unique
+  address   String
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  locations Location[]
+}
+
+// Unified location (retail branch or central warehouse); backfilled from
+// Branch in Phase 1A. `type` is immutable after creation at the service level.
+model Location {
+  id                String       @id @default(uuid())
+  companyId         String
+  name              String
+  code              String       @unique
+  type              LocationType
+  address           String
+  pointOfSaleNumber Int          @unique
+  isActive          Boolean      @default(true)
+  company           Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
+
+  @@index([type])
+  @@index([isActive])
+}
+
 // UUID strings preserve compatibility with the plan's parameterized raw SQL locks.
 // Monetary amounts are BigInt centavos; quantities/counters are also BigInt.
 // Restrict deletion of referenced records to preserve commercial/audit history.

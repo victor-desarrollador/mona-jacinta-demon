@@ -76,6 +76,37 @@ npm run demo:seed
 
 Reset is destructive for the DEMO database only. The existing demo/test Supabase safety checks remain authoritative.
 
+## Organization Bootstrap (Company / Location — Production V1 Phase 1A)
+
+`demo:reset` / `demo:seed` populate Branch (and everything else in
+`prisma/seed.ts`) but never touch `Company` or `Location` — that table pair is
+additive Production V1 schema, backfilled from Branch by a separate, explicit
+command:
+
+```bash
+cd api
+npm run db:backfill-company-location -- --target=demo
+```
+
+Expected success:
+
+```text
+[db:backfill-company-location] OK
+  target: demo
+  company: <id>
+  branches mapped: 6
+  locations: 6
+```
+
+This is required once per database (idempotent and safe to rerun — it
+converges rather than duplicating rows) before anything reads Company/Location
+data. On a brand-new migrated database, run it after `demo:seed`/`demo:reset`.
+`demo:reset` does not remove or touch existing Company/Location rows, so it
+never needs to be rerun just because you reset Branch/User/product data — only
+rerun it if Branch rows themselves changed (e.g. a new Branch was added) and
+Location needs to catch up. This step is removed once Phase 1C fully retires
+Branch in favor of Location.
+
 ## Startup Order
 
 Terminal 1:

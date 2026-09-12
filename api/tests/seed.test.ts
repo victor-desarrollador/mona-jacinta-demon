@@ -59,17 +59,29 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
       const migrations = fileURLToPath(
         new URL('../prisma/migrations/', import.meta.url),
       );
-      const dirs = readdirSync(migrations).filter((n) => n.endsWith('_init'));
-      if (dirs.length !== 1)
-        throw new Error('Expected one committed initial migration');
-      const checksum = createHash('sha256')
-        .update(readFileSync(`${migrations}/${dirs[0]}/migration.sql`))
-        .digest('hex');
+      // Generalized from a single hardcoded `_init` migration (Phase 0A) to every
+      // committed migration directory, so this check keeps working as Production V1
+      // adds migrations (e.g. Phase 1A's add_company_location) without weakening it:
+      // TEST's applied history must still match the full reviewed set exactly.
+      const dirs = readdirSync(migrations, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort();
+      if (dirs.length === 0)
+        throw new Error('Expected at least one committed migration');
+      const expectedChecksums = new Map(
+        dirs.map((dir) => [
+          dir,
+          createHash('sha256')
+            .update(readFileSync(`${migrations}/${dir}/migration.sql`))
+            .digest('hex'),
+        ]),
+      );
       const tables = await db.pool.query<{ name: string }>(
         "SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'",
       );
       if (tables.rows.length === 0) {
-        // Minimum seed-test prerequisite: apply the existing, reviewed migration to
+        // Minimum seed-test prerequisite: apply the existing, reviewed migrations to
         // the proven TEST target. No shadow, reset, new migration, or schema drop.
         execFileSync(
           process.execPath,
@@ -87,17 +99,23 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
         );
       }
       const history = await db.pool.query<{
+        migration_name: string;
         checksum: string;
         finished: boolean;
       }>(
-        'SELECT checksum, (finished_at IS NOT NULL AND rolled_back_at IS NULL) AS finished FROM _prisma_migrations',
+        'SELECT migration_name, checksum, (finished_at IS NOT NULL AND rolled_back_at IS NULL) AS finished FROM _prisma_migrations',
       );
-      if (
-        history.rows.length !== 1 ||
-        !history.rows[0]?.finished ||
-        history.rows[0].checksum !== checksum
-      ) {
-        throw new Error('Test migration does not match the reviewed schema');
+      const appliedNames = new Set(history.rows.map((row) => row.migration_name));
+      const matchesReviewedHistory =
+        history.rows.length === dirs.length &&
+        appliedNames.size === dirs.length &&
+        dirs.every((dir) => appliedNames.has(dir)) &&
+        history.rows.every(
+          (row) =>
+            row.finished && row.checksum === expectedChecksums.get(row.migration_name),
+        );
+      if (!matchesReviewedHistory) {
+        throw new Error('Test migration history does not match the reviewed schema');
       }
       await resetDemo(db.prisma);
     });

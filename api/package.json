@@ -18,6 +18,7 @@
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx scripts/seed-demo.ts",
+    "db:backfill-company-location": "tsx scripts/backfill-company-location.ts",
     "db:reset": "tsx scripts/reset-demo.ts",
     "db:studio": "prisma studio"
   },
