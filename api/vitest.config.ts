@@ -5,7 +5,12 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
-    testTimeout: 30000,
+    // Integration tests truncate + reseed against a real hosted PostgreSQL
+    // (Supabase) TEST_DATABASE_URL per docs/development/database.md — round
+    // trips are real network latency, not local disk I/O. 30s/10s defaults
+    // were tuned for a local database and produced spurious timeouts here.
+    testTimeout: 60000,
+    hookTimeout: 60000,
     fileParallelism: false,
     coverage: {
       provider: 'v8',
