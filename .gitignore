@@ -40,3 +40,6 @@ Thumbs.db
 *.temp
 *.swp
 *~
+
+# Database backup artifacts (scripts/database/backup.mjs) — never committed
+backups/

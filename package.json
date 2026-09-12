@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "db:check": "node scripts/check-databases.mjs",
+    "db:backup": "node scripts/database/backup.mjs",
+    "db:restore": "node scripts/database/restore.mjs",
     "demo:reset": "npm --prefix api run db:reset",
     "demo:seed": "npm --prefix api run db:seed"
   },

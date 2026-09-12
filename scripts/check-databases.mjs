@@ -1,13 +1,14 @@
 import { loadEnvFile } from 'node:process';
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 
 const { Client } = pg;
 
-const ENV_FILE = '.env.development';
-const DEV_VAR = 'DATABASE_URL';
-const TEST_VAR = 'TEST_DATABASE_URL';
-const MIN_PG_MAJOR = 16;
+export const ENV_FILE = '.env.development';
+export const DEV_VAR = 'DATABASE_URL';
+export const TEST_VAR = 'TEST_DATABASE_URL';
+export const MIN_PG_MAJOR = 16;
 const DEFAULT_PORT = '5432';
 const CONNECT_TIMEOUT_MS = 10000;
 
@@ -16,7 +17,7 @@ function fail(message) {
   process.exit(1);
 }
 
-function parsePgUrl(raw) {
+export function parsePgUrl(raw) {
   const url = new URL(raw);
   return {
     host: url.hostname.toLowerCase(),
@@ -26,7 +27,7 @@ function parsePgUrl(raw) {
   };
 }
 
-function clientFor(raw, ca, varName) {
+export function clientFor(raw, ca, varName) {
   // pg URL TLS options replace the explicit ssl object, including its trusted CA.
   const params = new URL(raw).searchParams;
   if (['ssl', 'sslmode', 'sslcert', 'sslkey', 'sslrootcert', 'uselibpqcompat'].some(key => params.has(key))) {
@@ -39,7 +40,7 @@ function clientFor(raw, ca, varName) {
   });
 }
 
-async function queryMetadata(client) {
+export async function queryMetadata(client) {
   if (!client.connection.stream.encrypted || !client.connection.stream.authorized) {
     throw new Error('Verified TLS is required before querying database metadata');
   }
@@ -73,12 +74,12 @@ async function queryMetadata(client) {
   };
 }
 
-function parseVersionMajor(version) {
+export function parseVersionMajor(version) {
   const match = version.match(/PostgreSQL\s+(\d+)/i);
   return match ? Number(match[1]) : null;
 }
 
-function compareSignals(a, b) {
+export function compareSignals(a, b) {
   const strong = [];
   if (a.host !== b.host) strong.push('hostname');
   if (a.username !== b.username) strong.push('username');
@@ -106,39 +107,43 @@ function formatMajor(version) {
   return major != null ? `${major}.x` : 'unknown';
 }
 
-async function main() {
+// Reusable, fail-closed proof that DATABASE_URL/TEST_DATABASE_URL are reachable,
+// distinct, and version-supported. Throws (never process.exit) so other tooling
+// (e.g. scripts/database/backup.mjs, restore.mjs) can catch and apply its own
+// fail-closed handling instead of a second, competing identity check.
+export async function proveIdentities() {
   try {
     loadEnvFile(ENV_FILE);
   } catch {
-    fail(`could not load ${ENV_FILE} (create it locally with real server-only connection strings; never commit it)`);
+    throw new Error(`could not load ${ENV_FILE} (create it locally with real server-only connection strings; never commit it)`);
   }
 
   const devUrl = process.env[DEV_VAR];
   const testUrl = process.env[TEST_VAR];
 
-  if (!devUrl) fail(`${DEV_VAR} is missing`);
-  if (!testUrl) fail(`${TEST_VAR} is missing`);
+  if (!devUrl) throw new Error(`${DEV_VAR} is missing`);
+  if (!testUrl) throw new Error(`${TEST_VAR} is missing`);
 
-  if (devUrl === testUrl) fail(`${DEV_VAR} and ${TEST_VAR} must be different raw connection strings`);
+  if (devUrl === testUrl) throw new Error(`${DEV_VAR} and ${TEST_VAR} must be different raw connection strings`);
 
   let devParsed;
   let testParsed;
   try {
     devParsed = parsePgUrl(devUrl);
   } catch {
-    fail(`${DEV_VAR} is not a parseable PostgreSQL URL`);
+    throw new Error(`${DEV_VAR} is not a parseable PostgreSQL URL`);
   }
   try {
     testParsed = parsePgUrl(testUrl);
   } catch {
-    fail(`${TEST_VAR} is not a parseable PostgreSQL URL`);
+    throw new Error(`${TEST_VAR} is not a parseable PostgreSQL URL`);
   }
 
   let ca;
   try {
     ca = readFileSync(new URL('./certs/supabase-prod-ca-2021.crt', import.meta.url), 'utf8');
   } catch {
-    fail('could not read the bundled Supabase CA certificate (see docs/development/database.md)');
+    throw new Error('could not read the bundled Supabase CA certificate (see docs/development/database.md)');
   }
 
   const devClient = clientFor(devUrl, ca, DEV_VAR);
@@ -150,7 +155,7 @@ async function main() {
     await devClient.connect();
     devMeta = await queryMetadata(devClient);
   } catch (err) {
-    fail(`could not connect to ${DEV_VAR}: ${err?.code ?? 'connection failed'}`);
+    throw new Error(`could not connect to ${DEV_VAR}: ${err?.code ?? 'connection failed'}`);
   } finally {
     await devClient.end().catch(() => {});
   }
@@ -159,7 +164,7 @@ async function main() {
     await testClient.connect();
     testMeta = await queryMetadata(testClient);
   } catch (err) {
-    fail(`could not connect to ${TEST_VAR}: ${err?.code ?? 'connection failed'}`);
+    throw new Error(`could not connect to ${TEST_VAR}: ${err?.code ?? 'connection failed'}`);
   } finally {
     await testClient.end().catch(() => {});
   }
@@ -173,7 +178,7 @@ async function main() {
     const reason = !sig.staticDistinct
       ? 'parsed connection identity components (hostname/username) are not distinct'
       : 'live server identity could not be proven distinct (inet_server_addr masked/equal and pg_control_system unavailable — possible pooled connection mode masking server metadata)';
-    fail(
+    throw new Error(
       `cannot establish distinct Supabase project/database identities (failing closed). ${reason}. Differing signals: [${sig.strong.join(', ') || 'none'}].`
     );
   }
@@ -184,11 +189,25 @@ async function main() {
   ]) {
     const major = parseVersionMajor(meta.version);
     if (major == null || major < MIN_PG_MAJOR) {
-      fail(
+      throw new Error(
         `${varName} reports unsupported PostgreSQL version (${meta.version || 'unknown'}); Prisma 7.10.x requires ${MIN_PG_MAJOR}+`
       );
     }
   }
+
+  return { devUrl, testUrl, devParsed, testParsed, devMeta, testMeta, sig };
+}
+
+async function main() {
+  let result;
+  try {
+    result = await proveIdentities();
+  } catch (err) {
+    fail(err.message);
+    return;
+  }
+
+  const { devMeta, testMeta, sig } = result;
 
   console.log('[db:check] OK');
   console.log('  DEV/DEMO reachable: yes');
@@ -199,4 +218,9 @@ async function main() {
   console.log(`  signals used: ${sig.strong.join(', ') || 'none'}`);
 }
 
-await main();
+// Only run the CLI flow when executed directly (`node scripts/check-databases.mjs`
+// / `npm run db:check`) — importing proveIdentities() elsewhere (e.g.
+// scripts/database/backup.mjs, restore.mjs) must not trigger a second, unwanted run.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}
