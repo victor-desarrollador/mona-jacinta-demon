@@ -1736,7 +1736,7 @@ For every phase include a structured section with:
 TEST STRATEGY
 ==================================================
 
-Define test layers:
+Test layers:
 
 - unit tests
 - domain/service tests
@@ -1746,83 +1746,79 @@ Define test layers:
 - migration tests
 - E2E critical flows
 
-Explicitly identify critical tests such as:
+Critical test matrix (all required for Production V1):
 
-- two sellers race for last unit
-- transfer cannot dispatch held merchandise
-- partial transfer receipt keeps outstanding custody
-- lost-in-transit doesn't double-decrement
-- publication loss doesn't double-decrement
-- SEÑA last-unit fulfillment succeeds
-- expired SEÑA doesn't block sellable
-- SEÑA CASH deposit creates exactly one CashMovement
-- SEÑA settlement does not duplicate payment/cash
-- mixed SEÑA/card payment uses listPrice
-- global PRICE_MANAGE rejected for LOCATION-scoped ADMIN
-- exchange cannot exchange same sold quantity twice
-- exchange replacement decremented exactly once
-- only one OPEN CashSession per register
-- duplicate payment retry is idempotent
-- DocumentCounter concurrent allocation doesn't duplicate numbers
-- FiscalOutbox cannot be lost between Sale completion and worker
+1. two sellers race for final unit — only one succeeds
+2. transfer cannot dispatch held merchandise
+3. partial transfer receipt preserves outstandingTransit (external custody)
+4. LOST_IN_TRANSIT does not double-decrement origin
+5. publication LOSS/DAMAGE does not double-decrement location
+6. SEÑA fulfillment succeeds against its own entitlement even when general sellable = 0
+7. expired SEÑA no longer reduces effective sellable
+8. CASH SenaPayment creates exactly one SENA_DEPOSIT CashMovement
+9. SenaSettlement creates no duplicate SalePayment
+10. SenaSettlement creates no second CashMovement
+11. CASH SEÑA + CARD payment uses listPrice
+12. CASH SEÑA + TRANSFER remainder uses cashPrice
+13. LOCATION-scoped ADMIN cannot mutate global pricing/catalog
+14. Exchange cannot exceed originalSaleItem.quantity
+15. Exchange replacement inventory decremented exactly once
+16. one OPEN CashSession per CashRegister
+17. duplicate payment retry is idempotent
+18. concurrent DocumentCounter allocations never duplicate numbers
+19. FiscalOutbox cannot be lost between Sale completion and worker
 
 ==================================================
 MIGRATION STRATEGY
 ==================================================
 
-Add a migration dependency graph.
+Migration dependency graph. All migrations follow the discipline:
 
-Important existing Demo V2 concepts include:
+ADD → BACKFILL → VERIFY → SWITCH READS/WRITES → DEPRECATE → REMOVE (only after a validated compatibility window).
 
-Branch
-UserBranchRole
-Inventory.physical
-Inventory.reserved
-ProductVariant.barcode
-Sale
-SaleItem
-SalePayment
-CashSession
-StockReservation
+No destructive one-step replacement.
 
-Document how each is migrated safely.
-
-Prefer:
-
-add
-→ backfill
-→ verify
-→ switch reads/writes
-→ remove/deprecate
-
-instead of destructive one-step replacement.
+| Source | Target | Strategy |
+| ------ | ------ | -------- |
+| Branch | Location | ADD Location; BACKFILL from Branch; VERIFY; SWITCH reads/writes; DEPRECATE Branch; REMOVE after validated compatibility window. |
+| UserBranchRole | UserRoleScope | ADD UserRoleScope; BACKFILL from UserBranchRole; VERIFY permissions/scopes; SWITCH authorization reads/writes; DEPRECATE UserBranchRole; REMOVE only after validated compatibility window. |
+| ProductVariant.barcode | Product.barcode | Inspect products with one vs multiple legacy variant barcodes; choose/generate canonical Product.barcode per migration policy; preserve legacy values via approved legacy fields; flag any migration mapping as an explicit implementation decision; never silently discard identifiers. |
+| Inventory.physical | InventoryBalance.onHand | ADD InventoryBalance; BACKFILL onHand from Inventory.physical; VERIFY counts; SWITCH reads/writes; DEPRECATE counter. |
+| Inventory.reserved | StockHold | Reconcile/backfill reserved into StockHold; VERIFY counts/invariants; SWITCH reads/writes; DEPRECATE old counter. |
+| StockReservation | StockHold | Migrate with history and active-status reconciliation; VERIFY active holds; DEPRECATE old model. |
+| Sale | (altered) | ALTER incrementally; preserve all historical rows. |
+| SaleItem | (altered) | ALTER incrementally; preserve historical monetary history. |
+| SalePayment | (altered) | ALTER incrementally; preserve payment history. |
+| CashSession | CashRegister + altered CashSession | ADD CashRegister (NEW); backfill/register assignment; ADD CashSession.cashRegisterId and new financial fields; backfill; verify; switch; deprecate obsolete branch-only semantics. Do NOT drop CashSession rows. |
 
 ==================================================
 CLAUDE CODE EXECUTION MODEL
 ==================================================
 
-The roadmap must be suitable for execution by Claude Code.
+The roadmap is structured for direct Claude Code execution. Every subphase (0A through 10E) is a focused implementation unit with:
 
-Each future implementation task should be small enough to fit one focused
-development session.
+- one clear implementation objective
+- exact dependency
+- touched entities/modules
+- schema/migration effect
+- backend/domain effect
+- tests required
+- completion criteria
+- suggested commit boundary
 
-Recommend subdivision within phases where necessary.
+Subphases are already decomposed into session-sized units. Examples follow.
 
-Example:
+Phase 1A — Company + Location schema/migration: create Company/Location tables, backfill Branch → Location, verify counts, switch reads. (Already detailed above.)
 
-Phase 1A:
-Company + Location schema/migration
+Phase 1B — Role / Permission / UserRoleScope: role model + DB CHECKs + privilege-escalation tests.
 
-Phase 1B:
-UserRoleScope + permissions
+Phase 1C — Branch/UserBranchRole migration: ADD → BACKFILL → VERIFY → SWITCH → DEPRECATE.
 
-Phase 1C:
-authorization middleware + migration
+Phase 1D — Authorization middleware/services: backend-authoritative scope-aware permission checks.
 
-Phase 1D:
-tests + cleanup
+Phase 3A — InventoryBalance migration: create InventoryBalance, backfill Demo Inventory.physical, verify counts, add reconciliation tests, switch inventory reads.
 
-Do not create implementation code now.
+The decomposition is complete in this document; Claude Code must not invent the implementation decomposition.
 
 ==================================================
 DAY-25 PRIORITY
