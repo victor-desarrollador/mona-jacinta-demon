@@ -1,5 +1,6 @@
 import { hash } from 'bcryptjs';
 import type { Prisma } from '../src/generated/prisma/client.js';
+import { syncProductionRbacCatalog } from '../src/modules/rbac/catalog.service.js';
 
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -235,6 +236,14 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
       }
     }
   }
+  // Phase 1B (Production V1): the Production RBAC catalog (roles, permissions,
+  // grants) must exist after every successful seed/reset — see
+  // api/src/modules/rbac/catalog.service.ts. Runs on this same transaction
+  // (never a nested one) and after the legacy role/permission loop above,
+  // since that loop's `rolePermission.deleteMany({ where: { roleId } })` for
+  // reused roles (ADMIN/CASHIER/SELLER share their legacy Role.id) would
+  // otherwise wipe Production grants added before it ran.
+  await syncProductionRbacCatalog(tx);
 }
 
 async function clear(tx: Prisma.TransactionClient) {

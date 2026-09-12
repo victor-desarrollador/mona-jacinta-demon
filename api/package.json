@@ -19,6 +19,7 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx scripts/seed-demo.ts",
     "db:backfill-company-location": "tsx scripts/backfill-company-location.ts",
+    "db:bootstrap-rbac-catalog": "tsx scripts/bootstrap-rbac-catalog.ts",
     "db:reset": "tsx scripts/reset-demo.ts",
     "db:studio": "prisma studio"
   },

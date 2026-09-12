@@ -213,7 +213,7 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
     });
   }, 30000);
 
-  it('has all 12 permissions and the exact role matrix, including queue separation', async () => {
+  it('has all 12 legacy permissions and the exact legacy role matrix, including queue separation', async () => {
     await safely(async () => {
       const all = [
         'sale.create',
@@ -230,11 +230,15 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
         'audit.view',
       ];
       const rows = await db.prisma.permission.findMany();
-      expect(rows.map((p) => p.code).sort()).toEqual([...all].sort());
+      const legacyCodes = rows.map((p) => p.code).filter((code) => code.includes('.'));
+      expect(legacyCodes.sort()).toEqual([...all].sort());
       const roles = await db.prisma.role.findMany({
         include: { permissions: { include: { permission: true } } },
       });
-      expect(roles.map((r) => r.code).sort()).toEqual([
+      const legacyRoles = roles.filter((r) =>
+        ['ADMIN', 'CASHIER', 'MANAGER', 'SELLER'].includes(r.code),
+      );
+      expect(legacyRoles.map((r) => r.code).sort()).toEqual([
         'ADMIN',
         'CASHIER',
         'MANAGER',
@@ -254,11 +258,21 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
         MANAGER: all.filter((p) => p !== 'user.manage' && p !== 'audit.view'),
         ADMIN: all,
       };
-      for (const role of roles)
-        expect(role.permissions.map((p) => p.permission.code).sort()).toEqual(
-          matrix[role.code]!.slice().sort(),
-        );
-      expect(await db.prisma.rolePermission.count()).toBe(32);
+      // Phase 1B additively grants ADMIN/CASHIER/SELLER the uppercase
+      // Production permission set alongside these legacy grants (see
+      // tests/rbac/catalog.test.ts) — filter to the legacy (dot-separated)
+      // codes here so this assertion keeps verifying only the original,
+      // unmodified Demo V2 matrix.
+      for (const role of legacyRoles) {
+        const legacyGrants = role.permissions
+          .map((p) => p.permission.code)
+          .filter((code) => code.includes('.'));
+        expect(legacyGrants.sort()).toEqual(matrix[role.code]!.slice().sort());
+      }
+      const legacyRolePermissionCount = await db.prisma.rolePermission.count({
+        where: { permission: { code: { contains: '.' } } },
+      });
+      expect(legacyRolePermissionCount).toBe(32);
     });
   });
 
@@ -324,6 +338,7 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
   it('rolls back deletion if reseeding fails', async () => {
     await safely(async () => {
       const before = await db.prisma.user.findMany({ orderBy: { id: 'asc' } });
+      const rolePermissionCountBefore = await db.prisma.rolePermission.count();
       await expect(
         resetDemo({
           $transaction: (action, options) =>
@@ -354,7 +369,12 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
       // Compare internally so an assertion failure cannot expose password hashes.
       expect(JSON.stringify(before) === JSON.stringify(after)).toBe(true);
       expect(await db.prisma.inventory.count()).toBe(36);
-      expect(await db.prisma.rolePermission.count()).toBe(32);
+      // Phase 1B: RolePermission now also carries the additive Production
+      // grants (see tests/rbac/catalog.test.ts), so this compares against the
+      // count captured before the failed attempt rather than a legacy-era
+      // literal — the invariant under test is "the failed attempt changed
+      // nothing", not any particular total.
+      expect(await db.prisma.rolePermission.count()).toBe(rolePermissionCountBefore);
     });
   }, 180000);
 

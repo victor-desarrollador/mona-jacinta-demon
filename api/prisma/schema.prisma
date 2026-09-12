@@ -53,6 +53,13 @@ enum LocationType {
   CENTRAL_WAREHOUSE
 }
 
+// Phase 1B (Production V1): UserRoleScope's scope discriminator. See
+// docs/production-v1/05-architecture.md §5 and 06-erd-data-model.md §2.2.
+enum ScopeKind {
+  LOCATION
+  COMPANY
+}
+
 // Phase 1A (Production V1): additive Company/Location foundation, introduced
 // alongside — not replacing — the Demo V2 Branch model. Existing Branch-keyed
 // consumers (Sale, Inventory, StockMovement, CashRegister, AuditLog,
@@ -84,6 +91,8 @@ model Location {
   isActive          Boolean      @default(true)
   company           Company      @relation(fields: [companyId], references: [id], onDelete: Restrict)
 
+  roleScopes UserRoleScope[]
+
   @@index([type])
   @@index([isActive])
 }
@@ -101,6 +110,7 @@ model User {
   updatedAt    DateTime @updatedAt @db.Timestamptz(3)
 
   branchRoles        UserBranchRole[]
+  roleScopes         UserRoleScope[]
   sales              Sale[]
   stockMovements     StockMovement[]
   openedCashSessions CashSession[]    @relation("CashSessionOpenedBy")
@@ -116,6 +126,7 @@ model Role {
 
   permissions RolePermission[]
   branchUsers UserBranchRole[]
+  roleScopes  UserRoleScope[]
 }
 
 model Permission {
@@ -133,6 +144,42 @@ model RolePermission {
 
   @@id([roleId, permissionId])
   @@index([permissionId])
+}
+
+// Phase 1B (Production V1): additive Role/scope model, introduced alongside —
+// not replacing — Demo V2's UserBranchRole. UserBranchRole stays authoritative
+// until Phase 1C backfills and switches reads/writes (expand-and-contract,
+// docs/development/migrations.md §16). No rows are written to this table in
+// Phase 1B; the CHECK constraint and the two uniqueness-covering partial
+// unique indexes below live in raw SQL appended to this migration's
+// migration.sql (Prisma has no @@check and no partial-index syntax — see
+// docs/development/migrations.md §12):
+//   - CHECK chk_user_role_scope_consistency:
+//       (scopeKind = 'LOCATION' AND locationId IS NOT NULL)
+//       OR (scopeKind = 'COMPANY' AND locationId IS NULL)
+//   - uq_user_role_scope_location: UNIQUE (userId, roleId, scopeKind, locationId)
+//       WHERE locationId IS NOT NULL
+//   - uq_user_role_scope_company: UNIQUE (userId, roleId, scopeKind)
+//       WHERE locationId IS NULL
+// (a plain Prisma @@unique treats NULL as distinct and would not stop
+// duplicate COMPANY-scope rows for the same user+role, per
+// docs/production-v1/05-architecture.md §5 — the two partial indexes above
+// are this project's chosen "equivalent partial unique index strategy" in
+// place of NULLS NOT DISTINCT, consistent with the existing
+// cash_session_one_open_per_register precedent.)
+model UserRoleScope {
+  id         String    @id @default(uuid())
+  userId     String
+  roleId     String
+  scopeKind  ScopeKind @default(LOCATION)
+  locationId String?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role      @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  location   Location? @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@index([locationId])
+  @@index([roleId])
+  @@index([scopeKind])
 }
 
 model Branch {
