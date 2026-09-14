@@ -4,6 +4,8 @@ import type { PrismaClient } from '../generated/prisma/client.js';
 import { env } from '../config/env.js';
 import { prisma as defaultPrisma } from '../config/prisma.js';
 import { AppError } from '../shared/errors.js';
+import { resolveEffectiveBranchIds } from '../modules/rbac/effective-branch-ids.js';
+import { mapUserRoleScopeRows } from '../modules/rbac/scope-resolver.js';
 
 const key = new TextEncoder().encode(env.JWT_SECRET);
 
@@ -38,13 +40,20 @@ export function createRequireAuth(
           isActive: true,
           branchRoles: {
             select: {
-              branchId: true,
               role: {
                 select: {
                   code: true,
                   permissions: { select: { permission: { select: { code: true } } } },
                 },
               },
+            },
+          },
+          roleScopes: {
+            select: {
+              roleId: true,
+              scopeKind: true,
+              locationId: true,
+              role: { select: { code: true } },
             },
           },
         },
@@ -54,7 +63,7 @@ export function createRequireAuth(
         throw new AppError(403, 'INACTIVE_USER', 'El usuario está inactivo.');
 
       const roles = [...new Set(user.branchRoles.map(({ role }) => role.code))];
-      const branchIds = [...new Set(user.branchRoles.map(({ branchId }) => branchId))];
+      const branchIds = resolveEffectiveBranchIds(mapUserRoleScopeRows(user.roleScopes));
       const permissions = [
         ...new Set(
           user.branchRoles.flatMap(({ role }) =>

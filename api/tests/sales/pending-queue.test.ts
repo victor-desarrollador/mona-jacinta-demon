@@ -110,18 +110,34 @@ describe('cashier pending-sales queue', () => {
     const centroSale = await pending();
     const yerbaSale = await pending({ branchId: yerbaId });
     expect((await queue()).body.items.map((sale: { saleId: string }) => sale.saleId)).toEqual([centroSale.id]);
-    await prisma.userBranchRole.updateMany({ where: { userId: cashierId }, data: { branchId: yerbaId } });
+    // Phase 1C SWITCH: UserRoleScope is the authoritative LOCATION scope
+    // source for req.auth.branchIds, not UserBranchRole — re-scope it
+    // directly (seedDemo already backfilled cashier01 a UserRoleScope row
+    // for Centro, so this is an update, not a create).
+    await prisma.userRoleScope.updateMany({ where: { userId: cashierId }, data: { locationId: yerbaId } });
     expect((await queue()).body.items.map((sale: { saleId: string }) => sale.saleId)).toEqual([yerbaSale.id]);
     const role = await prisma.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
-    await prisma.userBranchRole.create({ data: { userId: cashierId, branchId: centroId, roleId: role.id } });
+    await prisma.userRoleScope.create({
+      data: { userId: cashierId, roleId: role.id, scopeKind: 'LOCATION', locationId: centroId },
+    });
     expect((await queue()).body.items).toHaveLength(2);
   });
 
   it('returns no sales for an empty server-side branch scope', async () => {
     await pending();
     expect(await createSalesService(prisma).listPendingSales([])).toEqual([]);
-    await prisma.userBranchRole.deleteMany({ where: { userId: cashierId } });
-    expect((await queue()).status).toBe(403);
+    // Delete only the authoritative LOCATION scope, keeping UserBranchRole
+    // (and therefore SALE_QUEUE_VIEW) intact — deleting UserBranchRole too
+    // would strip the permission itself and produce a false-positive 403
+    // from a missing permission rather than an empty branch scope.
+    // GET /sales/pending has no per-resource branch check (unlike
+    // cancel/complete/payments): it filters by branchIds with no
+    // route-level guard against an empty set, so a fully authorized cashier
+    // with zero LOCATION scope legitimately sees an empty queue, not a 403.
+    await prisma.userRoleScope.deleteMany({ where: { userId: cashierId } });
+    const response = await queue();
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ items: [] });
   });
 
   it('rejects branchId, repeated, array, nested and alternative query filters', async () => {

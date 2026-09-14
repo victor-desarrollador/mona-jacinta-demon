@@ -37,8 +37,10 @@ export function createCashService(database: PrismaClient) {
     throw new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
   }
 
-  async function assertCurrentBranch(tx: Prisma.TransactionClient, userId: string, branchId: string, branchIds: string[]) {
-    if (!branchIds.includes(branchId) || !await tx.userBranchRole.findFirst({ where: { userId, branchId }, select: { id: true } })) throw forbidden();
+  // Phase 1C SWITCH: branchIds (UserRoleScope) is the sole LOCATION
+  // authority — no UserBranchRole re-check here.
+  function assertCurrentBranch(branchId: string, branchIds: string[]) {
+    if (!branchIds.includes(branchId)) throw forbidden();
   }
 
   return {
@@ -54,7 +56,7 @@ export function createCashService(database: PrismaClient) {
           SELECT id, "branchId" FROM "CashRegister" WHERE id = ${registerId} FOR UPDATE
         `;
         if (!register) throw new AppError(404, 'NOT_FOUND', 'No se encontró la caja.');
-        await assertCurrentBranch(tx, userId, register.branchId, branchIds);
+        assertCurrentBranch(register.branchId, branchIds);
         if (await tx.cashSession.findFirst({ where: { registerId, status: 'OPEN' } })) throw conflict(true);
         const session = await tx.cashSession.create({ data: { registerId, openedById: userId, startingCash, status: 'OPEN' } });
         await tx.cashMovement.create({ data: { sessionId: session.id, type: 'OPENING', amount: startingCash, salePaymentId: null, userId } });
@@ -72,7 +74,7 @@ export function createCashService(database: PrismaClient) {
         `;
         if (!locked) throw new AppError(404, 'NOT_FOUND', 'No se encontró la sesión.');
         const register = await tx.cashRegister.findUniqueOrThrow({ where: { id: locked.registerId } });
-        await assertCurrentBranch(tx, userId, register.branchId, branchIds);
+        assertCurrentBranch(register.branchId, branchIds);
         if (locked.status !== 'OPEN') throw conflict(false);
         await tx.cashMovement.create({ data: { sessionId, type: 'CLOSING', amount: closingCash, salePaymentId: null, userId } });
         const session = await tx.cashSession.update({ where: { id: sessionId }, data: { status: 'CLOSED', closedById: userId, closedAt: new Date() } });

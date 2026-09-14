@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createApp } from '../../src/app.js';
 import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { createBranch, createRole, createTestUser } from '../helpers/factories.js';
+import { createBranch, createRole, createTestUser, ensureTestLocation } from '../helpers/factories.js';
 import { getAuthToken } from '../helpers/auth.js';
 
 describe('cash sessions', () => {
@@ -105,10 +105,32 @@ describe('cash sessions', () => {
   });
   it('respects branch reassignment after JWT issuance on all routes', async () => {
     const session = await open();
-    await db.userBranchRole.updateMany({ where: { userId }, data: { branchId: otherBranchId } });
+    // Phase 1C SWITCH: req.auth.branchIds comes from UserRoleScope only —
+    // UserBranchRole (role/permission authority) is deliberately left
+    // untouched at the original branch, staying independently valid, to
+    // prove LOCATION reassignment is a UserRoleScope-only event, not a
+    // dual-authority one. otherBranchId is a plain ad hoc Branch with no
+    // Location of its own yet (only the user's original branch got one, in
+    // createTestUser), so ensure one exists before pointing UserRoleScope at it.
+    await ensureTestLocation(db, otherBranchId);
+    await db.userRoleScope.updateMany({ where: { userId }, data: { locationId: otherBranchId } });
     expect((await read('register')).status).toBe(403); expect((await read('current')).status).toBe(403);
     expect((await open()).status).toBe(403); expect((await close(session.body.sessionId)).status).toBe(403);
     expect((await db.cashSession.findFirstOrThrow()).status).toBe('OPEN'); expect(await db.cashMovement.count()).toBe(1);
+  });
+  it('grants cash access to a fresh UserRoleScope location despite a stale UserBranchRole', async () => {
+    // Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority.
+    // UserBranchRole (role/permission authority) stays at the original
+    // branch — only the scope moves to otherBranchId — so this proves the
+    // legacy row can no longer veto access to a location UserRoleScope
+    // has actually authorized.
+    await ensureTestLocation(db, otherBranchId);
+    await db.userRoleScope.updateMany({ where: { userId }, data: { locationId: otherBranchId } });
+    const otherRegister = await db.cashRegister.create({ data: { branchId: otherBranchId, name: 'Caja Yerba Buena' } });
+    expect((await read('register', { branchId: otherBranchId })).status).toBe(200);
+    const session = await open({ registerId: otherRegister.id, startingCash: exact });
+    expect(session.status).toBe(201);
+    expect((await close(session.body.sessionId)).status).toBe(200);
   });
   it.each(['open', 'close'])('rolls back every %s write if audit fails', async (operation) => {
     const id = operation === 'close' ? (await open()).body.sessionId : '';

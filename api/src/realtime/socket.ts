@@ -4,6 +4,8 @@ import { Server, type Socket } from 'socket.io';
 import type { PrismaClient } from '../generated/prisma/client.js';
 import { env } from '../config/env.js';
 import { toJsonSafe } from '../shared/json-safe.js';
+import { resolveEffectiveBranchIds } from '../modules/rbac/effective-branch-ids.js';
+import { mapUserRoleScopeRows } from '../modules/rbac/scope-resolver.js';
 
 export const REALTIME_EVENTS = {
   salePendingPayment: 'sale.pending_payment',
@@ -47,15 +49,25 @@ async function authenticateSocket(socket: Socket, database: PrismaClient) {
       id: true, isActive: true,
       branchRoles: {
         select: {
-          branchId: true,
           role: { select: { permissions: { select: { permission: { select: { code: true } } } } } },
+        },
+      },
+      // Phase 1C SWITCH: LOCATION branch scope comes exclusively from
+      // UserRoleScope, same as the HTTP path (middleware/auth.ts) — never
+      // from branchRoles (UserBranchRole), which stays role/permission only.
+      roleScopes: {
+        select: {
+          roleId: true,
+          scopeKind: true,
+          locationId: true,
+          role: { select: { code: true } },
         },
       },
     },
   });
   if (!user || !user.isActive) throw new Error('UNAUTHORIZED');
   socket.data.userId = user.id;
-  socket.data.branchIds = [...new Set(user.branchRoles.map(({ branchId }) => branchId))];
+  socket.data.branchIds = resolveEffectiveBranchIds(mapUserRoleScopeRows(user.roleScopes));
   socket.data.permissions = [...new Set(user.branchRoles.flatMap(({ role }) =>
     role.permissions.map(({ permission }) => permission.code),
   ))];

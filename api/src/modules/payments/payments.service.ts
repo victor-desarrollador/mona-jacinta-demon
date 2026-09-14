@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient, SalePayment } from '../../generated/prisma/client.js';
+import type { PrismaClient, SalePayment } from '../../generated/prisma/client.js';
 import { assertBranchAccess } from '../../middleware/authorization.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
@@ -35,12 +35,11 @@ function sameIntent(payment: SalePayment, input: RegisterPaymentInput) {
 }
 
 export function createPaymentsService(database: PrismaClient) {
-  async function assertCurrentBranch(
-    tx: Prisma.TransactionClient, req: RequestLike, userId: string, branchId: string,
-  ) {
+  // Phase 1C SWITCH: UserRoleScope (req.auth.branchIds) is the sole LOCATION
+  // authority — no UserBranchRole re-check here. A stale legacy row must
+  // never veto access UserRoleScope has actually authorized.
+  function assertCurrentBranch(req: RequestLike, branchId: string) {
     if (!req.auth?.branchIds.includes(branchId)) throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
-    const assignment = await tx.userBranchRole.findFirst({ where: { userId, branchId }, select: { id: true } });
-    if (!assignment) throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
   }
 
   async function findExisting(idempotencyKey: string, saleId: string) {
@@ -55,7 +54,7 @@ export function createPaymentsService(database: PrismaClient) {
         SELECT id, "branchId", status, total FROM "Sale" WHERE id = ${saleId} FOR UPDATE
       `;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
-      await assertCurrentBranch(tx, req, userId, sale.branchId);
+      assertCurrentBranch(req, sale.branchId);
 
       const existing = await tx.salePayment.findUnique({
         where: { saleId_idempotencyKey: { saleId, idempotencyKey: input.idempotencyKey } },
@@ -142,12 +141,12 @@ export function createPaymentsService(database: PrismaClient) {
     throw new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
   }
 
-  async function listPayments(req: RequestLike, userId: string, saleId: string) {
+  // Phase 1C SWITCH: assertBranchAccess (req.auth.branchIds / UserRoleScope)
+  // is the sole LOCATION authority — no UserBranchRole re-check here.
+  async function listPayments(req: RequestLike, saleId: string) {
     const sale = await database.sale.findUnique({ where: { id: saleId }, select: { id: true, branchId: true } });
     if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
     assertBranchAccess(req, sale.branchId);
-    const assignment = await database.userBranchRole.findFirst({ where: { userId, branchId: sale.branchId }, select: { id: true } });
-    if (!assignment) throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
     return database.salePayment.findMany({ where: { saleId }, orderBy: [{ paidAt: 'asc' }, { id: 'asc' }] });
   }
 

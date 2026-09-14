@@ -153,9 +153,29 @@ describe('permission and branch authorization', () => {
       where: { code: 'CASHIER' },
       select: { id: true },
     });
+    // Legacy role/permission authority (UserBranchRole + Role/Permission)
+    // stays on UserBranchRole until Phase 1D: this is what /permission's
+    // requirePermission(SALE_QUEUE_VIEW) enforces below.
     await prisma.userBranchRole.deleteMany({ where: { userId: seller.id } });
     await prisma.userBranchRole.create({
       data: { userId: seller.id, branchId: branchIds.YB!, roleId: cashier.id },
+    });
+    // Phase 1C SWITCH: LOCATION/COMPANY branch scope authority is
+    // UserRoleScope, not UserBranchRole — move it explicitly so /resource's
+    // branchScope: 'own' check (enforced against req.auth.branchIds, resolved
+    // from UserRoleScope) reflects the branch change too.
+    const sellerRole = await prisma.role.findUniqueOrThrow({
+      where: { code: 'SELLER' },
+      select: { id: true },
+    });
+    await prisma.userRoleScope.deleteMany({ where: { userId: seller.id } });
+    await prisma.userRoleScope.create({
+      data: {
+        userId: seller.id,
+        roleId: sellerRole.id,
+        scopeKind: 'LOCATION',
+        locationId: branchIds.YB!,
+      },
     });
     const response = await request(app)
       .get('/permission')
@@ -169,5 +189,31 @@ describe('permission and branch authorization', () => {
       ).status,
     ).toBe(403);
     expect(getUserBranchScope).toBeTypeOf('function');
+  });
+
+  it('denies access to a legacy branch once UserRoleScope is deliberately emptied, instead of resurrecting it from UserBranchRole (Phase 1C SWITCH)', async () => {
+    const token = await tokenFor('seller01');
+    const seller = await prisma.user.findUniqueOrThrow({
+      where: { email: 'seller01@demo.local' },
+      select: { id: true },
+    });
+    // seedDemo already backfilled seller01 a UserRoleScope row for Centro.
+    // Revoke every scope row while leaving the legacy UserBranchRole
+    // assignment (Centro) untouched — Phase 1D still needs it as the
+    // role/permission source. An empty UserRoleScope must mean zero
+    // authorized branches for this user, not "not yet migrated": it must
+    // never fall back to the still-present legacy assignment.
+    await prisma.userRoleScope.deleteMany({ where: { userId: seller.id } });
+    expect(await prisma.userBranchRole.count({ where: { userId: seller.id } })).toBeGreaterThan(0);
+
+    const resource = await request(app)
+      .get(`/resource/${branchIds.CEN}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(resource.status).toBe(403);
+    const filter = await request(app)
+      .get('/filter')
+      .set('Authorization', `Bearer ${token}`)
+      .query({ branchId: branchIds.CEN });
+    expect(filter.status).toBe(403);
   });
 });

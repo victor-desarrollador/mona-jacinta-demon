@@ -18,10 +18,11 @@ function transient(error: unknown) {
     || candidate.meta?.code === '40P01' || message.includes('40001') || message.includes('40P01');
 }
 
-async function branchAssignment(tx: Prisma.TransactionClient, scope: AuthScope, branchId: string) {
+// Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority — no
+// UserBranchRole re-check here. A stale legacy row must never veto access
+// UserRoleScope has actually authorized (see docs/production-v1 Phase 1C).
+function branchAssignment(scope: AuthScope, branchId: string) {
   if (!scope.branchIds.includes(branchId)) throw forbidden();
-  const assigned = await tx.userBranchRole.findFirst({ where: { userId: scope.userId, branchId }, select: { id: true } });
-  if (!assigned) throw forbidden();
 }
 
 async function acceptedTotal(tx: Prisma.TransactionClient, saleId: string) {
@@ -79,7 +80,7 @@ export function createCancellationService(database: PrismaClient) {
     return inTransaction(async (tx) => {
       const [sale] = await tx.$queryRaw<LockedSale[]>`SELECT id, "branchId", status FROM "Sale" WHERE id = ${saleId} FOR UPDATE`;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
-      await branchAssignment(tx, scope, sale.branchId);
+      branchAssignment(scope, sale.branchId);
       const paid = await acceptedTotal(tx, saleId);
       if (paid > 0n) throw new AppError(409, 'PAYMENT_ALREADY_ACCEPTED', 'La venta tiene pagos aceptados.');
       if (sale.status !== 'DRAFT' && sale.status !== 'PENDING_PAYMENT') throw invalidState();
@@ -117,7 +118,6 @@ export function createCancellationService(database: PrismaClient) {
       for (const candidate of candidates) {
         const [sale] = await tx.$queryRaw<LockedSale[]>`SELECT id, "branchId", status FROM "Sale" WHERE id = ${candidate.saleId} FOR UPDATE`;
         if (!sale || !scope.branchIds.includes(sale.branchId)) continue;
-        await branchAssignment(tx, scope, sale.branchId);
         if (sale.status !== 'PENDING_PAYMENT') continue;
         if (await acceptedTotal(tx, sale.id) > 0n) continue;
         const reservations = await tx.$queryRaw<LockedReservation[]>`

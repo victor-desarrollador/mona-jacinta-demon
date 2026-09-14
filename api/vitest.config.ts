@@ -5,6 +5,7 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
+    globalSetup: ['tests/globalSetup.ts'],
     // Integration tests truncate + reseed against a real hosted PostgreSQL
     // (Supabase) TEST_DATABASE_URL per docs/development/database.md — round
     // trips are real network latency, not local disk I/O. 30s/10s defaults

@@ -72,8 +72,22 @@ describe('split payments', () => {
   it('requires the persisted sale branch and applies branch revocation to an existing JWT', async () => {
     const sale = await createSale(1n);
     const otherBranch = await db.branch.findFirstOrThrow({ where: { id: { not: branchId } } });
-    await db.userBranchRole.updateMany({ where: { userId: cashierId }, data: { branchId: otherBranch.id } });
+    // Branch-scope revocation: move the authoritative LOCATION scope only.
+    // UserBranchRole (role/permission authority) stays valid for this assertion.
+    await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranch.id } });
     expect((await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() })).status).toBe(403);
+  });
+
+  it('grants payment registration on a fresh UserRoleScope location despite a stale UserBranchRole', async () => {
+    // Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority.
+    // UserBranchRole (role/permission authority) stays at branchId — only
+    // the scope moves — so this proves the legacy row can no longer veto
+    // access to a location UserRoleScope has actually authorized.
+    const otherBranch = await db.branch.findFirstOrThrow({ where: { id: { not: branchId } } });
+    await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranch.id } });
+    const sale = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', subtotal: 1n, total: 1n } });
+    const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
+    expect(response.status).toBe(201);
   });
 
   it.each(['DRAFT', 'PAID', 'COMPLETED', 'CANCELLED'] as const)('rejects a new payment for %s', async (status) => {
@@ -177,8 +191,21 @@ describe('split payments', () => {
     expect(response.body.items.map((item: { id: string }) => item.id)).toEqual([first.body.id, second.body.id]);
     expect(await db.auditLog.count()).toBe(before);
     const otherBranch = await db.branch.findFirstOrThrow({ where: { id: { not: branchId } } });
-    await db.userBranchRole.updateMany({ where: { userId: cashierId }, data: { branchId: otherBranch.id } });
+    // Branch-access revocation: mutate the authoritative LOCATION scope only.
+    await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranch.id } });
     expect((await request(app).get(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${token}`)).status).toBe(403);
+  });
+
+  it('grants GET payment listing on a fresh UserRoleScope location despite a stale UserBranchRole', async () => {
+    // Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority.
+    // UserBranchRole (role/permission authority) stays at branchId — only
+    // the scope moves — so this proves the legacy row can no longer veto a
+    // read that UserRoleScope has actually authorized.
+    const otherBranch = await db.branch.findFirstOrThrow({ where: { id: { not: branchId } } });
+    await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranch.id } });
+    const sale = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', subtotal: 1n, total: 1n } });
+    const response = await request(app).get(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
   });
 
   it('rolls back payment, cash movement and status when audit persistence fails', async () => {

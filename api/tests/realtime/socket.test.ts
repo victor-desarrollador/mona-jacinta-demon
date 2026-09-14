@@ -18,13 +18,25 @@ let port: number;
 let token: string;
 const clients: ClientSocket[] = [];
 
-function userWithBranches(branchIds: string[]) {
+// scopeBranchIds defaults to branchIds so existing call sites keep both
+// authorities in sync (matching tests/helpers/factories.ts's createTestUser).
+// Phase 1C SWITCH: only roleScopes (UserRoleScope) should determine
+// socket.data.branchIds — branchRoles (UserBranchRole) stays role/permission
+// only — so passing a different scopeBranchIds lets a test prove the two
+// authorities are no longer conflated here.
+function userWithBranches(branchIds: string[], scopeBranchIds: string[] = branchIds) {
   return {
     id: userId,
     isActive: true,
     branchRoles: branchIds.map((branchId) => ({
       branchId,
       role: { permissions: [{ permission: { code: 'sale.view' } }] },
+    })),
+    roleScopes: scopeBranchIds.map((locationId) => ({
+      roleId: 'role-cashier',
+      scopeKind: 'LOCATION' as const,
+      locationId,
+      role: { code: 'CASHIER' },
     })),
   };
 }
@@ -85,6 +97,26 @@ describe('Socket.IO realtime', () => {
     await connected(client);
     client.disconnect();
     database.user.findUnique.mockResolvedValue(userWithBranches([]));
+    await connected(client);
+    const serverSocket = realtime.io.sockets.sockets.get(client.id!);
+    expect([...serverSocket?.rooms ?? []]).toEqual([client.id]);
+  });
+
+  it('deriva las branch rooms desde UserRoleScope, no desde UserBranchRole legado', async () => {
+    // UserBranchRole (legacy role/permission source) still says Centro;
+    // UserRoleScope (Phase 1C authoritative LOCATION source) says Yerba
+    // Buena only. The socket must join Yerba Buena, never Centro.
+    database.user.findUnique.mockResolvedValue(userWithBranches([centroId], [yerbaId]));
+    const client = connectClient(token);
+    await connected(client);
+    const serverSocket = realtime.io.sockets.sockets.get(client.id!);
+    expect(serverSocket?.rooms.has(`branch:${yerbaId}`)).toBe(true);
+    expect(serverSocket?.rooms.has(`branch:${centroId}`)).toBe(false);
+  });
+
+  it('produce cero branch rooms con UserRoleScope vacío aunque UserBranchRole siga vigente', async () => {
+    database.user.findUnique.mockResolvedValue(userWithBranches([centroId], []));
+    const client = connectClient(token);
     await connected(client);
     const serverSocket = realtime.io.sockets.sockets.get(client.id!);
     expect([...serverSocket?.rooms ?? []]).toEqual([client.id]);

@@ -37,6 +37,14 @@ describe('POST /api/v1/sales/:saleId/send-to-cashier', () => {
     });
     const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
     await prisma.userBranchRole.create({ data: { userId: otherSeller.id, branchId: centro.id, roleId: sellerRole.id } });
+    // Phase 1C SWITCH: req.auth.branchIds comes from UserRoleScope exclusively
+    // (see effective-branch-ids.ts) — a raw UserBranchRole row alone leaves
+    // otherSeller with an empty scope, so the ownership assertion below would
+    // 403 for the wrong reason (empty branch scope) instead of the intended
+    // one (not the sale's owner). Give otherSeller a matching LOCATION scope.
+    await prisma.userRoleScope.create({
+      data: { userId: otherSeller.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: centro.id },
+    });
     sellerId = seller.id;
     otherSellerId = otherSeller.id;
     sellerToken = await getAuthToken(seller);

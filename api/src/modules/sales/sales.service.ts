@@ -249,14 +249,11 @@ export function createSalesService(database: SaleDatabase) {
     `;
     if (!sale) throw notFound('No se encontró la venta.');
 
+    // Phase 1C SWITCH: req.auth.branchIds (UserRoleScope) is the sole
+    // LOCATION authority — no UserBranchRole re-check here.
     if (!req.auth?.branchIds.includes(sale.branchId)) {
       throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
     }
-    const assignment = await tx.userBranchRole.findFirst({
-      where: { userId, branchId: sale.branchId },
-      select: { id: true },
-    });
-    if (!assignment) throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
 
     if (sale.status === 'COMPLETED') return tx.sale.findUniqueOrThrow({ where: { id: saleId }, include: saleInclude });
     if (sale.status !== 'PAID') throw completionConflict('INVALID_SALE_STATE', 'La venta no está lista para finalizarse.');

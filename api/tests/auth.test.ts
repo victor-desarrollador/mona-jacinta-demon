@@ -17,6 +17,13 @@ const testDatabase = {
       id: 'test-user',
       isActive: true,
       branchRoles: [],
+      // Phase 1C: middleware/auth.ts now resolves branchIds via
+      // resolveEffectiveBranchIds, fed by this same findUnique's `roleScopes`
+      // selection (no separate UserRoleScope query, and no legacy fallback
+      // post-SWITCH — an empty roleScopes means empty branchIds). This
+      // file's tests only check identity, not branchIds, so an empty stub is
+      // fine either way.
+      roleScopes: [],
     }),
   },
 } as unknown as PrismaClient;

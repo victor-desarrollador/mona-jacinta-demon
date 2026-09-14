@@ -1,5 +1,7 @@
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
+import { resolveEffectiveBranchIds } from '../rbac/effective-branch-ids.js';
+import { mapUserRoleScopeRows } from '../rbac/scope-resolver.js';
 import { verifyPassword } from './password.js';
 import { signAccessToken } from './tokens.js';
 import type { LoginInput } from './dto/login.dto.js';
@@ -23,13 +25,20 @@ const userSelect = {
   passwordHash: true,
   branchRoles: {
     select: {
-      branchId: true,
       role: {
         select: {
           code: true,
           permissions: { select: { permission: { select: { code: true } } } },
         },
       },
+    },
+  },
+  roleScopes: {
+    select: {
+      roleId: true,
+      scopeKind: true,
+      locationId: true,
+      role: { select: { code: true } },
     },
   },
 } as const;
@@ -39,8 +48,13 @@ function contextFromUser(user: {
   name: string;
   email: string;
   branchRoles: Array<{
-    branchId: string;
     role: { code: string; permissions: Array<{ permission: { code: string } }> };
+  }>;
+  roleScopes: Array<{
+    roleId: string;
+    scopeKind: 'LOCATION' | 'COMPANY';
+    locationId: string | null;
+    role: { code: string };
   }>;
 }): UserContext {
   return {
@@ -48,7 +62,7 @@ function contextFromUser(user: {
     name: user.name,
     email: user.email,
     roles: [...new Set(user.branchRoles.map(({ role }) => role.code))],
-    branchIds: [...new Set(user.branchRoles.map(({ branchId }) => branchId))],
+    branchIds: resolveEffectiveBranchIds(mapUserRoleScopeRows(user.roleScopes)),
     permissions: [
       ...new Set(
         user.branchRoles.flatMap(({ role }) =>

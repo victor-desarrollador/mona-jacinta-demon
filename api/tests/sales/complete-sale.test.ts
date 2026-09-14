@@ -120,8 +120,24 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     expect((await complete(sale.id)).status).toBe(403);
 
     await db.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
-    await db.userBranchRole.updateMany({ where: { userId: cashierId }, data: { branchId: otherBranchId } });
+    // Fresh branch authorization subcase: move the authoritative LOCATION
+    // scope, not the legacy UserBranchRole assignment used above for permission.
+    await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranchId } });
     expect((await complete(sale.id)).status).toBe(403);
+  });
+
+  it('grants completion on a fresh UserRoleScope location despite a stale UserBranchRole', async () => {
+    // Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority.
+    // UserBranchRole (role/permission authority) stays at branchId (CEN) —
+    // only the scope moves to otherBranchId (YB) — so this proves the legacy
+    // row can no longer veto access to a location UserRoleScope authorized.
+    await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranchId } });
+    const sale = await db.sale.create({ data: { sellerId, branchId: otherBranchId, status: 'PAID', subtotal: 4500000n, total: 4500000n } });
+    await addItem(sale.id, remeraId, remeraProductId, 1n);
+    await reserve(sale.id, remeraId, 1n, { branchId: otherBranchId });
+    const response = await complete(sale.id);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('COMPLETED');
   });
 
   it('returns 404 for an unknown sale and rejects invalid lifecycle states', async () => {
@@ -229,34 +245,28 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } })).toBe(0);
   });
 
-  it('rejects missing, non-active, wrong-branch and mismatched reservations', async () => {
-    const cases = [
-      async () => { /* no reservation */ },
-      async (saleId: string) => { await reserve(saleId, remeraId, 1n, { status: 'RELEASED' }); },
-      async (saleId: string) => { await reserve(saleId, remeraId, 1n, { branchId: otherBranchId }); },
-      async (saleId: string) => { await reserve(saleId, remeraId, 2n); },
-    ];
-    for (const prepare of cases) {
-      const sale = await createSale();
-      await addItem(sale.id, remeraId, remeraProductId, 1n);
-      await prepare(sale.id);
-      expect((await complete(sale.id)).status).toBe(409);
-      expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
-      expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(0);
-      await truncateAllTables(db);
-      await seedDemo(db);
-      const [cashier, seller, branch, otherBranch, remera, jean] = await Promise.all([
-        db.user.findUniqueOrThrow({ where: { email: 'cashier01@demo.local' } }),
-        db.user.findUniqueOrThrow({ where: { email: 'seller01@demo.local' } }),
-        db.branch.findUniqueOrThrow({ where: { code: 'CEN' } }),
-        db.branch.findUniqueOrThrow({ where: { code: 'YB' } }),
-        db.productVariant.findUniqueOrThrow({ where: { sku: 'REM-NEG-M' } }),
-        db.productVariant.findUniqueOrThrow({ where: { sku: 'JEA-AZU-42' } }),
-      ]);
-      cashierId = cashier.id; sellerId = seller.id; branchId = branch.id; otherBranchId = otherBranch.id;
-      remeraId = remera.id; jeanId = jean.id; remeraProductId = remera.productId; jeanProductId = jean.productId;
-      token = await getAuthToken(cashier);
-    }
+  // These four rejection scenarios are logically independent (each starts
+  // from its own fresh sale/reservation setup and asserts the same
+  // no-partial-writes shape). They used to run as manual iterations inside a
+  // single `it`, re-truncating and reseeding the database by hand between
+  // iterations instead of relying on this suite's own beforeEach — that put
+  // 5 full seed cycles (1 implicit + 4 manual) at ~14s each of real Supabase
+  // round-trip cost inside one `it`'s 60s testTimeout budget, timing out at
+  // ~70s+ even though no single case is slow on its own. Splitting into
+  // `it.each` (matching the sibling case above) gives each case its own
+  // fresh beforeEach and its own 60s budget instead.
+  it.each([
+    ['missing reservation', async () => { /* no reservation */ }],
+    ['non-active reservation', async (saleId: string) => { await reserve(saleId, remeraId, 1n, { status: 'RELEASED' }); }],
+    ['wrong-branch reservation', async (saleId: string) => { await reserve(saleId, remeraId, 1n, { branchId: otherBranchId }); }],
+    ['mismatched reservation quantity', async (saleId: string) => { await reserve(saleId, remeraId, 2n); }],
+  ])('rejects a sale with %s without partial writes', async (_label, prepare) => {
+    const sale = await createSale();
+    await addItem(sale.id, remeraId, remeraProductId, 1n);
+    await prepare(sale.id);
+    expect((await complete(sale.id)).status).toBe(409);
+    expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
+    expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(0);
   });
 
   it('rolls back every completion write when the late audit write fails', async () => {

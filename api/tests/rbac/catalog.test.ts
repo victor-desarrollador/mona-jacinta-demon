@@ -151,11 +151,19 @@ describe('Production RBAC catalog bootstrap (Phase 1B)', () => {
   });
 
   it('leaves UserBranchRole (including the legacy MANAGER assignment) and UserRoleScope assignment state untouched', async () => {
+    // This suite's beforeAll resetDemo may itself have already synchronized
+    // UserRoleScope from UserBranchRole (Phase 1C, once Location exists in
+    // this shared test database) — that's a different code path's job, not
+    // this test's concern. What this test proves is that catalog bootstrap
+    // itself never creates/deletes/modifies a UserRoleScope row, so capture
+    // the count immediately before calling it and assert it is unchanged
+    // after, rather than assuming a specific absolute count.
+    const scopeCountBeforeCatalogBootstrap = await db.prisma.userRoleScope.count();
     await bootstrapProductionRbacCatalog(db.prisma);
     expect(await db.prisma.userBranchRole.count()).toBe(9);
     const managerRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'MANAGER' } });
     expect(await db.prisma.userBranchRole.count({ where: { roleId: managerRole.id } })).toBe(1);
     // No scope assignment is ever created by catalog bootstrap (Phase 1C's job).
-    expect(await db.prisma.userRoleScope.count()).toBe(0);
+    expect(await db.prisma.userRoleScope.count()).toBe(scopeCountBeforeCatalogBootstrap);
   });
 });

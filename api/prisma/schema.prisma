@@ -167,6 +167,14 @@ model RolePermission {
 // are this project's chosen "equivalent partial unique index strategy" in
 // place of NULLS NOT DISTINCT, consistent with the existing
 // cash_session_one_open_per_register precedent.)
+//
+// Phase 1C addendum: UserRoleScope is now backfilled from UserBranchRole
+// (scope-backfill.service.ts) and is the authoritative LOCATION/COMPANY
+// scope source read at request time (api/src/modules/rbac/effective-branch-ids.ts,
+// consumed by api/src/middleware/auth.ts and auth.service.ts) — falling back
+// to UserBranchRole only where a user has not been backfilled yet. Role code
+// and permission vocabulary resolution stay on UserBranchRole/legacy
+// Role/Permission until Phase 1D.
 model UserRoleScope {
   id         String    @id @default(uuid())
   userId     String
@@ -200,6 +208,16 @@ model Branch {
   saleNumberCounter SaleNumberCounter?
 }
 
+// Phase 1C (Production V1) DEPRECATE step — transitional split, not a full
+// handoff: UserRoleScope (backfilled 1:1 from this table by
+// api/src/modules/rbac/scope-backfill.service.ts) is now the authoritative
+// source for LOCATION/COMPANY scope resolution (`req.auth.branchIds`, wired
+// in api/src/middleware/auth.ts and api/src/modules/auth/auth.service.ts,
+// with a fallback to this table's data where UserRoleScope has not been
+// backfilled yet). This table remains the sole, unmodified source for role
+// codes and the legacy permission vocabulary (`req.auth.roles`/
+// `req.auth.permissions`) until Phase 1D. REMOVE happens only after that
+// full compatibility window closes (docs/development/migrations.md §16).
 model UserBranchRole {
   id       String @id @default(uuid())
   userId   String

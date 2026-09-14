@@ -1,6 +1,7 @@
 import { hash } from 'bcryptjs';
 import type { Prisma } from '../src/generated/prisma/client.js';
 import { syncProductionRbacCatalog } from '../src/modules/rbac/catalog.service.js';
+import { syncUserRoleScopeFromUserBranchRole } from '../src/modules/rbac/scope-backfill.service.js';
 
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -244,6 +245,26 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
   // reused roles (ADMIN/CASHIER/SELLER share their legacy Role.id) would
   // otherwise wipe Production grants added before it ran.
   await syncProductionRbacCatalog(tx);
+
+  // Phase 1C (Production V1): keep UserRoleScope in sync with UserBranchRole
+  // on every successful seed/reset — see
+  // docs/production-v1/08-implementation-roadmap.md Phase 1C and
+  // api/tests/rbac/scope-seed-integration.test.ts. Skipped only when
+  // Company/Location (Phase 1A) has genuinely never been backfilled yet for
+  // this database (a brand-new database, before its one-time
+  // `db:backfill-company-location` run) — there is nothing to keep in sync
+  // yet, and failing here would break the documented first-time bootstrap
+  // order (demo:reset before the Location backfill exists at all,
+  // docs/development/getting-started.md). Once Location exists (the normal
+  // case for any database that has completed Phase 1A/1B bootstrap once),
+  // this always runs, and any partial/inconsistent state (a Branch with no
+  // matching Location) still fails the whole seed/reset closed, per
+  // syncUserRoleScopeFromUserBranchRole's own fail-closed checks. Runs on
+  // this same transaction — never a nested one — so a synchronization
+  // failure rolls back the entire seed/reset, not just this step.
+  if ((await tx.location.count()) > 0) {
+    await syncUserRoleScopeFromUserBranchRole(tx);
+  }
 }
 
 async function clear(tx: Prisma.TransactionClient) {

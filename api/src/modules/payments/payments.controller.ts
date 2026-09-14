@@ -18,7 +18,7 @@ export function createPaymentsController(database: PrismaClient, realtime?: Real
       sendJson(res.status(result.replayed ? 200 : 201), result.payment);
     }) as RequestHandler,
     list: (async (req, res) => {
-      sendJson(res, { items: await service.listPayments(req, userId(req), String(req.params.saleId)) });
+      sendJson(res, { items: await service.listPayments(req, String(req.params.saleId)) });
     }) as RequestHandler,
   };
 }

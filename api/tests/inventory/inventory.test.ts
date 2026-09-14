@@ -131,9 +131,13 @@ describe('branch inventory read and availability', () => {
   });
 
   it('honors branch revocation after token issuance', async () => {
-    await prisma.userBranchRole.updateMany({
+    // Phase 1C SWITCH: UserRoleScope is the authoritative LOCATION scope
+    // source, not UserBranchRole — mutate it directly to revoke/grant branch
+    // access (seedDemo already backfilled seller01 a UserRoleScope row for
+    // Centro, so this is an update, not a create).
+    await prisma.userRoleScope.updateMany({
       where: { userId: sellerId },
-      data: { branchId: yerbaId },
+      data: { locationId: yerbaId },
     });
     expect((await get()).status).toBe(403);
     expect((await get('', { branchId: yerbaId })).status).toBe(200);

@@ -33,6 +33,14 @@ describe('seller draft sales', () => {
     ]);
     const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
     await prisma.userBranchRole.create({ data: { userId: otherSeller.id, branchId: centro.id, roleId: sellerRole.id } });
+    // Phase 1C SWITCH: req.auth.branchIds comes from UserRoleScope
+    // exclusively (empty means empty, no legacy fallback) — otherSeller is a
+    // brand-new user created directly above, not via seedDemo, so it needs
+    // its own scope row too. Centro's Location already exists (seeded/
+    // backfilled), so this just points at it directly.
+    await prisma.userRoleScope.create({
+      data: { userId: otherSeller.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: centro.id },
+    });
     token = await getAuthToken(seller);
     otherSellerToken = await getAuthToken(otherSeller);
     centroId = centro.id;

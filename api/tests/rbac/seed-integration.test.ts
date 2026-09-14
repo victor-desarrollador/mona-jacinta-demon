@@ -2,6 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resetDemo, seedDemo } from '../../prisma/seed.js';
 import { openSeedDatabase } from '../../scripts/demo-database.js';
 import {
+  backfillLocationsFromBranches,
+  type CompanyBootstrap,
+} from '../../src/modules/organization/organization.service.js';
+import {
   CANONICAL_PERMISSION_IDS,
   CANONICAL_ROLE_IDS,
   DEFAULT_ROLE_GRANTS,
@@ -27,6 +31,13 @@ import {
 describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase 1B)', () => {
   let db: Awaited<ReturnType<typeof openSeedDatabase>>;
 
+  const FALLBACK_COMPANY_BOOTSTRAP: CompanyBootstrap = {
+    id: '00000000-0000-4000-9600-000000000001',
+    name: 'Mona Jacinta (rbac seed integration test)',
+    cuit: '00-66666666-6',
+    address: 'Dirección legal test — pendiente de dato real',
+  };
+
   async function safely<T>(action: () => Promise<T>): Promise<T> {
     try {
       return await action();
@@ -35,12 +46,33 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
     }
   }
 
+  // This file's own Phase 1B assertions must not depend on whether some
+  // other file already backfilled Location — ensure it here too (idempotent,
+  // reuses an existing Company if one already exists) so
+  // expectFullPhase1BState()'s UserRoleScope count is deterministic
+  // regardless of test file execution order or standalone runs.
+  async function ensureLocationBootstrap() {
+    const existingCompany = await db.prisma.company.findFirst();
+    const bootstrap: CompanyBootstrap = existingCompany
+      ? {
+          id: existingCompany.id,
+          name: existingCompany.name,
+          cuit: existingCompany.cuit,
+          address: existingCompany.address,
+        }
+      : FALLBACK_COMPANY_BOOTSTRAP;
+    await safely(() => backfillLocationsFromBranches(db.prisma, bootstrap));
+  }
+
   async function expectFullPhase1BState() {
     expect(await db.prisma.role.count()).toBe(6);
     expect(await db.prisma.permission.count()).toBe(45);
     expect(await db.prisma.rolePermission.count()).toBe(101);
     expect(await db.prisma.userBranchRole.count()).toBe(9);
-    expect(await db.prisma.userRoleScope.count()).toBe(0);
+    // Phase 1C addendum: with Location bootstrapped (ensured in beforeAll
+    // below), populate() now also syncs UserRoleScope on every reset/seed —
+    // see scope-seed-integration.test.ts for the dedicated Phase 1C checks.
+    expect(await db.prisma.userRoleScope.count()).toBe(9);
     const verification = await verifyProductionRbacCatalog(db.prisma);
     expect(verification.ok).toBe(true);
     expect(verification.issues).toEqual([]);
@@ -48,6 +80,8 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
 
   beforeAll(async () => {
     db = await safely(() => openSeedDatabase('test'));
+    await safely(() => resetDemo(db.prisma));
+    await ensureLocationBootstrap();
   }, 120000);
 
   afterAll(async () => {

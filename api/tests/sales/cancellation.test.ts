@@ -56,8 +56,25 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await cancel(current.id)).status).toBe(403);
     await db.rolePermission.upsert({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } }, create: { roleId: role.id, permissionId: permission.id }, update: {} });
-    await db.userBranchRole.updateMany({ where: { userId: sellerId }, data: { branchId: (await db.branch.findUniqueOrThrow({ where: { code: 'YB' } })).id } });
+    // Branch/reassignment subcase: authoritative LOCATION scope moves to YB.
+    // UserBranchRole stays put — this asserts fresh UserRoleScope
+    // enforcement, not a re-test of the permission check above.
+    const yb = await db.branch.findUniqueOrThrow({ where: { code: 'YB' } });
+    await db.userRoleScope.updateMany({ where: { userId: sellerId, scopeKind: 'LOCATION' }, data: { locationId: yb.id } });
     expect((await cancel(current.id)).status).toBe(403);
+  });
+
+  it('grants cancellation on a fresh UserRoleScope location despite a stale UserBranchRole', async () => {
+    // Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority.
+    // UserBranchRole (role/permission authority) stays at CEN — only the
+    // scope moves to YB — so this proves the legacy row can no longer veto
+    // access to a location UserRoleScope has actually authorized.
+    const yb = await db.branch.findUniqueOrThrow({ where: { code: 'YB' } });
+    await db.userRoleScope.updateMany({ where: { userId: sellerId, scopeKind: 'LOCATION' }, data: { locationId: yb.id } });
+    const current = await db.sale.create({ data: { sellerId, branchId: yb.id, status: 'DRAFT', subtotal: 100n, total: 100n } });
+    const response = await cancel(current.id);
+    expect(response.status).toBe(200);
+    expect((await db.sale.findUniqueOrThrow({ where: { id: current.id } })).status).toBe('CANCELLED');
   });
 
   it('cancels DRAFT without inventory or stock movement and audits', async () => {

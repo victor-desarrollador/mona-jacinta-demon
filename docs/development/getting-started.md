@@ -107,6 +107,43 @@ rerun it if Branch rows themselves changed (e.g. a new Branch was added) and
 Location needs to catch up. This step is removed once Phase 1C fully retires
 Branch in favor of Location.
 
+## Scope Assignment Backfill (UserRoleScope — Production V1 Phase 1C)
+
+`UserRoleScope` (added empty in Phase 1B) is backfilled 1:1 from the existing
+`UserBranchRole` rows: legacy `MANAGER` assignments map explicitly to the
+Production `WAREHOUSE` role (`docs/production-v1/06-erd-data-model.md` §2.2
+ROLE: "codes changed: MANAGER→WAREHOUSE"); `ADMIN`/`CASHIER`/`SELLER` keep
+their own code. Every backfilled row is `LOCATION`-scoped, reusing the source
+`UserBranchRole.branchId` as `locationId` (`Location.id == Branch.id`, from
+the Organization Bootstrap above) — `COMPANY` scope is never inferred.
+
+Requires the Company/Location backfill above and the Phase 1B RBAC catalog
+bootstrap to have already run:
+
+```bash
+cd api
+npm run db:bootstrap-rbac-catalog -- --target=demo
+npm run db:backfill-user-role-scope -- --target=demo
+```
+
+Expected success:
+
+```text
+[db:backfill-user-role-scope] OK
+  target: demo
+  legacy UserBranchRole rows: 9
+  created: 9
+  already present: 0
+  verified UserRoleScope rows: 9
+```
+
+Idempotent and safe to rerun. `UserBranchRole` stays fully intact and is
+still the source for role codes and permissions; Task 6 switches `branchIds`
+(LOCATION/COMPANY scope) to read from `UserRoleScope`, falling back to
+`UserBranchRole` for any user this backfill has not reached yet. Task 7 keeps
+this in sync automatically on every future `demo:reset`/`db:reset` once the
+Company/Location backfill above has run at least once.
+
 ## Startup Order
 
 Terminal 1:
