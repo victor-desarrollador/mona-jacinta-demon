@@ -21,22 +21,25 @@ const clients: ClientSocket[] = [];
 // scopeBranchIds defaults to branchIds so existing call sites keep both
 // authorities in sync (matching tests/helpers/factories.ts's createTestUser).
 // Phase 1C SWITCH: only roleScopes (UserRoleScope) should determine
-// socket.data.branchIds — branchRoles (UserBranchRole) stays role/permission
-// only — so passing a different scopeBranchIds lets a test prove the two
-// authorities are no longer conflated here.
+// socket.data.effectiveLocationIds — branchRoles (UserBranchRole) stays
+// role/permission only — so passing a different scopeBranchIds lets a test
+// prove the two authorities are no longer conflated here. Phase 1D.1: each
+// roleScopes row's role now also carries `permissions` (Production
+// uppercase) so buildAuthorizationContext can build its per-assignment
+// permissions array without crashing on a stub fixture.
 function userWithBranches(branchIds: string[], scopeBranchIds: string[] = branchIds) {
   return {
     id: userId,
     isActive: true,
     branchRoles: branchIds.map((branchId) => ({
       branchId,
-      role: { permissions: [{ permission: { code: 'sale.view' } }] },
+      role: { code: 'CASHIER', permissions: [{ permission: { code: 'sale.view' } }] },
     })),
     roleScopes: scopeBranchIds.map((locationId) => ({
       roleId: 'role-cashier',
       scopeKind: 'LOCATION' as const,
       locationId,
-      role: { code: 'CASHIER' },
+      role: { code: 'CASHIER', permissions: [{ permission: { code: 'CASH_SESSION_OPEN' } }] },
     })),
   };
 }
@@ -120,6 +123,22 @@ describe('Socket.IO realtime', () => {
     await connected(client);
     const serverSocket = realtime.io.sockets.sockets.get(client.id!);
     expect([...serverSocket?.rooms ?? []]).toEqual([client.id]);
+  });
+
+  it('expone socket.data.assignments con la forma de asignación, nunca aplanada (Phase 1D.1)', async () => {
+    database.user.findUnique.mockResolvedValue(userWithBranches([centroId]));
+    const client = connectClient(token);
+    await connected(client);
+    const serverSocket = realtime.io.sockets.sockets.get(client.id!);
+    expect(serverSocket?.data.assignments).toEqual([
+      {
+        roleId: 'role-cashier',
+        roleCode: 'CASHIER',
+        scopeKind: 'LOCATION',
+        locationId: centroId,
+        permissions: ['CASH_SESSION_OPEN'],
+      },
+    ]);
   });
 
   it('emite solo después de una operación comprometida y serializa BigInt', async () => {

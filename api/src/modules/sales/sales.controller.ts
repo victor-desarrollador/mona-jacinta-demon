@@ -15,14 +15,14 @@ export function createSalesController(database: PrismaClient, realtime?: Realtim
       if (Object.keys(req.query).length > 0) {
         throw new AppError(400, 'VALIDATION_ERROR', 'La cola no admite parámetros de consulta.');
       }
-      sendJson(res, { items: await service.listPendingSales(req.auth!.branchIds) });
+      sendJson(res, { items: await service.listPendingSales(req.auth!.effectiveLocationIds) });
     }) as RequestHandler,
     create: (async (req, res) => {
       const sale = await service.createDraftSale(req, userId(req), req.body.branchId);
       sendJson(res.status(201), sale);
     }) as RequestHandler,
     list: (async (req, res) => {
-      sendJson(res, { items: await service.listDrafts(userId(req), req.auth!.branchIds) });
+      sendJson(res, { items: await service.listDrafts(userId(req), req.auth!.effectiveLocationIds) });
     }) as RequestHandler,
     get: (async (req, res) => {
       sendJson(res, await service.getDraft(req, userId(req), String(req.params.saleId)));
@@ -37,7 +37,7 @@ export function createSalesController(database: PrismaClient, realtime?: Realtim
       sendJson(res, await service.removeItem(req, userId(req), String(req.params.saleId), String(req.params.itemId)));
     }) as RequestHandler,
     sendToCashier: (async (req, res) => {
-      const sale = await service.sendToCashier(String(req.params.saleId), userId(req), req.auth!.branchIds);
+      const sale = await service.sendToCashier(String(req.params.saleId), userId(req), req.auth!.effectiveLocationIds);
       realtime?.emit(REALTIME_EVENTS.salePendingPayment, { branchId: sale.branchId, saleId: sale.id, saleNumber: sale.saleNumber, status: sale.status });
       sendJson(res, sale);
     }) as RequestHandler,

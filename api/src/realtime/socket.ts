@@ -4,8 +4,7 @@ import { Server, type Socket } from 'socket.io';
 import type { PrismaClient } from '../generated/prisma/client.js';
 import { env } from '../config/env.js';
 import { toJsonSafe } from '../shared/json-safe.js';
-import { resolveEffectiveBranchIds } from '../modules/rbac/effective-branch-ids.js';
-import { mapUserRoleScopeRows } from '../modules/rbac/scope-resolver.js';
+import { buildAuthorizationContext } from '../modules/rbac/authorization-context.js';
 
 export const REALTIME_EVENTS = {
   salePendingPayment: 'sale.pending_payment',
@@ -49,7 +48,12 @@ async function authenticateSocket(socket: Socket, database: PrismaClient) {
       id: true, isActive: true,
       branchRoles: {
         select: {
-          role: { select: { permissions: { select: { permission: { select: { code: true } } } } } },
+          role: {
+            select: {
+              code: true,
+              permissions: { select: { permission: { select: { code: true } } } },
+            },
+          },
         },
       },
       // Phase 1C SWITCH: LOCATION branch scope comes exclusively from
@@ -60,17 +64,21 @@ async function authenticateSocket(socket: Socket, database: PrismaClient) {
           roleId: true,
           scopeKind: true,
           locationId: true,
-          role: { select: { code: true } },
+          role: {
+            select: {
+              code: true,
+              permissions: { select: { permission: { select: { code: true } } } },
+            },
+          },
         },
       },
     },
   });
   if (!user || !user.isActive) throw new Error('UNAUTHORIZED');
-  socket.data.userId = user.id;
-  socket.data.branchIds = resolveEffectiveBranchIds(mapUserRoleScopeRows(user.roleScopes));
-  socket.data.permissions = [...new Set(user.branchRoles.flatMap(({ role }) =>
-    role.permissions.map(({ permission }) => permission.code),
-  ))];
+  const context = await buildAuthorizationContext(user);
+  socket.data.userId = context.userId;
+  socket.data.assignments = context.assignments;
+  socket.data.effectiveLocationIds = context.effectiveLocationIds;
 }
 
 export function createRealtime(httpServer: HttpServer, database: PrismaClient): { io: Server; emitter: RealtimeEmitter } {
@@ -79,10 +87,10 @@ export function createRealtime(httpServer: HttpServer, database: PrismaClient): 
     authenticateSocket(socket, database).then(() => next()).catch(() => next(new Error('UNAUTHORIZED')));
   });
   io.on('connection', (socket) => {
-    const branchIds = socket.data.branchIds as string[];
-    for (const branchId of branchIds) socket.join(`branch:${branchId}`);
+    const effectiveLocationIds = socket.data.effectiveLocationIds as string[];
+    for (const branchId of effectiveLocationIds) socket.join(`branch:${branchId}`);
     socket.on('branch:join', (branchId: unknown) => {
-      if (typeof branchId === 'string' && branchIds.includes(branchId)) socket.join(`branch:${branchId}`);
+      if (typeof branchId === 'string' && effectiveLocationIds.includes(branchId)) socket.join(`branch:${branchId}`);
       else socket.emit('realtime.error', { code: 'FORBIDDEN' });
     });
   });

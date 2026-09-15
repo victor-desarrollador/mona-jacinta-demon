@@ -39,6 +39,11 @@ describe('GET /api/v1/auth/me', () => {
       email: 'seller01@demo.local',
       roles: ['SELLER'],
     });
+    // Compatibility contract (Phase 1D.1): internal AuthContext shapes must
+    // never leak through the public /me response.
+    expect(response.body.user.assignments).toBeUndefined();
+    expect(response.body.user.legacyPermissions).toBeUndefined();
+    expect(response.body.user.effectiveLocationIds).toBeUndefined();
   });
 
   it('rejects missing and expired tokens', async () => {
@@ -79,6 +84,10 @@ describe('GET /api/v1/auth/me', () => {
       .get('/api/v1/auth/me')
       .set('Authorization', `Bearer ${token}`);
     expect(response.status).toBe(200);
+    // Public contract (Phase 1D.1 compatibility fix): the PUBLIC `roles`
+    // field preserves its pre-1D.1 semantics — derived from UserBranchRole
+    // only, not the internal legacy+Production union AuthContext.roles now
+    // carries. Only UserBranchRole was changed above (to CASHIER).
     expect(response.body.user.roles).toEqual(['CASHIER']);
   });
 

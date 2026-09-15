@@ -2,16 +2,17 @@ import { AppError } from '../../shared/errors.js';
 import type { ResolvedRoleScope } from './scope-resolver.js';
 
 // Phase 1C SWITCH policy (docs/production-v1/08-implementation-roadmap.md
-// Phase 1C: "SWITCH authorization reads/writes"). Shared by the two real
-// consumers of a user's branch/location scope — api/src/middleware/auth.ts
-// (builds req.auth.branchIds on every authenticated request; this is what
+// Phase 1C: "SWITCH authorization reads/writes"). As of Phase 1D.1, this is
+// called from exactly one place — api/src/modules/rbac/authorization-context.ts
+// — which builds req.auth.effectiveLocationIds/socket.data.effectiveLocationIds
+// on every authenticated request/connection; this is what
 // api/src/middleware/authorization.ts's assertBranchAccess/requirePermission
-// actually enforce against) and api/src/modules/auth/auth.service.ts (the
-// /login and /me response bodies) — so this policy exists in exactly one
-// place, not duplicated and at risk of drifting between the two.
+// actually enforce against. Consolidating the three previously-duplicated
+// call sites (middleware/auth.ts, modules/auth/auth.service.ts,
+// realtime/socket.ts) into that one shared builder is Phase 1D.1's job.
 //
-// Pure: both callers already load UserRoleScope as part of their own
-// `user.findUnique` select (nested `roleScopes`, mapped via
+// Pure: authorization-context.ts's caller already loads UserRoleScope as
+// part of its own `user.findUnique` select (nested `roleScopes`, mapped via
 // scope-resolver.ts's mapUserRoleScopeRows) rather than this function
 // querying it itself — one fewer authorization DB round trip per request
 // than the earlier version, which called resolveUserRoleScopes internally.

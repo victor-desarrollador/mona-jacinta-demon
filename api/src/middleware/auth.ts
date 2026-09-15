@@ -4,8 +4,7 @@ import type { PrismaClient } from '../generated/prisma/client.js';
 import { env } from '../config/env.js';
 import { prisma as defaultPrisma } from '../config/prisma.js';
 import { AppError } from '../shared/errors.js';
-import { resolveEffectiveBranchIds } from '../modules/rbac/effective-branch-ids.js';
-import { mapUserRoleScopeRows } from '../modules/rbac/scope-resolver.js';
+import { buildAuthorizationContext } from '../modules/rbac/authorization-context.js';
 
 const key = new TextEncoder().encode(env.JWT_SECRET);
 
@@ -53,7 +52,12 @@ export function createRequireAuth(
               roleId: true,
               scopeKind: true,
               locationId: true,
-              role: { select: { code: true } },
+              role: {
+                select: {
+                  code: true,
+                  permissions: { select: { permission: { select: { code: true } } } },
+                },
+              },
             },
           },
         },
@@ -62,17 +66,8 @@ export function createRequireAuth(
       if (!user.isActive)
         throw new AppError(403, 'INACTIVE_USER', 'El usuario está inactivo.');
 
-      const roles = [...new Set(user.branchRoles.map(({ role }) => role.code))];
-      const branchIds = resolveEffectiveBranchIds(mapUserRoleScopeRows(user.roleScopes));
-      const permissions = [
-        ...new Set(
-          user.branchRoles.flatMap(({ role }) =>
-            role.permissions.map(({ permission }) => permission.code),
-          ),
-        ),
-      ];
       req.userId = user.id;
-      req.auth = { userId: user.id, roles, branchIds, permissions };
+      req.auth = await buildAuthorizationContext(user);
       next();
     } catch (error) {
       if (error instanceof AppError) {

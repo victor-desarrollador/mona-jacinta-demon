@@ -96,7 +96,7 @@ export function createSalesService(database: SaleDatabase) {
   async function createDraftSale(
     req: Parameters<typeof assertBranchAccess>[0], userId: string, requestedBranchId?: string,
   ) {
-    const branchId = requestedBranchId ?? (req.auth?.branchIds.length === 1 ? req.auth.branchIds[0] : undefined);
+    const branchId = requestedBranchId ?? (req.auth?.effectiveLocationIds.length === 1 ? req.auth.effectiveLocationIds[0] : undefined);
     if (!branchId) throw new AppError(400, 'BRANCH_REQUIRED', 'Debe indicar una sucursal autorizada.');
     assertBranchAccess(req, branchId);
     return database.$transaction(async (tx) => {
@@ -249,9 +249,9 @@ export function createSalesService(database: SaleDatabase) {
     `;
     if (!sale) throw notFound('No se encontró la venta.');
 
-    // Phase 1C SWITCH: req.auth.branchIds (UserRoleScope) is the sole
-    // LOCATION authority — no UserBranchRole re-check here.
-    if (!req.auth?.branchIds.includes(sale.branchId)) {
+    // Phase 1C SWITCH: req.auth.effectiveLocationIds (UserRoleScope) is the
+    // sole LOCATION authority — no UserBranchRole re-check here.
+    if (!req.auth?.effectiveLocationIds.includes(sale.branchId)) {
       throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
     }
 

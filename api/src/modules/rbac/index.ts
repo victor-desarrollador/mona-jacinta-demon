@@ -26,3 +26,4 @@ export * from './legacy-role-map.js';
 export * from './scope-backfill.service.js';
 export * from './scope-resolver.js';
 export * from './effective-branch-ids.js';
+export * from './authorization-context.js';

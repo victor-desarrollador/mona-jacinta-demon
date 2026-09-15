@@ -35,7 +35,7 @@ describe('permission and branch authorization', () => {
       '/permission',
       auth,
       requirePermission(PERMISSIONS.SALE_QUEUE_VIEW),
-      (req, res) => res.json({ ok: true, permissions: req.auth?.permissions }),
+      (req, res) => res.json({ ok: true, permissions: req.auth?.legacyPermissions }),
     );
     app.get(
       '/resource/:id',

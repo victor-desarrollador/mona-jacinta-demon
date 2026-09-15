@@ -26,7 +26,7 @@ function scopeBranches(req: RequestLike, branchId?: string) {
     assertBranchAccess(req, branchId);
     return [branchId];
   }
-  return req.auth?.branchIds ?? [];
+  return req.auth?.effectiveLocationIds ?? [];
 }
 
 function todayBounds(now = new Date()) {

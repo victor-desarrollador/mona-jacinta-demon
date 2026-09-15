@@ -35,11 +35,11 @@ function sameIntent(payment: SalePayment, input: RegisterPaymentInput) {
 }
 
 export function createPaymentsService(database: PrismaClient) {
-  // Phase 1C SWITCH: UserRoleScope (req.auth.branchIds) is the sole LOCATION
-  // authority — no UserBranchRole re-check here. A stale legacy row must
-  // never veto access UserRoleScope has actually authorized.
+  // Phase 1C SWITCH: UserRoleScope (req.auth.effectiveLocationIds) is the
+  // sole LOCATION authority — no UserBranchRole re-check here. A stale
+  // legacy row must never veto access UserRoleScope has actually authorized.
   function assertCurrentBranch(req: RequestLike, branchId: string) {
-    if (!req.auth?.branchIds.includes(branchId)) throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
+    if (!req.auth?.effectiveLocationIds.includes(branchId)) throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
   }
 
   async function findExisting(idempotencyKey: string, saleId: string) {
@@ -141,8 +141,9 @@ export function createPaymentsService(database: PrismaClient) {
     throw new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
   }
 
-  // Phase 1C SWITCH: assertBranchAccess (req.auth.branchIds / UserRoleScope)
-  // is the sole LOCATION authority — no UserBranchRole re-check here.
+  // Phase 1C SWITCH: assertBranchAccess (req.auth.effectiveLocationIds /
+  // UserRoleScope) is the sole LOCATION authority — no UserBranchRole
+  // re-check here.
   async function listPayments(req: RequestLike, saleId: string) {
     const sale = await database.sale.findUnique({ where: { id: saleId }, select: { id: true, branchId: true } });
     if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');

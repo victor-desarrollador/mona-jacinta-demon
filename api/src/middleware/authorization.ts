@@ -18,7 +18,7 @@ function forbidden(message = 'No cuenta con permisos para esta operación.') {
 
 export function getUserBranchScope(req: Parameters<RequestHandler>[0]): string[] {
   if (!req.auth) throw new AppError(401, 'UNAUTHORIZED', 'Se requiere autenticación.');
-  return req.auth.branchIds;
+  return req.auth.effectiveLocationIds;
 }
 
 export function assertBranchAccess(
@@ -36,7 +36,7 @@ export function requirePermission(
   return async (req, _res, next) => {
     try {
       if (!req.auth) throw new AppError(401, 'UNAUTHORIZED', 'Se requiere autenticación.');
-      if (!req.auth.permissions.includes(permission)) throw forbidden();
+      if (!req.auth.legacyPermissions.includes(permission)) throw forbidden();
 
       if (branchScope !== 'global') {
         if (!options.resolveResourceBranch) {

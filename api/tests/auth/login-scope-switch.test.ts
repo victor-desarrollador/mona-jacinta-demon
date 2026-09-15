@@ -88,7 +88,25 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
       .post('/api/v1/auth/login')
       .send({ email: 'manager01@demo.local', password: 'demo123' });
     expect(response.status).toBe(200);
+    // Public contract (Phase 1D.1 compatibility fix): `roles` preserves its
+    // pre-1D.1 semantics — UserBranchRole-derived only, not the internal
+    // legacy+Production union (the desync fix lives in the internal
+    // AuthContext.assignments — see authorization-context.test.ts — and is
+    // deliberately not surfaced through this public field).
     expect(response.body.user.roles).toEqual(['MANAGER']);
     expect(response.body.user.permissions.sort()).toEqual([...rolePermissions.MANAGER].sort());
+  });
+
+  it('never exposes internal Production authorization shapes (assignments/legacyPermissions/effectiveLocationIds) through the public login response', async () => {
+    const response = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'seller01@demo.local', password: 'demo123' });
+    expect(response.status).toBe(200);
+    expect(response.body.user.assignments).toBeUndefined();
+    expect(response.body.user.legacyPermissions).toBeUndefined();
+    expect(response.body.user.effectiveLocationIds).toBeUndefined();
+    expect(Object.keys(response.body.user).sort()).toEqual(
+      ['branchIds', 'email', 'id', 'name', 'permissions', 'roles'].sort(),
+    );
   });
 });

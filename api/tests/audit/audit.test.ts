@@ -20,8 +20,12 @@ describe('critical operation audit', () => {
   let cashierId: string;
   let adminId: string;
   let token: string;
+  // cancellation.service.ts's AuthScope still takes `branchIds` (its own
+  // internal, service-local shape — unaffected by Phase 1D.1's rename of
+  // Express.AuthContext's field, which is what `req()` below builds).
   const scope = (userId: string) => ({ userId, branchIds: [branchId] });
-  const req = (userId: string) => ({ auth: { ...scope(userId), roles: [], permissions: [] } }) as unknown as Request;
+  const req = (userId: string) =>
+    ({ auth: { userId, effectiveLocationIds: [branchId], roles: [], legacyPermissions: [], assignments: [] } }) as unknown as Request;
   const get = (accessToken = token, query = '') => request(createApp(db)).get(`/api/v1/audit${query}`).set('Authorization', `Bearer ${accessToken}`);
 
   beforeAll(async () => { db = await createTestPrismaClient(); });

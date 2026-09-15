@@ -14,7 +14,7 @@ const now = Math.floor(Date.now() / 1000);
 function buildApp(database: PrismaClient) {
   const app = express();
   app.get('/private', createRequireAuth(database), (req, res) => {
-    sendJson(res, { branchIds: req.auth?.branchIds, roles: req.auth?.roles });
+    sendJson(res, { effectiveLocationIds: req.auth?.effectiveLocationIds, roles: req.auth?.roles });
   });
   app.use(errorHandler);
   return app;
@@ -31,7 +31,7 @@ async function token() {
 
 type StubRoleScope = {
   roleId: string;
-  role: { code: string };
+  role: { code: string; permissions: Array<{ permission: { code: string } }> };
   scopeKind: 'LOCATION' | 'COMPANY';
   locationId: string | null;
 };
@@ -64,7 +64,7 @@ describe('middleware/auth.ts branchIds resolution (Phase 1C SWITCH)', () => {
       user: {
         findUnique: async () =>
           stubUser(['legacy-branch'], [
-            { roleId: 'r1', role: { code: 'SELLER' }, scopeKind: 'LOCATION', locationId: 'switched-location' },
+            { roleId: 'r1', role: { code: 'SELLER', permissions: [{ permission: { code: 'CASH_SESSION_OPEN' } }] }, scopeKind: 'LOCATION', locationId: 'switched-location' },
           ]),
       },
     } as unknown as PrismaClient;
@@ -72,7 +72,7 @@ describe('middleware/auth.ts branchIds resolution (Phase 1C SWITCH)', () => {
       .get('/private')
       .auth(await token(), { type: 'bearer' });
     expect(response.status).toBe(200);
-    expect(response.body.branchIds).toEqual(['switched-location']);
+    expect(response.body.effectiveLocationIds).toEqual(['switched-location']);
   });
 
   it('returns empty branchIds when UserRoleScope is empty, even though legacy UserBranchRole still grants a branch (no per-user legacy fallback post-SWITCH)', async () => {
@@ -91,7 +91,7 @@ describe('middleware/auth.ts branchIds resolution (Phase 1C SWITCH)', () => {
       .get('/private')
       .auth(await token(), { type: 'bearer' });
     expect(response.status).toBe(200);
-    expect(response.body.branchIds).toEqual([]);
+    expect(response.body.effectiveLocationIds).toEqual([]);
     expect(response.body.roles).toEqual(['SELLER']);
   });
 
@@ -100,7 +100,7 @@ describe('middleware/auth.ts branchIds resolution (Phase 1C SWITCH)', () => {
       user: {
         findUnique: async () =>
           stubUser(['legacy-branch'], [
-            { roleId: 'r1', role: { code: 'ADMIN' }, scopeKind: 'COMPANY', locationId: null },
+            { roleId: 'r1', role: { code: 'ADMIN', permissions: [] }, scopeKind: 'COMPANY', locationId: null },
           ]),
       },
     } as unknown as PrismaClient;

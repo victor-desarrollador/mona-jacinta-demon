@@ -109,7 +109,7 @@ export async function listVariants(
 ) {
   const branchId = query.branchId;
   if (branchId) assertBranchAccess(req, branchId);
-  const branchIds = req.auth?.branchIds ?? [];
+  const branchIds = req.auth?.effectiveLocationIds ?? [];
   const where = {
     isActive: query.isActive,
     ...(query.productId ? { productId: query.productId } : {}),

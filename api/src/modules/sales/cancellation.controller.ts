@@ -9,13 +9,13 @@ export function createCancellationController(database: PrismaClient, realtime?: 
   const service = createCancellationService(database);
   return {
     cancel: (async (req, res) => {
-      const result = await service.cancelSale(String(req.params.saleId), { userId: req.auth!.userId, branchIds: req.auth!.branchIds });
+      const result = await service.cancelSale(String(req.params.saleId), { userId: req.auth!.userId, branchIds: req.auth!.effectiveLocationIds });
       realtime?.emit(REALTIME_EVENTS.saleCancelled, result);
       if (result.released.length > 0) realtime?.emit(REALTIME_EVENTS.inventoryUpdated, result);
       sendJson(res, result);
     }) as RequestHandler,
     releaseExpired: (async (req, res) => {
-      const result = await service.releaseExpiredReservations({ userId: req.auth!.userId, branchIds: req.auth!.branchIds });
+      const result = await service.releaseExpiredReservations({ userId: req.auth!.userId, branchIds: req.auth!.effectiveLocationIds });
       for (const release of result.released) realtime?.emit(REALTIME_EVENTS.inventoryUpdated, release);
       sendJson(res, result);
     }) as RequestHandler,

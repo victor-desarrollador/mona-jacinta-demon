@@ -34,6 +34,12 @@ describe('POST /api/v1/auth/login', () => {
       roles: ['SELLER'],
     });
     expect(response.body.user.branchIds).toHaveLength(1);
+    // Compatibility contract (Phase 1D.1): internal AuthContext shapes must
+    // never leak through the public /login response — admin/client only
+    // know the baseline { id, name, email, roles, branchIds, permissions }.
+    expect(response.body.user.assignments).toBeUndefined();
+    expect(response.body.user.legacyPermissions).toBeUndefined();
+    expect(response.body.user.effectiveLocationIds).toBeUndefined();
     expect(response.body.accessToken).toEqual(expect.any(String));
     const { payload } = await jwtVerify(
       response.body.accessToken,
