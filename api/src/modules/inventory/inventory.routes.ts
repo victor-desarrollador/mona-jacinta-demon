@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma/client.js';
-import { requirePermission } from '../../middleware/authorization.js';
+import { requireLegacyPermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
 import { PERMISSIONS } from '../../shared/permissions.js';
 import { createInventoryController } from './inventory.controller.js';
@@ -17,7 +17,7 @@ const availabilityQuery = branchQuery.extend({
 export function createInventoryRouter(database: PrismaClient): Router {
   const router = Router();
   const controller = createInventoryController(database);
-  const inventoryRead = requirePermission(PERMISSIONS.INVENTORY_VIEW, {
+  const inventoryRead = requireLegacyPermission(PERMISSIONS.INVENTORY_VIEW, {
     branchScope: 'own',
     resolveResourceBranch: (req) => String(req.query.branchId),
   });

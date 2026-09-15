@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { rolePermissions, seedDemo } from '../../prisma/seed.js';
@@ -108,5 +109,39 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     expect(Object.keys(response.body.user).sort()).toEqual(
       ['branchIds', 'email', 'id', 'name', 'permissions', 'roles'].sort(),
     );
+  });
+
+  // Phase 1D.2.5 module-level OWNER proof (docs/superpowers/plans/2026-09-14-
+  // phase-1d-production-authorization.md Task 1D.2.5): OWNER passes a direct
+  // Production requirePermission check purely through isOwner's COMPANY
+  // assignment recognition, with zero RolePermission rows anywhere. No HTTP
+  // route is switched to Production requirePermission yet at this checkpoint
+  // (Phase 1D.3 does that) — the plan itself defers the HTTP-route proof to
+  // Task 1D.3.1 and keeps only this module-level proof here.
+  it('OWNER passes requirePermission directly with zero RolePermission rows (module-level proof, HTTP proof deferred to Task 1D.3.1)', async () => {
+    const { requirePermission } = await import('../../src/middleware/authorization.js');
+    const middleware = requirePermission('PRICE_MANAGE' as never);
+    // Same typed-fixture idiom as tests/audit/audit.test.ts's req() helper:
+    // a real Express.Request only needs the .auth shape this middleware
+    // actually reads, so build exactly that and assert it into the full
+    // Request type rather than fabricating every unrelated Request field.
+    const req = {
+      auth: {
+        userId: 'u1',
+        roles: ['OWNER'],
+        legacyPermissions: [],
+        assignments: [
+          { roleId: 'r', roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] },
+        ],
+        effectiveLocationIds: [],
+      },
+    } as unknown as Request;
+    const res = {} as unknown as Response;
+    let calledNext = false;
+    const next: NextFunction = (err) => {
+      if (!err) calledNext = true;
+    };
+    await middleware(req, res, next);
+    expect(calledNext).toBe(true);
   });
 });

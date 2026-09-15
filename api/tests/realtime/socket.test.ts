@@ -6,12 +6,13 @@ import { createRealtime, REALTIME_EVENTS } from '../../src/realtime/socket.js';
 
 type SocketDatabase = {
   user: { findUnique: ReturnType<typeof vi.fn> };
+  location: { findMany: ReturnType<typeof vi.fn> };
 };
 
 const userId = 'user-realtime';
 const centroId = 'branch-centro';
 const yerbaId = 'branch-yerba';
-const database: SocketDatabase = { user: { findUnique: vi.fn() } };
+const database: SocketDatabase = { user: { findUnique: vi.fn() }, location: { findMany: vi.fn() } };
 const server = createServer();
 const realtime = createRealtime(server, database as never);
 let port: number;
@@ -139,6 +140,54 @@ describe('Socket.IO realtime', () => {
         permissions: ['CASH_SESSION_OPEN'],
       },
     ]);
+  });
+
+  it('una asignación COMPANY expande effectiveLocationIds a cada location activa vía database.location.findMany, y el socket se une a cada room (Phase 1D.2.6)', async () => {
+    database.location.findMany.mockResolvedValueOnce([{ id: centroId }, { id: yerbaId }]);
+    database.user.findUnique.mockResolvedValue({
+      id: userId,
+      isActive: true,
+      branchRoles: [],
+      roleScopes: [
+        {
+          roleId: 'role-admin',
+          scopeKind: 'COMPANY' as const,
+          locationId: null,
+          role: { code: 'ADMIN', permissions: [{ permission: { code: 'PRICE_MANAGE' } }] },
+        },
+      ],
+    });
+    const client = connectClient(token);
+    await connected(client);
+    const serverSocket = realtime.io.sockets.sockets.get(client.id!);
+    expect(serverSocket?.rooms.has(`branch:${centroId}`)).toBe(true);
+    expect(serverSocket?.rooms.has(`branch:${yerbaId}`)).toBe(true);
+    expect(database.location.findMany).toHaveBeenCalledWith({
+      where: { isActive: true },
+      select: { id: true },
+    });
+  });
+
+  it('una location inactiva (ausente del resultado de findMany filtrado) nunca se convierte en room para una asignación COMPANY', async () => {
+    database.location.findMany.mockResolvedValueOnce([{ id: centroId }]);
+    database.user.findUnique.mockResolvedValue({
+      id: userId,
+      isActive: true,
+      branchRoles: [],
+      roleScopes: [
+        {
+          roleId: 'role-admin',
+          scopeKind: 'COMPANY' as const,
+          locationId: null,
+          role: { code: 'ADMIN', permissions: [] },
+        },
+      ],
+    });
+    const client = connectClient(token);
+    await connected(client);
+    const serverSocket = realtime.io.sockets.sockets.get(client.id!);
+    expect(serverSocket?.rooms.has(`branch:${centroId}`)).toBe(true);
+    expect(serverSocket?.rooms.has(`branch:${yerbaId}`)).toBe(false);
   });
 
   it('emite solo después de una operación comprometida y serializa BigInt', async () => {

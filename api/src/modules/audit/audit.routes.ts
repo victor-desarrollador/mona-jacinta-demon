@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma/client.js';
-import { requirePermission } from '../../middleware/authorization.js';
+import { requireLegacyPermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
 import { sendJson } from '../../shared/json-safe.js';
 import { PERMISSIONS } from '../../shared/permissions.js';
@@ -14,7 +14,7 @@ const query = z.object({
 export function createAuditRouter(database: PrismaClient): Router {
   const router = Router();
   // Mounted after createRequireAuth, which reloads permissions from the DB.
-  router.get('/', requirePermission(PERMISSIONS.AUDIT_VIEW), validate(query, 'query'), async (req, res) => {
+  router.get('/', requireLegacyPermission(PERMISSIONS.AUDIT_VIEW), validate(query, 'query'), async (req, res) => {
     const { limit, offset } = req.query as unknown as z.infer<typeof query>;
     const logs = await database.auditLog.findMany({
       orderBy: [{ timestamp: 'desc' }, { id: 'desc' }],

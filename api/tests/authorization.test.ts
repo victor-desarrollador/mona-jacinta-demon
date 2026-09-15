@@ -6,7 +6,7 @@ import { createRequireAuth } from '../src/middleware/auth.js';
 import {
   assertBranchAccess,
   getUserBranchScope,
-  requirePermission,
+  requireLegacyPermission,
 } from '../src/middleware/authorization.js';
 import { createTestPrismaClient, truncateAllTables } from './helpers/test-db.js';
 import { getAuthToken } from './helpers/auth.js';
@@ -34,13 +34,13 @@ describe('permission and branch authorization', () => {
     app.get(
       '/permission',
       auth,
-      requirePermission(PERMISSIONS.SALE_QUEUE_VIEW),
+      requireLegacyPermission(PERMISSIONS.SALE_QUEUE_VIEW),
       (req, res) => res.json({ ok: true, permissions: req.auth?.legacyPermissions }),
     );
     app.get(
       '/resource/:id',
       auth,
-      requirePermission(PERMISSIONS.SALE_VIEW, {
+      requireLegacyPermission(PERMISSIONS.SALE_VIEW, {
         branchScope: 'own',
         resolveResourceBranch: async (req) =>
           (await prisma.branch.findUnique({
@@ -154,8 +154,9 @@ describe('permission and branch authorization', () => {
       select: { id: true },
     });
     // Legacy role/permission authority (UserBranchRole + Role/Permission)
-    // stays on UserBranchRole until Phase 1D: this is what /permission's
-    // requirePermission(SALE_QUEUE_VIEW) enforces below.
+    // stays on UserBranchRole until Phase 1D.3 switches this route: this is
+    // what /permission's requireLegacyPermission(SALE_QUEUE_VIEW) enforces
+    // below.
     await prisma.userBranchRole.deleteMany({ where: { userId: seller.id } });
     await prisma.userBranchRole.create({
       data: { userId: seller.id, branchId: branchIds.YB!, roleId: cashier.id },

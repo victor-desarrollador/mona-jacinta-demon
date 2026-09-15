@@ -24,8 +24,25 @@ describe('critical operation audit', () => {
   // internal, service-local shape — unaffected by Phase 1D.1's rename of
   // Express.AuthContext's field, which is what `req()` below builds).
   const scope = (userId: string) => ({ userId, branchIds: [branchId] });
+  // Phase 1D.2.4: assertBranchAccess now reads req.auth.assignments (via the
+  // centralized hasBranchAccess policy), not req.auth.effectiveLocationIds —
+  // this hand-built fixture must carry a matching LOCATION assignment for
+  // branchId, or every assertBranchAccess call below fails closed. The exact
+  // roleCode is irrelevant to hasBranchAccess's coarse membership check
+  // (only OWNER is special-cased, and only to fail closed on a malformed
+  // COMPANY-less OWNER row) — SELLER is an arbitrary non-OWNER placeholder.
   const req = (userId: string) =>
-    ({ auth: { userId, effectiveLocationIds: [branchId], roles: [], legacyPermissions: [], assignments: [] } }) as unknown as Request;
+    ({
+      auth: {
+        userId,
+        effectiveLocationIds: [branchId],
+        roles: [],
+        legacyPermissions: [],
+        assignments: [
+          { roleId: 'audit-test-assignment', roleCode: 'SELLER', scopeKind: 'LOCATION', locationId: branchId, permissions: [] },
+        ],
+      },
+    }) as unknown as Request;
   const get = (accessToken = token, query = '') => request(createApp(db)).get(`/api/v1/audit${query}`).set('Authorization', `Bearer ${accessToken}`);
 
   beforeAll(async () => { db = await createTestPrismaClient(); });
