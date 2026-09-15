@@ -67,7 +67,7 @@ export function createRequireAuth(
         throw new AppError(403, 'INACTIVE_USER', 'El usuario está inactivo.');
 
       req.userId = user.id;
-      req.auth = await buildAuthorizationContext(user);
+      req.auth = await buildAuthorizationContext(database, user);
       next();
     } catch (error) {
       if (error instanceof AppError) {

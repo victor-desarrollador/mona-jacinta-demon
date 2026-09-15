@@ -75,7 +75,7 @@ async function authenticateSocket(socket: Socket, database: PrismaClient) {
     },
   });
   if (!user || !user.isActive) throw new Error('UNAUTHORIZED');
-  const context = await buildAuthorizationContext(user);
+  const context = await buildAuthorizationContext(database, user);
   socket.data.userId = context.userId;
   socket.data.assignments = context.assignments;
   socket.data.effectiveLocationIds = context.effectiveLocationIds;

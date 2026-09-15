@@ -1,7 +1,8 @@
 import { permissionValues } from '../../shared/permissions.js';
 import { productionPermissionValues } from './permissions.js';
-import { resolveEffectiveBranchIds } from './effective-branch-ids.js';
+import { resolveEffectiveLocationIds, type LocationLookupDatabase } from './effective-branch-ids.js';
 import { mapUserRoleScopeRows } from './scope-resolver.js';
+import { isProductionRoleCode } from './roles.js';
 
 const LEGACY_PERMISSION_CODES = new Set<string>(permissionValues);
 const PRODUCTION_PERMISSION_CODES = new Set<string>(productionPermissionValues);
@@ -21,7 +22,13 @@ export type AuthorizationContextInput = {
   roleScopes: ProductionRoleScopeRow[];
 };
 
-// Phase 1D.1 (assignment-shaped, per
+// Phase 1D.2: the only database access this module needs — resolving
+// effectiveLocationIds for a COMPANY-kind UserRoleScope row (Cross-cutting
+// design §C). Reused directly from effective-branch-ids.ts rather than
+// redefined, since it is the same narrow need.
+export type AuthorizationContextDatabase = LocationLookupDatabase;
+
+// Phase 1D.1/1D.2 (assignment-shaped, per
 // docs/superpowers/plans/2026-09-14-phase-1d-production-authorization.md's
 // Cross-cutting design §A/§B/§D): single shared source for req.auth/
 // socket.data, replacing the three duplicated inline implementations in
@@ -34,9 +41,13 @@ export type AuthorizationContextInput = {
 // untouched/unmerged, so a caller with multiple assignments (e.g.
 // SELLER @ A + WAREHOUSE @ B) can never have a permission from one
 // assignment combine with a location from another — see
-// authorization-policy.ts's hasPermissionAtLocation (Phase 1D.2), the only
-// function allowed to reason about permission+location together.
+// authorization-policy.ts's hasPermissionAtLocation, the only function
+// allowed to reason about permission+location together. A COMPANY-kind row
+// is preserved exactly as-is (scopeKind: 'COMPANY', locationId: null) in
+// `assignments` — it is never rewritten into a LOCATION entry and never
+// given a fabricated location id (Cross-cutting §C).
 export async function buildAuthorizationContext(
+  db: AuthorizationContextDatabase,
   user: AuthorizationContextInput,
 ): Promise<Express.AuthContext> {
   const roles = [
@@ -52,25 +63,33 @@ export async function buildAuthorizationContext(
     ),
   ].filter((code) => LEGACY_PERMISSION_CODES.has(code));
 
-  // Still throws on COMPANY (Phase 1C behavior, unchanged) — Phase 1D.2
-  // replaces this call with the COMPANY-aware resolver and builds the
-  // COMPANY ProductionAssignment entry itself. For LOCATION-only scopes this
-  // is exactly the same effective-location set the pre-1D.1 branchIds field
-  // carried — effectiveLocationIds must stay a real, non-empty array here
-  // (never hardcoded to []), since it remains the sole location-filtering
-  // input for every current consumer until those consumers migrate to
-  // assignment-based checks in later phases.
-  const effectiveLocationIds = resolveEffectiveBranchIds(mapUserRoleScopeRows(user.roleScopes));
+  // Phase 1D.2: COMPANY is now a qualifying assignment, not a thrown error.
+  // resolveEffectiveLocationIds expands to every active Location id for a
+  // COMPANY-kind row — display/filter convenience only, never authorization
+  // authority (see effective-branch-ids.ts and Cross-cutting design §C).
+  const effectiveLocationIds = await resolveEffectiveLocationIds(db, mapUserRoleScopeRows(user.roleScopes));
 
-  const assignments = user.roleScopes.map((scope) => ({
-    roleId: scope.roleId,
-    roleCode: scope.role.code as Express.AuthContext['assignments'][number]['roleCode'],
-    scopeKind: scope.scopeKind,
-    locationId: scope.locationId,
-    permissions: scope.role.permissions
-      .map((p) => p.permission.code)
-      .filter((code) => PRODUCTION_PERMISSION_CODES.has(code)),
-  }));
+  // Fix (review correction): a persisted UserRoleScope row's Role.code must
+  // be validated against the canonical Production role catalog
+  // (isProductionRoleCode, roles.ts) at runtime, not merely cast. `MANAGER`
+  // (legacy-only) or any unknown/future value must never become a
+  // ProductionAssignment — a TS type assertion alone cannot enforce this
+  // against real, persisted data. Fails closed per row: an invalid row is
+  // skipped entirely; it does not affect any other row's assignment.
+  const assignments: Express.ProductionAssignment[] = [];
+  for (const scope of user.roleScopes) {
+    const roleCode = scope.role.code;
+    if (!isProductionRoleCode(roleCode)) continue;
+    assignments.push({
+      roleId: scope.roleId,
+      roleCode,
+      scopeKind: scope.scopeKind,
+      locationId: scope.locationId,
+      permissions: scope.role.permissions
+        .map((p) => p.permission.code)
+        .filter((code) => PRODUCTION_PERMISSION_CODES.has(code)),
+    });
+  }
 
   return { userId: user.id, roles, legacyPermissions, assignments, effectiveLocationIds };
 }

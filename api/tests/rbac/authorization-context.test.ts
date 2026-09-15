@@ -1,8 +1,16 @@
 import type { Request, Response } from 'express';
 import { describe, expect, it } from 'vitest';
 import { buildAuthorizationContext } from '../../src/modules/rbac/authorization-context.js';
+import { hasPermissionAtLocation } from '../../src/modules/rbac/authorization-policy.js';
 
-function userFixture(overrides: Partial<Parameters<typeof buildAuthorizationContext>[0]> = {}) {
+// Phase 1D.2: buildAuthorizationContext now takes an explicit db argument
+// (the narrowest interface it needs — see effective-branch-ids.ts's
+// LocationLookupDatabase) so a COMPANY-kind row can resolve
+// effectiveLocationIds instead of throwing. Most fixtures never touch a
+// COMPANY row, so this stub never has findMany called on it.
+const noopDb = { location: { findMany: async () => [] } };
+
+function userFixture(overrides: Partial<Parameters<typeof buildAuthorizationContext>[1]> = {}) {
   return {
     id: 'user-1',
     branchRoles: [
@@ -22,7 +30,7 @@ function userFixture(overrides: Partial<Parameters<typeof buildAuthorizationCont
 
 describe('buildAuthorizationContext (Phase 1D.1)', () => {
   it('keeps legacyPermissions and assignments as separate vocabularies, never merged', async () => {
-    const ctx = await buildAuthorizationContext(userFixture());
+    const ctx = await buildAuthorizationContext(noopDb, userFixture());
     expect(ctx.legacyPermissions).toEqual(['cash.session.open']);
     expect(ctx.assignments).toEqual([
       { roleId: 'role-cashier', roleCode: 'CASHIER', scopeKind: 'LOCATION', locationId: 'loc-1', permissions: ['CASH_SESSION_OPEN'] },
@@ -31,6 +39,7 @@ describe('buildAuthorizationContext (Phase 1D.1)', () => {
 
   it('a Role carrying BOTH vocabularies reached only via UserBranchRole never leaks the uppercase code (Cross-cutting §D)', async () => {
     const ctx = await buildAuthorizationContext(
+      noopDb,
       userFixture({
         branchRoles: [
           {
@@ -50,10 +59,15 @@ describe('buildAuthorizationContext (Phase 1D.1)', () => {
     expect(ctx.assignments).toEqual([]);
     // The critical assertion: SALE_VIEW must not be reachable through any field.
     expect(JSON.stringify(ctx)).not.toContain('SALE_VIEW');
+    // [RED 18] stale UserBranchRole cannot influence Production policy either
+    // — a stale MIXED role's legacy sale.view grant must not translate into
+    // SALE_VIEW authority anywhere the policy module can see.
+    expect(hasPermissionAtLocation(ctx, 'SALE_VIEW', 'anywhere')).toBe(false);
   });
 
   it('produces one independent assignment per UserRoleScope row — never merged (Cross-cutting §B)', async () => {
     const ctx = await buildAuthorizationContext(
+      noopDb,
       userFixture({
         branchRoles: [],
         roleScopes: [
@@ -74,24 +88,134 @@ describe('buildAuthorizationContext (Phase 1D.1)', () => {
   });
 
   it('is fail-closed for a user with zero UserRoleScope rows, even with a UserBranchRole row', async () => {
-    const ctx = await buildAuthorizationContext(userFixture({ roleScopes: [] }));
+    const ctx = await buildAuthorizationContext(noopDb, userFixture({ roleScopes: [] }));
     expect(ctx.assignments).toEqual([]);
   });
 
-  it('still throws on a COMPANY-kind UserRoleScope row (Phase 1D.2 implements this)', async () => {
-    await expect(
-      buildAuthorizationContext(
-        userFixture({
-          roleScopes: [
-            { roleId: 'role-admin', scopeKind: 'COMPANY' as const, locationId: null, role: { code: 'ADMIN', permissions: [] } },
-          ],
-        }),
-      ),
-    ).rejects.toMatchObject({ code: 'UNSUPPORTED_SCOPE' });
+  it('[FIX 2 / 5] a UserRoleScope row whose Role.code is the legacy MANAGER code never becomes a ProductionAssignment', async () => {
+    const ctx = await buildAuthorizationContext(
+      noopDb,
+      userFixture({
+        branchRoles: [],
+        roleScopes: [
+          {
+            roleId: 'role-manager', scopeKind: 'LOCATION' as const, locationId: 'loc-1',
+            role: { code: 'MANAGER', permissions: [{ permission: { code: 'INVENTORY_MANAGE' } }] },
+          },
+        ],
+      }),
+    );
+    expect(ctx.assignments).toEqual([]);
+  });
+
+  it('[FIX 2 / 6] a UserRoleScope row with an unknown/invalid role code never becomes a ProductionAssignment', async () => {
+    const ctx = await buildAuthorizationContext(
+      noopDb,
+      userFixture({
+        branchRoles: [],
+        roleScopes: [
+          {
+            roleId: 'role-bogus', scopeKind: 'LOCATION' as const, locationId: 'loc-1',
+            role: { code: 'TOTALLY_MADE_UP', permissions: [{ permission: { code: 'SALE_CREATE' } }] },
+          },
+        ],
+      }),
+    );
+    expect(ctx.assignments).toEqual([]);
+  });
+
+  it('[FIX 2 / 7] a valid WAREHOUSE row still creates its normal assignment, alongside a rejected MANAGER row on the same user', async () => {
+    const ctx = await buildAuthorizationContext(
+      noopDb,
+      userFixture({
+        branchRoles: [],
+        roleScopes: [
+          {
+            roleId: 'role-manager', scopeKind: 'LOCATION' as const, locationId: 'loc-1',
+            role: { code: 'MANAGER', permissions: [{ permission: { code: 'INVENTORY_MANAGE' } }] },
+          },
+          {
+            roleId: 'role-warehouse', scopeKind: 'LOCATION' as const, locationId: 'loc-2',
+            role: { code: 'WAREHOUSE', permissions: [{ permission: { code: 'INVENTORY_MANAGE' } }] },
+          },
+        ],
+      }),
+    );
+    expect(ctx.assignments).toEqual([
+      { roleId: 'role-warehouse', roleCode: 'WAREHOUSE', scopeKind: 'LOCATION', locationId: 'loc-2', permissions: ['INVENTORY_MANAGE'] },
+    ]);
+  });
+
+  it('[Phase 1D.2] a COMPANY-kind UserRoleScope row becomes its own qualifying assignment, locationId stays null (Cross-cutting §C) — no longer throws UNSUPPORTED_SCOPE', async () => {
+    const db = { location: { findMany: async () => [{ id: 'loc-1' }, { id: 'loc-2' }] } };
+    const ctx = await buildAuthorizationContext(
+      db,
+      userFixture({
+        roleScopes: [
+          {
+            roleId: 'role-admin', scopeKind: 'COMPANY' as const, locationId: null,
+            role: { code: 'ADMIN', permissions: [{ permission: { code: 'PRICE_MANAGE' } }] },
+          },
+        ],
+      }),
+    );
+    expect(ctx.assignments).toEqual([
+      { roleId: 'role-admin', roleCode: 'ADMIN', scopeKind: 'COMPANY', locationId: null, permissions: ['PRICE_MANAGE'] },
+    ]);
+    // [RED 19] COMPANY context can derive active effectiveLocationIds for
+    // compatibility/filtering — never authorization authority.
+    expect(ctx.effectiveLocationIds.slice().sort()).toEqual(['loc-1', 'loc-2']);
+  });
+
+  it('[ZERO ACTIVE LOCATIONS] a COMPANY assignment retains full authority even when the Location lookup returns zero active locations — assignments are authority, effectiveLocationIds is a separate query/filter convenience (M1 contract)', async () => {
+    const db = { location: { findMany: async () => [] } };
+    const ctx = await buildAuthorizationContext(
+      db,
+      userFixture({
+        roleScopes: [
+          {
+            roleId: 'role-admin', scopeKind: 'COMPANY' as const, locationId: null,
+            role: { code: 'ADMIN', permissions: [{ permission: { code: 'PRICE_MANAGE' } }] },
+          },
+        ],
+      }),
+    );
+    expect(ctx.effectiveLocationIds).toEqual([]);
+    expect(ctx.assignments).toEqual([
+      { roleId: 'role-admin', roleCode: 'ADMIN', scopeKind: 'COMPANY', locationId: null, permissions: ['PRICE_MANAGE'] },
+    ]);
+    // Policy authority is evaluated purely from the assignment — it is
+    // completely indifferent to effectiveLocationIds being empty.
+    expect(hasPermissionAtLocation(ctx, 'PRICE_MANAGE', 'any-location-even-though-effectiveLocationIds-is-empty')).toBe(true);
+  });
+
+  it('[RED 9 / security check 2] a COMPANY assignment coexisting with an unrelated LOCATION assignment never cross-composes', async () => {
+    const db = { location: { findMany: async () => [{ id: 'loc-1' }] } };
+    const ctx = await buildAuthorizationContext(
+      db,
+      userFixture({
+        branchRoles: [],
+        roleScopes: [
+          {
+            roleId: 'role-admin', scopeKind: 'COMPANY' as const, locationId: null,
+            role: { code: 'ADMIN', permissions: [{ permission: { code: 'PRICE_MANAGE' } }] },
+          },
+          {
+            roleId: 'role-cashier', scopeKind: 'LOCATION' as const, locationId: 'loc-9',
+            role: { code: 'CASHIER', permissions: [{ permission: { code: 'CASH_SESSION_OPEN' } }] },
+          },
+        ],
+      }),
+    );
+    expect(hasPermissionAtLocation(ctx, 'PRICE_MANAGE', 'anywhere')).toBe(true); // COMPANY assignment covers it
+    expect(hasPermissionAtLocation(ctx, 'CASH_SESSION_OPEN', 'loc-9')).toBe(true); // LOCATION assignment covers it
+    expect(hasPermissionAtLocation(ctx, 'PRICE_MANAGE', 'loc-9')).toBe(true); // COMPANY still covers PRICE_MANAGE anywhere
+    expect(hasPermissionAtLocation(ctx, 'CASH_SESSION_OPEN', 'anywhere')).toBe(false); // CASHIER assignment is LOCATION-only, not COMPANY
   });
 
   it('resolves a legacy MANAGER-backfilled user to WAREHOUSE Production permissions via its own assignment (closes the audit-found desync)', async () => {
     const ctx = await buildAuthorizationContext(
+      noopDb,
       userFixture({
         branchRoles: [{ role: { code: 'MANAGER', permissions: [{ permission: { code: 'inventory.manage' } }] } }],
         roleScopes: [

@@ -95,7 +95,7 @@ describe('middleware/auth.ts branchIds resolution (Phase 1C SWITCH)', () => {
     expect(response.body.roles).toEqual(['SELLER']);
   });
 
-  it('fails closed (500) on an unexpected COMPANY-scoped row instead of guessing', async () => {
+  it('[Phase 1D.2] a COMPANY-scoped row now resolves — effectiveLocationIds expands to every active Location instead of throwing UNSUPPORTED_SCOPE', async () => {
     const testDatabase = {
       user: {
         findUnique: async () =>
@@ -103,11 +103,14 @@ describe('middleware/auth.ts branchIds resolution (Phase 1C SWITCH)', () => {
             { roleId: 'r1', role: { code: 'ADMIN', permissions: [] }, scopeKind: 'COMPANY', locationId: null },
           ]),
       },
+      location: {
+        findMany: async () => [{ id: 'active-loc-1' }, { id: 'active-loc-2' }],
+      },
     } as unknown as PrismaClient;
     const response = await request(buildApp(testDatabase))
       .get('/private')
       .auth(await token(), { type: 'bearer' });
-    expect(response.status).toBe(500);
-    expect(response.body.error.code).toBe('UNSUPPORTED_SCOPE');
+    expect(response.status).toBe(200);
+    expect(response.body.effectiveLocationIds.sort()).toEqual(['active-loc-1', 'active-loc-2']);
   });
 });

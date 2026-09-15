@@ -49,8 +49,8 @@ const userSelect = {
 // effectiveLocationIds) is deliberately NOT returned to callers of
 // login/resolveUserContext — see user-context.dto.ts for why. This is the
 // only place the internal context and the public DTO meet.
-async function contextFromUser(user: UserRow) {
-  const context = await buildAuthorizationContext(user);
+async function contextFromUser(database: AuthDatabase, user: UserRow) {
+  const context = await buildAuthorizationContext(database, user);
   return toPublicUserContext(user, context);
 }
 
@@ -58,7 +58,7 @@ export async function resolveUserContext(database: AuthDatabase, userId: string)
   const user = await database.user.findUnique({ where: { id: userId }, select: userSelect });
   if (!user) throw new AppError(401, 'UNAUTHORIZED', 'El token no es válido.');
   if (!user.isActive) throw new AppError(403, 'INACTIVE_USER', 'El usuario está inactivo.');
-  return contextFromUser(user);
+  return contextFromUser(database, user);
 }
 
 export async function login(database: AuthDatabase, input: LoginInput) {
@@ -66,6 +66,6 @@ export async function login(database: AuthDatabase, input: LoginInput) {
   if (!user || !(await verifyPassword(input.password, user.passwordHash)))
     throw new AppError(401, 'INVALID_CREDENTIALS', 'Las credenciales no son válidas.');
   if (!user.isActive) throw new AppError(403, 'INACTIVE_USER', 'El usuario está inactivo.');
-  const context = await contextFromUser(user);
+  const context = await contextFromUser(database, user);
   return { accessToken: await signAccessToken(user.id), user: context };
 }
