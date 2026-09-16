@@ -2,14 +2,16 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
-import { PERMISSIONS } from '../../src/shared/permissions.js';
+import { PRODUCTION_PERMISSIONS } from '../../src/modules/rbac/permissions.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
 
 describe('products read API', () => {
   let prisma: Awaited<ReturnType<typeof createTestPrismaClient>>;
   let app: ReturnType<typeof createApp>;
   let sellerToken: string;
+  let centroId: string;
 
   beforeAll(async () => {
     prisma = await createTestPrismaClient();
@@ -18,18 +20,26 @@ describe('products read API', () => {
   beforeEach(async () => {
     await truncateAllTables(prisma);
     await seedDemo(prisma);
-    const seller = await prisma.user.findUniqueOrThrow({
-      where: { email: 'seller01@demo.local' },
-      select: { id: true },
-    });
+    const [seller, centro] = await Promise.all([
+      prisma.user.findUniqueOrThrow({
+        where: { email: 'seller01@demo.local' },
+        select: { id: true },
+      }),
+      prisma.branch.findUniqueOrThrow({ where: { code: 'CEN' }, select: { id: true } }),
+    ]);
     sellerToken = await getAuthToken(seller);
+    centroId = centro.id;
   });
   afterAll(async () => prisma.$disconnect());
 
-  it('requires authentication and inventory permission', async () => {
+  it('requires authentication and the Production INVENTORY_VIEW permission', async () => {
     expect((await request(app).get('/api/v1/products')).status).toBe(401);
+    // Phase 1D.3.4 SWITCH: /products now gates on the Production
+    // INVENTORY_VIEW grant (req.auth.assignments), not the legacy
+    // inventory.view code — revoke the Production grant to prove that is the
+    // real, live decision.
     const permission = await prisma.permission.findUniqueOrThrow({
-      where: { code: PERMISSIONS.INVENTORY_VIEW },
+      where: { code: PRODUCTION_PERMISSIONS.INVENTORY_VIEW },
       select: { id: true },
     });
     const role = await prisma.role.findUniqueOrThrow({
@@ -46,6 +56,28 @@ describe('products read API', () => {
           .set('Authorization', `Bearer ${sellerToken}`)
       ).status,
     ).toBe(403);
+  });
+
+  it('authorizes global product read via the Production INVENTORY_VIEW grant alone', async () => {
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const user = await createTestUser(prisma, sellerRole.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/products').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only inventory.view grant on the global catalog, once switched', async () => {
+    const permission = await prisma.permission.upsert({
+      where: { code: 'inventory.view' },
+      create: { code: 'inventory.view' },
+      update: {},
+    });
+    const role = await createRole(prisma, 'LEGACY-ONLY-INVENTORY-VIEW-PRODUCTS');
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(prisma, role.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/products').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
   });
 
   it('lists active products with pagination and name/SKU/barcode search', async () => {

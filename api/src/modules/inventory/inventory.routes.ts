@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma/client.js';
-import { requireLegacyPermission } from '../../middleware/authorization.js';
+import { requirePermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
-import { PERMISSIONS } from '../../shared/permissions.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { createInventoryController } from './inventory.controller.js';
 
 const branchQuery = z.object({ branchId: z.uuid() }).strict();
@@ -17,12 +17,13 @@ const availabilityQuery = branchQuery.extend({
 export function createInventoryRouter(database: PrismaClient): Router {
   const router = Router();
   const controller = createInventoryController(database);
-  const inventoryRead = requireLegacyPermission(PERMISSIONS.INVENTORY_VIEW, {
+  const inventoryRead = requirePermission(PRODUCTION_PERMISSIONS.INVENTORY_VIEW, {
     branchScope: 'own',
     resolveResourceBranch: (req) => String(req.query.branchId),
   });
-  // Validate first for 400 on malformed IDs. The permission middleware calls
-  // assertBranchAccess before either controller can query branch inventory.
+  // Validate first for 400 on malformed IDs. The permission middleware pairs
+  // INVENTORY_VIEW with the requested branch via hasPermissionAtLocation
+  // before either controller can query branch inventory.
   router.get(
     '/',
     validate(branchQuery, 'query'),

@@ -2,8 +2,10 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
+import { PRODUCTION_PERMISSIONS } from '../../src/modules/rbac/permissions.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole, createBranch, ensureTestLocation } from '../helpers/factories.js';
 
 describe('product variants read API', () => {
   let prisma: Awaited<ReturnType<typeof createTestPrismaClient>>;
@@ -57,6 +59,94 @@ describe('product variants read API', () => {
       .query({ branchId: yerbaId })
       .set('Authorization', `Bearer ${sellerToken}`);
     expect(response.status).toBe(403);
+  });
+
+  it('requires authentication and the Production INVENTORY_VIEW permission', async () => {
+    expect((await request(app).get('/api/v1/variants')).status).toBe(401);
+    // Phase 1D.3.4 SWITCH: /variants now gates on the Production
+    // INVENTORY_VIEW grant (req.auth.assignments), not the legacy
+    // inventory.view code — revoke the Production grant to prove that is the
+    // real, live decision.
+    const permission = await prisma.permission.findUniqueOrThrow({
+      where: { code: PRODUCTION_PERMISSIONS.INVENTORY_VIEW },
+      select: { id: true },
+    });
+    const role = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' }, select: { id: true } });
+    await prisma.rolePermission.delete({
+      where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } },
+    });
+    expect(
+      (await request(app).get('/api/v1/variants').set('Authorization', `Bearer ${sellerToken}`)).status,
+    ).toBe(403);
+  });
+
+  it('authorizes global variant read via the Production INVENTORY_VIEW grant alone', async () => {
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const user = await createTestUser(prisma, sellerRole.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/variants').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only inventory.view grant on the global catalog, once switched', async () => {
+    const permission = await prisma.permission.upsert({
+      where: { code: 'inventory.view' },
+      create: { code: 'inventory.view' },
+      update: {},
+    });
+    const role = await createRole(prisma, 'LEGACY-ONLY-INVENTORY-VIEW-VARIANTS');
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(prisma, role.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/variants').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
+  });
+
+  it('authorizes the explicit variant branchId filter only via Production INVENTORY_VIEW at that exact location', async () => {
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const user = await createTestUser(prisma, sellerRole.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app)
+      .get('/api/v1/variants')
+      .query({ branchId: centroId })
+      .set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects the explicit variant branchId filter for a mismatched assignment/location', async () => {
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const user = await createTestUser(prisma, sellerRole.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app)
+      .get('/api/v1/variants')
+      .query({ branchId: yerbaId })
+      .set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
+  });
+
+  // Phase 1D.3.4 cross-assignment security: a permission granted by one
+  // assignment must never combine with a location granted by a different
+  // assignment (authorization-policy.ts's hasPermissionAtLocation contract).
+  // SELLER carries INVENTORY_VIEW by default; WAREHOUSE does not.
+  it('does not compose SELLER @ A permission with WAREHOUSE @ B location for the explicit variant branch filter', async () => {
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const warehouseRole = await prisma.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const branchB = await createBranch(prisma);
+    await ensureTestLocation(prisma, branchB.id);
+    const multi = await prisma.user.create({ data: { name: 'multi-variant', email: 'multi-variant@test.local', passwordHash: 'x' } });
+    await prisma.userRoleScope.createMany({
+      data: [
+        { userId: multi.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: centroId },
+        { userId: multi.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branchB.id },
+      ],
+    });
+    const multiToken = await getAuthToken(multi);
+    expect(
+      (await request(app).get('/api/v1/variants').query({ branchId: centroId }).set('Authorization', `Bearer ${multiToken}`)).status,
+    ).toBe(200);
+    expect(
+      (await request(app).get('/api/v1/variants').query({ branchId: branchB.id }).set('Authorization', `Bearer ${multiToken}`)).status,
+    ).toBe(403);
   });
 
   it('returns authorized inventory only and computes available as physical minus reserved', async () => {

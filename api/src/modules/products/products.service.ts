@@ -1,6 +1,7 @@
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
-import { assertBranchAccess } from '../../middleware/authorization.js';
+import { assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import type { Request } from 'express';
 import type { ProductQuery } from './dto/product.dto.js';
 import type { VariantQuery } from './dto/variant.dto.js';
@@ -108,7 +109,7 @@ export async function listVariants(
   query: VariantQuery,
 ) {
   const branchId = query.branchId;
-  if (branchId) assertBranchAccess(req, branchId);
+  if (branchId) assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.INVENTORY_VIEW, branchId);
   const branchIds = req.auth?.effectiveLocationIds ?? [];
   const where = {
     isActive: query.isActive,

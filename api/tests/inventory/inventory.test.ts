@@ -12,11 +12,13 @@ import {
 import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import { createInventoryService } from '../../src/modules/inventory/inventory.service.js';
+import { PRODUCTION_PERMISSIONS } from '../../src/modules/rbac/permissions.js';
 import {
   createTestPrismaClient,
   truncateAllTables,
 } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole, createBranch, ensureTestLocation } from '../helpers/factories.js';
 
 describe('branch inventory read and availability', () => {
   let prisma: Awaited<ReturnType<typeof createTestPrismaClient>>;
@@ -74,14 +76,76 @@ describe('branch inventory read and availability', () => {
   });
 
   it('uses current database permissions even with a previously issued token', async () => {
+    // Phase 1D.3.4 SWITCH: /inventory now gates on the Production
+    // INVENTORY_VIEW grant (req.auth.assignments), not the legacy
+    // inventory.view code — revoke the Production grant to prove that is the
+    // real, live decision.
     await prisma.rolePermission.deleteMany({
       where: {
         role: { code: 'SELLER' },
-        permission: { code: 'inventory.view' },
+        permission: { code: PRODUCTION_PERMISSIONS.INVENTORY_VIEW },
       },
     });
     for (const path of ['', '/availability'])
       expect((await get(path)).status).toBe(403);
+  });
+
+  it('authorizes inventory read via the Production INVENTORY_VIEW grant alone', async () => {
+    // Isolated via a fresh user (not a fresh role): authorization-context.ts
+    // validates a persisted UserRoleScope's Role.code against the canonical
+    // Production catalog before it can ever become an assignment. SELLER
+    // carries INVENTORY_VIEW as its own real default grant
+    // (role-permission-matrix.ts).
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const user = await createTestUser(prisma, sellerRole.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app)
+      .get('/api/v1/inventory')
+      .query({ branchId: centroId })
+      .set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only inventory.view grant, once switched', async () => {
+    const permission = await prisma.permission.upsert({
+      where: { code: 'inventory.view' },
+      create: { code: 'inventory.view' },
+      update: {},
+    });
+    const role = await createRole(prisma, 'LEGACY-ONLY-INVENTORY-VIEW');
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(prisma, role.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app)
+      .get('/api/v1/inventory')
+      .query({ branchId: centroId })
+      .set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
+  });
+
+  // Phase 1D.3.4 cross-assignment security: a permission granted by one
+  // assignment must never combine with a location granted by a different
+  // assignment (authorization-policy.ts's hasPermissionAtLocation contract).
+  // SELLER carries INVENTORY_VIEW by default; WAREHOUSE does not.
+  it('does not compose SELLER @ A permission with WAREHOUSE @ B location for inventory reads', async () => {
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const warehouseRole = await prisma.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const branchB = await createBranch(prisma);
+    await ensureTestLocation(prisma, branchB.id);
+    const multi = await prisma.user.create({ data: { name: 'multi-inventory', email: 'multi-inventory@test.local', passwordHash: 'x' } });
+    await prisma.userRoleScope.createMany({
+      data: [
+        { userId: multi.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: centroId },
+        { userId: multi.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branchB.id },
+      ],
+    });
+    const multiToken = await getAuthToken(multi);
+    expect(
+      (await request(app).get('/api/v1/inventory').query({ branchId: centroId }).set('Authorization', `Bearer ${multiToken}`)).status,
+    ).toBe(200);
+    expect(
+      (await request(app).get('/api/v1/inventory').query({ branchId: branchB.id }).set('Authorization', `Bearer ${multiToken}`)).status,
+    ).toBe(403);
   });
 
   it('returns only Centro inventory with safe quantities and POS product details', async () => {
