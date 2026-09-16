@@ -84,7 +84,8 @@ describe('POST /api/v1/sales/:saleId/send-to-cashier', () => {
   it('requires authentication and SALE_CREATE', async () => {
     const saleId = await createSale();
     expect((await request(app).post(`/api/v1/sales/${saleId}/send-to-cashier`)).status).toBe(401);
-    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'sale.create' } });
+    // Phase 1D.3.1 SWITCH: gated on the Production SALE_CREATE grant now.
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'SALE_CREATE' } });
     const role = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
     await prisma.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await send(saleId)).status).toBe(403);

@@ -5,7 +5,8 @@ import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
 
 describe('POST /api/v1/sales/:saleId/complete', () => {
   let db: PrismaClient;
@@ -111,8 +112,9 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     const sale = await createReservedSale([{ variantId: remeraId, productId: remeraProductId, quantity: 1n }]);
     expect((await request(app).post(`/api/v1/sales/${sale.id}/complete`)).status).toBe(401);
 
+    // Phase 1D.3.1 SWITCH: gated on the Production SALE_COMPLETE grant now.
     const role = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
-    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'sale.complete' } });
+    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'SALE_COMPLETE' } });
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await complete(sale.id)).status).toBe(403);
 
@@ -124,6 +126,37 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     // scope, not the legacy UserBranchRole assignment used above for permission.
     await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranchId } });
     expect((await complete(sale.id)).status).toBe(403);
+  });
+
+  // Phase 1D.3.1 §8: isolate the authority source explicitly. This proves
+  // completeSaleInTransaction's converted inline check (hasPermissionAtLocation
+  // over req.auth.assignments) — not just the route-level requirePermission
+  // gate — actually decides completion.
+  it('authorizes completion via the Production SALE_COMPLETE grant alone', async () => {
+    // Isolated via a fresh user, not a fresh role: authorization-context.ts
+    // validates a persisted UserRoleScope's Role.code against the canonical
+    // Production catalog (isProductionRoleCode) before it can ever become an
+    // assignment — an arbitrary test-only role code would be skipped
+    // entirely and prove nothing. CASHIER carries SALE_COMPLETE as its own
+    // real default grant (role-permission-matrix.ts), so a brand-new CASHIER
+    // user with no other state still isolates "the grant alone authorizes".
+    const cashierRole = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+    const user = await createTestUser(db, cashierRole.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const sale = await createReservedSale([{ variantId: remeraId, productId: remeraProductId, quantity: 1n }]);
+    const response = await complete(sale.id, isolatedToken);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only sale.complete grant, once switched', async () => {
+    const permission = await db.permission.upsert({ where: { code: 'sale.complete' }, create: { code: 'sale.complete' }, update: {} });
+    const role = await createRole(db, 'LEGACY-ONLY-SALE-COMPLETE');
+    await db.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(db, role.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const sale = await createReservedSale([{ variantId: remeraId, productId: remeraProductId, quantity: 1n }]);
+    const response = await complete(sale.id, isolatedToken);
+    expect(response.status).toBe(403);
   });
 
   it('grants completion on a fresh UserRoleScope location despite a stale UserBranchRole', async () => {

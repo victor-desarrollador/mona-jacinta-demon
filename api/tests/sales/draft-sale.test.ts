@@ -3,7 +3,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
 
 describe('seller draft sales', () => {
   let prisma: Awaited<ReturnType<typeof createTestPrismaClient>>;
@@ -56,10 +57,71 @@ describe('seller draft sales', () => {
 
   it('requires authentication and SALE_CREATE', async () => {
     expect((await request(app).post('/api/v1/sales').send({})).status).toBe(401);
-    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'sale.create' } });
+    // Phase 1D.3.1 SWITCH: POST /sales now gates on the Production SALE_CREATE
+    // grant (req.auth.assignments), not the legacy sale.create code — revoke
+    // the Production grant to prove that is the real, live decision.
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'SALE_CREATE' } });
     const role = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
     await prisma.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await postSale()).status).toBe(403);
+  });
+
+  it('authorizes creation via the Production SALE_CREATE grant alone', async () => {
+    // Isolated via a fresh user, not a fresh role: authorization-context.ts
+    // validates a persisted UserRoleScope's Role.code against the canonical
+    // Production catalog (isProductionRoleCode) before it can ever become an
+    // assignment — an arbitrary test-only role code would be skipped
+    // entirely and prove nothing. SELLER carries SALE_CREATE as its own real
+    // default grant (role-permission-matrix.ts), so a brand-new SELLER user
+    // with no other state still isolates "the grant alone authorizes".
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const user = await createTestUser(prisma, sellerRole.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).post('/api/v1/sales').set('Authorization', `Bearer ${isolatedToken}`).send({ branchId: centroId });
+    expect(response.status).toBe(201);
+  });
+
+  it('rejects a legacy-lowercase-only sale.create grant, once switched', async () => {
+    const permission = await prisma.permission.upsert({ where: { code: 'sale.create' }, create: { code: 'sale.create' }, update: {} });
+    const role = await createRole(prisma, 'LEGACY-ONLY-SALE-CREATE');
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(prisma, role.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).post('/api/v1/sales').set('Authorization', `Bearer ${isolatedToken}`).send({ branchId: centroId });
+    expect(response.status).toBe(403);
+  });
+
+  // Phase 1D.3.1 §5 location-validation audit: createDraftSale's branchId is
+  // genuinely client-controlled (POST body), unlike every other Sales manual
+  // recheck in this file (all derived from an already-persisted Sale row).
+  // A COMPANY assignment's hasPermissionAtLocation qualifies for ANY
+  // non-empty locationId string, so this exact input must be validated
+  // against a persisted, active Location before it ever reaches the policy —
+  // never solved by consulting effectiveLocationIds.
+  it('rejects a nonexistent branch for a COMPANY-scoped caller (location-validation audit)', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const companyAdmin = await prisma.user.create({ data: { name: 'Company Admin', email: 'company-admin@test.local', passwordHash: 'x' } });
+    await prisma.userRoleScope.create({ data: { userId: companyAdmin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null } });
+    const adminToken = await getAuthToken(companyAdmin);
+    const bogusBranchId = '00000000-0000-4000-8000-000000000099';
+    const response = await request(app).post('/api/v1/sales').set('Authorization', `Bearer ${adminToken}`).send({ branchId: bogusBranchId });
+    expect(response.status).toBe(404);
+    expect(await prisma.sale.count({ where: { branchId: bogusBranchId } })).toBe(0);
+  });
+
+  it('rejects an inactive branch for a COMPANY-scoped caller (location-validation audit)', async () => {
+    await prisma.location.update({ where: { id: yerbaId }, data: { isActive: false } });
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const companyAdmin = await prisma.user.create({ data: { name: 'Company Admin Inactive', email: 'company-admin-inactive@test.local', passwordHash: 'x' } });
+    await prisma.userRoleScope.create({ data: { userId: companyAdmin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null } });
+    const adminToken = await getAuthToken(companyAdmin);
+    const response = await request(app).post('/api/v1/sales').set('Authorization', `Bearer ${adminToken}`).send({ branchId: yerbaId });
+    expect(response.status).toBe(404);
+    expect(await prisma.sale.count({ where: { branchId: yerbaId } })).toBe(0);
+    // `Location` is not in truncateAllTables' TRUNCATE list (test-db.ts is
+    // out of scope for this task) — restore the shared seeded YB location so
+    // this mutation cannot leak into any later test in this file/run.
+    await prisma.location.update({ where: { id: yerbaId }, data: { isActive: true } });
   });
 
   it('creates a draft with server identity and null sale number', async () => {

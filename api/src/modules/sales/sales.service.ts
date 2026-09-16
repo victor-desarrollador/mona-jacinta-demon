@@ -1,5 +1,7 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
-import { assertBranchAccess } from '../../middleware/authorization.js';
+import { assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { hasPermissionAtLocation } from '../rbac/authorization-policy.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 import { createInventoryService } from '../inventory/inventory.service.js';
@@ -36,11 +38,11 @@ function ensureDraft(sale: { status: string }) {
 }
 
 function ensureSaleAccess(
-  req: Parameters<typeof assertBranchAccess>[0],
+  req: Parameters<typeof assertPermissionAtLocation>[0],
   sale: { sellerId: string; branchId: string },
   userId: string,
 ) {
-  assertBranchAccess(req, sale.branchId);
+  assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.SALE_VIEW, sale.branchId);
   if (sale.sellerId !== userId) {
     throw new AppError(403, 'FORBIDDEN', 'No cuenta con permisos para esta venta.');
   }
@@ -86,7 +88,7 @@ export function createSalesService(database: SaleDatabase) {
   }
 
   async function authorizeSale(
-    req: Parameters<typeof assertBranchAccess>[0], userId: string, saleId: string,
+    req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, saleId: string,
   ) {
     const sale = await loadSale(saleId);
     ensureSaleAccess(req, sale, userId);
@@ -94,11 +96,17 @@ export function createSalesService(database: SaleDatabase) {
   }
 
   async function createDraftSale(
-    req: Parameters<typeof assertBranchAccess>[0], userId: string, requestedBranchId?: string,
+    req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, requestedBranchId?: string,
   ) {
     const branchId = requestedBranchId ?? (req.auth?.effectiveLocationIds.length === 1 ? req.auth.effectiveLocationIds[0] : undefined);
     if (!branchId) throw new AppError(400, 'BRANCH_REQUIRED', 'Debe indicar una sucursal autorizada.');
-    assertBranchAccess(req, branchId);
+    // A COMPANY assignment's hasPermissionAtLocation qualifies for ANY
+    // non-empty locationId string (authorization-policy.ts's documented
+    // contract) — this client-controlled branchId must be validated against
+    // a persisted, active Location before it ever reaches that policy check.
+    const location = await database.location.findUnique({ where: { id: branchId }, select: { isActive: true } });
+    if (!location || !location.isActive) throw notFound('No se encontró la sucursal.');
+    assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.SALE_CREATE, branchId);
     return database.$transaction(async (tx) => {
       const sale = await tx.sale.create({
         data: { sellerId: userId, branchId, status: 'DRAFT', subtotal: 0n, discountTotal: 0n, total: 0n },
@@ -122,7 +130,7 @@ export function createSalesService(database: SaleDatabase) {
   }
 
   async function addItem(
-    req: Parameters<typeof assertBranchAccess>[0], userId: string, saleId: string, input: AddSaleItemInput,
+    req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, saleId: string, input: AddSaleItemInput,
   ) {
     const sale = await authorizeSale(req, userId, saleId);
     ensureDraft(sale);
@@ -154,7 +162,7 @@ export function createSalesService(database: SaleDatabase) {
   }
 
   async function updateItem(
-    req: Parameters<typeof assertBranchAccess>[0], userId: string, saleId: string, itemId: string, input: UpdateSaleItemInput,
+    req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, saleId: string, itemId: string, input: UpdateSaleItemInput,
   ) {
     const sale = await authorizeSale(req, userId, saleId);
     ensureDraft(sale);
@@ -167,7 +175,7 @@ export function createSalesService(database: SaleDatabase) {
     });
   }
 
-  async function removeItem(req: Parameters<typeof assertBranchAccess>[0], userId: string, saleId: string, itemId: string) {
+  async function removeItem(req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, saleId: string, itemId: string) {
     const sale = await authorizeSale(req, userId, saleId);
     ensureDraft(sale);
     if (!sale.items.some(({ id }) => id === itemId)) throw notFound('No se encontró el artículo de la venta.');
@@ -177,7 +185,7 @@ export function createSalesService(database: SaleDatabase) {
     });
   }
 
-  async function getDraft(req: Parameters<typeof assertBranchAccess>[0], userId: string, saleId: string) {
+  async function getDraft(req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, saleId: string) {
     const sale = await authorizeSale(req, userId, saleId);
     ensureDraft(sale);
     return sale;
@@ -232,7 +240,7 @@ export function createSalesService(database: SaleDatabase) {
 
   async function completeSaleInTransaction(
     tx: Prisma.TransactionClient,
-    req: Parameters<typeof assertBranchAccess>[0],
+    req: Parameters<typeof assertPermissionAtLocation>[0],
     userId: string,
     saleId: string,
   ) {
@@ -249,9 +257,10 @@ export function createSalesService(database: SaleDatabase) {
     `;
     if (!sale) throw notFound('No se encontró la venta.');
 
-    // Phase 1C SWITCH: req.auth.effectiveLocationIds (UserRoleScope) is the
-    // sole LOCATION authority — no UserBranchRole re-check here.
-    if (!req.auth?.effectiveLocationIds.includes(sale.branchId)) {
+    // Phase 1D.3.1 SWITCH: the real decision is the Production SALE_COMPLETE
+    // grant paired with this sale's own location (req.auth.assignments), not
+    // a bare effectiveLocationIds membership check.
+    if (!req.auth || !hasPermissionAtLocation(req.auth, PRODUCTION_PERMISSIONS.SALE_COMPLETE, sale.branchId)) {
       throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
     }
 
@@ -358,7 +367,7 @@ export function createSalesService(database: SaleDatabase) {
   }
 
   async function completeSale(
-    req: Parameters<typeof assertBranchAccess>[0], userId: string, saleId: string,
+    req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, saleId: string,
   ) {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {

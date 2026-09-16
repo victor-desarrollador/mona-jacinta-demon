@@ -24,13 +24,16 @@ describe('critical operation audit', () => {
   // internal, service-local shape — unaffected by Phase 1D.1's rename of
   // Express.AuthContext's field, which is what `req()` below builds).
   const scope = (userId: string) => ({ userId, branchIds: [branchId] });
-  // Phase 1D.2.4: assertBranchAccess now reads req.auth.assignments (via the
-  // centralized hasBranchAccess policy), not req.auth.effectiveLocationIds —
-  // this hand-built fixture must carry a matching LOCATION assignment for
-  // branchId, or every assertBranchAccess call below fails closed. The exact
-  // roleCode is irrelevant to hasBranchAccess's coarse membership check
-  // (only OWNER is special-cased, and only to fail closed on a malformed
-  // COMPANY-less OWNER row) — SELLER is an arbitrary non-OWNER placeholder.
+  // Phase 1D.2.4/1D.3.1: assertBranchAccess/assertPermissionAtLocation now
+  // read req.auth.assignments (via the centralized authorization-policy.ts),
+  // not req.auth.effectiveLocationIds — this hand-built fixture must carry a
+  // matching LOCATION assignment for branchId, with the Production
+  // permissions the switched Sales/Cancellation code paths actually check
+  // (SALE_CREATE for createDraftSale/cancelSale, SALE_VIEW for
+  // ensureSaleAccess, SALE_COMPLETE for completeSaleInTransaction), or those
+  // calls fail closed. The exact roleCode is irrelevant to these checks
+  // (only OWNER is special-cased) — SELLER is an arbitrary non-OWNER
+  // placeholder.
   const req = (userId: string) =>
     ({
       auth: {
@@ -39,7 +42,10 @@ describe('critical operation audit', () => {
         roles: [],
         legacyPermissions: [],
         assignments: [
-          { roleId: 'audit-test-assignment', roleCode: 'SELLER', scopeKind: 'LOCATION', locationId: branchId, permissions: [] },
+          {
+            roleId: 'audit-test-assignment', roleCode: 'SELLER', scopeKind: 'LOCATION', locationId: branchId,
+            permissions: ['SALE_CREATE', 'SALE_VIEW', 'SALE_COMPLETE'],
+          },
         ],
       },
     }) as unknown as Request;
@@ -113,7 +119,7 @@ describe('critical operation audit', () => {
     const cancellation = createCancellationService(db);
     const cancelled = await draft();
     await sales.sendToCashier(cancelled.id, sellerId, [branchId]);
-    await cancellation.cancelSale(cancelled.id, scope(adminId));
+    await cancellation.cancelSale(req(adminId), cancelled.id);
     const entry = await audit('SALE_CANCELLED', cancelled.id, adminId);
     expect(entry.before).toEqual({ status: 'PENDING_PAYMENT' });
     expect(entry.after).toMatchObject({ status: 'CANCELLED', released: [{ variantId: expect.any(String), quantity: '1' }] });

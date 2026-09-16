@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { rolePermissions, seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
+import { getAuthToken } from '../helpers/auth.js';
 
 // Real-DB confirmation that auth.service.ts's /login response body (used by
 // GET /me too, via the same resolveEffectiveBranchIds policy) reflects the
@@ -143,5 +144,31 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     };
     await middleware(req, res, next);
     expect(calledNext).toBe(true);
+  });
+
+  // Phase 1D.3.1 §7 — the deferred HTTP proofs from Task 1D.2.5, now that
+  // GET /sales/pending (SALE_QUEUE_VIEW) and GET /sales/:saleId (SALE_VIEW)
+  // are real switched Production-gated routes.
+  it('an OWNER user passes a live switched route (SALE_QUEUE_VIEW) with zero RolePermission rows', async () => {
+    const ownerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
+    const owner = await prisma.user.create({ data: { name: 'Owner E2E', email: 'owner-e2e@test.local', passwordHash: 'x' } });
+    await prisma.userRoleScope.create({ data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null } });
+    const token = await getAuthToken(owner);
+    const response = await request(app).get('/api/v1/sales/pending').set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('an ADMIN with a COMPANY assignment can view its own draft at a branch it was never explicitly LOCATION-granted', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const admin = await prisma.user.create({ data: { name: 'Admin E2E', email: 'admin-e2e@test.local', passwordHash: 'x' } });
+    await prisma.userRoleScope.create({ data: { userId: admin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null } });
+    const token = await getAuthToken(admin);
+    // Never explicitly LOCATION-granted to this admin — only the COMPANY
+    // assignment above authorizes it, proving ensureSaleAccess's converted
+    // assertPermissionAtLocation(SALE_VIEW) honors a COMPANY assignment.
+    const yb = await prisma.branch.findUniqueOrThrow({ where: { code: 'YB' } });
+    const sale = await prisma.sale.create({ data: { sellerId: admin.id, branchId: yb.id, status: 'DRAFT', subtotal: 0n, total: 0n } });
+    const response = await request(app).get(`/api/v1/sales/${sale.id}`).set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
   });
 });

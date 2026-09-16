@@ -5,7 +5,8 @@ import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
 
 describe('Task 19: sale cancellation and expired reservation release', () => {
   let db: PrismaClient;
@@ -51,8 +52,9 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
   it('requires authentication, SALE_CREATE, and fresh assignment/permission', async () => {
     const current = await sale('DRAFT');
     expect((await request(app).post(`/api/v1/sales/${current.id}/cancel`)).status).toBe(401);
+    // Phase 1D.3.1 SWITCH: /cancel now gates on the Production SALE_CREATE grant.
     const role = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
-    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'sale.create' } });
+    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'SALE_CREATE' } });
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await cancel(current.id)).status).toBe(403);
     await db.rolePermission.upsert({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } }, create: { roleId: role.id, permissionId: permission.id }, update: {} });
@@ -136,14 +138,98 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
   });
 
   it('requires INVENTORY_MANAGE and preserves stale-role authorization', async () => {
-    const role = await db.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
-    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'inventory.manage' } });
+    // Phase 1D.3.1 SWITCH: /release-expired now gates on the Production
+    // INVENTORY_MANAGE grant. manager01's UserRoleScope (Phase 1C's explicit
+    // MANAGER->WAREHOUSE backfill mapping, legacy-role-map.ts) points at the
+    // real WAREHOUSE Role row, not the legacy MANAGER row — that WAREHOUSE
+    // row is what the Production assignment's permissions actually come
+    // from, so revoking the grant here (not on MANAGER) is what proves the
+    // live decision.
+    const role = await db.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'INVENTORY_MANAGE' } });
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await release()).status).toBe(403);
     await db.rolePermission.upsert({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } }, create: { roleId: role.id, permissionId: permission.id }, update: {} });
-    await db.role.update({ where: { id: role.id }, data: { code: 'ADMIN_LOOKALIKE' } });
+    // The legacy MANAGER role code itself may be renamed without affecting
+    // Production authority, since it is no longer the source of this grant.
+    const legacyRole = await db.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
+    await db.role.update({ where: { id: legacyRole.id }, data: { code: 'ADMIN_LOOKALIKE' } });
     const current = await sale(); await reserve(current.id);
     expect((await release()).status).toBe(200);
+  });
+
+  // Phase 1D.3.1 §8: isolate the authority source explicitly for both
+  // switched Cancellation gates.
+  it('authorizes cancellation via the Production SALE_CREATE grant alone', async () => {
+    // Isolated via a fresh user, not a fresh role: authorization-context.ts
+    // validates a persisted UserRoleScope's Role.code against the canonical
+    // Production catalog (isProductionRoleCode) before it can ever become an
+    // assignment — an arbitrary test-only role code would be skipped
+    // entirely and prove nothing. SELLER carries SALE_CREATE as its own real
+    // default grant (role-permission-matrix.ts), so a brand-new SELLER user
+    // with no other state still isolates "the grant alone authorizes".
+    const sellerRole = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const user = await createTestUser(db, sellerRole.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const current = await sale('DRAFT');
+    const response = await cancel(current.id, isolatedToken);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only sale.create grant on /cancel, once switched', async () => {
+    const permission = await db.permission.upsert({ where: { code: 'sale.create' }, create: { code: 'sale.create' }, update: {} });
+    const role = await createRole(db, 'LEGACY-ONLY-CANCEL');
+    await db.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(db, role.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const current = await sale('DRAFT');
+    const response = await cancel(current.id, isolatedToken);
+    expect(response.status).toBe(403);
+  });
+
+  it('authorizes release-expired via the Production INVENTORY_MANAGE grant alone', async () => {
+    // Isolated via a fresh user on the real WAREHOUSE role, not a fresh
+    // role — see the SALE_CREATE isolation test above for why an arbitrary
+    // test-only role code cannot be used (isProductionRoleCode fails it
+    // closed). WAREHOUSE carries INVENTORY_MANAGE as its own real default
+    // grant (role-permission-matrix.ts).
+    const warehouseRole = await db.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const user = await createTestUser(db, warehouseRole.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await release(isolatedToken);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only inventory.manage grant on /release-expired, once switched', async () => {
+    const permission = await db.permission.upsert({ where: { code: 'inventory.manage' }, create: { code: 'inventory.manage' }, update: {} });
+    const role = await createRole(db, 'LEGACY-ONLY-RELEASE');
+    await db.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(db, role.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await release(isolatedToken);
+    expect(response.status).toBe(403);
+  });
+
+  // Phase 1D.3.1 §6 cross-assignment security, through the real switched
+  // /cancel route (complements tests/rbac/cross-assignment.test.ts's
+  // synthetic-app proof): a permission granted by one assignment must never
+  // combine with a location granted by a different assignment.
+  it('SELLER @ A + WAREHOUSE @ B: cancels a sale at A via SELLER, but never at B (WAREHOUSE lacks SALE_CREATE)', async () => {
+    const yb = await db.branch.findUniqueOrThrow({ where: { code: 'YB' } });
+    const sellerRole = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const warehouseRole = await db.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const multi = await db.user.create({ data: { name: 'multi', email: 'multi-cancel@test.local', passwordHash: 'x' } });
+    await db.userRoleScope.createMany({
+      data: [
+        { userId: multi.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branchId },
+        { userId: multi.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: yb.id },
+      ],
+    });
+    const multiToken = await getAuthToken(multi);
+    const saleAtA = await db.sale.create({ data: { sellerId, branchId, status: 'DRAFT', subtotal: 100n, total: 100n } });
+    expect((await cancel(saleAtA.id, multiToken)).status).toBe(200);
+    const saleAtB = await db.sale.create({ data: { sellerId, branchId: yb.id, status: 'DRAFT', subtotal: 100n, total: 100n } });
+    expect((await cancel(saleAtB.id, multiToken)).status).toBe(403);
   });
 
   it('does not leave payment plus released reservation in a race', async () => {

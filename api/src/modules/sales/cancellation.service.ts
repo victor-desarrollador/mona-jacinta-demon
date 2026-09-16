@@ -1,4 +1,6 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
+import { assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 
@@ -9,20 +11,12 @@ type LockedInventory = { id: string; variantId: string; branchId: string; physic
 
 const invalidState = () => new AppError(409, 'INVALID_SALE_STATE', 'La venta no puede cancelarse en su estado actual.');
 const invalidReservation = (message = 'La reserva de la venta no es válida.') => new AppError(409, 'INVALID_RESERVATION', message);
-const forbidden = () => new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
 
 function transient(error: unknown) {
   const candidate = error as { code?: string; meta?: { code?: string } };
   const message = error instanceof Error ? error.message : '';
   return candidate.code === 'P2034' || candidate.meta?.code === '40001'
     || candidate.meta?.code === '40P01' || message.includes('40001') || message.includes('40P01');
-}
-
-// Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority — no
-// UserBranchRole re-check here. A stale legacy row must never veto access
-// UserRoleScope has actually authorized (see docs/production-v1 Phase 1C).
-function branchAssignment(scope: AuthScope, branchId: string) {
-  if (!scope.branchIds.includes(branchId)) throw forbidden();
 }
 
 async function acceptedTotal(tx: Prisma.TransactionClient, saleId: string) {
@@ -76,11 +70,14 @@ export function createCancellationService(database: PrismaClient) {
     throw new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
   }
 
-  async function cancelSale(saleId: string, scope: AuthScope) {
+  async function cancelSale(req: Parameters<typeof assertPermissionAtLocation>[0], saleId: string) {
     return inTransaction(async (tx) => {
       const [sale] = await tx.$queryRaw<LockedSale[]>`SELECT id, "branchId", status FROM "Sale" WHERE id = ${saleId} FOR UPDATE`;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
-      branchAssignment(scope, sale.branchId);
+      // Phase 1D.3.1 SWITCH: /cancel is gated on the Production SALE_CREATE
+      // grant, paired with this sale's own location — never a bare
+      // effectiveLocationIds membership check.
+      assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.SALE_CREATE, sale.branchId);
       const paid = await acceptedTotal(tx, saleId);
       if (paid > 0n) throw new AppError(409, 'PAYMENT_ALREADY_ACCEPTED', 'La venta tiene pagos aceptados.');
       if (sale.status !== 'DRAFT' && sale.status !== 'PENDING_PAYMENT') throw invalidState();
@@ -95,7 +92,7 @@ export function createCancellationService(database: PrismaClient) {
         : [];
       await tx.sale.update({ where: { id: saleId }, data: { status: 'CANCELLED' } });
       await createAuditLog(tx, {
-        userId: scope.userId, branchId: sale.branchId, action: 'SALE_CANCELLED', entityType: 'Sale', entityId: saleId,
+        userId: req.auth!.userId, branchId: sale.branchId, action: 'SALE_CANCELLED', entityType: 'Sale', entityId: saleId,
         before: { status: sale.status },
         after: { status: 'CANCELLED', released },
       });

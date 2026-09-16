@@ -7,7 +7,8 @@ import { createApp } from '../../src/app.js';
 import type { Prisma } from '../../src/generated/prisma/client.js';
 import { createSalesService } from '../../src/modules/sales/sales.service.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
 
 describe('cashier pending-sales queue', () => {
   let prisma: Awaited<ReturnType<typeof createTestPrismaClient>>;
@@ -82,8 +83,9 @@ describe('cashier pending-sales queue', () => {
   it('denies seller01 despite SALE_VIEW, but accepts a fresh explicit queue grant', async () => {
     const sellerToken = await getAuthToken({ id: sellerId });
     expect((await queue('', sellerToken)).status).toBe(403);
+    // Phase 1D.3.1 SWITCH: gated on the Production SALE_QUEUE_VIEW grant now.
     const role = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
-    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'sale.queue.view' } });
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'SALE_QUEUE_VIEW' } });
     await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
     expect((await queue('', sellerToken)).status).toBe(200);
   });
@@ -92,10 +94,40 @@ describe('cashier pending-sales queue', () => {
     const user = await prisma.user.findUniqueOrThrow({ where: { email: code === 'ADMIN' ? 'admin@demo.local' : 'cashier01@demo.local' } });
     const issuedToken = await getAuthToken(user);
     expect((await queue('', issuedToken)).status).toBe(200);
+    // Phase 1D.3.1 SWITCH: gated on the Production SALE_QUEUE_VIEW grant now.
     const role = await prisma.role.findUniqueOrThrow({ where: { code } });
-    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'sale.queue.view' } });
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'SALE_QUEUE_VIEW' } });
     await prisma.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await queue('', issuedToken)).status).toBe(403);
+  });
+
+  // Phase 1D.3.1 §8: isolate the authority source explicitly — a caller
+  // whose only grant is the Production uppercase code must be authorized,
+  // and a caller whose only grant is the legacy lowercase code must be
+  // rejected, once this route is switched.
+  it('authorizes the pending-queue route via the Production SALE_QUEUE_VIEW grant alone, once switched', async () => {
+    // Isolated via a fresh user, not a fresh role: authorization-context.ts
+    // validates a persisted UserRoleScope's Role.code against the canonical
+    // Production catalog (isProductionRoleCode) before it can ever become an
+    // assignment — an arbitrary test-only role code would be skipped
+    // entirely and prove nothing. CASHIER carries SALE_QUEUE_VIEW as its own
+    // real default grant (role-permission-matrix.ts), so a brand-new CASHIER
+    // user with no other state still isolates "the grant alone authorizes".
+    const cashierRole = await prisma.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+    const user = await createTestUser(prisma, cashierRole.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await queue('', isolatedToken);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only grant on the pending-queue route once switched', async () => {
+    const legacyPermission = await prisma.permission.upsert({ where: { code: 'sale.queue.view' }, create: { code: 'sale.queue.view' }, update: {} });
+    const legacyRole = await createRole(prisma, 'LEGACY-ONLY-ROLE');
+    await prisma.rolePermission.create({ data: { roleId: legacyRole.id, permissionId: legacyPermission.id } });
+    const user = await createTestUser(prisma, legacyRole.id, centroId);
+    const isolatedToken = await getAuthToken(user);
+    const response = await queue('', isolatedToken);
+    expect(response.status).toBe(403);
   });
 
   it('includes only PENDING_PAYMENT and excludes every other lifecycle state', async () => {
@@ -123,21 +155,21 @@ describe('cashier pending-sales queue', () => {
     expect((await queue()).body.items).toHaveLength(2);
   });
 
-  it('returns no sales for an empty server-side branch scope', async () => {
+  it('handles an empty server-side branch scope safely at the service layer', async () => {
     await pending();
     expect(await createSalesService(prisma).listPendingSales([])).toEqual([]);
-    // Delete only the authoritative LOCATION scope, keeping UserBranchRole
-    // (and therefore SALE_QUEUE_VIEW) intact — deleting UserBranchRole too
-    // would strip the permission itself and produce a false-positive 403
-    // from a missing permission rather than an empty branch scope.
-    // GET /sales/pending has no per-resource branch check (unlike
-    // cancel/complete/payments): it filters by branchIds with no
-    // route-level guard against an empty set, so a fully authorized cashier
-    // with zero LOCATION scope legitimately sees an empty queue, not a 403.
+  });
+
+  it('rejects a cashier with zero UserRoleScope rows (permission and scope now share one source)', async () => {
+    // Phase 1D.3.1 SWITCH: permission and location both come from the same
+    // UserRoleScope-derived assignment now (authorization-context.ts) —
+    // unlike the pre-switch legacy model, there is no longer a
+    // UserBranchRole-only path that can keep SALE_QUEUE_VIEW alive once every
+    // UserRoleScope row is gone. Deleting them all removes the grant itself,
+    // not just the branch scope, so this now correctly 403s.
     await prisma.userRoleScope.deleteMany({ where: { userId: cashierId } });
     const response = await queue();
-    expect(response.status).toBe(200);
-    expect(response.body).toEqual({ items: [] });
+    expect(response.status).toBe(403);
   });
 
   it('rejects branchId, repeated, array, nested and alternative query filters', async () => {
