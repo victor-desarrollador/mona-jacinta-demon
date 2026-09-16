@@ -6,11 +6,11 @@ import { createRequireAuth } from '../src/middleware/auth.js';
 import {
   assertBranchAccess,
   getUserBranchScope,
-  requireLegacyPermission,
+  requirePermission,
 } from '../src/middleware/authorization.js';
 import { createTestPrismaClient, truncateAllTables } from './helpers/test-db.js';
 import { getAuthToken } from './helpers/auth.js';
-import { PERMISSIONS } from '../src/shared/permissions.js';
+import { PRODUCTION_PERMISSIONS } from '../src/modules/rbac/permissions.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
 
 describe('permission and branch authorization', () => {
@@ -34,13 +34,13 @@ describe('permission and branch authorization', () => {
     app.get(
       '/permission',
       auth,
-      requireLegacyPermission(PERMISSIONS.SALE_QUEUE_VIEW),
-      (req, res) => res.json({ ok: true, permissions: req.auth?.legacyPermissions }),
+      requirePermission(PRODUCTION_PERMISSIONS.SALE_QUEUE_VIEW),
+      (_req, res) => res.json({ ok: true }),
     );
     app.get(
       '/resource/:id',
       auth,
-      requireLegacyPermission(PERMISSIONS.SALE_VIEW, {
+      requirePermission(PRODUCTION_PERMISSIONS.SALE_VIEW, {
         branchScope: 'own',
         resolveResourceBranch: async (req) =>
           (await prisma.branch.findUnique({
@@ -90,13 +90,18 @@ describe('permission and branch authorization', () => {
       .set('Authorization', `Bearer ${await tokenFor('admin')}`);
     expect(seller.status).toBe(403);
     expect(cashier.status).toBe(200);
-    expect(manager.status).toBe(200);
+    // Phase 1D.3.6 SWITCH: this route now gates on Production
+    // SALE_QUEUE_VIEW exclusively. MANAGER maps to Production WAREHOUSE
+    // (legacy-role-map.ts), which does not carry SALE_QUEUE_VIEW by default
+    // (role-permission-matrix.ts) — unlike the legacy MANAGER Role, which
+    // did. MANAGER must fail closed here now.
+    expect(manager.status).toBe(403);
     expect(admin.status).toBe(200);
   });
 
-  it('does not allow an ADMIN role to bypass a removed permission', async () => {
+  it('does not allow an ADMIN role to bypass a revoked Production permission', async () => {
     const permission = await prisma.permission.findUniqueOrThrow({
-      where: { code: PERMISSIONS.SALE_QUEUE_VIEW },
+      where: { code: PRODUCTION_PERMISSIONS.SALE_QUEUE_VIEW },
       select: { id: true },
     });
     const adminRole = await prisma.role.findUniqueOrThrow({
@@ -149,31 +154,21 @@ describe('permission and branch authorization', () => {
       where: { email: 'seller01@demo.local' },
       select: { id: true },
     });
-    const cashier = await prisma.role.findUniqueOrThrow({
+    const cashierRole = await prisma.role.findUniqueOrThrow({
       where: { code: 'CASHIER' },
       select: { id: true },
     });
-    // Legacy role/permission authority (UserBranchRole + Role/Permission)
-    // stays on UserBranchRole until Phase 1D.3 switches this route: this is
-    // what /permission's requireLegacyPermission(SALE_QUEUE_VIEW) enforces
-    // below.
-    await prisma.userBranchRole.deleteMany({ where: { userId: seller.id } });
-    await prisma.userBranchRole.create({
-      data: { userId: seller.id, branchId: branchIds.YB!, roleId: cashier.id },
-    });
-    // Phase 1C SWITCH: LOCATION/COMPANY branch scope authority is
-    // UserRoleScope, not UserBranchRole — move it explicitly so /resource's
-    // branchScope: 'own' check (enforced against req.auth.branchIds, resolved
-    // from UserRoleScope) reflects the branch change too.
-    const sellerRole = await prisma.role.findUniqueOrThrow({
-      where: { code: 'SELLER' },
-      select: { id: true },
-    });
+    // Phase 1D.3.6 SWITCH: /permission and /resource now gate exclusively on
+    // Production assignments (UserRoleScope) — UserBranchRole has zero
+    // bearing on either route's outcome. Moving the user's UserRoleScope
+    // role+location directly is what changes both the permission (CASHIER
+    // carries SALE_QUEUE_VIEW; SELLER does not) and the location (YB) in one
+    // step.
     await prisma.userRoleScope.deleteMany({ where: { userId: seller.id } });
     await prisma.userRoleScope.create({
       data: {
         userId: seller.id,
-        roleId: sellerRole.id,
+        roleId: cashierRole.id,
         scopeKind: 'LOCATION',
         locationId: branchIds.YB!,
       },

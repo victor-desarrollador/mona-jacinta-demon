@@ -37,12 +37,15 @@ export function createRequireAuth(
         select: {
           id: true,
           isActive: true,
+          // Phase 1D.3.6: UserBranchRole no longer needs its permissions
+          // selected — it contributes only role.code, for the roles[]
+          // display union. It can never again contribute permission
+          // authority of any kind.
           branchRoles: {
             select: {
               role: {
                 select: {
                   code: true,
-                  permissions: { select: { permission: { select: { code: true } } } },
                 },
               },
             },

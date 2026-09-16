@@ -44,7 +44,6 @@ describe('critical operation audit', () => {
         userId,
         effectiveLocationIds: [branchId],
         roles: [],
-        legacyPermissions: [],
         assignments: [
           {
             roleId: 'audit-test-assignment', roleCode: 'SELLER', scopeKind: 'LOCATION', locationId: branchId,
@@ -207,9 +206,10 @@ describe('critical operation audit', () => {
 
   // Phase 1D.3.5 correction: this test used to prove "permission works
   // without role names" by renaming ADMIN to an arbitrary code and expecting
-  // continued access — a legacy-only property, since requireLegacyPermission
-  // reads req.auth.legacyPermissions purely by permission code. Under the
-  // Production switch that expectation is invalid: isProductionRoleCode
+  // continued access — a legacy-only property, since the now-deleted
+  // requireLegacyPermission (Task 1D.3.6) read req.auth.legacyPermissions
+  // purely by permission code. Under the Production switch that expectation
+  // is invalid: isProductionRoleCode
   // (roles.ts) filters authorization-context.ts's assignments by canonical
   // Production role code BEFORE any permission is read, so an unrecognized
   // code like AUDITOR can never contribute AUDIT_VIEW, even though the

@@ -127,11 +127,10 @@ describe('hasPermission (Phase 1D.2)', () => {
     expect(hasPermission(ctx([]), 'PRICE_MANAGE')).toBe(false);
   });
 
-  it('[RED 16] legacyPermissions on the full AuthContext never influence the decision — policy only ever reads assignments', () => {
+  it('[RED 16] empty assignments never influence the decision — policy only ever reads assignments (legacyPermissions no longer exists on the context at all, Phase 1D.3.6)', () => {
     const full: Express.AuthContext = {
       userId: 'u1',
       roles: [],
-      legacyPermissions: ['sale.create'],
       assignments: [],
       effectiveLocationIds: [],
     };
@@ -142,7 +141,6 @@ describe('hasPermission (Phase 1D.2)', () => {
     const full: Express.AuthContext = {
       userId: 'u1',
       roles: ['OWNER'], // display-only, no OWNER assignment backing it
-      legacyPermissions: [],
       assignments: [],
       effectiveLocationIds: [],
     };

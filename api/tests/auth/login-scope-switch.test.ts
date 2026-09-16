@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { rolePermissions, seedDemo } from '../../prisma/seed.js';
+import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 import { getAuthToken } from '../helpers/auth.js';
@@ -85,7 +85,7 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     }
   });
 
-  it("does not change MANAGER's effective legacy roles or permissions", async () => {
+  it("preserves MANAGER's public roles display while projecting permissions from its Production WAREHOUSE assignment, not the legacy grant", async () => {
     const response = await request(app)
       .post('/api/v1/auth/login')
       .send({ email: 'manager01@demo.local', password: 'demo123' });
@@ -96,7 +96,13 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     // AuthContext.assignments — see authorization-context.test.ts — and is
     // deliberately not surfaced through this public field).
     expect(response.body.user.roles).toEqual(['MANAGER']);
-    expect(response.body.user.permissions.sort()).toEqual([...rolePermissions.MANAGER].sort());
+    // Phase 1D.3.6 SWITCH: `permissions` is now a non-authoritative public
+    // compatibility projection of the caller's Production authority (via
+    // hasPermission), never legacy UserBranchRole grants. manager01's legacy
+    // MANAGER role carries nearly every legacy permission, but MANAGER maps
+    // to Production WAREHOUSE (legacy-role-map.ts), which carries only
+    // INVENTORY_MANAGE among the 12 mapped compatibility permissions.
+    expect(response.body.user.permissions).toEqual(['inventory.manage']);
   });
 
   it('never exposes internal Production authorization shapes (assignments/legacyPermissions/effectiveLocationIds) through the public login response', async () => {
@@ -130,7 +136,6 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
       auth: {
         userId: 'u1',
         roles: ['OWNER'],
-        legacyPermissions: [],
         assignments: [
           { roleId: 'r', roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] },
         ],

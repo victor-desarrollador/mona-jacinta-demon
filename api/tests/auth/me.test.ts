@@ -91,6 +91,39 @@ describe('GET /api/v1/auth/me', () => {
     expect(response.body.user.roles).toEqual(['CASHIER']);
   });
 
+  it('projects Production REPORT_VIEW/USER_MANAGE into the public permissions field for ADMIN', async () => {
+    const admin = await prisma.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' }, select: { id: true } });
+    const response = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
+    expect(response.status).toBe(200);
+    expect(response.body.user.permissions).toEqual(expect.arrayContaining(['report.view', 'user.manage']));
+  });
+
+  it('excludes report.view/user.manage/audit.view for a MANAGER caller (mapped to Production WAREHOUSE, which lacks them)', async () => {
+    const manager = await prisma.user.findUniqueOrThrow({ where: { email: 'manager01@demo.local' }, select: { id: true } });
+    const response = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${await getAuthToken(manager)}`);
+    expect(response.status).toBe(200);
+    expect(response.body.user.permissions).not.toContain('report.view');
+    expect(response.body.user.permissions).not.toContain('user.manage');
+    expect(response.body.user.permissions).not.toContain('audit.view');
+  });
+
+  it('reflects a revoked Production permission in the public permissions field on the next request, without issuing a new token', async () => {
+    const admin = await prisma.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' }, select: { id: true } });
+    const token = await getAuthToken(admin);
+    const before = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${token}`);
+    expect(before.body.user.permissions).toContain('report.view');
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'REPORT_VIEW' } });
+    await prisma.rolePermission.delete({ where: { roleId_permissionId: { roleId: adminRole.id, permissionId: permission.id } } });
+    const after = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${token}`);
+    expect(after.status).toBe(200);
+    expect(after.body.user.permissions).not.toContain('report.view');
+  });
+
   it('rejects an inactive user even with a previously issued token', async () => {
     const token = await sellerToken();
     await prisma.user.update({

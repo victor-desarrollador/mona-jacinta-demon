@@ -13,7 +13,6 @@ declare global {
     interface AuthContext {
       userId: string;
       roles: string[];
-      legacyPermissions: string[];
       assignments: ProductionAssignment[];
       effectiveLocationIds: string[];
     }

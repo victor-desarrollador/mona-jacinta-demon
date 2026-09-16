@@ -1,14 +1,16 @@
-import { permissionValues } from '../../shared/permissions.js';
 import { productionPermissionValues } from './permissions.js';
 import { resolveEffectiveLocationIds, type LocationLookupDatabase } from './effective-branch-ids.js';
 import { mapUserRoleScopeRows } from './scope-resolver.js';
 import { isProductionRoleCode } from './roles.js';
 
-const LEGACY_PERMISSION_CODES = new Set<string>(permissionValues);
 const PRODUCTION_PERMISSION_CODES = new Set<string>(productionPermissionValues);
 
 type PermissionRow = { permission: { code: string } };
-type LegacyBranchRoleRow = { role: { code: string; permissions: PermissionRow[] } };
+// Phase 1D.3.6: UserBranchRole contributes only role.code (for the roles[]
+// display union) — it can never again contribute a permission of any kind,
+// legacy or Production. This is now a type-level guarantee, not merely a
+// runtime filter.
+type LegacyBranchRoleRow = { role: { code: string } };
 type ProductionRoleScopeRow = {
   roleId: string;
   scopeKind: 'LOCATION' | 'COMPANY';
@@ -28,17 +30,17 @@ export type AuthorizationContextInput = {
 // redefined, since it is the same narrow need.
 export type AuthorizationContextDatabase = LocationLookupDatabase;
 
-// Phase 1D.1/1D.2 (assignment-shaped, per
+// Phase 1D.1/1D.2/1D.3.6 (assignment-shaped, per
 // docs/superpowers/plans/2026-09-14-phase-1d-production-authorization.md's
 // Cross-cutting design §A/§B/§D): single shared source for req.auth/
 // socket.data, replacing the three duplicated inline implementations in
 // middleware/auth.ts, modules/auth/auth.service.ts and realtime/socket.ts.
-// `legacyPermissions` and `assignments` are built from independently
-// filtered code sets (§D) so a Role row that carries BOTH the legacy
-// lowercase and Production uppercase RolePermission grants for the same
-// permission concept can never leak the wrong vocabulary through the wrong
-// join table. `assignments` holds one entry per UserRoleScope row,
-// untouched/unmerged, so a caller with multiple assignments (e.g.
+// Task 1D.3.6 deleted the compatibility-window `legacyPermissions` field and
+// its computation outright — every route switched to Production
+// `assignments` by then (Tasks 1D.3.1-1D.3.5), so UserBranchRole no longer
+// contributes any permission authority at all (only role.code, for the
+// roles[] display union). `assignments` holds one entry per UserRoleScope
+// row, untouched/unmerged, so a caller with multiple assignments (e.g.
 // SELLER @ A + WAREHOUSE @ B) can never have a permission from one
 // assignment combine with a location from another — see
 // authorization-policy.ts's hasPermissionAtLocation, the only function
@@ -56,12 +58,6 @@ export async function buildAuthorizationContext(
       ...user.roleScopes.map((scope) => scope.role.code),
     ]),
   ];
-
-  const legacyPermissions = [
-    ...new Set(
-      user.branchRoles.flatMap((row) => row.role.permissions.map((p) => p.permission.code)),
-    ),
-  ].filter((code) => LEGACY_PERMISSION_CODES.has(code));
 
   // Phase 1D.2: COMPANY is now a qualifying assignment, not a thrown error.
   // resolveEffectiveLocationIds expands to every active Location id for a
@@ -91,5 +87,5 @@ export async function buildAuthorizationContext(
     });
   }
 
-  return { userId: user.id, roles, legacyPermissions, assignments, effectiveLocationIds };
+  return { userId: user.id, roles, assignments, effectiveLocationIds };
 }

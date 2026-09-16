@@ -19,12 +19,14 @@ const userSelect = {
   email: true,
   isActive: true,
   passwordHash: true,
+  // Phase 1D.3.6: UserBranchRole no longer needs its permissions selected —
+  // it contributes only role.code, for the roles[] display union. It can
+  // never again contribute permission authority of any kind.
   branchRoles: {
     select: {
       role: {
         select: {
           code: true,
-          permissions: { select: { permission: { select: { code: true } } } },
         },
       },
     },
@@ -45,7 +47,7 @@ const userSelect = {
 } as const;
 
 // Public API contract boundary: buildAuthorizationContext's internal,
-// Production-authorization-shaped AuthContext (assignments/legacyPermissions/
+// Production-authorization-shaped AuthContext (assignments/
 // effectiveLocationIds) is deliberately NOT returned to callers of
 // login/resolveUserContext — see user-context.dto.ts for why. This is the
 // only place the internal context and the public DTO meet.

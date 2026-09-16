@@ -13,8 +13,11 @@ const noopDb = { location: { findMany: async () => [] } };
 function userFixture(overrides: Partial<Parameters<typeof buildAuthorizationContext>[1]> = {}) {
   return {
     id: 'user-1',
+    // Phase 1D.3.6: branchRoles no longer carries `permissions` — UserBranchRole
+    // contributes only role.code, for the roles[] display union. It can never
+    // again contribute permission authority of any kind.
     branchRoles: [
-      { role: { code: 'CASHIER', permissions: [{ permission: { code: 'cash.session.open' } }] } },
+      { role: { code: 'CASHIER' } },
     ],
     roleScopes: [
       {
@@ -29,39 +32,35 @@ function userFixture(overrides: Partial<Parameters<typeof buildAuthorizationCont
 }
 
 describe('buildAuthorizationContext (Phase 1D.1)', () => {
-  it('keeps legacyPermissions and assignments as separate vocabularies, never merged', async () => {
+  // Phase 1D.3.6: the compatibility-window `legacyPermissions` field and its
+  // computation are deleted outright — every route has switched to Production
+  // `assignments` by now (Tasks 1D.3.1-1D.3.5), so there is no remaining
+  // consumer for a legacy-vocabulary permission set on the context.
+  it('does not expose a legacyPermissions property, while Production assignments still work normally', async () => {
     const ctx = await buildAuthorizationContext(noopDb, userFixture());
-    expect(ctx.legacyPermissions).toEqual(['cash.session.open']);
+    expect(ctx).not.toHaveProperty('legacyPermissions');
     expect(ctx.assignments).toEqual([
       { roleId: 'role-cashier', roleCode: 'CASHIER', scopeKind: 'LOCATION', locationId: 'loc-1', permissions: ['CASH_SESSION_OPEN'] },
     ]);
   });
 
-  it('a Role carrying BOTH vocabularies reached only via UserBranchRole never leaks the uppercase code (Cross-cutting §D)', async () => {
+  it('a stale UserBranchRole-only grant creates no Production authority — no assignment, no SALE_VIEW authority through policy (Cross-cutting §D)', async () => {
+    // Phase 1D.3.6: branchRoles no longer even carries a `permissions` field
+    // (see userFixture's default above), so a Role reached only via
+    // UserBranchRole structurally cannot leak ANY permission code, uppercase
+    // or lowercase, into the context — this is now a type-level guarantee,
+    // not merely a runtime filter. The only remaining question is that the
+    // role itself (MIXED, with no qualifying UserRoleScope row) still
+    // produces zero Production authority.
     const ctx = await buildAuthorizationContext(
       noopDb,
       userFixture({
-        branchRoles: [
-          {
-            role: {
-              code: 'MIXED',
-              permissions: [
-                { permission: { code: 'sale.view' } },
-                { permission: { code: 'SALE_VIEW' } }, // same Role row also carries the Production grant
-              ],
-            },
-          },
-        ],
+        branchRoles: [{ role: { code: 'MIXED' } }],
         roleScopes: [], // no UserRoleScope row for this user at all — stale/never-migrated
       }),
     );
-    expect(ctx.legacyPermissions).toEqual(['sale.view']);
+    expect(ctx).not.toHaveProperty('legacyPermissions');
     expect(ctx.assignments).toEqual([]);
-    // The critical assertion: SALE_VIEW must not be reachable through any field.
-    expect(JSON.stringify(ctx)).not.toContain('SALE_VIEW');
-    // [RED 18] stale UserBranchRole cannot influence Production policy either
-    // — a stale MIXED role's legacy sale.view grant must not translate into
-    // SALE_VIEW authority anywhere the policy module can see.
     expect(hasPermissionAtLocation(ctx, 'SALE_VIEW', 'anywhere')).toBe(false);
   });
 
@@ -217,7 +216,7 @@ describe('buildAuthorizationContext (Phase 1D.1)', () => {
     const ctx = await buildAuthorizationContext(
       noopDb,
       userFixture({
-        branchRoles: [{ role: { code: 'MANAGER', permissions: [{ permission: { code: 'inventory.manage' } }] } }],
+        branchRoles: [{ role: { code: 'MANAGER' } }],
         roleScopes: [
           {
             roleId: 'role-warehouse', scopeKind: 'LOCATION' as const, locationId: 'loc-1',
