@@ -1,10 +1,11 @@
 import type { PrismaClient, SalePayment } from '../../generated/prisma/client.js';
-import { assertBranchAccess } from '../../middleware/authorization.js';
+import { assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 import type { RegisterPaymentInput } from './dto/payment.dto.js';
 
-type RequestLike = Parameters<typeof assertBranchAccess>[0];
+type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
 type LockedSale = { id: string; branchId: string; status: string; total: bigint };
 
 const transient = (error: unknown) => {
@@ -35,11 +36,12 @@ function sameIntent(payment: SalePayment, input: RegisterPaymentInput) {
 }
 
 export function createPaymentsService(database: PrismaClient) {
-  // Phase 1C SWITCH: UserRoleScope (req.auth.effectiveLocationIds) is the
-  // sole LOCATION authority — no UserBranchRole re-check here. A stale
-  // legacy row must never veto access UserRoleScope has actually authorized.
+  // Phase 1D.3.2 SWITCH: the real decision is the Production SALE_CHARGE
+  // grant paired with this sale's own persisted branchId
+  // (req.auth.assignments), not a bare effectiveLocationIds membership
+  // check — matches the route's own requirePermission(SALE_CHARGE) gate.
   function assertCurrentBranch(req: RequestLike, branchId: string) {
-    if (!req.auth?.effectiveLocationIds.includes(branchId)) throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
+    assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.SALE_CHARGE, branchId);
   }
 
   async function findExisting(idempotencyKey: string, saleId: string) {
@@ -141,13 +143,13 @@ export function createPaymentsService(database: PrismaClient) {
     throw new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
   }
 
-  // Phase 1C SWITCH: assertBranchAccess (req.auth.effectiveLocationIds /
-  // UserRoleScope) is the sole LOCATION authority — no UserBranchRole
-  // re-check here.
+  // Phase 1D.3.2 SWITCH: the real decision is the Production SALE_VIEW grant
+  // paired with this sale's own persisted branchId (req.auth.assignments) —
+  // matches the route's own requirePermission(SALE_VIEW) gate.
   async function listPayments(req: RequestLike, saleId: string) {
     const sale = await database.sale.findUnique({ where: { id: saleId }, select: { id: true, branchId: true } });
     if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
-    assertBranchAccess(req, sale.branchId);
+    assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.SALE_VIEW, sale.branchId);
     return database.salePayment.findMany({ where: { saleId }, orderBy: [{ paidAt: 'asc' }, { id: 'asc' }] });
   }
 

@@ -5,7 +5,7 @@ import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
 
 describe('split payments', () => {
   let db: PrismaClient;
@@ -61,12 +61,62 @@ describe('split payments', () => {
   it('requires SALE_CHARGE and has no role-name bypass or stale permission', async () => {
     const sale = await createSale(1n);
     const role = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
-    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'sale.charge' } });
+    // Phase 1D.3.2 SWITCH: /payments now gates on the Production SALE_CHARGE
+    // grant (req.auth.assignments), not the legacy sale.charge code.
+    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'SALE_CHARGE' } });
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() })).status).toBe(403);
 
     await db.role.update({ where: { id: role.id }, data: { code: 'ADMIN_LOOKALIKE' } });
     expect((await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() })).status).toBe(403);
+  });
+
+  // Phase 1D.3.2 §8: isolate the authority source explicitly. Fresh users on
+  // real canonical roles (never an invented Role.code — isProductionRoleCode
+  // fails closed on anything else) prove the grant alone decides, not the
+  // shared demo cashier01/seller01 fixtures' incidental state.
+  it('authorizes payment registration via the Production SALE_CHARGE grant alone', async () => {
+    const cashierRole = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+    const user = await createTestUser(db, cashierRole.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const sale = await createSale(1n);
+    const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, isolatedToken);
+    expect(response.status).toBe(201);
+  });
+
+  it('rejects a legacy-lowercase-only sale.charge grant on payment registration, once switched', async () => {
+    // WAREHOUSE holds neither SALE_CHARGE nor SALE_VIEW by default
+    // (role-permission-matrix.ts) — granting it only the legacy lowercase
+    // code proves that grant alone can never satisfy the switched route.
+    const warehouseRole = await db.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const legacyPermission = await db.permission.upsert({ where: { code: 'sale.charge' }, create: { code: 'sale.charge' }, update: {} });
+    await db.rolePermission.create({ data: { roleId: warehouseRole.id, permissionId: legacyPermission.id } });
+    const user = await createTestUser(db, warehouseRole.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const sale = await createSale(1n);
+    const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, isolatedToken);
+    expect(response.status).toBe(403);
+  });
+
+  // Phase 1D.3.2 §4 cross-assignment security: a permission granted by one
+  // assignment must never combine with a location granted by a different
+  // assignment (authorization-policy.ts's hasPermissionAtLocation contract).
+  it('SELLER @ A + CASHIER @ B: a SALE_CHARGE grant at B never authorizes charging a sale persisted at A', async () => {
+    const otherBranch = await db.branch.findFirstOrThrow({ where: { id: { not: branchId } } });
+    const sellerRole = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const cashierRole = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+    const multi = await db.user.create({ data: { name: 'multi-charge', email: 'multi-charge@test.local', passwordHash: 'x' } });
+    await db.userRoleScope.createMany({
+      data: [
+        { userId: multi.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branchId },
+        { userId: multi.id, roleId: cashierRole.id, scopeKind: 'LOCATION', locationId: otherBranch.id },
+      ],
+    });
+    const multiToken = await getAuthToken(multi);
+    const saleAtA = await createSale(1n);
+    expect((await pay(saleAtA.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, multiToken)).status).toBe(403);
+    const saleAtB = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', subtotal: 1n, total: 1n } });
+    expect((await pay(saleAtB.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, multiToken)).status).toBe(201);
   });
 
   it('requires the persisted sale branch and applies branch revocation to an existing JWT', async () => {
@@ -194,6 +244,29 @@ describe('split payments', () => {
     // Branch-access revocation: mutate the authoritative LOCATION scope only.
     await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranch.id } });
     expect((await request(app).get(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${token}`)).status).toBe(403);
+  });
+
+  it('authorizes payment listing via the Production SALE_VIEW grant alone', async () => {
+    // SELLER holds SALE_VIEW but not SALE_CHARGE by default
+    // (role-permission-matrix.ts), isolating this from the charge-authority
+    // proofs above.
+    const sellerRole = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const user = await createTestUser(db, sellerRole.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const sale = await createSale(1n);
+    const response = await request(app).get(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only sale.view grant on payment listing, once switched', async () => {
+    const warehouseRole = await db.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const legacyPermission = await db.permission.upsert({ where: { code: 'sale.view' }, create: { code: 'sale.view' }, update: {} });
+    await db.rolePermission.create({ data: { roleId: warehouseRole.id, permissionId: legacyPermission.id } });
+    const user = await createTestUser(db, warehouseRole.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const sale = await createSale(1n);
+    const response = await request(app).get(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
   });
 
   it('grants GET payment listing on a fresh UserRoleScope location despite a stale UserBranchRole', async () => {
