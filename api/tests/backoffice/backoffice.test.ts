@@ -4,7 +4,8 @@ import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import type { PrismaClient } from '../../src/generated/prisma/client.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
 
 describe('backoffice read API', () => {
   let prisma: PrismaClient;
@@ -41,6 +42,20 @@ describe('backoffice read API', () => {
         })
       ).map((variant) => [variant.sku, variant]),
     );
+    // Phase 1D.3.5 SWITCH: Backoffice REPORT_VIEW/USER_MANAGE now gate on
+    // Production assignments (req.auth.assignments), not legacy UserBranchRole
+    // report.view/user.manage. Legacy MANAGER maps to Production WAREHOUSE
+    // (legacy-role-map.ts), which carries neither REPORT_VIEW nor USER_MANAGE
+    // by default (role-permission-matrix.ts) — MANAGER can no longer stand in
+    // as "the authorized single-branch caller" these tests need. ADMIN is the
+    // only canonical role granted every Production permission by default, and
+    // can still be LOCATION-scoped during the pre-1D.4.1-backfill
+    // compatibility window this task must keep working under — a fresh
+    // LOCATION-scoped ADMIN user replaces MANAGER as the default authorized,
+    // single-branch caller.
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const scopedAdmin = await createTestUser(prisma, adminRole.id, branches.CEN!);
+    users['scoped-admin'] = scopedAdmin.id;
   }, 120000);
 
   afterAll(async () => prisma.$disconnect(), 120000);
@@ -49,7 +64,7 @@ describe('backoffice read API', () => {
     return getAuthToken({ id: users[email]! });
   }
 
-  async function get(path: string, email = 'manager01@demo.local') {
+  async function get(path: string, email = 'scoped-admin') {
     return request(app).get(path).set('Authorization', `Bearer ${await token(email)}`);
   }
 
@@ -156,7 +171,7 @@ describe('backoffice read API', () => {
     };
   }
 
-  it('allows MANAGER to read own branch data', async () => {
+  it('allows a LOCATION-scoped Production caller to read own branch data', async () => {
     await createPendingSale();
     const response = await get('/api/v1/backoffice/sales');
     expect(response.status).toBe(200);
@@ -164,9 +179,59 @@ describe('backoffice read API', () => {
     expect(response.body.items[0].branch).toMatchObject({ id: branches.CEN, code: 'CEN' });
   });
 
-  it('returns 403 when MANAGER queries an unauthorized branchId', async () => {
+  it('returns 403 when a LOCATION-scoped caller queries an unauthorized branchId', async () => {
     const response = await get(`/api/v1/backoffice/sales?branchId=${branches.YB}`);
     expect(response.status).toBe(403);
+  });
+
+  it('authorizes Backoffice REPORT_VIEW reads via the Production grant alone', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const user = await createTestUser(prisma, adminRole.id, branches.CEN!);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/backoffice/dashboard').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only report.view grant, once switched', async () => {
+    const permission = await prisma.permission.upsert({ where: { code: 'report.view' }, create: { code: 'report.view' }, update: {} });
+    const role = await createRole(prisma, 'LEGACY-ONLY-REPORT-VIEW');
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(prisma, role.id, branches.CEN!);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/backoffice/dashboard').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
+  });
+
+  it('rejects MANAGER (mapped to WAREHOUSE, no REPORT_VIEW) on Backoffice reads', async () => {
+    expect((await get('/api/v1/backoffice/dashboard', 'manager01@demo.local')).status).toBe(403);
+  });
+
+  it('revokes Production REPORT_VIEW after token issuance and fails closed', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'REPORT_VIEW' } });
+    await prisma.rolePermission.delete({ where: { roleId_permissionId: { roleId: adminRole.id, permissionId: permission.id } } });
+    expect((await get('/api/v1/backoffice/dashboard')).status).toBe(403);
+  });
+
+  // Phase 1D.3.5 cross-assignment security: a permission granted by one
+  // assignment must never combine with a location granted by a different
+  // assignment (authorization-policy.ts's hasPermissionAtLocation contract).
+  // ADMIN carries REPORT_VIEW by default; WAREHOUSE does not.
+  it('does not compose ADMIN @ A REPORT_VIEW with WAREHOUSE @ B location for sale detail', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const warehouseRole = await prisma.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const multi = await prisma.user.create({ data: { name: 'multi-report', email: 'multi-report@test.local', passwordHash: 'x' } });
+    await prisma.userRoleScope.createMany({
+      data: [
+        { userId: multi.id, roleId: adminRole.id, scopeKind: 'LOCATION', locationId: branches.CEN! },
+        { userId: multi.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branches.YB! },
+      ],
+    });
+    const multiToken = await getAuthToken(multi);
+    const saleA = await createPendingSale(branches.CEN);
+    const saleB = await createPendingSale(branches.YB);
+    expect((await request(app).get(`/api/v1/backoffice/sales/${saleA.id}`).set('Authorization', `Bearer ${multiToken}`)).status).toBe(200);
+    expect((await request(app).get(`/api/v1/backoffice/sales/${saleB.id}`).set('Authorization', `Bearer ${multiToken}`)).status).toBe(403);
   });
 
   it('allows ADMIN to read global authorized data', async () => {
@@ -186,12 +251,36 @@ describe('backoffice read API', () => {
   });
 
   it('denies /users without USER_MANAGE', async () => {
-    expect((await get('/api/v1/backoffice/users')).status).toBe(403);
+    // MANAGER maps to Production WAREHOUSE (legacy-role-map.ts), which
+    // carries neither USER_MANAGE nor REPORT_VIEW by default.
+    expect((await get('/api/v1/backoffice/users', 'manager01@demo.local')).status).toBe(403);
     expect((await get('/api/v1/backoffice/users', 'admin@demo.local')).status).toBe(200);
     expect((await get('/api/v1/backoffice/users', 'admin@demo.local')).body.items[0]).not.toHaveProperty('passwordHash');
   });
 
+  it('authorizes /backoffice/users via the Production USER_MANAGE grant alone', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const user = await createTestUser(prisma, adminRole.id, branches.CEN!);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/backoffice/users').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only user.manage grant, once switched', async () => {
+    const permission = await prisma.permission.upsert({ where: { code: 'user.manage' }, create: { code: 'user.manage' }, update: {} });
+    const role = await createRole(prisma, 'LEGACY-ONLY-USER-MANAGE');
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(prisma, role.id, branches.CEN!);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/backoffice/users').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
+  });
+
   it('denies sale detail from an unauthorized branch', async () => {
+    // Phase 1D.3.5 SWITCH: getSale now pairs REPORT_VIEW with the persisted
+    // Sale.branchId via assertPermissionAtLocation — the default caller's
+    // ADMIN assignment only covers Centro, so a sale persisted at Yerba
+    // Buena must still be rejected.
     const sale = await createPendingSale(branches.YB);
     const response = await get(`/api/v1/backoffice/sales/${sale.id}`);
     expect(response.status).toBe(403);
@@ -243,11 +332,11 @@ describe('backoffice read API', () => {
   it('scopes dashboard aggregates to authorized branches', async () => {
     await createPendingSale(branches.CEN);
     await createPendingSale(branches.YB);
-    const manager = await get('/api/v1/backoffice/dashboard');
+    const centroCaller = await get('/api/v1/backoffice/dashboard');
     const admin = await get('/api/v1/backoffice/dashboard', 'admin@demo.local');
-    expect(manager.status).toBe(200);
+    expect(centroCaller.status).toBe(200);
     expect(admin.status).toBe(200);
-    expect(manager.body.pendingSalesCount).toBe(1);
+    expect(centroCaller.body.pendingSalesCount).toBe(1);
     expect(admin.body.pendingSalesCount).toBe(2);
   });
 });

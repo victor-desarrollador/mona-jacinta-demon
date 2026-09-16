@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from '../../generated/prisma/client.js';
-import { assertBranchAccess } from '../../middleware/authorization.js';
+import { assertBranchAccess, assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 
 type RequestLike = Parameters<typeof assertBranchAccess>[0];
@@ -199,7 +200,7 @@ export function createBackofficeService(database: BackofficeDatabase) {
       },
     });
     if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontro la venta.');
-    assertBranchAccess(req, sale.branchId);
+    assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.REPORT_VIEW, sale.branchId);
     return { sale };
   }
 

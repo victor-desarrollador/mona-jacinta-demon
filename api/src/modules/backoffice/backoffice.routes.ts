@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma/client.js';
-import { requireLegacyPermission } from '../../middleware/authorization.js';
+import { requirePermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
-import { PERMISSIONS } from '../../shared/permissions.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { createBackofficeController } from './backoffice.controller.js';
 
 const limit = z.coerce.number().int().min(1).max(100).default(50);
@@ -31,8 +31,8 @@ const saleParams = z.object({ id: z.uuid() }).strict();
 export function createBackofficeRouter(database: PrismaClient): Router {
   const router = Router();
   const controller = createBackofficeController(database);
-  const reportView = requireLegacyPermission(PERMISSIONS.REPORT_VIEW);
-  const userManage = requireLegacyPermission(PERMISSIONS.USER_MANAGE);
+  const reportView = requirePermission(PRODUCTION_PERMISSIONS.REPORT_VIEW);
+  const userManage = requirePermission(PRODUCTION_PERMISSIONS.USER_MANAGE);
 
   router.get('/dashboard', reportView, controller.dashboard);
   router.get('/sales', reportView, validate(salesQuery, 'query'), controller.sales);

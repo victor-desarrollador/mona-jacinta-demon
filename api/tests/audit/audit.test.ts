@@ -10,7 +10,8 @@ import { createSalesService } from '../../src/modules/sales/sales.service.js';
 import { createPaymentsService } from '../../src/modules/payments/payments.service.js';
 import { createCashService } from '../../src/modules/cash/cash.service.js';
 import { createCancellationService } from '../../src/modules/sales/cancellation.service.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 
 describe('critical operation audit', () => {
@@ -170,15 +171,60 @@ describe('critical operation audit', () => {
     expect(await db.stockReservation.count({ where: { saleId: sale.id, status: 'ACTIVE' } })).toBe(1);
   });
 
-  it('requires authentication and fresh permission even for ADMIN; permission works without role names', async () => {
+  it('requires authentication', async () => {
     expect((await request(createApp(db)).get('/api/v1/audit')).status).toBe(401);
+  });
+
+  it('authorizes via the Production AUDIT_VIEW grant alone', async () => {
+    expect((await get()).status).toBe(200);
+  });
+
+  it('rejects a caller with no AUDIT_VIEW grant', async () => {
     expect((await get(await getAuthToken({ id: sellerId }))).status).toBe(403);
-    expect((await get()).status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only audit.view grant, once switched', async () => {
+    const permission = await db.permission.upsert({ where: { code: 'audit.view' }, create: { code: 'audit.view' }, update: {} });
+    const role = await createRole(db, 'LEGACY-ONLY-AUDIT-VIEW');
+    await db.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(db, role.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    expect((await get(isolatedToken)).status).toBe(403);
+  });
+
+  it('rejects MANAGER (mapped to WAREHOUSE, no AUDIT_VIEW)', async () => {
+    const manager = await db.user.findUniqueOrThrow({ where: { email: 'manager01@demo.local' } });
+    expect((await get(await getAuthToken(manager))).status).toBe(403);
+  });
+
+  it('authorizes via a COMPANY-scoped ADMIN assignment', async () => {
+    const adminRole = await db.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const companyAdmin = await db.user.create({ data: { name: 'company-admin-audit', email: 'company-admin-audit@test.local', passwordHash: 'x' } });
+    await db.userRoleScope.create({ data: { userId: companyAdmin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null } });
+    const companyToken = await getAuthToken(companyAdmin);
+    expect((await get(companyToken)).status).toBe(200);
+  });
+
+  // Phase 1D.3.5 correction: this test used to prove "permission works
+  // without role names" by renaming ADMIN to an arbitrary code and expecting
+  // continued access — a legacy-only property, since requireLegacyPermission
+  // reads req.auth.legacyPermissions purely by permission code. Under the
+  // Production switch that expectation is invalid: isProductionRoleCode
+  // (roles.ts) filters authorization-context.ts's assignments by canonical
+  // Production role code BEFORE any permission is read, so an unrecognized
+  // code like AUDITOR can never contribute AUDIT_VIEW, even though the
+  // underlying RolePermission grant on that Role row is untouched.
+  // isProductionRoleCode must not be weakened to preserve the old behavior.
+  it('fails closed for an unknown Production role code (AUDITOR), even with the underlying RolePermission grant intact', async () => {
     const role = await db.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
-    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'audit.view' } });
     await db.role.update({ where: { id: role.id }, data: { code: 'AUDITOR' } });
-    expect((await get()).status).toBe(200);
+    expect((await get()).status).toBe(403);
     await db.role.update({ where: { id: role.id }, data: { code: 'ADMIN' } });
+  });
+
+  it('revokes Production AUDIT_VIEW after token issuance and fails closed', async () => {
+    const role = await db.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'AUDIT_VIEW' } });
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await get()).status).toBe(403);
   });
