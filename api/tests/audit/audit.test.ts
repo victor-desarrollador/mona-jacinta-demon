@@ -24,17 +24,19 @@ describe('critical operation audit', () => {
   // internal, service-local shape — unaffected by Phase 1D.1's rename of
   // Express.AuthContext's field, which is what `req()` below builds).
   const scope = (userId: string) => ({ userId, branchIds: [branchId] });
-  // Phase 1D.2.4/1D.3.1/1D.3.2: assertBranchAccess/assertPermissionAtLocation
-  // now read req.auth.assignments (via the centralized
-  // authorization-policy.ts), not req.auth.effectiveLocationIds — this
-  // hand-built fixture must carry a matching LOCATION assignment for
-  // branchId, with the Production permissions the switched Sales/
-  // Cancellation/Payments code paths actually check (SALE_CREATE for
-  // createDraftSale/cancelSale, SALE_VIEW for ensureSaleAccess/listPayments,
-  // SALE_COMPLETE for completeSaleInTransaction, SALE_CHARGE for
-  // registerPayment's assertCurrentBranch), or those calls fail closed. The
-  // exact roleCode is irrelevant to these checks (only OWNER is
-  // special-cased) — SELLER is an arbitrary non-OWNER placeholder.
+  // Phase 1D.2.4/1D.3.1/1D.3.2/1D.3.3: assertBranchAccess/
+  // assertPermissionAtLocation/hasPermissionAtLocation now read
+  // req.auth.assignments (via the centralized authorization-policy.ts), not
+  // req.auth.effectiveLocationIds — this hand-built fixture must carry a
+  // matching LOCATION assignment for branchId, with the Production
+  // permissions the switched Sales/Cancellation/Payments/Cash code paths
+  // actually check (SALE_CREATE for createDraftSale/cancelSale, SALE_VIEW
+  // for ensureSaleAccess/listPayments, SALE_COMPLETE for
+  // completeSaleInTransaction, SALE_CHARGE for registerPayment's
+  // assertCurrentBranch, CASH_SESSION_OPEN/CLOSE for openSession/
+  // closeSession), or those calls fail closed. The exact roleCode is
+  // irrelevant to these checks (only OWNER is special-cased) — SELLER is an
+  // arbitrary non-OWNER placeholder.
   const req = (userId: string) =>
     ({
       auth: {
@@ -45,7 +47,7 @@ describe('critical operation audit', () => {
         assignments: [
           {
             roleId: 'audit-test-assignment', roleCode: 'SELLER', scopeKind: 'LOCATION', locationId: branchId,
-            permissions: ['SALE_CREATE', 'SALE_VIEW', 'SALE_COMPLETE', 'SALE_CHARGE'],
+            permissions: ['SALE_CREATE', 'SALE_VIEW', 'SALE_COMPLETE', 'SALE_CHARGE', 'CASH_SESSION_OPEN', 'CASH_SESSION_CLOSE'],
           },
         ],
       },
@@ -97,7 +99,7 @@ describe('critical operation audit', () => {
     expect(sent.after).toMatchObject({ status: 'PENDING_PAYMENT', saleNumber: expect.any(String) });
     const cash = createCashService(db);
     const register = await db.cashRegister.findFirstOrThrow({ where: { branchId } });
-    const session = await cash.openSession(register.id, cashierId, [branchId], 9007199254740993n);
+    const session = await cash.openSession(register.id, req(cashierId).auth!, 9007199254740993n);
     expect((await audit('CASH_SESSION_OPENED', session.sessionId, cashierId, 'CashSession')).after).toMatchObject({ startingCash: '9007199254740993', status: 'OPEN' });
     const paid = await createPaymentsService(db).registerPayment(req(cashierId), cashierId, sale.id, {
       method: 'CASH', amount: 4500000n, receivedAmount: 5000000n, idempotencyKey: randomUUID(),
@@ -109,7 +111,7 @@ describe('critical operation audit', () => {
     const completed = await audit('SALE_COMPLETED', sale.id, cashierId);
     expect(completed.before).toEqual({ status: 'PAID' });
     expect(completed.after).toMatchObject({ status: 'COMPLETED', inventory: [{ variantId: expect.any(String), quantity: '1' }] });
-    await cash.closeSession(session.sessionId, cashierId, [branchId], 4500000n);
+    await cash.closeSession(session.sessionId, req(cashierId).auth!, 4500000n);
     const closed = await audit('CASH_SESSION_CLOSED', session.sessionId, cashierId, 'CashSession');
     expect(closed.before).toEqual({ status: 'OPEN' });
     expect(closed.after).toMatchObject({ status: 'CLOSED', closingCash: '4500000', startingCash: '9007199254740993' });
