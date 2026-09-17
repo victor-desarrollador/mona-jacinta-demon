@@ -5,6 +5,7 @@ import { requirePermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { createBackofficeController } from './backoffice.controller.js';
+import { assignScopeDto, userIdParamsDto, userRoleParamsDto } from './scope-assignment.dto.js';
 
 const limit = z.coerce.number().int().min(1).max(100).default(50);
 const offset = z.coerce.number().int().min(0).default(0);
@@ -40,6 +41,23 @@ export function createBackofficeRouter(database: PrismaClient): Router {
   router.get('/inventory', reportView, validate(inventoryQuery, 'query'), controller.inventory);
   router.get('/branches', reportView, controller.branches);
   router.get('/users', userManage, controller.users);
+  // Phase 1D.4.4: this is the security dependency Task 1D.4.3 deliberately
+  // deferred — scope-assignment.service.ts is only safe against a
+  // CASHIER/SELLER/WAREHOUSE caller once USER_MANAGE gates both routes
+  // below, before the controller/service is ever invoked.
+  router.post(
+    '/users/:userId/scope',
+    validate(userIdParamsDto, 'params'),
+    validate(assignScopeDto),
+    userManage,
+    controller.assignScope,
+  );
+  router.delete(
+    '/users/:userId/scope/:roleCode',
+    validate(userRoleParamsDto, 'params'),
+    userManage,
+    controller.revokeScope,
+  );
 
   return router;
 }

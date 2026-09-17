@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import request from 'supertest';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 import { createBranch, createTestUser, ensureTestLocation } from '../helpers/factories.js';
+import { getAuthToken } from '../helpers/auth.js';
 import { bootstrapProductionRbacCatalog } from '../../src/modules/rbac/catalog.service.js';
 import { createScopeAssignmentService } from '../../src/modules/backoffice/scope-assignment.service.js';
+import { createApp } from '../../src/app.js';
 import type { RoleCode } from '../../src/modules/rbac/roles.js';
 import type { PrismaClient } from '../../src/generated/prisma/client.js';
 
@@ -379,5 +382,156 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
     const rows = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: managerRole.id } });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.locationId).toBe(branch.id);
+  });
+
+  // Phase 1D.4.4: HTTP exposure of the already-approved Task 1D.4.3 service.
+  // Nested inside the outer describe so it reuses the single test-database
+  // client and the outer beforeEach's truncate+bootstrap — this file's own
+  // established convention (no test file in this repo opens two independent
+  // createTestPrismaClient() pools). Only the HTTP-specific concerns this
+  // task actually adds are covered here: route registration, USER_MANAGE
+  // gating, request/response wiring, and validate() middleware — every
+  // authorization/business invariant already has direct-service coverage
+  // above and is deliberately not re-proven end-to-end here (Task 1D.4.5
+  // owns the dedicated privilege-escalation suite).
+  describe('HTTP exposure (Phase 1D.4.4)', () => {
+    let app: ReturnType<typeof createApp>;
+
+    beforeAll(() => {
+      app = createApp(db);
+    });
+
+    it('POST /api/v1/backoffice/users/:userId/scope: a CASHIER caller (no USER_MANAGE) gets 403 and creates no assignment', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const cashier = await createTestUser(db, (await findRole('CASHIER')).id, branch.id);
+      const target = await createTestUser(db, (await findRole('SELLER')).id, branch.id);
+      const before = await db.userRoleScope.findMany({ where: { userId: target.id } });
+
+      const res = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(cashier)}`)
+        .send({ roleCode: 'WAREHOUSE', scopeKind: 'LOCATION', locationIds: [branch.id] });
+
+      expect(res.status).toBe(403);
+      const after = await db.userRoleScope.findMany({ where: { userId: target.id } });
+      expect(after).toEqual(before);
+    });
+
+    it('POST /api/v1/backoffice/users/:userId/scope: an ADMIN with real USER_MANAGE reassigns SELLER to Location B without disturbing an independent WAREHOUSE @ Location A assignment', async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const admin = await createTestUser(db, (await findRole('ADMIN')).id, branchA.id);
+      const sellerRole = await findRole('SELLER');
+      const warehouseRole = await findRole('WAREHOUSE');
+      const target = await db.user.create({ data: { name: 'http-multi-1', email: 'http-multi-1@test.local', passwordHash: 'x' } });
+      await db.userRoleScope.create({ data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branchA.id } });
+      await db.userRoleScope.create({ data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branchA.id } });
+
+      const res = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchB.id] });
+
+      expect(res.status).toBeLessThan(300);
+      expect(res.body).toMatchObject({ userId: target.id, roleCode: 'SELLER', scopeKind: 'LOCATION' });
+
+      const sellerRows = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(sellerRows).toHaveLength(1);
+      expect(sellerRows[0]!.locationId).toBe(branchB.id);
+
+      const warehouseRows = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: warehouseRole.id } });
+      expect(warehouseRows).toHaveLength(1);
+      expect(warehouseRows[0]!.locationId).toBe(branchA.id);
+    });
+
+    it('DELETE /api/v1/backoffice/users/:userId/scope/:roleCode removes exactly that assignment and preserves an independent one', async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const admin = await createTestUser(db, (await findRole('ADMIN')).id, branchA.id);
+      const sellerRole = await findRole('SELLER');
+      const warehouseRole = await findRole('WAREHOUSE');
+      const target = await db.user.create({ data: { name: 'http-multi-2', email: 'http-multi-2@test.local', passwordHash: 'x' } });
+      await db.userRoleScope.create({ data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branchA.id } });
+      await db.userRoleScope.create({ data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branchB.id } });
+
+      const res = await request(app)
+        .delete(`/api/v1/backoffice/users/${target.id}/scope/WAREHOUSE`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
+
+      expect(res.status).toBeLessThan(300);
+      expect(res.body).toMatchObject({ userId: target.id, roleCode: 'WAREHOUSE', revoked: true });
+
+      expect(await db.userRoleScope.count({ where: { userId: target.id, roleId: warehouseRole.id } })).toBe(0);
+      const sellerRows = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(sellerRows).toHaveLength(1);
+      expect(sellerRows[0]!.locationId).toBe(branchA.id);
+    });
+
+    // Mandatory per Task 1D.4.4: proves the target's NEXT /me call rebuilds
+    // authorization context from current DB state (src/middleware/auth.ts's
+    // createRequireAuth re-queries roleScopes on every request — the JWT
+    // itself carries only `sub`), not a stale in-memory object.
+    it("the target user's next GET /api/v1/auth/me reflects a revoke via effectiveLocationIds (branchIds), while the remaining assignment stays reachable", async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const admin = await createTestUser(db, (await findRole('ADMIN')).id, branchA.id);
+      const sellerRole = await findRole('SELLER');
+      const warehouseRole = await findRole('WAREHOUSE');
+      const target = await db.user.create({ data: { name: 'http-me-target', email: 'http-me-target@test.local', passwordHash: 'x' } });
+      await db.userRoleScope.create({ data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branchA.id } });
+      await db.userRoleScope.create({ data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branchB.id } });
+      const targetToken = await getAuthToken(target);
+
+      const before = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${targetToken}`);
+      expect(before.status).toBe(200);
+      expect([...before.body.user.branchIds].sort()).toEqual([branchA.id, branchB.id].sort());
+
+      const revokeRes = await request(app)
+        .delete(`/api/v1/backoffice/users/${target.id}/scope/WAREHOUSE`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
+      expect(revokeRes.status).toBeLessThan(300);
+
+      const after = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${targetToken}`);
+      expect(after.status).toBe(200);
+      expect(after.body.user.branchIds).toEqual([branchA.id]);
+    });
+
+    it('DELETE .../scope/MANAGER is rejected by params validation before it can reach the service, with zero mutation', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const admin = await createTestUser(db, (await findRole('ADMIN')).id, branch.id);
+      const target = await createTestUser(db, (await findRole('SELLER')).id, branch.id);
+      const before = await db.userRoleScope.findMany({ where: { userId: target.id } });
+
+      const res = await request(app)
+        .delete(`/api/v1/backoffice/users/${target.id}/scope/MANAGER`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
+
+      expect(res.status).toBe(400);
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id } })).toEqual(before);
+    });
+
+    it('POST .../scope rejects a COMPANY body carrying a stray locationIds field before it can reach the service, with zero mutation', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const admin = await createTestUser(db, (await findRole('ADMIN')).id, branch.id);
+      const target = await createTestUser(db, (await findRole('SELLER')).id, branch.id);
+      const before = await db.userRoleScope.findMany({ where: { userId: target.id } });
+
+      const res = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'ADMIN', scopeKind: 'COMPANY', locationIds: [branch.id] });
+
+      expect(res.status).toBe(400);
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id } })).toEqual(before);
+    });
   });
 });
