@@ -339,4 +339,96 @@ describe('backoffice read API', () => {
     expect(centroCaller.body.pendingSalesCount).toBe(1);
     expect(admin.body.pendingSalesCount).toBe(2);
   });
+
+  // Phase 1D.4.6: GET /backoffice/users must read exclusively from live
+  // UserRoleScope — never UserBranchRole — for both user discovery and the
+  // projected assignments. Nested here (not a separate file) so it reuses
+  // this describe's seedDemo fixtures/beforeEach and its `get`/`token`
+  // helpers, per this file's own established convention.
+  describe('Phase 1D.4.6 live UserRoleScope users projection', () => {
+    async function findRole(code: 'ADMIN' | 'SELLER' | 'WAREHOUSE') {
+      return prisma.role.findUniqueOrThrow({ where: { code } });
+    }
+
+    it('a stale legacy UserBranchRole never leaks into assignments — only the live UserRoleScope is projected', async () => {
+      const sellerRole = await findRole('SELLER');
+      const warehouseRole = await findRole('WAREHOUSE');
+      // createTestUser gives target BOTH a legacy UserBranchRole(SELLER@CEN)
+      // and a matching UserRoleScope(SELLER@CEN) — deliberately diverge them
+      // below so the legacy row and the live Production row disagree.
+      const target = await createTestUser(prisma, sellerRole.id, branches.CEN!);
+      await prisma.userRoleScope.deleteMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      await prisma.userRoleScope.create({
+        data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branches.CEN! },
+      });
+      // Confirm the divergence is real before asserting on it.
+      expect(await prisma.userBranchRole.count({ where: { userId: target.id, roleId: sellerRole.id } })).toBe(1);
+
+      const response = await get('/api/v1/backoffice/users');
+      expect(response.status).toBe(200);
+      const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
+      expect(projected).toBeDefined();
+      expect(projected).not.toHaveProperty('roles');
+      expect(projected).not.toHaveProperty('branches');
+      expect(projected.assignments).toEqual([
+        { roleCode: 'WAREHOUSE', scopeKind: 'LOCATION', location: { id: branches.CEN, name: expect.any(String), code: 'CEN' } },
+      ]);
+    });
+
+    it('a fully-revoked user (stale UserBranchRole, zero UserRoleScope) is absent from the response', async () => {
+      const sellerRole = await findRole('SELLER');
+      const target = await createTestUser(prisma, sellerRole.id, branches.CEN!);
+      await prisma.userRoleScope.deleteMany({ where: { userId: target.id } });
+
+      const response = await get('/api/v1/backoffice/users');
+      expect(response.status).toBe(200);
+      expect(response.body.items.map((item: { id: string }) => item.id)).not.toContain(target.id);
+      expect(await prisma.userBranchRole.count({ where: { userId: target.id } })).toBe(1);
+    });
+
+    it('a COMPANY-scoped assignment is live user state — appears with location: null and no UserBranchRole needed', async () => {
+      const adminRole = await findRole('ADMIN');
+      const target = await prisma.user.create({
+        data: { name: 'company-target', email: 'company-target@test.local', passwordHash: 'x' },
+      });
+      await prisma.userRoleScope.create({
+        data: { userId: target.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
+      });
+      expect(await prisma.userBranchRole.count({ where: { userId: target.id } })).toBe(0);
+
+      const response = await get('/api/v1/backoffice/users');
+      expect(response.status).toBe(200);
+      const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
+      expect(projected).toBeDefined();
+      expect(projected.assignments).toEqual([{ roleCode: 'ADMIN', scopeKind: 'COMPANY', location: null }]);
+    });
+
+    it('a user with two independent LOCATION assignments returns both, never collapsed into a single role/branch list', async () => {
+      const sellerRole = await findRole('SELLER');
+      const warehouseRole = await findRole('WAREHOUSE');
+      const target = await prisma.user.create({
+        data: { name: 'multi-target', email: 'multi-target@test.local', passwordHash: 'x' },
+      });
+      await prisma.userRoleScope.create({
+        data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branches.CEN! },
+      });
+      await prisma.userRoleScope.create({
+        data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branches.YB! },
+      });
+
+      // admin@demo.local's Production assignment spans every seeded branch
+      // (Phase 1C backfill), so both CEN and YB are within its
+      // effectiveLocationIds filter.
+      const response = await get('/api/v1/backoffice/users', 'admin@demo.local');
+      expect(response.status).toBe(200);
+      const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
+      expect(projected).toBeDefined();
+      const byRoleCode = Object.fromEntries(
+        projected.assignments.map((a: { roleCode: string; location: { id: string } | null }) => [a.roleCode, a]),
+      );
+      expect(projected.assignments).toHaveLength(2);
+      expect(byRoleCode.SELLER).toMatchObject({ scopeKind: 'LOCATION', location: { id: branches.CEN } });
+      expect(byRoleCode.WAREHOUSE).toMatchObject({ scopeKind: 'LOCATION', location: { id: branches.YB } });
+    });
+  });
 });

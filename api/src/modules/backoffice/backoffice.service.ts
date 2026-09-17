@@ -283,23 +283,39 @@ export function createBackofficeService(database: BackofficeDatabase) {
     };
   }
 
+  // Phase 1D.4.6: reads live Production authority exclusively from
+  // UserRoleScope — never UserBranchRole (legacy/display compatibility
+  // only, per AGENTS.md's Phase 1C/1D checkpoint). A COMPANY-scoped row is
+  // explicitly admitted alongside a location match, since COMPANY has no
+  // locationId to filter on but is still live current state. locationIds
+  // here is scopeBranches(req)'s display/filter convenience
+  // (effectiveLocationIds by default) — USER_MANAGE authorization already
+  // happened at the route (backoffice.routes.ts), this is never a second
+  // permission authority.
   async function users(req: RequestLike) {
-    const branchIds = scopeBranches(req);
+    const locationIds = scopeBranches(req);
     const rows = await database.user.findMany({
-      where: { branchRoles: { some: { branchId: { in: branchIds } } } },
+      where: {
+        roleScopes: {
+          some: {
+            OR: [{ locationId: { in: locationIds } }, { scopeKind: 'COMPANY' }],
+          },
+        },
+      },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
       select: {
         id: true,
         name: true,
         email: true,
         isActive: true,
-        branchRoles: {
-          where: { branchId: { in: branchIds } },
+        roleScopes: {
           select: {
+            scopeKind: true,
+            locationId: true,
             role: { select: { id: true, code: true, name: true } },
-            branch: { select: branchSelect },
+            location: { select: branchSelect },
           },
-          orderBy: [{ branch: { code: 'asc' } }, { role: { code: 'asc' } }],
+          orderBy: [{ role: { code: 'asc' } }],
         },
       },
     });
@@ -310,12 +326,11 @@ export function createBackofficeService(database: BackofficeDatabase) {
         name: user.name,
         email: user.email,
         isActive: user.isActive,
-        roles: [
-          ...new Map(user.branchRoles.map(({ role }) => [role.id, role])).values(),
-        ],
-        branches: [
-          ...new Map(user.branchRoles.map(({ branch }) => [branch.id, branch])).values(),
-        ],
+        assignments: user.roleScopes.map((scope) => ({
+          roleCode: scope.role.code,
+          scopeKind: scope.scopeKind,
+          location: scope.location,
+        })),
       })),
     };
   }
