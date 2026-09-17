@@ -72,7 +72,9 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
     // Phase 1C addendum: with Location bootstrapped (ensured in beforeAll
     // below), populate() now also syncs UserRoleScope on every reset/seed —
     // see scope-seed-integration.test.ts for the dedicated Phase 1C checks.
-    expect(await db.prisma.userRoleScope.count()).toBe(9);
+    // Phase 1D.4.2 addendum: +1 for the canonical OWNER user's COMPANY
+    // UserRoleScope row (see the dedicated OWNER seed test below).
+    expect(await db.prisma.userRoleScope.count()).toBe(10);
     const verification = await verifyProductionRbacCatalog(db.prisma);
     expect(verification.ok).toBe(true);
     expect(verification.issues).toEqual([]);
@@ -193,4 +195,19 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
     await safely(() => resetDemo(db.prisma));
     await expectFullPhase1BState();
   }, 180000);
+
+  // Phase 1D.4.2: the canonical bootstrap OWNER user, provisioned only by
+  // seed/bootstrap tooling (docs/superpowers/plans/2026-09-14-phase-1d-production-authorization.md
+  // Task 1D.4.2) — never through the self-service scope-assignment endpoint.
+  // OWNER never existed as a legacy role code, so it must get zero
+  // UserBranchRole rows, unlike every other seeded demo user.
+  it('seeds a canonical OWNER user with exactly one COMPANY UserRoleScope assignment and zero legacy UserBranchRole rows', async () => {
+    await safely(() => resetDemo(db.prisma));
+    const owner = await db.prisma.user.findUniqueOrThrow({ where: { email: 'owner01@demo.local' } });
+    const ownerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
+    const scopes = await db.prisma.userRoleScope.findMany({ where: { userId: owner.id } });
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0]).toMatchObject({ roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null });
+    expect(await db.prisma.userBranchRole.count({ where: { userId: owner.id } })).toBe(0);
+  }, 120000);
 });

@@ -50,7 +50,12 @@ describe('Demo seed/reset lifecycle preserves the UserRoleScope backfill (Phase 
 
   async function expectFullPhase1CState() {
     expect(await db.prisma.userBranchRole.count()).toBe(9);
-    expect(await db.prisma.userRoleScope.count()).toBe(9);
+    // Phase 1D.4.2 addendum: 9 legacy-derived LOCATION scopes + 1 canonical
+    // OWNER COMPANY scope (see the dedicated OWNER seed test in
+    // seed-integration.test.ts) — see scope-backfill.service.ts's
+    // verifyUserRoleScopeBackfill for why the extra COMPANY row doesn't fail
+    // this Phase 1C verification.
+    expect(await db.prisma.userRoleScope.count()).toBe(10);
     const verification = await verifyUserRoleScopeBackfill(db.prisma);
     expect(verification.ok).toBe(true);
     expect(verification.issues).toEqual([]);
@@ -63,10 +68,13 @@ describe('Demo seed/reset lifecycle preserves the UserRoleScope backfill (Phase 
     expect(managerScope.roleId).toBe(warehouseRole.id);
     expect(managerScope.scopeKind).toBe('LOCATION');
 
-    expect(await db.prisma.userRoleScope.count({ where: { scopeKind: 'COMPANY' } })).toBe(0);
+    // Phase 1D.4.2 addendum: the sole COMPANY row is the canonical OWNER's.
+    expect(await db.prisma.userRoleScope.count({ where: { scopeKind: 'COMPANY' } })).toBe(1);
     const ownerRole = await db.prisma.role.findFirst({ where: { code: 'OWNER' } });
     if (ownerRole) {
-      expect(await db.prisma.userRoleScope.count({ where: { roleId: ownerRole.id } })).toBe(0);
+      const ownerScopes = await db.prisma.userRoleScope.findMany({ where: { roleId: ownerRole.id } });
+      expect(ownerScopes).toHaveLength(1);
+      expect(ownerScopes[0]).toMatchObject({ scopeKind: 'COMPANY', locationId: null });
     }
   }
 
@@ -83,12 +91,21 @@ describe('Demo seed/reset lifecycle preserves the UserRoleScope backfill (Phase 
   // restores Location afterward so every later test in this file can assume
   // it is present (Location is never deleted by clear()/populate(), so once
   // restored here it persists for the rest of this file's tests).
-  it('resetDemo succeeds and leaves UserRoleScope empty when Location has never been backfilled yet', async () => {
+  it('resetDemo succeeds and leaves only the canonical OWNER scope when Location has never been backfilled yet', async () => {
     await db.prisma.location.deleteMany();
     await safely(() => resetDemo(db.prisma));
     expect(await db.prisma.location.count()).toBe(0);
     expect(await db.prisma.userBranchRole.count()).toBe(9);
-    expect(await db.prisma.userRoleScope.count()).toBe(0);
+    // Phase 1D.4.2: the canonical OWNER's COMPANY UserRoleScope is
+    // location-independent (see prisma/seed.ts's populate()), so it is
+    // always provisioned even on a genuinely brand-new database — unlike
+    // the UserBranchRole-derived LOCATION sync, which requires Location.
+    const scopes = await db.prisma.userRoleScope.findMany();
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0]).toMatchObject({ scopeKind: 'COMPANY', locationId: null });
+    const owner = await db.prisma.user.findUniqueOrThrow({ where: { email: 'owner01@demo.local' } });
+    expect(scopes[0]!.userId).toBe(owner.id);
+    expect(await db.prisma.userBranchRole.count({ where: { userId: owner.id } })).toBe(0);
 
     await ensureLocationBootstrap();
   }, 120000);

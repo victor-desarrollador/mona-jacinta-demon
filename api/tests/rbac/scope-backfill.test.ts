@@ -170,6 +170,26 @@ describe('UserRoleScope backfill from UserBranchRole (Phase 1C)', () => {
     expect(verification).toMatchObject({ legacyRowCount: 9, scopeCount: 9 });
   });
 
+  it('verify: an unrelated non-legacy COMPANY UserRoleScope (e.g. OWNER) does not fail verification', async () => {
+    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
+    const ownerRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'OWNER' } });
+    const owner = await db.prisma.user.create({
+      data: { name: 'owner-verify-test', email: 'owner-verify-test@test.local', passwordHash: 'x' },
+    });
+    try {
+      await db.prisma.userRoleScope.create({
+        data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
+      });
+      const verification = await verifyUserRoleScopeBackfill(db.prisma);
+      expect(verification.ok).toBe(true);
+      expect(verification.issues).toEqual([]);
+      expect(verification).toMatchObject({ legacyRowCount: 9, scopeCount: 10 });
+    } finally {
+      await db.prisma.userRoleScope.deleteMany({ where: { userId: owner.id } });
+      await db.prisma.user.delete({ where: { id: owner.id } });
+    }
+  });
+
   it('verify: reports a missing-assignment issue when a backfilled row is deleted', async () => {
     await backfillUserRoleScopeFromUserBranchRole(db.prisma);
     const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });

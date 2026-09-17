@@ -265,6 +265,36 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
   if ((await tx.location.count()) > 0) {
     await syncUserRoleScopeFromUserBranchRole(tx);
   }
+
+  // Phase 1D.4.2 (Production V1): canonical bootstrap OWNER user. OWNER
+  // never existed as a legacy Demo V2 role, so — unlike the demo users
+  // above — it gets no UserBranchRole row; its only authorization state is
+  // a single COMPANY UserRoleScope, per AGENTS.md's Phase 1D target model
+  // ("OWNER — COMPANY scope, full authority"). This provisions the
+  // canonical, bootstrap FIRST OWNER — the HTTP scope-assignment endpoint
+  // (Task 1D.4.3) cannot bootstrap this first OWNER itself, since
+  // self-modification is denied for every caller and ADMIN can never grant
+  // OWNER; a later, already-bootstrapped OWNER can still grant the OWNER
+  // role to a different (non-self) user through that endpoint. Runs after
+  // syncProductionRbacCatalog (which creates the OWNER Role row) so the
+  // lookup below always resolves; location-independent, so unlike the
+  // UserRoleScope sync above it always runs, even on a genuinely brand-new
+  // database that has never had Location backfilled yet.
+  const ownerRole = await tx.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
+  const owner = await tx.user.upsert({
+    where: { email: 'owner01@demo.local' },
+    // Canonical id, matching every other seeded entity in this file — a
+    // deterministic id.uuid() default would otherwise mint a fresh row on
+    // every full clear()/populate() cycle, breaking the file's own
+    // "second resetDemo from scratch produces the exact same canonical ids"
+    // invariant (see seed-integration.test.ts).
+    create: { id: id(604), name: 'Owner Demo', email: 'owner01@demo.local', passwordHash },
+    update: {},
+  });
+  await tx.userRoleScope.deleteMany({ where: { userId: owner.id } });
+  await tx.userRoleScope.create({
+    data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
+  });
 }
 
 async function clear(tx: Prisma.TransactionClient) {

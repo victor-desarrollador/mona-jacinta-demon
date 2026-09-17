@@ -126,14 +126,15 @@ export type ScopeBackfillVerification = {
 };
 
 // VERIFY step: proves row-by-row equivalence between UserBranchRole and the
-// backfilled UserRoleScope rows without trusting the backfill's own return
-// value. Assumes every UserRoleScope row in the database originated from this
-// backfill (true as of Phase 1C: Phase 1B never writes UserRoleScope rows —
-// see user-role-scope.test.ts — and OWNER's company-wide authority is
-// implicit, never a row); a later phase that starts writing UserRoleScope
-// rows through some other path must revisit this assumption. Duplicate
-// detection here is defense-in-depth: the raw-SQL partial unique indexes
-// (uq_user_role_scope_location / uq_user_role_scope_company, see
+// legacy-derived subset of UserRoleScope rows, without trusting the
+// backfill's own return value. Deliberately verifies only that subset — an
+// expected `userId|roleId|LOCATION|branchId` key per legacy row — rather
+// than asserting every UserRoleScope row in the database is legacy-derived.
+// As of Phase 1D.4.2, a legitimate independently-managed row can coexist
+// (e.g. the canonical OWNER's COMPANY scope, seeded outside this backfill);
+// such rows are simply outside this function's concern and never flagged.
+// Duplicate detection here is defense-in-depth: the raw-SQL partial unique
+// indexes (uq_user_role_scope_location / uq_user_role_scope_company, see
 // schema.prisma) already make a real duplicate impossible to create through
 // normal writes.
 export async function verifyUserRoleScopeBackfill(
@@ -151,14 +152,9 @@ export async function verifyUserRoleScopeBackfill(
   for (const scope of scopes) {
     const key = `${scope.userId}|${scope.roleId}|${scope.scopeKind}|${scope.locationId}`;
     scopeKeyCounts.set(key, (scopeKeyCounts.get(key) ?? 0) + 1);
-    if (scope.scopeKind !== 'LOCATION' || scope.locationId === null) {
-      issues.push(`UserRoleScope ${scope.id} is not a LOCATION-scoped backfilled row as expected`);
-    }
-  }
-  for (const [key, count] of scopeKeyCounts) {
-    if (count > 1) issues.push(`duplicate UserRoleScope for ${key}`);
   }
 
+  const expectedKeys = new Set<string>();
   for (const legacy of legacyRows) {
     let targetRoleCode;
     try {
@@ -175,17 +171,25 @@ export async function verifyUserRoleScopeBackfill(
       continue;
     }
     const key = `${legacy.userId}|${targetRoleId}|LOCATION|${legacy.branchId}`;
-    if (!scopeKeyCounts.has(key)) {
+    expectedKeys.add(key);
+    const count = scopeKeyCounts.get(key) ?? 0;
+    if (count === 0) {
       issues.push(
         `missing UserRoleScope for UserBranchRole ${legacy.id} (user ${legacy.userId}, ` +
           `role ${legacy.role.code} -> ${targetRoleCode}, location ${legacy.branchId})`,
       );
+    } else if (count > 1) {
+      issues.push(`duplicate UserRoleScope for ${key}`);
     }
   }
 
-  if (scopes.length !== legacyRows.length) {
+  const legacyDerivedScopeCount = scopes.filter((scope) =>
+    expectedKeys.has(`${scope.userId}|${scope.roleId}|${scope.scopeKind}|${scope.locationId}`),
+  ).length;
+
+  if (legacyDerivedScopeCount !== legacyRows.length) {
     issues.push(
-      `expected ${legacyRows.length} UserRoleScope row(s) (one per UserBranchRole), found ${scopes.length}`,
+      `expected ${legacyRows.length} UserRoleScope row(s) (one per UserBranchRole), found ${legacyDerivedScopeCount}`,
     );
   }
 
