@@ -192,6 +192,19 @@ describe('backoffice read API', () => {
     expect(response.status).toBe(200);
   });
 
+  it('authorizes GET /api/v1/backoffice/dashboard via a COMPANY-scoped OWNER assignment, with zero RolePermission rows', async () => {
+    const ownerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
+    const owner = await prisma.user.create({
+      data: { name: 'owner-backoffice', email: 'owner-backoffice@test.local', passwordHash: 'x' },
+    });
+    await prisma.userRoleScope.create({
+      data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    const ownerToken = await getAuthToken(owner);
+    const response = await request(app).get('/api/v1/backoffice/dashboard').set('Authorization', `Bearer ${ownerToken}`);
+    expect(response.status).toBe(200);
+  });
+
   it('rejects a legacy-lowercase-only report.view grant, once switched', async () => {
     const permission = await prisma.permission.upsert({ where: { code: 'report.view' }, create: { code: 'report.view' }, update: {} });
     const role = await createRole(prisma, 'LEGACY-ONLY-REPORT-VIEW');
