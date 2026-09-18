@@ -204,6 +204,18 @@ describe('critical operation audit', () => {
     expect((await get(companyToken)).status).toBe(200);
   });
 
+  it('authorizes audit read for a bare COMPANY-scoped OWNER', async () => {
+    const ownerRole = await db.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
+    const owner = await db.user.create({
+      data: { name: 'owner-audit', email: 'owner-audit@test.local', passwordHash: 'x' },
+    });
+    await db.userRoleScope.create({
+      data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    const ownerToken = await getAuthToken(owner);
+    expect((await get(ownerToken)).status).toBe(200);
+  });
+
   // Phase 1D.3.5 correction: this test used to prove "permission works
   // without role names" by renaming ADMIN to an arbitrary code and expecting
   // continued access — a legacy-only property, since the now-deleted
