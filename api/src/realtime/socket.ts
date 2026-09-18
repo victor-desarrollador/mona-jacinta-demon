@@ -90,6 +90,14 @@ export function createRealtime(httpServer: HttpServer, database: PrismaClient): 
     authenticateSocket(socket, database).then(() => next()).catch(() => next(new Error('UNAUTHORIZED')));
   });
   io.on('connection', (socket) => {
+    // Phase 1D.5.2: socket authorization is a connection-time snapshot.
+    // authenticateSocket resolves assignments/effectiveLocationIds once
+    // during the handshake; this connection keeps that snapshot for room
+    // membership and branch:join authorization below. UserRoleScope changes
+    // are NOT hot-applied to an already-connected socket. Reconnecting
+    // re-authenticates and rebuilds the context from current DB state.
+    // Phase 1D deliberately does not implement live mid-connection
+    // revocation because no frozen requirement calls for it.
     const effectiveLocationIds = socket.data.effectiveLocationIds as string[];
     for (const branchId of effectiveLocationIds) socket.join(`branch:${branchId}`);
     socket.on('branch:join', (branchId: unknown) => {
