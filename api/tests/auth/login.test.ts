@@ -52,6 +52,10 @@ describe('POST /api/v1/auth/login', () => {
     expect(payload.roles).toBeUndefined();
     expect(payload.branchIds).toBeUndefined();
     expect(payload.permissions).toBeUndefined();
+    expect(payload.jti).toEqual(expect.any(String));
+    expect(payload.assignments).toBeUndefined();
+    expect(payload.effectiveLocationIds).toBeUndefined();
+    expect(Object.keys(payload).sort()).toEqual(['exp', 'iat', 'jti', 'sub']);
   });
 
   it('rejects invalid passwords and unknown users without account enumeration', async () => {
