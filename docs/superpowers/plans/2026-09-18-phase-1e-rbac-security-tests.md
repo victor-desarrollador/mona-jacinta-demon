@@ -598,15 +598,19 @@ git commit -m "test(rbac): add canonical role x permission x scope authorization
 
 **Full-repository-suite policy (per OpenCode audit item 12):** no full suite is required at Phase 1E closure, and none is run below merely by habit. Rationale: the roadmap scopes Phase 1E's exit criteria to "RBAC test suite green" and commit boundary to "RBAC test suite" (`08-implementation-roadmap.md:322-323`) — narrower than Phase 1D, which owned the authorization middleware itself. Phase 1E's Global Constraints (this plan's header) are schema/migration/backend/frontend: none, so no non-RBAC test file's behavior can regress. The only conditions that would require a full suite are: (a) production source changes occur after an approved DESIGN ESCALATION (none are planned here), or (b) an independent reviewer (OpenCode/Codex) finds a concrete reason requiring it — not assumed in advance.
 
+**Correction (T8 pre-execution micro-correction):** the original Steps 1-3 below assumed a single ad hoc terminal invocation and a worktree-only diff review. Neither holds once Tasks 1-7/6B are each committed locally as they complete (the actual execution model this plan has followed): (a) separate `cd api` steps in one persistent shell risk a stale/nested cwd (a `cd api` run twice becomes `api/api`), so every step below is wrapped in its own subshell to stay root-stable regardless of execution order; (b) `git diff -- api/tests` and plain `git diff --check` only show *uncommitted* worktree changes — with Tasks 1-7/6B already committed, the worktree is expected to contain nothing but the pre-existing `opencode.json`, so that review would look empty while missing the entire committed Phase 1E test delta. The real review boundary is the committed range from the approved Phase 1E baseline (`053f0b47ac5e4d17e0c59a0dea5073485634f9b9`, still `origin/feat/production-v1`, the parent of Task 1's first commit) through `HEAD`. This is a plan closure-gate execution defect only — no Production defect, no test defect, no DESIGN ESCALATION.
+
 - [ ] **Step 1: Run the complete Phase 1E RBAC/security focused gate (affected module security tests) once**
 
 ```bash
-cd api
-NODE_ENV=test npx vitest run \
-  tests/rbac tests/auth tests/auth.test.ts tests/auth-scope-switch.test.ts tests/authorization.test.ts \
-  tests/backoffice tests/realtime \
-  tests/sales tests/payments tests/cash tests/inventory tests/products tests/audit \
-  --reporter=verbose
+(
+  cd api
+  NODE_ENV=test npx vitest run \
+    tests/rbac tests/auth tests/auth.test.ts tests/auth-scope-switch.test.ts tests/authorization.test.ts \
+    tests/backoffice tests/realtime \
+    tests/sales tests/payments tests/cash tests/inventory tests/products tests/audit \
+    --reporter=verbose
+)
 ```
 
 Record: files passed/failed, tests passed/failed/skipped, duration.
@@ -614,25 +618,41 @@ Record: files passed/failed, tests passed/failed/skipped, duration.
 - [ ] **Step 2: Typecheck and lint**
 
 ```bash
-cd api
-npx tsc --noEmit
-npm run typecheck   # if the project's current package.json script still requires this separately from tsc --noEmit
-npm run lint
+(
+  cd api
+  npx tsc --noEmit
+)
+(
+  cd api
+  npm run typecheck   # if the project's current package.json script still requires this separately from tsc --noEmit
+)
+(
+  cd api
+  npm run lint
+)
 ```
 
-- [ ] **Step 3: Diff review**
+- [ ] **Step 3: Diff review (committed Phase 1E range, not just the worktree)**
+
+From the repository root, using the fixed Phase 1E baseline `053f0b47ac5e4d17e0c59a0dea5073485634f9b9`:
 
 ```bash
 git status --short
-git diff --check
-git diff -- api/tests
+git diff --check 053f0b47ac5e4d17e0c59a0dea5073485634f9b9..HEAD
+git diff --name-status 053f0b47ac5e4d17e0c59a0dea5073485634f9b9..HEAD
+git diff --stat 053f0b47ac5e4d17e0c59a0dea5073485634f9b9..HEAD
+git diff 053f0b47ac5e4d17e0c59a0dea5073485634f9b9..HEAD -- api/tests
+git diff 053f0b47ac5e4d17e0c59a0dea5073485634f9b9..HEAD -- docs/superpowers/plans/2026-09-18-phase-1e-rbac-security-tests.md
+git diff 053f0b47ac5e4d17e0c59a0dea5073485634f9b9..HEAD -- api/src
 ```
 
-Confirm: only files listed in Tasks 1-7 and 6B changed; no `api/src/**` diff; no whitespace errors.
+Expected `git status --short`: ` M opencode.json` only (pre-existing local-only state, not part of the Phase 1E range).
+
+Confirm the committed range contains only the Phase 1E test work plus the reviewed Phase 1E plan micro-corrections — expected test paths: `api/tests/auth/login.test.ts`; `api/tests/sales/draft-sale.test.ts`, `api/tests/sales/complete-sale.test.ts`, `api/tests/sales/cancellation.test.ts`; `api/tests/payments/split-payment.test.ts`; `api/tests/cash/cash-session.test.ts`; `api/tests/inventory/inventory.test.ts`, `api/tests/products/products.test.ts`, `api/tests/products/variants.test.ts`; `api/tests/audit/audit.test.ts`; `api/tests/backoffice/backoffice.test.ts`; `api/tests/rbac/role-permission-scope-matrix.test.ts` — plus the reviewed documentation path `docs/superpowers/plans/2026-09-18-phase-1e-rbac-security-tests.md` itself. The `api/src` range diff must be **empty** — no Production source changes, no schema changes, no migration changes, no frontend changes, no unexpected files. `opencode.json` is pre-existing local-only worktree state and must never be treated as part of the Phase 1E committed range.
 
 - [ ] **Step 4: Independent review**
 
-Submit the resulting diff for OpenCode independent audit, then Codex high-rigor review, per this project's established cross-agent workflow — before any push. Neither review is a Phase 1E task deliverable in itself; both gate the commit boundary.
+Submit the same committed range — `053f0b47ac5e4d17e0c59a0dea5073485634f9b9..HEAD`, not merely the current worktree — for OpenCode independent audit, then Codex high-rigor review, per this project's established cross-agent workflow — before any push. Give each reviewer: the exact baseline SHA, the exact final Phase 1E HEAD SHA, the commit list in the range, the name-status/stat output, the complete test/docs diff as needed, confirmation the `api/src` range diff is empty, the Step 1 focused-gate evidence, the Step 2 typecheck evidence, the Step 2 lint evidence, and the final worktree state. Neither review is a Phase 1E task deliverable in itself; both gate the commit boundary.
 
 - [ ] **Step 5: Commit boundary**
 
