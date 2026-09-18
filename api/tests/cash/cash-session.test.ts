@@ -72,6 +72,21 @@ describe('cash sessions', () => {
     expect(session.status).toBe(201);
     expect((await close(session.body.sessionId, undefined, adminToken)).status).toBe(200);
   });
+  it('authorizes cash session open/close and register/current reads for a COMPANY-scoped OWNER assignment, with zero RolePermission rows', async () => {
+    const ownerRole = await createRole(db, 'OWNER');
+    const owner = await db.user.create({
+      data: { name: 'owner-cash', email: 'owner-cash@test.local', passwordHash: 'x' },
+    });
+    await db.userRoleScope.create({
+      data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    const ownerToken = await getAuthToken(owner);
+    expect((await read('register', { branchId }, ownerToken)).status).toBe(200);
+    expect((await read('current', { branchId }, ownerToken)).status).toBe(200);
+    const openResponse = await open(undefined, ownerToken);
+    expect(openResponse.status).toBe(201);
+    expect((await close(openResponse.body.sessionId, undefined, ownerToken)).status).toBe(200);
+  });
   it('fails closed for a MANAGER-coded role even with the Production grant intact', async () => {
     // isProductionRoleCode (authorization-context.ts) fails a persisted
     // UserRoleScope's Role.code closed unless it is one of the 5 canonical
