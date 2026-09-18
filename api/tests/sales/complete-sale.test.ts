@@ -148,6 +148,37 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     expect(response.status).toBe(200);
   });
 
+  it('authorizes completion via a bare COMPANY-scoped OWNER assignment', async () => {
+    const ownerRole = await db.role.findUniqueOrThrow({
+      where: { code: 'OWNER' },
+    });
+
+    const owner = await db.user.create({
+      data: {
+        name: 'owner-complete-sale',
+        email: 'owner-complete-sale@test.local',
+        passwordHash: 'x',
+      },
+    });
+
+    await db.userRoleScope.create({
+      data: {
+        userId: owner.id,
+        roleId: ownerRole.id,
+        scopeKind: 'COMPANY',
+        locationId: null,
+      },
+    });
+
+    const ownerToken = await getAuthToken(owner);
+    const sale = await createReservedSale([
+      { variantId: remeraId, productId: remeraProductId, quantity: 1n },
+    ]);
+    const response = await complete(sale.id, ownerToken);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('COMPLETED');
+  });
+
   it('rejects a legacy-lowercase-only sale.complete grant, once switched', async () => {
     const permission = await db.permission.upsert({ where: { code: 'sale.complete' }, create: { code: 'sale.complete' }, update: {} });
     const role = await createRole(db, 'LEGACY-ONLY-SALE-COMPLETE');

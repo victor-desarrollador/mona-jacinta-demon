@@ -81,6 +81,44 @@ describe('seller draft sales', () => {
     expect(response.status).toBe(201);
   });
 
+  it('an OWNER (COMPANY scope, no location assignment) can create and view a draft sale at any branch', async () => {
+    const ownerRole = await prisma.role.findUniqueOrThrow({
+      where: { code: 'OWNER' },
+    });
+
+    const owner = await prisma.user.create({
+      data: {
+        name: 'owner-sales',
+        email: 'owner-sales@test.local',
+        passwordHash: 'x',
+      },
+    });
+
+    await prisma.userRoleScope.create({
+      data: {
+        userId: owner.id,
+        roleId: ownerRole.id,
+        scopeKind: 'COMPANY',
+        locationId: null,
+      },
+    });
+
+    const ownerToken = await getAuthToken(owner);
+
+    const createResponse = await request(app)
+      .post('/api/v1/sales')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ branchId: centroId });
+
+    expect(createResponse.status).toBe(201);
+
+    const viewResponse = await request(app)
+      .get(`/api/v1/sales/${createResponse.body.id}`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(viewResponse.status).toBe(200);
+  });
+
   it('rejects a legacy-lowercase-only sale.create grant, once switched', async () => {
     const permission = await prisma.permission.upsert({ where: { code: 'sale.create' }, create: { code: 'sale.create' }, update: {} });
     const role = await createRole(prisma, 'LEGACY-ONLY-SALE-CREATE');

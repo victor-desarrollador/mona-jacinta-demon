@@ -176,6 +176,35 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     expect(response.status).toBe(200);
   });
 
+  it('authorizes cancellation via a bare COMPANY-scoped OWNER assignment', async () => {
+    const ownerRole = await db.role.findUniqueOrThrow({
+      where: { code: 'OWNER' },
+    });
+
+    const owner = await db.user.create({
+      data: {
+        name: 'owner-cancel-sale',
+        email: 'owner-cancel-sale@test.local',
+        passwordHash: 'x',
+      },
+    });
+
+    await db.userRoleScope.create({
+      data: {
+        userId: owner.id,
+        roleId: ownerRole.id,
+        scopeKind: 'COMPANY',
+        locationId: null,
+      },
+    });
+
+    const ownerToken = await getAuthToken(owner);
+    const current = await sale('DRAFT');
+    const response = await cancel(current.id, ownerToken);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('CANCELLED');
+  });
+
   it('rejects a legacy-lowercase-only sale.create grant on /cancel, once switched', async () => {
     const permission = await db.permission.upsert({ where: { code: 'sale.create' }, create: { code: 'sale.create' }, update: {} });
     const role = await createRole(db, 'LEGACY-ONLY-CANCEL');
@@ -197,6 +226,33 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     const user = await createTestUser(db, warehouseRole.id, branchId);
     const isolatedToken = await getAuthToken(user);
     const response = await release(isolatedToken);
+    expect(response.status).toBe(200);
+  });
+
+  it('authorizes release-expired via a bare COMPANY-scoped OWNER assignment', async () => {
+    const ownerRole = await db.role.findUniqueOrThrow({
+      where: { code: 'OWNER' },
+    });
+
+    const owner = await db.user.create({
+      data: {
+        name: 'owner-release-expired',
+        email: 'owner-release-expired@test.local',
+        passwordHash: 'x',
+      },
+    });
+
+    await db.userRoleScope.create({
+      data: {
+        userId: owner.id,
+        roleId: ownerRole.id,
+        scopeKind: 'COMPANY',
+        locationId: null,
+      },
+    });
+
+    const ownerToken = await getAuthToken(owner);
+    const response = await release(ownerToken);
     expect(response.status).toBe(200);
   });
 
