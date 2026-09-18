@@ -88,6 +88,38 @@ describe('product variants read API', () => {
     expect(response.status).toBe(200);
   });
 
+  it('a bare COMPANY-scoped OWNER passes both the global route gate and the service-level branchId check', async () => {
+    const ownerRole = await prisma.role.findUniqueOrThrow({
+      where: { code: 'OWNER' },
+    });
+
+    const owner = await prisma.user.create({
+      data: {
+        name: 'owner-variants',
+        email: 'owner-variants@test.local',
+        passwordHash: 'x',
+      },
+    });
+
+    await prisma.userRoleScope.create({
+      data: {
+        userId: owner.id,
+        roleId: ownerRole.id,
+        scopeKind: 'COMPANY',
+        locationId: null,
+      },
+    });
+
+    const ownerToken = await getAuthToken(owner);
+
+    const response = await request(app)
+      .get('/api/v1/variants')
+      .query({ branchId: yerbaId })
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(response.status).toBe(200);
+  });
+
   it('rejects a legacy-lowercase-only inventory.view grant on the global catalog, once switched', async () => {
     const permission = await prisma.permission.upsert({
       where: { code: 'inventory.view' },
