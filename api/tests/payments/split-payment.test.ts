@@ -258,6 +258,50 @@ describe('split payments', () => {
     expect(response.status).toBe(200);
   });
 
+  it('allows a bare COMPANY-scoped OWNER to register and list payments for a sale at any branch', async () => {
+    const ownerRole = await db.role.findUniqueOrThrow({
+      where: { code: 'OWNER' },
+    });
+
+    const owner = await db.user.create({
+      data: {
+        name: 'owner-payments',
+        email: 'owner-payments@test.local',
+        passwordHash: 'x',
+      },
+    });
+
+    await db.userRoleScope.create({
+      data: {
+        userId: owner.id,
+        roleId: ownerRole.id,
+        scopeKind: 'COMPANY',
+        locationId: null,
+      },
+    });
+
+    const ownerToken = await getAuthToken(owner);
+    const sale = await createSale(1n);
+
+    const payResponse = await pay(
+      sale.id,
+      {
+        method: 'TRANSFER',
+        amount: '1',
+        idempotencyKey: randomUUID(),
+      },
+      ownerToken,
+    );
+
+    expect(payResponse.status).toBe(201);
+
+    const listResponse = await request(app)
+      .get(`/api/v1/sales/${sale.id}/payments`)
+      .set('Authorization', `Bearer ${ownerToken}`);
+
+    expect(listResponse.status).toBe(200);
+  });
+
   it('rejects a legacy-lowercase-only sale.view grant on payment listing, once switched', async () => {
     const warehouseRole = await db.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
     const legacyPermission = await db.permission.upsert({ where: { code: 'sale.view' }, create: { code: 'sale.view' }, update: {} });
