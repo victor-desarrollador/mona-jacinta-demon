@@ -181,33 +181,59 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
         ['DEP', 'Depósito Central', 6],
       ]);
       const users = await db.prisma.user.findMany({
-        orderBy: { name: 'asc' },
         include: { branchRoles: { include: { role: true, branch: true } } },
       });
-      expect(users.map((u) => u.name)).toEqual([
-        'admin',
-        'cashier01',
-        'manager01',
-        'seller01',
-      ]);
+      // Phase 1D.4.2: the canonical OWNER (owner01@demo.local) never existed
+      // as a legacy Demo V2 role, so it has no `${name}@demo.local` email
+      // and no UserBranchRole/legacy-role row — keyed by email, not name, so
+      // this stays independent of database name/collation ordering. Its
+      // UserRoleScope (COMPANY, OWNER role) is proven by the dedicated
+      // tests/rbac/seed-integration.test.ts, not duplicated here.
+      const expectedUsers: Record<
+        string,
+        { name: string; role: string | null; branches: string[] }
+      > = {
+        'admin@demo.local': {
+          name: 'admin',
+          role: 'ADMIN',
+          branches: ['BAN', 'CEN', 'CON', 'DEP', 'TV', 'YB'],
+        },
+        'cashier01@demo.local': {
+          name: 'cashier01',
+          role: 'CASHIER',
+          branches: ['CEN'],
+        },
+        'manager01@demo.local': {
+          name: 'manager01',
+          role: 'MANAGER',
+          branches: ['CEN'],
+        },
+        'seller01@demo.local': {
+          name: 'seller01',
+          role: 'SELLER',
+          branches: ['CEN'],
+        },
+        'owner01@demo.local': { name: 'Owner Demo', role: null, branches: [] },
+      };
+      expect(users.map((u) => u.email).sort()).toEqual(
+        Object.keys(expectedUsers).sort(),
+      );
       for (const user of users) {
-        expect(user.email).toBe(`${user.name}@demo.local`);
+        const expected = expectedUsers[user.email];
+        expect(expected).toBeDefined();
+        expect(user.name).toBe(expected!.name);
         expect(await compare('demo123', user.passwordHash)).toBe(true);
         expect(user.passwordHash.startsWith('$2')).toBe(true);
         expect(user.isActive).toBe(true);
-        const expectedRole = {
-          admin: 'ADMIN',
-          cashier01: 'CASHIER',
-          manager01: 'MANAGER',
-          seller01: 'SELLER',
-        }[user.name];
-        expect(
-          user.branchRoles.every((r) => r.role.code === expectedRole),
-        ).toBe(true);
+        if (expected!.role === null) {
+          expect(user.branchRoles).toHaveLength(0);
+        } else {
+          expect(
+            user.branchRoles.every((r) => r.role.code === expected!.role),
+          ).toBe(true);
+        }
         expect(user.branchRoles.map((r) => r.branch.code).sort()).toEqual(
-          user.name === 'admin'
-            ? ['BAN', 'CEN', 'CON', 'DEP', 'TV', 'YB']
-            : ['CEN'],
+          expected!.branches,
         );
       }
     });
