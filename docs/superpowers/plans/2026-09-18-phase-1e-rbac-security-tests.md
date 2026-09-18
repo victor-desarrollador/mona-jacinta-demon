@@ -217,7 +217,13 @@ git commit -m "test(payments): prove OWNER COMPANY authority on payment routes (
 **Interfaces:**
 - Consumes: the file *already has* one COMPANY-scoped ADMIN test at line 66-74 to copy from directly (just swap the role to OWNER and drop the `RolePermission` grant entirely, since OWNER needs none).
 
-**Why this test exists:** covers two genuinely distinct wiring patterns in one task — `open`/`close` are a permission check paired with a **request-body-supplied** resource (the register/session, not yet persisted at check time), while `register`/`current` are membership-only GETs with **no permission constant at all** (see this plan's "Existing coverage inventory" section, cash GET row). Kept as one test because both already exist side-by-side in this file's own ADMIN case.
+**Why this test exists:** covers three genuinely distinct wiring patterns in one task, all read from the current implementation (not the request-body-supplied description a prior revision used):
+
+- **`open`** — route-level global `CASH_SESSION_OPEN` permission gate (`cash.routes.ts`). The request supplies `registerId`; the service (`cash.service.ts:openSession`) loads the **persisted** `CashRegister` row for that id, then enforces `hasPermissionAtLocation(ctx, CASH_SESSION_OPEN, register.branchId)` against that persisted register's own `branchId` — not an unpersisted, request-supplied location.
+- **`close`** — route-level global `CASH_SESSION_CLOSE` permission gate. The request supplies `sessionId` in the path; the service (`closeSession`) loads the **persisted** `CashSession`, then its **persisted** `CashRegister`, then enforces `hasPermissionAtLocation(ctx, CASH_SESSION_CLOSE, register.branchId)` — same persisted-resource-location pattern as `open`, one hop deeper.
+- **`register`/`current`** — `GET /cash/register` and `GET /cash/current` have **no permission constant at all** (`cash.routes.ts`'s own comment: "no `CASH_VIEW` exists in the Production catalog"); `cashBranchDto` (`cash.dto.ts`) requires `{ branchId: z.uuid() }` as a **required, strict** query field, and the service enforces only coarse `hasBranchAccess(ctx, branchId)` against that query-supplied branch — no persisted-resource lookup at authorization time for these two.
+
+Kept as one test because all three already exist side-by-side in this file's own ADMIN case (lines 60-74).
 
 **Correction (per OpenCode audit MEDIUM-3):** the file's real helper signatures, read directly from `cash-session.test.ts:38-40`, are:
 ```ts
@@ -228,6 +234,8 @@ const read = (route: string, query: object = { branchId }, accessToken = token) 
 `close`'s second parameter is the request **body**, not the token — the token is the *third* parameter. Passing `ownerToken` as the second argument would silently become the close request body (`send(ownerToken)`), producing a spurious authorization/validation failure unrelated to OWNER's actual authority. The existing ADMIN test already demonstrates the correct call shape at line 73: `close(session.body.sessionId, undefined, adminToken)` — passing `undefined` for body falls through to the real default `{ closingCash: exact }` already used by every passing test in this file (no new `closingCash` representation invented).
 
 **Correction (per Codex audit MEDIUM-1):** the previous revision's fixture was a comment placeholder (`/* bare user, per Task 2's pattern */`) and incorrectly assumed `db.role.findUniqueOrThrow({ where: { code: 'OWNER' } })` would resolve — but, confirmed directly from `cash-session.test.ts:15-30`, this file's `beforeEach` never calls `seedDemo`; it builds its own minimal fixtures directly (`createRole(db, 'CASHIER')`, `createBranch(db)`, etc.), so no `OWNER` `Role` row exists yet in this file's database state. Use the file's own already-imported `createRole` helper (`tests/helpers/factories.ts:81-86`, a plain `prisma.role.create({ data: { code, name: code } })` — no `RolePermission` rows, exactly what an implicit-authority OWNER proof needs) to create it, exactly as this file's own existing tests create `CASHIER`/`ADMIN` roles.
+
+**Correction (T4 pre-execution micro-correction):** the previous revision's literal called `read('register', {}, ownerToken)` / `read('current', {}, ownerToken)`. `cashBranchDto` (`cash.dto.ts:6`) is `z.object({ branchId: z.uuid() }).strict()` — `branchId` is required, so an empty `{}` query fails request validation with `400` before authorization is ever reached, producing a false RED unrelated to OWNER's actual authority (this file's own existing case, line 158, `it.each(['register', 'current'])('requires valid branch UUID on %s', ...)`, already proves `{}` is a `400` for exactly this reason). The corrected literal below passes the file-local `branchId` explicitly, so these two assertions deliberately exercise `hasBranchAccess(ctx, branchId)` — the actual authorization decision for these two routes — rather than the DTO's unrelated required-field validation.
 
 - [ ] **Step 1: Add the regression test**
 
@@ -241,8 +249,8 @@ it('authorizes cash session open/close and register/current reads for a COMPANY-
     data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
   });
   const ownerToken = await getAuthToken(owner);
-  expect((await read('register', {}, ownerToken)).status).toBe(200);
-  expect((await read('current', {}, ownerToken)).status).toBe(200);
+  expect((await read('register', { branchId }, ownerToken)).status).toBe(200);
+  expect((await read('current', { branchId }, ownerToken)).status).toBe(200);
   const openResponse = await open(undefined, ownerToken);
   expect(openResponse.status).toBe(201);
   expect((await close(openResponse.body.sessionId, undefined, ownerToken)).status).toBe(200);
