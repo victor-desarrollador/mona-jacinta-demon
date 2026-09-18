@@ -488,7 +488,9 @@ With Task 6B, every currently-existing distinct permission-gated route family (s
 - **CASHIER/SELLER/WAREHOUSE — canonical is LOCATION only.** The matrix tests each role's exact default grants, matching-location access, unrelated-location denial, and denial of permissions outside its default grant set. CASHIER/SELLER/WAREHOUSE + COMPANY are invalid shapes under the current scope-assignment model and are already rejected at creation by `scope-assignment.test.ts:173` (`it.each(['CASHIER','SELLER','WAREHOUSE'])('rejects scopeKind COMPANY for roleCode %s', ...)`) — no new policy-level "what if COMPANY" expectation is invented here; if implementation work later reveals behavior contradicting this frozen contract, STOP and mark DESIGN ESCALATION REQUIRED rather than adding an ad hoc case.
 - **Legacy MANAGER / unknown role codes — never a valid Production assignment.** Not fabricated as a matrix entry. Existing coverage already proves this: `legacy-role-map.test.ts` (MANAGER maps to WAREHOUSE only at backfill time, never survives as a Production role code) and `scope-assignment.test.ts:339,364` (`'F1: assign/revoke rejects a legacy MANAGER roleCode even when the Role row genuinely exists'`). The matrix's cross-assignment case below (independent LOCATION-only-role pairs) separately reconfirms that a sibling valid assignment is never disturbed by an adjacent invalid one, which is the only MANAGER-adjacent property this task needs to touch.
 
-**Type shape (resolved from source, not left as an implementer guess):** `api/src/types/express.d.ts:5-11` declares `Express.ProductionAssignment` flat — `{ roleId: string; roleCode: 'OWNER'|'ADMIN'|'CASHIER'|'SELLER'|'WAREHOUSE'; scopeKind: 'LOCATION'|'COMPANY'; locationId: string | null; permissions: string[] }` — and `authorization-policy.ts:26` declares its policy `Ctx` as `Pick<Express.AuthContext, 'assignments'>`. The field is `roleCode` (flat), not a nested `role.code` — the snippet below already uses that shape and needs no adjustment. `OWNER` has no `DEFAULT_ROLE_GRANTS` entry (`role-permission-matrix.ts`'s comment: "OWNER intentionally has no entry above"), so OWNER fixtures below correctly use `permissions: []` to prove implicit-authority independence from any grant list.
+**Type shape (resolved from source, not left as an implementer guess):** `api/src/types/express.d.ts:5-11` declares `Express.ProductionAssignment` flat — `{ roleId: string; roleCode: 'OWNER'|'ADMIN'|'CASHIER'|'SELLER'|'WAREHOUSE'; scopeKind: 'LOCATION'|'COMPANY'; locationId: string | null; permissions: string[] }` — and `authorization-policy.ts:26` declares its policy `Ctx` as `Pick<Express.AuthContext, 'assignments'>`. The field is `roleCode` (flat), not a nested `role.code` — the snippet below already uses that shape correctly on that point. `OWNER` has no `DEFAULT_ROLE_GRANTS` entry (`role-permission-matrix.ts`'s comment: "OWNER intentionally has no entry above"), so OWNER fixtures below correctly use `permissions: []` to prove implicit-authority independence from any grant list.
+
+**Correction (T7 pre-execution micro-correction):** `DEFAULT_ROLE_GRANTS` (`role-permission-matrix.ts:16-19`) is typed `Record<..., readonly ProductionPermission[]>` — its arrays are intentionally readonly domain metadata. `Express.ProductionAssignment.permissions` (`express.d.ts:10`) is `string[]` — mutable. A fixture that writes `permissions: DEFAULT_ROLE_GRANTS[roleCode]` (or `DEFAULT_ROLE_GRANTS.ADMIN`) directly assigns a `readonly ProductionPermission[]` into a `string[]`-typed field, which fails structural assignability (`tsc` rejects a readonly array where a mutable array is expected). Vitest alone would not catch this — `vitest run` transpiles and executes without a full type-check pass — but Task 8's `npm run typecheck` runs `tsc -p tsconfig.check.json`, which includes `tests/**/*.ts`, and would fail on this file at that later gate. The fix is a plain mutable copy at the fixture boundary — `permissions: [...DEFAULT_ROLE_GRANTS[roleCode]]` — which satisfies `ProductionAssignment.permissions: string[]` without loosening the interface, casting, or touching `DEFAULT_ROLE_GRANTS`'s own readonly declaration; the copied values are identical, so no RBAC semantic changes. The five call sites below (LOCATION-only roles, ADMIN COMPANY, ADMIN LOCATION, and both cross-assignment roles) are corrected accordingly; read-only uses such as `DEFAULT_ROLE_GRANTS[roleCode].includes(permission)` are untouched since they never assign into a mutable field.
 
 - [ ] **Step 1: Add the regression test**
 
@@ -512,7 +514,7 @@ describe('canonical role x permission x scope authorization matrix (Phase 1E)', 
   it.each(LOCATION_ONLY_ROLES)('%s: LOCATION assignment at A grants exactly its default permissions at A, never at B', (roleCode) => {
     const ctx = {
       assignments: [
-        { roleId: 'r', roleCode, permissions: DEFAULT_ROLE_GRANTS[roleCode], scopeKind: 'LOCATION' as const, locationId: LOCATION_A },
+        { roleId: 'r', roleCode, permissions: [...DEFAULT_ROLE_GRANTS[roleCode]], scopeKind: 'LOCATION' as const, locationId: LOCATION_A },
       ],
     };
     for (const permission of productionPermissionValues) {
@@ -524,10 +526,10 @@ describe('canonical role x permission x scope authorization matrix (Phase 1E)', 
 
   it('ADMIN: COMPANY assignment grants every catalogued permission at every location; LOCATION assignment fails every COMPANY-required permission everywhere', () => {
     const companyCtx = {
-      assignments: [{ roleId: 'r', roleCode: ROLE_CODES.ADMIN, permissions: DEFAULT_ROLE_GRANTS.ADMIN, scopeKind: 'COMPANY' as const, locationId: null }],
+      assignments: [{ roleId: 'r', roleCode: ROLE_CODES.ADMIN, permissions: [...DEFAULT_ROLE_GRANTS.ADMIN], scopeKind: 'COMPANY' as const, locationId: null }],
     };
     const locationCtx = {
-      assignments: [{ roleId: 'r', roleCode: ROLE_CODES.ADMIN, permissions: DEFAULT_ROLE_GRANTS.ADMIN, scopeKind: 'LOCATION' as const, locationId: LOCATION_A }],
+      assignments: [{ roleId: 'r', roleCode: ROLE_CODES.ADMIN, permissions: [...DEFAULT_ROLE_GRANTS.ADMIN], scopeKind: 'LOCATION' as const, locationId: LOCATION_A }],
     };
     for (const permission of productionPermissionValues) {
       expect(hasPermissionAtLocation(companyCtx, permission, LOCATION_A)).toBe(true);
@@ -560,8 +562,8 @@ describe('canonical role x permission x scope authorization matrix (Phase 1E)', 
     (roleA, roleB) => {
       const ctx = {
         assignments: [
-          { roleId: 'ra', roleCode: roleA, permissions: DEFAULT_ROLE_GRANTS[roleA], scopeKind: 'LOCATION' as const, locationId: LOCATION_A },
-          { roleId: 'rb', roleCode: roleB, permissions: DEFAULT_ROLE_GRANTS[roleB], scopeKind: 'LOCATION' as const, locationId: LOCATION_B },
+          { roleId: 'ra', roleCode: roleA, permissions: [...DEFAULT_ROLE_GRANTS[roleA]], scopeKind: 'LOCATION' as const, locationId: LOCATION_A },
+          { roleId: 'rb', roleCode: roleB, permissions: [...DEFAULT_ROLE_GRANTS[roleB]], scopeKind: 'LOCATION' as const, locationId: LOCATION_B },
         ],
       };
       for (const permission of productionPermissionValues) {
@@ -573,7 +575,7 @@ describe('canonical role x permission x scope authorization matrix (Phase 1E)', 
 });
 ```
 
-The `ctx`/assignment shape above already matches `Express.ProductionAssignment` and `authorization-policy.ts`'s `Ctx` type exactly (confirmed above, not left as a guess) — no adjustment needed before running.
+The `ctx`/assignment shape above matches `Express.ProductionAssignment` and `authorization-policy.ts`'s `Ctx` type exactly (confirmed above, not left as a guess): the flat field names (`roleId`/`roleCode`/`scopeKind`/`locationId`/`permissions`) are correct as written, `roleCode` is correctly flat rather than nested, OWNER correctly passes `permissions: []`, and every other `permissions` value is a mutable spread copy of `DEFAULT_ROLE_GRANTS`'s readonly grant list (per the correction above) — the underlying grant contents are unchanged, only satisfying `ProductionAssignment.permissions: string[]`.
 
 - [ ] **Step 2: Run**
 
