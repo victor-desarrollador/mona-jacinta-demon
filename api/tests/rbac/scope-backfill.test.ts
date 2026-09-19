@@ -8,8 +8,10 @@ import {
 import { bootstrapProductionRbacCatalog } from '../../src/modules/rbac/catalog.service.js';
 import {
   backfillUserRoleScopeFromUserBranchRole,
+  planUserRoleScopeBackfill,
   verifyUserRoleScopeBackfill,
 } from '../../src/modules/rbac/scope-backfill.service.js';
+import { parseCliArgs } from '../../scripts/backfill-user-role-scope.js';
 
 // Phase 1C: backfills UserRoleScope from the legacy UserBranchRole rows.
 // Depends on Phase 1A's Location backfill and Phase 1B's RBAC catalog
@@ -209,5 +211,237 @@ describe('UserRoleScope backfill from UserBranchRole (Phase 1C)', () => {
         issue.includes('expected 9 UserRoleScope row(s) (one per UserBranchRole), found 8'),
       ),
     ).toBe(true);
+  });
+
+  // GC4F1 (Phase 1 Global Closeout): read-only preflight planner for the
+  // mutation above. Every test asserts zero UserRoleScope mutation via an
+  // exact before/after snapshot, and the planner never calls
+  // syncUserRoleScopeFromUserBranchRole/backfillUserRoleScopeFromUserBranchRole.
+  it('plans the full 9-row legacy fixture with zero mutation', async () => {
+    const before = await db.prisma.userRoleScope.findMany();
+    expect(before).toHaveLength(0);
+
+    const plan = await planUserRoleScopeBackfill(db.prisma);
+
+    expect(plan.legacyRowCount).toBe(9);
+    expect(plan.currentUserRoleScopeCount).toBe(0);
+    expect(plan.expectedCreateCount).toBe(9);
+    expect(plan.alreadyPresentCount).toBe(0);
+    expect(plan.readyForExecution).toBe(true);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.rows).toHaveLength(9);
+
+    const admin = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
+    const adminRows = plan.rows.filter((r) => r.userId === admin.id);
+    expect(adminRows).toHaveLength(6);
+    for (const row of adminRows) {
+      expect(row.legacyRoleCode).toBe('ADMIN');
+      expect(row.target.productionRoleCode).toBe('ADMIN');
+      expect(row.target.scopeKind).toBe('LOCATION');
+      expect(row.target.locationId).toBe(row.branchId);
+      expect(row.target.alreadyPresent).toBe(false);
+      expect(row.target.wouldCreate).toBe(true);
+      expect(row.blocker).toBeNull();
+    }
+
+    const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });
+    const managerRows = plan.rows.filter((r) => r.userId === manager.id);
+    expect(managerRows).toHaveLength(1);
+    expect(managerRows[0]!.legacyRoleCode).toBe('MANAGER');
+    expect(managerRows[0]!.target.productionRoleCode).toBe('WAREHOUSE');
+
+    const seller = await db.prisma.user.findFirstOrThrow({ where: { name: 'seller01' } });
+    const sellerRows = plan.rows.filter((r) => r.userId === seller.id);
+    expect(sellerRows).toHaveLength(1);
+    expect(sellerRows[0]!.target.productionRoleCode).toBe('SELLER');
+
+    const cashier = await db.prisma.user.findFirstOrThrow({ where: { name: 'cashier01' } });
+    const cashierRows = plan.rows.filter((r) => r.userId === cashier.id);
+    expect(cashierRows).toHaveLength(1);
+    expect(cashierRows[0]!.target.productionRoleCode).toBe('CASHIER');
+
+    const after = await db.prisma.userRoleScope.findMany();
+    expect(after).toHaveLength(0);
+  });
+
+  it('reports an already-present exact target row and excludes it from the create count', async () => {
+    const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });
+    const warehouseRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'WAREHOUSE' } });
+    const legacyManagerAssignment = await db.prisma.userBranchRole.findFirstOrThrow({
+      where: { userId: manager.id },
+    });
+    await db.prisma.userRoleScope.create({
+      data: {
+        userId: manager.id,
+        roleId: warehouseRole.id,
+        scopeKind: 'LOCATION',
+        locationId: legacyManagerAssignment.branchId,
+      },
+    });
+    const before = await db.prisma.userRoleScope.findMany();
+
+    const plan = await planUserRoleScopeBackfill(db.prisma);
+
+    expect(plan.legacyRowCount).toBe(9);
+    expect(plan.expectedCreateCount).toBe(8);
+    expect(plan.alreadyPresentCount).toBe(1);
+    const managerRow = plan.rows.find((r) => r.userId === manager.id)!;
+    expect(managerRow.target.alreadyPresent).toBe(true);
+    expect(managerRow.target.wouldCreate).toBe(false);
+
+    const after = await db.prisma.userRoleScope.findMany();
+    expect(after).toEqual(before);
+  });
+
+  it('surfaces a coexisting COMPANY scope without treating it as something Phase1C will remove', async () => {
+    const admin = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
+    const adminRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'ADMIN' } });
+    await db.prisma.userRoleScope.create({
+      data: { userId: admin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    const before = await db.prisma.userRoleScope.findMany();
+
+    const plan = await planUserRoleScopeBackfill(db.prisma);
+
+    const adminRows = plan.rows.filter((r) => r.userId === admin.id);
+    expect(adminRows).toHaveLength(6);
+    expect(adminRows.every((r) => r.target.wouldCreate)).toBe(true);
+    expect(plan.readyForExecution).toBe(true);
+
+    const coexisting = plan.coexistingScopes.filter((s) => s.userId === admin.id);
+    expect(coexisting).toHaveLength(1);
+    expect(coexisting[0]).toMatchObject({ scopeKind: 'COMPANY', locationId: null, roleCode: 'ADMIN' });
+
+    const after = await db.prisma.userRoleScope.findMany();
+    expect(after).toEqual(before);
+  });
+
+  it('returns NOT READY and reports an unmapped legacy role code, without mutating', async () => {
+    const ghostRole = await db.prisma.role.create({ data: { code: 'GHOST', name: 'GHOST' } });
+    const branch = await db.prisma.branch.findFirstOrThrow();
+    const location = await db.prisma.location.findUniqueOrThrow({ where: { id: branch.id } });
+    expect(location.id).toBe(branch.id);
+    const user = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
+    const ghostAssignment = await db.prisma.userBranchRole.create({
+      data: { userId: user.id, branchId: branch.id, roleId: ghostRole.id },
+    });
+    try {
+      const plan = await planUserRoleScopeBackfill(db.prisma);
+      expect(plan.readyForExecution).toBe(false);
+      expect(plan.unmappedLegacyRoleCodes).toContain('GHOST');
+      const ghostRow = plan.rows.find((r) => r.legacyRowId === ghostAssignment.id)!;
+      expect(ghostRow.target.wouldCreate).toBe(false);
+      expect(ghostRow.blocker).toBe('UNMAPPED_LEGACY_ROLE');
+      expect(await db.prisma.userRoleScope.count()).toBe(0);
+    } finally {
+      await db.prisma.userBranchRole.delete({ where: { id: ghostAssignment.id } });
+      await db.prisma.role.delete({ where: { id: ghostRole.id } });
+    }
+  });
+
+  it('returns NOT READY and reports a missing Location, without mutating', async () => {
+    const user = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
+    const adminRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'ADMIN' } });
+    const orphanBranch = await db.prisma.branch.create({
+      data: { name: 'Sucursal huérfana (GC4F1)', code: 'ORPHAN-GC4F1', address: 'N/A', pointOfSaleNumber: 998 },
+    });
+    const orphanAssignment = await db.prisma.userBranchRole.create({
+      data: { userId: user.id, branchId: orphanBranch.id, roleId: adminRole.id },
+    });
+    try {
+      const plan = await planUserRoleScopeBackfill(db.prisma);
+      expect(plan.readyForExecution).toBe(false);
+      expect(plan.missingLocationBranchIds).toContain(orphanBranch.id);
+      const orphanRow = plan.rows.find((r) => r.legacyRowId === orphanAssignment.id)!;
+      expect(orphanRow.target.wouldCreate).toBe(false);
+      expect(orphanRow.blocker).toBe('MISSING_LOCATION');
+      expect(await db.prisma.userRoleScope.count()).toBe(0);
+    } finally {
+      await db.prisma.userBranchRole.delete({ where: { id: orphanAssignment.id } });
+      await db.prisma.branch.delete({ where: { id: orphanBranch.id } });
+    }
+  });
+
+  it('returns NOT READY and reports a missing target Production role, without mutating', async () => {
+    const warehouseRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'WAREHOUSE' } });
+    await db.prisma.rolePermission.deleteMany({ where: { roleId: warehouseRole.id } });
+    await db.prisma.role.delete({ where: { id: warehouseRole.id } });
+    try {
+      const plan = await planUserRoleScopeBackfill(db.prisma);
+      expect(plan.readyForExecution).toBe(false);
+      expect(plan.missingProductionRoleCodes).toContain('WAREHOUSE');
+      const managerRow = plan.rows.find((r) => r.legacyRoleCode === 'MANAGER')!;
+      expect(managerRow.target.wouldCreate).toBe(false);
+      expect(managerRow.blocker).toBe('MISSING_PRODUCTION_ROLE');
+      expect(await db.prisma.userRoleScope.count()).toBe(0);
+    } finally {
+      await bootstrapProductionRbacCatalog(db.prisma);
+    }
+  });
+});
+
+// GC4F1 CLI safety contract: pure argument-parsing tests, no database
+// involved. Importing the script module (see the top-level import above)
+// must not itself open a connection — its direct-execution guard only fires
+// when the module is run as the CLI entry point, never on import.
+describe('parseCliArgs (GC4F1 CLI safety contract)', () => {
+  it('accepts --target=test --dry-run', () => {
+    expect(parseCliArgs(['--target=test', '--dry-run'])).toEqual({ ok: true, target: 'test', mode: 'dry-run' });
+  });
+
+  it('accepts --target=demo --dry-run', () => {
+    expect(parseCliArgs(['--target=demo', '--dry-run'])).toEqual({ ok: true, target: 'demo', mode: 'dry-run' });
+  });
+
+  it('accepts --target=test --execute', () => {
+    expect(parseCliArgs(['--target=test', '--execute'])).toEqual({ ok: true, target: 'test', mode: 'execute' });
+  });
+
+  it('accepts --target=demo --execute', () => {
+    expect(parseCliArgs(['--target=demo', '--execute'])).toEqual({ ok: true, target: 'demo', mode: 'execute' });
+  });
+
+  it('rejects a bare --target=test with no mode', () => {
+    expect(parseCliArgs(['--target=test']).ok).toBe(false);
+  });
+
+  it('rejects a bare --target=demo with no mode', () => {
+    expect(parseCliArgs(['--target=demo']).ok).toBe(false);
+  });
+
+  it('rejects --dry-run with no target', () => {
+    expect(parseCliArgs(['--dry-run']).ok).toBe(false);
+  });
+
+  it('rejects --execute with no target', () => {
+    expect(parseCliArgs(['--execute']).ok).toBe(false);
+  });
+
+  it('rejects both --dry-run and --execute together', () => {
+    expect(parseCliArgs(['--target=test', '--dry-run', '--execute']).ok).toBe(false);
+  });
+
+  it('rejects an invalid --target value', () => {
+    expect(parseCliArgs(['--target=production', '--dry-run']).ok).toBe(false);
+  });
+
+  it('rejects conflicting duplicate --target arguments', () => {
+    expect(parseCliArgs(['--target=test', '--target=demo', '--dry-run']).ok).toBe(false);
+  });
+
+  it('rejects duplicate identical --target arguments', () => {
+    expect(parseCliArgs(['--target=test', '--target=test', '--dry-run']).ok).toBe(false);
+  });
+
+  it('rejects duplicate identical mode flags', () => {
+    expect(parseCliArgs(['--target=test', '--dry-run', '--dry-run']).ok).toBe(false);
+  });
+
+  it('rejects an unknown flag instead of silently ignoring it', () => {
+    expect(parseCliArgs(['--target=test', '--dry-run', '--force']).ok).toBe(false);
+  });
+
+  it('rejects an unexpected positional argument instead of silently ignoring it', () => {
+    expect(parseCliArgs(['--target=test', '--dry-run', 'extra']).ok).toBe(false);
   });
 });

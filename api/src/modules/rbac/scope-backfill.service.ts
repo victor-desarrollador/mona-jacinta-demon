@@ -200,3 +200,207 @@ export async function verifyUserRoleScopeBackfill(
     scopeCount: scopes.length,
   };
 }
+
+type PlanDatabase = Pick<PrismaClient, 'userBranchRole' | 'role' | 'location' | 'userRoleScope'>;
+
+export type UserRoleScopeBackfillPlanRowBlocker =
+  | 'UNMAPPED_LEGACY_ROLE'
+  | 'MISSING_PRODUCTION_ROLE'
+  | 'MISSING_LOCATION'
+  | null;
+
+export type UserRoleScopeBackfillPlanRow = {
+  legacyRowId: string;
+  userId: string;
+  name: string;
+  email: string;
+  isActive: boolean;
+  legacyRoleCode: string;
+  legacyRoleId: string;
+  branchId: string;
+  branchCode: string;
+  branchName: string;
+  target: {
+    productionRoleCode: string | null;
+    productionRoleId: string | null;
+    scopeKind: 'LOCATION';
+    locationId: string;
+    locationCode: string | null;
+    locationName: string | null;
+    alreadyPresent: boolean;
+    wouldCreate: boolean;
+  };
+  blocker: UserRoleScopeBackfillPlanRowBlocker;
+};
+
+export type UserRoleScopeBackfillCoexistingScope = {
+  scopeId: string;
+  userId: string;
+  roleCode: string;
+  scopeKind: 'LOCATION' | 'COMPANY';
+  locationId: string | null;
+};
+
+export type UserRoleScopeBackfillPlan = {
+  legacyRowCount: number;
+  currentUserRoleScopeCount: number;
+  expectedCreateCount: number;
+  alreadyPresentCount: number;
+  readyForExecution: boolean;
+  blockers: string[];
+  rows: UserRoleScopeBackfillPlanRow[];
+  unmappedLegacyRoleCodes: string[];
+  missingProductionRoleCodes: string[];
+  missingLocationBranchIds: string[];
+  coexistingScopes: UserRoleScopeBackfillCoexistingScope[];
+};
+
+// GC4F1 (Phase 1 Global Closeout): read-only preflight for the mutation
+// above — SELECT/find/count queries only, never create/update/delete/
+// upsert/$executeRaw/a transaction, and never calls
+// syncUserRoleScopeFromUserBranchRole/backfillUserRoleScopeFromUserBranchRole.
+// Describes exactly the historical Phase1C operation (missing LOCATION rows
+// only) — it never claims final Phase1D canonical state (ADMIN COMPANY
+// canonicalization is a separate, later step — see
+// admin-company-backfill.service.ts), and it never treats a coexisting
+// COMPANY/extra scope as something this backfill will touch, since the real
+// mutator only ever creates missing rows and never deletes.
+export async function planUserRoleScopeBackfill(db: PlanDatabase): Promise<UserRoleScopeBackfillPlan> {
+  const legacyRows = await db.userBranchRole.findMany({
+    include: {
+      role: { select: { id: true, code: true } },
+      user: { select: { id: true, name: true, email: true, isActive: true } },
+      branch: { select: { id: true, code: true, name: true } },
+    },
+    orderBy: { id: 'asc' },
+  });
+
+  const unmappedLegacyRoleCodes = new Set<string>();
+  const mappedCodeByLegacyRowId = new Map<string, string>();
+  for (const row of legacyRows) {
+    try {
+      mappedCodeByLegacyRowId.set(row.id, resolveProductionRoleCodeForLegacy(row.role.code));
+    } catch {
+      unmappedLegacyRoleCodes.add(row.role.code);
+    }
+  }
+
+  const productionRoleCodes = [...new Set(mappedCodeByLegacyRowId.values())];
+  const productionRoles = await db.role.findMany({ where: { code: { in: productionRoleCodes } } });
+  const productionRoleByCode = new Map(productionRoles.map((role) => [role.code, role]));
+  const missingProductionRoleCodes = productionRoleCodes.filter((code) => !productionRoleByCode.has(code));
+
+  const branchIds = [...new Set(legacyRows.map((row) => row.branchId))];
+  const locations = await db.location.findMany({ where: { id: { in: branchIds } } });
+  const locationById = new Map(locations.map((location) => [location.id, location]));
+  const missingLocationBranchIds = branchIds.filter((id) => !locationById.has(id));
+
+  // Every (userId, targetRoleId) pair a legacy row maps to — used to fetch
+  // only the existing scopes actually relevant to this backfill (never an
+  // independent, unrelated-role assignment for the same user).
+  const targetRoleIdsByUserId = new Map<string, Set<string>>();
+  for (const legacy of legacyRows) {
+    const code = mappedCodeByLegacyRowId.get(legacy.id);
+    const role = code ? productionRoleByCode.get(code) : undefined;
+    if (!role) continue;
+    const set = targetRoleIdsByUserId.get(legacy.userId) ?? new Set<string>();
+    set.add(role.id);
+    targetRoleIdsByUserId.set(legacy.userId, set);
+  }
+  const relevantUserIds = [...targetRoleIdsByUserId.keys()];
+  const existingScopes = relevantUserIds.length
+    ? await db.userRoleScope.findMany({
+        where: { userId: { in: relevantUserIds } },
+        include: { role: { select: { code: true } } },
+      })
+    : [];
+  const relevantExistingScopes = existingScopes.filter((scope) =>
+    (targetRoleIdsByUserId.get(scope.userId) ?? new Set()).has(scope.roleId),
+  );
+  const existingScopeKeySet = new Set(
+    existingScopes.map((scope) => `${scope.userId}|${scope.roleId}|${scope.scopeKind}|${scope.locationId}`),
+  );
+
+  const rows: UserRoleScopeBackfillPlanRow[] = [];
+  const exactTargetKeys = new Set<string>();
+  let expectedCreateCount = 0;
+  let alreadyPresentCount = 0;
+
+  for (const legacy of legacyRows) {
+    const productionRoleCode = mappedCodeByLegacyRowId.get(legacy.id) ?? null;
+    const productionRole = productionRoleCode ? productionRoleByCode.get(productionRoleCode) ?? null : null;
+    const location = locationById.get(legacy.branchId) ?? null;
+
+    let blocker: UserRoleScopeBackfillPlanRowBlocker = null;
+    if (!productionRoleCode) blocker = 'UNMAPPED_LEGACY_ROLE';
+    else if (!productionRole) blocker = 'MISSING_PRODUCTION_ROLE';
+    else if (!location) blocker = 'MISSING_LOCATION';
+
+    let alreadyPresent = false;
+    let wouldCreate = false;
+    if (!blocker && productionRole) {
+      const key = `${legacy.userId}|${productionRole.id}|LOCATION|${legacy.branchId}`;
+      exactTargetKeys.add(key);
+      alreadyPresent = existingScopeKeySet.has(key);
+      wouldCreate = !alreadyPresent;
+      if (alreadyPresent) alreadyPresentCount += 1;
+      else expectedCreateCount += 1;
+    }
+
+    rows.push({
+      legacyRowId: legacy.id,
+      userId: legacy.user.id,
+      name: legacy.user.name,
+      email: legacy.user.email,
+      isActive: legacy.user.isActive,
+      legacyRoleCode: legacy.role.code,
+      legacyRoleId: legacy.role.id,
+      branchId: legacy.branch.id,
+      branchCode: legacy.branch.code,
+      branchName: legacy.branch.name,
+      target: {
+        productionRoleCode,
+        productionRoleId: productionRole?.id ?? null,
+        scopeKind: 'LOCATION',
+        locationId: legacy.branchId,
+        locationCode: location?.code ?? null,
+        locationName: location?.name ?? null,
+        alreadyPresent,
+        wouldCreate,
+      },
+      blocker,
+    });
+  }
+
+  const coexistingScopes: UserRoleScopeBackfillCoexistingScope[] = relevantExistingScopes
+    .filter(
+      (scope) => !exactTargetKeys.has(`${scope.userId}|${scope.roleId}|${scope.scopeKind}|${scope.locationId}`),
+    )
+    .map((scope) => ({
+      scopeId: scope.id,
+      userId: scope.userId,
+      roleCode: scope.role.code,
+      scopeKind: scope.scopeKind,
+      locationId: scope.locationId,
+    }));
+
+  const blockers: string[] = [
+    ...[...unmappedLegacyRoleCodes].map((code) => `unmapped legacy role code: ${code}`),
+    ...missingProductionRoleCodes.map((code) => `missing Production Role: ${code}`),
+    ...missingLocationBranchIds.map((id) => `missing Location for Branch id: ${id}`),
+  ];
+
+  return {
+    legacyRowCount: legacyRows.length,
+    currentUserRoleScopeCount: await db.userRoleScope.count(),
+    expectedCreateCount,
+    alreadyPresentCount,
+    readyForExecution: blockers.length === 0,
+    blockers,
+    rows,
+    unmappedLegacyRoleCodes: [...unmappedLegacyRoleCodes],
+    missingProductionRoleCodes,
+    missingLocationBranchIds,
+    coexistingScopes,
+  };
+}
