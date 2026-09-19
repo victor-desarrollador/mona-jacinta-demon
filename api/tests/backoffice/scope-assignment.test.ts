@@ -79,6 +79,21 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
     return authAs(userId, [{ roleId, roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] }]);
   }
 
+  // GC2 (Phase 1 Global Closeout): the canonical, non-transitional ADMIN
+  // shape — exactly one UserRoleScope row, scopeKind COMPANY, locationId
+  // null, and deliberately no legacy UserBranchRole row (unlike
+  // createTestUser, which always creates a LOCATION row). Used wherever an
+  // HTTP test needs a real ADMIN caller for a USER_MANAGE-gated route now
+  // that USER_MANAGE requires COMPANY scope.
+  async function createCompanyAdmin(email: string) {
+    const adminRole = await findRole('ADMIN');
+    const admin = await db.user.create({ data: { name: 'company-admin', email, passwordHash: 'x' } });
+    await db.userRoleScope.create({
+      data: { userId: admin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    return admin;
+  }
+
   it('rejects a caller with no auth context (401)', async () => {
     const branch = await createBranch(db);
     const target = await createTestUser(db, (await findRole('CASHIER')).id, branch.id);
@@ -418,7 +433,17 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
       expect(after).toEqual(before);
     });
 
-    it('POST /api/v1/backoffice/users/:userId/scope: an ADMIN with real USER_MANAGE reassigns SELLER to Location B without disturbing an independent WAREHOUSE @ Location A assignment', async () => {
+    // GC2 (Phase 1 Global Closeout, security regression coverage): USER_MANAGE
+    // is now COMPANY-required (permissions.ts's COMPANY_SCOPE_REQUIRED_FOR_ADMIN),
+    // precisely because this route has no location dimension at all — it never
+    // resolves or checks a branch. Before GC2, a transitional LOCATION-scoped
+    // ADMIN passed this route's global USER_MANAGE gate and could reassign any
+    // user to any location, including one the caller had no assignment to
+    // (this exact fixture, previously asserting `res.status).toBeLessThan(300)`
+    // for a branchA-only ADMIN reassigning a target to branchB). That gap is
+    // now closed: this must stay 403 to prevent the regression, not merely to
+    // pass once.
+    it('POST /api/v1/backoffice/users/:userId/scope: a transitional ADMIN LOCATION caller is denied USER_MANAGE, even for an eligible non-self, non-OWNER target at an unrelated location', async () => {
       const branchA = await createBranch(db);
       const branchB = await createBranch(db);
       await ensureTestLocation(db, branchA.id);
@@ -427,6 +452,32 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
       const sellerRole = await findRole('SELLER');
       const warehouseRole = await findRole('WAREHOUSE');
       const target = await db.user.create({ data: { name: 'http-multi-1', email: 'http-multi-1@test.local', passwordHash: 'x' } });
+      await db.userRoleScope.create({ data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branchA.id } });
+      await db.userRoleScope.create({ data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branchA.id } });
+      const before = await db.userRoleScope.findMany({ where: { userId: target.id } });
+
+      const res = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchB.id] });
+
+      expect(res.status).toBe(403);
+      const after = await db.userRoleScope.findMany({ where: { userId: target.id } });
+      expect(after).toEqual(before);
+    });
+
+    // GC2 companion proof: the canonical, non-transitional ADMIN COMPANY
+    // caller retains the exact legitimate cross-location capability the
+    // denial test above proves a LOCATION-scoped ADMIN no longer has.
+    it('POST /api/v1/backoffice/users/:userId/scope: an ADMIN COMPANY caller reassigns SELLER to Location B without disturbing an independent WAREHOUSE @ Location A assignment', async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const admin = await createCompanyAdmin('company-admin-scope-1@test.local');
+      const sellerRole = await findRole('SELLER');
+      const warehouseRole = await findRole('WAREHOUSE');
+      const target = await db.user.create({ data: { name: 'http-multi-1b', email: 'http-multi-1b@test.local', passwordHash: 'x' } });
       await db.userRoleScope.create({ data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branchA.id } });
       await db.userRoleScope.create({ data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branchA.id } });
 
@@ -452,7 +503,10 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
       const branchB = await createBranch(db);
       await ensureTestLocation(db, branchA.id);
       await ensureTestLocation(db, branchB.id);
-      const admin = await createTestUser(db, (await findRole('ADMIN')).id, branchA.id);
+      // GC2: USER_MANAGE now requires COMPANY scope; this test is about
+      // revoke's independent-assignment behavior, not the USER_MANAGE gate
+      // itself, so its incidental caller must be a real ADMIN COMPANY.
+      const admin = await createCompanyAdmin('company-admin-scope-2@test.local');
       const sellerRole = await findRole('SELLER');
       const warehouseRole = await findRole('WAREHOUSE');
       const target = await db.user.create({ data: { name: 'http-multi-2', email: 'http-multi-2@test.local', passwordHash: 'x' } });
@@ -481,7 +535,10 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
       const branchB = await createBranch(db);
       await ensureTestLocation(db, branchA.id);
       await ensureTestLocation(db, branchB.id);
-      const admin = await createTestUser(db, (await findRole('ADMIN')).id, branchA.id);
+      // GC2: USER_MANAGE now requires COMPANY scope; this test is about the
+      // /me projection reflecting a revoke, not the USER_MANAGE gate itself,
+      // so its incidental caller must be a real ADMIN COMPANY.
+      const admin = await createCompanyAdmin('company-admin-scope-3@test.local');
       const sellerRole = await findRole('SELLER');
       const warehouseRole = await findRole('WAREHOUSE');
       const target = await db.user.create({ data: { name: 'http-me-target', email: 'http-me-target@test.local', passwordHash: 'x' } });

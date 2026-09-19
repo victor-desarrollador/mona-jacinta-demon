@@ -91,13 +91,41 @@ describe('GET /api/v1/auth/me', () => {
     expect(response.body.user.roles).toEqual(['CASHIER']);
   });
 
-  it('projects Production REPORT_VIEW/USER_MANAGE into the public permissions field for ADMIN', async () => {
+  // GC2 (Phase 1 Global Closeout): admin@demo.local is currently represented
+  // by seedDemo's transitional ADMIN LOCATION UserRoleScope rows (derived
+  // from UserBranchRole), prior to the operational ADMIN COMPANY backfill.
+  // USER_MANAGE is now COMPANY-required (permissions.ts), so this
+  // transitional caller must still project report.view but no longer
+  // user.manage. seedDemo itself is unchanged by GC2.
+  it('projects report.view but not user.manage for the transitional ADMIN LOCATION seed fixture', async () => {
     const admin = await prisma.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' }, select: { id: true } });
     const response = await request(app)
       .get('/api/v1/auth/me')
       .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
     expect(response.status).toBe(200);
-    expect(response.body.user.permissions).toEqual(expect.arrayContaining(['report.view', 'user.manage']));
+    expect(response.body.user.permissions).toContain('report.view');
+    expect(response.body.user.permissions).not.toContain('user.manage');
+  });
+
+  // GC2 companion proof: a canonical, non-transitional ADMIN COMPANY
+  // assignment retains the exact user.manage projection the transitional
+  // LOCATION seed fixture above no longer has. Direct user + real ADMIN role
+  // + one UserRoleScope (COMPANY, locationId null) — UserBranchRole grants no
+  // authorization here.
+  it('projects user.manage for a canonical ADMIN COMPANY caller', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const companyAdmin = await prisma.user.create({
+      data: { name: 'company-admin-me', email: 'company-admin-me@test.local', passwordHash: 'x' },
+    });
+    await prisma.userRoleScope.create({
+      data: { userId: companyAdmin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    const response = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${await getAuthToken(companyAdmin)}`);
+    expect(response.status).toBe(200);
+    expect(response.body.user.permissions).toContain('user.manage');
+    expect(response.body.user.permissions).toContain('report.view');
   });
 
   it('excludes report.view/user.manage/audit.view for a MANAGER caller (mapped to Production WAREHOUSE, which lacks them)', async () => {

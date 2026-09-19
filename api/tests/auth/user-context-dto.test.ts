@@ -6,7 +6,12 @@ function assignment(overrides: Partial<Express.ProductionAssignment> = {}): Expr
 }
 
 describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', () => {
-  it('maps effectiveLocationIds to branchIds and projects public permissions from the caller\'s Production assignments, via the explicit 12-code compatibility mapping', () => {
+  // GC2 (Phase 1 Global Closeout): USER_MANAGE is now COMPANY-required
+  // (permissions.ts's COMPANY_SCOPE_REQUIRED_FOR_ADMIN), enforced centrally by
+  // hasPermission(). A transitional LOCATION-scoped assignment structurally
+  // carries USER_MANAGE in its `permissions` array but must not project
+  // user.manage publicly — only REPORT_VIEW (not COMPANY-required) still does.
+  it('a transitional LOCATION-scoped ADMIN assignment projects report.view but not user.manage (USER_MANAGE is COMPANY-required)', () => {
     const dto = toPublicUserContext(
       { id: 'u1', name: 'Admin', email: 'a@test.local', branchRoles: [{ role: { code: 'ADMIN' } }] },
       {
@@ -20,10 +25,25 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
       email: 'a@test.local',
       roles: ['ADMIN'],
       branchIds: ['loc-1'],
-      // Deterministic mapping order (USER_MANAGE precedes REPORT_VIEW in the
-      // explicit 12-code table), never alphabetical or insertion order.
-      permissions: ['user.manage', 'report.view'],
+      permissions: ['report.view'],
     });
+  });
+
+  // GC2 companion proof: the canonical, non-transitional ADMIN COMPANY
+  // assignment retains the exact user.manage projection the transitional
+  // LOCATION case above no longer has.
+  it('a canonical COMPANY-scoped ADMIN assignment projects both report.view and user.manage', () => {
+    const dto = toPublicUserContext(
+      { id: 'u1', name: 'Admin', email: 'a@test.local', branchRoles: [{ role: { code: 'ADMIN' } }] },
+      {
+        effectiveLocationIds: [],
+        assignments: [
+          assignment({ scopeKind: 'COMPANY', locationId: null, permissions: ['REPORT_VIEW', 'USER_MANAGE'] }),
+        ],
+      },
+    );
+    expect(dto.permissions).toContain('report.view');
+    expect(dto.permissions).toContain('user.manage');
   });
 
   it('derives public roles from UserBranchRole only, never the internal legacy+Production union', () => {

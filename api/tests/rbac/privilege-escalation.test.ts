@@ -46,6 +46,20 @@ describe('Privilege escalation (Phase 1D.4/1E checklist)', () => {
     return { owner, ownerRole };
   }
 
+  // GC2 (Phase 1 Global Closeout): USER_MANAGE is now COMPANY-required
+  // (permissions.ts's COMPANY_SCOPE_REQUIRED_FOR_ADMIN). Cases A and H prove
+  // service-level OWNER-target guards, not the USER_MANAGE route gate itself
+  // — their caller must be a real ADMIN COMPANY so a LOCATION-scoped ADMIN's
+  // now-correct 403 at the route gate can never masquerade as those guards.
+  async function createCompanyAdmin(email: string) {
+    const adminRole = await findRole('ADMIN');
+    const admin = await db.user.create({ data: { name: 'company-admin', email, passwordHash: 'x' } });
+    await db.userRoleScope.create({
+      data: { userId: admin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    return admin;
+  }
+
   // Real DB-backed authorization context, built the exact way
   // src/middleware/auth.ts does (same select shape), not a fabricated
   // object — proves the actual policy/context composition, not a stand-in.
@@ -72,7 +86,10 @@ describe('Privilege escalation (Phase 1D.4/1E checklist)', () => {
   it('Case A: ADMIN cannot grant OWNER through the HTTP scope-assignment route', async () => {
     const branch = await createBranch(db);
     await ensureTestLocation(db, branch.id);
-    const admin = await createTestUser(db, (await findRole('ADMIN')).id, branch.id);
+    // ADMIN COMPANY (not LOCATION): USER_MANAGE is now COMPANY-required, and
+    // this case must reach the service-level OWNER-grant guard, not stop at
+    // the route gate.
+    const admin = await createCompanyAdmin('company-admin-case-a@test.local');
     const sellerRole = await findRole('SELLER');
     const target = await createTestUser(db, sellerRole.id, branch.id);
 
@@ -223,7 +240,10 @@ describe('Privilege escalation (Phase 1D.4/1E checklist)', () => {
   it('Case H: ADMIN cannot assign a new role to, nor revoke any assignment from, a target that currently holds OWNER', async () => {
     const branch = await createBranch(db);
     await ensureTestLocation(db, branch.id);
-    const admin = await createTestUser(db, (await findRole('ADMIN')).id, branch.id);
+    // ADMIN COMPANY (not LOCATION): USER_MANAGE is now COMPANY-required, and
+    // this case must reach the service-level OWNER-target guard, not stop at
+    // the route gate.
+    const admin = await createCompanyAdmin('company-admin-case-h@test.local');
     const { owner: target, ownerRole } = await createOwnerUser('owner-target-h@test.local');
     const warehouseRole = await findRole('WAREHOUSE');
     await db.userRoleScope.create({ data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branch.id } });

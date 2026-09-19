@@ -116,9 +116,9 @@ describe('Phase 1B RBAC domain module (no database)', () => {
     expect(ownerHasImplicitAuthority).toBe(true);
   });
 
-  it('flags PRICE_MANAGE / PRODUCT_MANAGE / PRODUCT_VARIANT_MANAGE as COMPANY-scope-only for ADMIN', () => {
+  it('flags PRICE_MANAGE / PRODUCT_MANAGE / PRODUCT_VARIANT_MANAGE / USER_MANAGE as COMPANY-scope-only for ADMIN', () => {
     expect(COMPANY_SCOPE_REQUIRED_FOR_ADMIN.slice().sort()).toEqual(
-      ['PRICE_MANAGE', 'PRODUCT_MANAGE', 'PRODUCT_VARIANT_MANAGE'].sort(),
+      ['PRICE_MANAGE', 'PRODUCT_MANAGE', 'PRODUCT_VARIANT_MANAGE', 'USER_MANAGE'].sort(),
     );
   });
 

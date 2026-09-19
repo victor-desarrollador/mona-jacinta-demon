@@ -68,6 +68,22 @@ describe('backoffice read API', () => {
     return request(app).get(path).set('Authorization', `Bearer ${await token(email)}`);
   }
 
+  // GC2 (Phase 1 Global Closeout): USER_MANAGE is now COMPANY-required
+  // (permissions.ts's COMPANY_SCOPE_REQUIRED_FOR_ADMIN). The canonical,
+  // non-transitional ADMIN shape — exactly one UserRoleScope row, scopeKind
+  // COMPANY, locationId null, no legacy UserBranchRole row — used wherever a
+  // test needs a real ADMIN caller for a USER_MANAGE-gated route now that a
+  // LOCATION-scoped ADMIN (including seedDemo's transitional admin@demo.local
+  // and this file's default 'scoped-admin') no longer qualifies.
+  async function createCompanyAdmin(email: string) {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const admin = await prisma.user.create({ data: { name: 'company-admin', email, passwordHash: 'x' } });
+    await prisma.userRoleScope.create({
+      data: { userId: admin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    return admin;
+  }
+
   async function createPendingSale(branchId = branches.CEN!) {
     const sellerId = users['seller01@demo.local']!;
     const remera = variants['REM-NEG-M']!;
@@ -263,17 +279,24 @@ describe('backoffice read API', () => {
     expect((await get('/api/v1/backoffice/dashboard', 'cashier01@demo.local')).status).toBe(403);
   });
 
-  it('denies /users without USER_MANAGE', async () => {
+  it('denies /users without USER_MANAGE, including a transitional LOCATION ADMIN caller', async () => {
     // MANAGER maps to Production WAREHOUSE (legacy-role-map.ts), which
     // carries neither USER_MANAGE nor REPORT_VIEW by default.
     expect((await get('/api/v1/backoffice/users', 'manager01@demo.local')).status).toBe(403);
-    expect((await get('/api/v1/backoffice/users', 'admin@demo.local')).status).toBe(200);
-    expect((await get('/api/v1/backoffice/users', 'admin@demo.local')).body.items[0]).not.toHaveProperty('passwordHash');
+    // GC2: USER_MANAGE now requires COMPANY scope, and admin@demo.local is
+    // seedDemo's transitional ADMIN LOCATION fixture — this global
+    // (no-location) route must deny it too.
+    expect((await get('/api/v1/backoffice/users', 'admin@demo.local')).status).toBe(403);
+    const companyAdmin = await createCompanyAdmin('company-admin-users-1@test.local');
+    const response = await request(app)
+      .get('/api/v1/backoffice/users')
+      .set('Authorization', `Bearer ${await getAuthToken(companyAdmin)}`);
+    expect(response.status).toBe(200);
+    expect(response.body.items[0]).not.toHaveProperty('passwordHash');
   });
 
-  it('authorizes /backoffice/users via the Production USER_MANAGE grant alone', async () => {
-    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
-    const user = await createTestUser(prisma, adminRole.id, branches.CEN!);
+  it('authorizes /backoffice/users via the Production USER_MANAGE grant alone (COMPANY-scoped ADMIN)', async () => {
+    const user = await createCompanyAdmin('company-admin-users-2@test.local');
     const isolatedToken = await getAuthToken(user);
     const response = await request(app).get('/api/v1/backoffice/users').set('Authorization', `Bearer ${isolatedToken}`);
     expect(response.status).toBe(200);
@@ -363,6 +386,24 @@ describe('backoffice read API', () => {
       return prisma.role.findUniqueOrThrow({ where: { code } });
     }
 
+    // GC2: USER_MANAGE now requires COMPANY scope. Every test below is about
+    // the TARGET user's projected assignments, not the USER_MANAGE gate
+    // itself, so the caller must be a real ADMIN COMPANY (this file's default
+    // 'scoped-admin' and seedDemo's admin@demo.local are both LOCATION-scoped
+    // and would 403 before reaching the projection under test). A COMPANY
+    // assignment's effectiveLocationIds expands to every active Location
+    // (authorization-context.ts), so CEN and YB both remain in scope exactly
+    // as they were under the previous admin@demo.local caller.
+    let companyAdminToken: string;
+    beforeEach(async () => {
+      const companyAdmin = await createCompanyAdmin('company-admin-projection@test.local');
+      companyAdminToken = await getAuthToken(companyAdmin);
+    });
+
+    async function getAsCompanyAdmin(path: string) {
+      return request(app).get(path).set('Authorization', `Bearer ${companyAdminToken}`);
+    }
+
     it('a stale legacy UserBranchRole never leaks into assignments — only the live UserRoleScope is projected', async () => {
       const sellerRole = await findRole('SELLER');
       const warehouseRole = await findRole('WAREHOUSE');
@@ -377,7 +418,7 @@ describe('backoffice read API', () => {
       // Confirm the divergence is real before asserting on it.
       expect(await prisma.userBranchRole.count({ where: { userId: target.id, roleId: sellerRole.id } })).toBe(1);
 
-      const response = await get('/api/v1/backoffice/users');
+      const response = await getAsCompanyAdmin('/api/v1/backoffice/users');
       expect(response.status).toBe(200);
       const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
       expect(projected).toBeDefined();
@@ -393,7 +434,7 @@ describe('backoffice read API', () => {
       const target = await createTestUser(prisma, sellerRole.id, branches.CEN!);
       await prisma.userRoleScope.deleteMany({ where: { userId: target.id } });
 
-      const response = await get('/api/v1/backoffice/users');
+      const response = await getAsCompanyAdmin('/api/v1/backoffice/users');
       expect(response.status).toBe(200);
       expect(response.body.items.map((item: { id: string }) => item.id)).not.toContain(target.id);
       expect(await prisma.userBranchRole.count({ where: { userId: target.id } })).toBe(1);
@@ -409,7 +450,7 @@ describe('backoffice read API', () => {
       });
       expect(await prisma.userBranchRole.count({ where: { userId: target.id } })).toBe(0);
 
-      const response = await get('/api/v1/backoffice/users');
+      const response = await getAsCompanyAdmin('/api/v1/backoffice/users');
       expect(response.status).toBe(200);
       const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
       expect(projected).toBeDefined();
@@ -429,10 +470,10 @@ describe('backoffice read API', () => {
         data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branches.YB! },
       });
 
-      // admin@demo.local's Production assignment spans every seeded branch
-      // (Phase 1C backfill), so both CEN and YB are within its
-      // effectiveLocationIds filter.
-      const response = await get('/api/v1/backoffice/users', 'admin@demo.local');
+      // The COMPANY admin caller's effectiveLocationIds expands to every
+      // active Location (authorization-context.ts), so both CEN and YB are
+      // within its filter.
+      const response = await getAsCompanyAdmin('/api/v1/backoffice/users');
       expect(response.status).toBe(200);
       const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
       expect(projected).toBeDefined();

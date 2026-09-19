@@ -61,8 +61,8 @@ describe('requiresCompanyScope (Phase 1D.2)', () => {
     expect(requiresCompanyScope('SALE_CREATE')).toBe(false);
   });
 
-  it('does NOT silently include USER_MANAGE (unresolved design question, not decided by this phase)', () => {
-    expect(requiresCompanyScope('USER_MANAGE')).toBe(false);
+  it('includes USER_MANAGE (Phase 1 Global Closeout GC2: user/scope-management routes have no location dimension)', () => {
+    expect(requiresCompanyScope('USER_MANAGE')).toBe(true);
   });
 });
 

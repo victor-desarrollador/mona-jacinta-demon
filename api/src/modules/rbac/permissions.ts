@@ -55,8 +55,15 @@ export const productionPermissionValues = Object.values(
 // role-permission-matrix.ts). This is domain metadata describing the rule for
 // later enforcement (Phase 1D authorization middleware) — it does not itself
 // grant or check anything.
+// GC2 (Phase 1 Global Closeout): USER_MANAGE added — its backoffice routes
+// (GET/POST/DELETE .../backoffice/users...) have no location dimension at
+// all (the target is a user, never a branch-owned resource), the same shape
+// that justifies COMPANY-required treatment for the other three permissions
+// here. Before this change, a transitional LOCATION-scoped ADMIN passed the
+// global USER_MANAGE gate and could manage any user company-wide.
 export const COMPANY_SCOPE_REQUIRED_FOR_ADMIN: readonly ProductionPermission[] = [
   PRODUCTION_PERMISSIONS.PRICE_MANAGE,
   PRODUCTION_PERMISSIONS.PRODUCT_MANAGE,
   PRODUCTION_PERMISSIONS.PRODUCT_VARIANT_MANAGE,
+  PRODUCTION_PERMISSIONS.USER_MANAGE,
 ];
