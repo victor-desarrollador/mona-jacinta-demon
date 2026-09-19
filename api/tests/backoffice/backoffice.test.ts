@@ -73,8 +73,9 @@ describe('backoffice read API', () => {
   // non-transitional ADMIN shape — exactly one UserRoleScope row, scopeKind
   // COMPANY, locationId null, no legacy UserBranchRole row — used wherever a
   // test needs a real ADMIN caller for a USER_MANAGE-gated route now that a
-  // LOCATION-scoped ADMIN (including seedDemo's transitional admin@demo.local
-  // and this file's default 'scoped-admin') no longer qualifies.
+  // LOCATION-scoped ADMIN (this file's default 'scoped-admin') no longer
+  // qualifies. GC4F2 converged seedDemo's admin@demo.local itself to this
+  // same canonical COMPANY shape, so it is no longer a LOCATION example.
   async function createCompanyAdmin(email: string) {
     const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
     const admin = await prisma.user.create({ data: { name: 'company-admin', email, passwordHash: 'x' } });
@@ -283,10 +284,13 @@ describe('backoffice read API', () => {
     // MANAGER maps to Production WAREHOUSE (legacy-role-map.ts), which
     // carries neither USER_MANAGE nor REPORT_VIEW by default.
     expect((await get('/api/v1/backoffice/users', 'manager01@demo.local')).status).toBe(403);
-    // GC2: USER_MANAGE now requires COMPANY scope, and admin@demo.local is
-    // seedDemo's transitional ADMIN LOCATION fixture — this global
-    // (no-location) route must deny it too.
-    expect((await get('/api/v1/backoffice/users', 'admin@demo.local')).status).toBe(403);
+    // GC2: USER_MANAGE now requires COMPANY scope. GC4F2 converged
+    // seedDemo's admin@demo.local to canonical ADMIN COMPANY, so it no
+    // longer represents a transitional LOCATION ADMIN — this test
+    // intentionally uses this file's purpose-built LOCATION ADMIN fixture
+    // ('scoped-admin', created in beforeAll above) instead, to keep proving
+    // this global (no-location) route denies a LOCATION-scoped ADMIN.
+    expect((await get('/api/v1/backoffice/users', 'scoped-admin')).status).toBe(403);
     const companyAdmin = await createCompanyAdmin('company-admin-users-1@test.local');
     const response = await request(app)
       .get('/api/v1/backoffice/users')
@@ -389,11 +393,10 @@ describe('backoffice read API', () => {
     // GC2: USER_MANAGE now requires COMPANY scope. Every test below is about
     // the TARGET user's projected assignments, not the USER_MANAGE gate
     // itself, so the caller must be a real ADMIN COMPANY (this file's default
-    // 'scoped-admin' and seedDemo's admin@demo.local are both LOCATION-scoped
-    // and would 403 before reaching the projection under test). A COMPANY
-    // assignment's effectiveLocationIds expands to every active Location
-    // (authorization-context.ts), so CEN and YB both remain in scope exactly
-    // as they were under the previous admin@demo.local caller.
+    // 'scoped-admin' is LOCATION-scoped and would 403 before reaching the
+    // projection under test). A COMPANY assignment's effectiveLocationIds
+    // expands to every active Location (authorization-context.ts), so CEN
+    // and YB both remain in scope for this dedicated companyAdmin caller.
     let companyAdminToken: string;
     beforeEach(async () => {
       const companyAdmin = await createCompanyAdmin('company-admin-projection@test.local');

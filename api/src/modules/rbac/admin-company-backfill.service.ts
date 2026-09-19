@@ -43,6 +43,65 @@ export type AdminCompanyBackfillPlan = {
   readyForExecution: boolean;
 };
 
+type MutationDatabase = Pick<PrismaClient, 'role' | 'userRoleScope'>;
+
+async function findAdminRoleOrThrow(db: Pick<PrismaClient, 'role'>) {
+  const adminRole = await db.role.findUnique({ where: { code: ROLE_CODES.ADMIN } });
+  if (!adminRole) {
+    throw new Error(
+      'Production ADMIN Role does not exist; run the Phase 1B RBAC catalog bootstrap ' +
+        '(bootstrapProductionRbacCatalog) first',
+    );
+  }
+  return adminRole;
+}
+
+async function findAdminLocationUserIds(db: Pick<PrismaClient, 'userRoleScope'>, adminRoleId: string) {
+  return [
+    ...new Set(
+      (
+        await db.userRoleScope.findMany({
+          where: { roleId: adminRoleId, scopeKind: 'LOCATION' },
+          select: { userId: true },
+        })
+      ).map((row) => row.userId),
+    ),
+  ];
+}
+
+// Scoped to (userId, adminRoleId) ONLY — never userId alone, so an
+// independent assignment for the same user under a different roleId is
+// never touched by this deleteMany.
+async function convertAdminUserToCompanyScope(db: MutationDatabase, userId: string, adminRoleId: string) {
+  await db.userRoleScope.deleteMany({ where: { userId, roleId: adminRoleId } });
+  await db.userRoleScope.create({
+    data: { userId, roleId: adminRoleId, scopeKind: 'COMPANY', locationId: null },
+  });
+}
+
+// GC4F2 (Phase 1 Global Closeout): transaction-compatible core, usable on an
+// existing transaction client — no `$transaction` of its own (same split as
+// catalog.service.ts's syncProductionRbacCatalog/bootstrapProductionRbacCatalog
+// and scope-backfill.service.ts's syncUserRoleScopeFromUserBranchRole/
+// backfillUserRoleScopeFromUserBranchRole). This is what prisma/seed.ts's
+// populate() calls directly, immediately after the Phase1C legacy scope
+// sync, on its own already-open transaction — so a seed/reset can never
+// leave a corrected ADMIN regressed back into mixed LOCATION+COMPANY state,
+// and a synchronization failure rolls back the entire seed/reset, never
+// just this step.
+export async function syncAdminCompanyScope(db: MutationDatabase): Promise<AdminCompanyBackfillResult> {
+  const adminRole = await findAdminRoleOrThrow(db);
+  const affectedUserIds = await findAdminLocationUserIds(db, adminRole.id);
+
+  let usersConverted = 0;
+  for (const userId of affectedUserIds) {
+    await convertAdminUserToCompanyScope(db, userId, adminRole.id);
+    usersConverted += 1;
+  }
+
+  return { usersConverted };
+}
+
 // Phase 1D.4.1 one-time data correction (AGENTS.md's Checkpoint /
 // docs/superpowers/plans/2026-09-14-phase-1d-production-authorization.md
 // Task 1D.4.1): Phase 1C's UserBranchRole -> UserRoleScope backfill gave
@@ -55,36 +114,22 @@ export type AdminCompanyBackfillPlan = {
 // CASHIER) is left completely untouched. CLI-invoked only (see
 // scripts/backfill-admin-company-scope.ts); never called from a request
 // path.
+//
+// GC4F2: standalone entry point — opens one transaction PER AFFECTED USER
+// around the same convertAdminUserToCompanyScope helper syncAdminCompanyScope
+// uses (this per-user transaction granularity was independently reviewed and
+// accepted at GC2/Phase 1D.4.1 and is preserved unchanged here — never
+// collapsed into a single all-users transaction, which would be a different,
+// unreviewed operation shape). Target discovery runs once, outside the loop,
+// exactly as before.
 export async function backfillAdminCompanyScope(db: Database): Promise<AdminCompanyBackfillResult> {
-  const adminRole = await db.role.findUnique({ where: { code: ROLE_CODES.ADMIN } });
-  if (!adminRole) {
-    throw new Error(
-      'Production ADMIN Role does not exist; run the Phase 1B RBAC catalog bootstrap ' +
-        '(bootstrapProductionRbacCatalog) first',
-    );
-  }
-
-  const affectedUserIds = [
-    ...new Set(
-      (
-        await db.userRoleScope.findMany({
-          where: { roleId: adminRole.id, scopeKind: 'LOCATION' },
-          select: { userId: true },
-        })
-      ).map((row) => row.userId),
-    ),
-  ];
+  const adminRole = await findAdminRoleOrThrow(db);
+  const affectedUserIds = await findAdminLocationUserIds(db, adminRole.id);
 
   let usersConverted = 0;
   for (const userId of affectedUserIds) {
     await db.$transaction(async (tx) => {
-      // Scoped to (userId, adminRole.id) ONLY — never userId alone, so an
-      // independent assignment for the same user under a different roleId
-      // is never touched by this deleteMany.
-      await tx.userRoleScope.deleteMany({ where: { userId, roleId: adminRole.id } });
-      await tx.userRoleScope.create({
-        data: { userId, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
-      });
+      await convertAdminUserToCompanyScope(tx, userId, adminRole.id);
     });
     usersConverted += 1;
   }

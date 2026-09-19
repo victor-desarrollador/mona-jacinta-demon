@@ -2,6 +2,7 @@ import { hash } from 'bcryptjs';
 import type { Prisma } from '../src/generated/prisma/client.js';
 import { syncProductionRbacCatalog } from '../src/modules/rbac/catalog.service.js';
 import { syncUserRoleScopeFromUserBranchRole } from '../src/modules/rbac/scope-backfill.service.js';
+import { syncAdminCompanyScope } from '../src/modules/rbac/admin-company-backfill.service.js';
 
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -262,8 +263,25 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
   // syncUserRoleScopeFromUserBranchRole's own fail-closed checks. Runs on
   // this same transaction — never a nested one — so a synchronization
   // failure rolls back the entire seed/reset, not just this step.
+  //
+  // GC4F2 (Phase 1 Global Closeout): immediately afterward, converge every
+  // ADMIN LOCATION row the sync above just (re)created into a single ADMIN
+  // COMPANY row — the Phase 1D canonical target (AGENTS.md "Roles —
+  // Production V1"). Deliberately kept inside this same Location-gated block
+  // (never invoked when Phase1C is skipped): syncAdminCompanyScope only
+  // collapses existing UserRoleScope LOCATION rows, it never infers ADMIN
+  // COMPANY directly from UserBranchRole, so it would be a no-op with
+  // nothing to converge yet on a genuinely brand-new database — see the
+  // dedicated Location-never-backfilled test in
+  // scope-seed-integration.test.ts. Runs on this same transaction — never a
+  // nested one (syncAdminCompanyScope opens no transaction of its own) — so
+  // a failure here rolls back the entire seed/reset, including the Phase1C
+  // sync above; this is what makes a seed/reset run against an
+  // already-corrected database converge back to canonical instead of
+  // silently regressing to transitional mixed LOCATION+COMPANY state.
   if ((await tx.location.count()) > 0) {
     await syncUserRoleScopeFromUserBranchRole(tx);
+    await syncAdminCompanyScope(tx);
   }
 
   // Phase 1D.4.2 (Production V1): canonical bootstrap OWNER user. OWNER

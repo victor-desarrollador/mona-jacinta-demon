@@ -5,7 +5,7 @@ import { seedDemo } from '../../prisma/seed.js';
 import { createApp } from '../../src/app.js';
 import { env } from '../../src/config/env.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
-import { getAuthToken } from '../helpers/auth.js';
+import { createTestUser, getAuthToken } from '../helpers/auth.js';
 
 describe('GET /api/v1/auth/me', () => {
   let prisma: Awaited<ReturnType<typeof createTestPrismaClient>>;
@@ -91,17 +91,21 @@ describe('GET /api/v1/auth/me', () => {
     expect(response.body.user.roles).toEqual(['CASHIER']);
   });
 
-  // GC2 (Phase 1 Global Closeout): admin@demo.local is currently represented
-  // by seedDemo's transitional ADMIN LOCATION UserRoleScope rows (derived
-  // from UserBranchRole), prior to the operational ADMIN COMPANY backfill.
-  // USER_MANAGE is now COMPANY-required (permissions.ts), so this
-  // transitional caller must still project report.view but no longer
-  // user.manage. seedDemo itself is unchanged by GC2.
-  it('projects report.view but not user.manage for the transitional ADMIN LOCATION seed fixture', async () => {
-    const admin = await prisma.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' }, select: { id: true } });
+  // GC2 (Phase 1 Global Closeout): USER_MANAGE is now COMPANY-required
+  // (permissions.ts), so a LOCATION-scoped ADMIN must still project
+  // report.view but no longer user.manage. GC4F2 converged seedDemo's own
+  // admin@demo.local to canonical ADMIN COMPANY, so it no longer represents
+  // this transitional shape — this test uses its own purpose-built
+  // transitional ADMIN LOCATION fixture instead (createTestUser gives it a
+  // real UserRoleScope LOCATION row at CEN, matching what admin@demo.local
+  // used to look like pre-GC4F2).
+  it('projects report.view but not user.manage for a purpose-built transitional ADMIN LOCATION fixture', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const centro = await prisma.branch.findUniqueOrThrow({ where: { code: 'CEN' }, select: { id: true } });
+    const locationAdmin = await createTestUser(prisma, adminRole.id, centro.id);
     const response = await request(app)
       .get('/api/v1/auth/me')
-      .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
+      .set('Authorization', `Bearer ${await getAuthToken(locationAdmin)}`);
     expect(response.status).toBe(200);
     expect(response.body.user.permissions).toContain('report.view');
     expect(response.body.user.permissions).not.toContain('user.manage');

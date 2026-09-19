@@ -72,9 +72,15 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
     // Phase 1C addendum: with Location bootstrapped (ensured in beforeAll
     // below), populate() now also syncs UserRoleScope on every reset/seed —
     // see scope-seed-integration.test.ts for the dedicated Phase 1C checks.
-    // Phase 1D.4.2 addendum: +1 for the canonical OWNER user's COMPANY
-    // UserRoleScope row (see the dedicated OWNER seed test below).
-    expect(await db.prisma.userRoleScope.count()).toBe(10);
+    // GC4F2 addendum: populate() also converges ADMIN's Phase1C-synced
+    // LOCATION rows to a single COMPANY row immediately afterward (same
+    // transaction), so the 6 legacy ADMIN branches collapse to 1 row, not
+    // 6 — canonical final count: ADMIN COMPANY(1) + WAREHOUSE LOCATION(1) +
+    // SELLER LOCATION(1) + CASHIER LOCATION(1) + OWNER COMPANY(1) = 5. See
+    // scope-seed-integration.test.ts's expectCanonicalPhase1ScopeState for
+    // the detailed per-role/per-user shape this file's own count only
+    // summarizes.
+    expect(await db.prisma.userRoleScope.count()).toBe(5);
     const verification = await verifyProductionRbacCatalog(db.prisma);
     expect(verification.ok).toBe(true);
     expect(verification.issues).toEqual([]);

@@ -3,6 +3,7 @@ import { bootstrapProductionRbacCatalog } from '../../src/modules/rbac/catalog.s
 import {
   backfillAdminCompanyScope,
   planAdminCompanyBackfill,
+  syncAdminCompanyScope,
 } from '../../src/modules/rbac/admin-company-backfill.service.js';
 import { createBranch, createTestUser, ensureTestLocation } from '../helpers/factories.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
@@ -111,6 +112,42 @@ describe('backfillAdminCompanyScope (Phase 1D.4.1)', () => {
     const rows = await db.userRoleScope.findMany({ where: { userId: user.id } });
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ scopeKind: 'COMPANY', locationId: null });
+  });
+
+  // GC4F2 (Phase 1 Global Closeout): syncAdminCompanyScope is the
+  // transaction-compatible core prisma/seed.ts's populate() calls directly on
+  // its own already-open transaction (never a nested one — the exact split
+  // catalog.service.ts's syncProductionRbacCatalog/bootstrapProductionRbacCatalog
+  // and scope-backfill.service.ts's syncUserRoleScopeFromUserBranchRole/
+  // backfillUserRoleScopeFromUserBranchRole already established). This proves
+  // it runs correctly when called from inside a caller-owned transaction, and
+  // that it never tries to open one of its own (its parameter type has no
+  // `$transaction`, so that would not even compile).
+  it('syncAdminCompanyScope runs inside an already-open transaction without opening its own', async () => {
+    const adminRole = await db.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const cashierRole = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+    const branchA = await createBranch(db);
+    const branchB = await createBranch(db);
+    const admin = await createTestUser(db, adminRole.id, branchA.id);
+    await ensureTestLocation(db, branchB.id);
+    await db.userRoleScope.create({
+      data: { userId: admin.id, roleId: adminRole.id, scopeKind: 'LOCATION', locationId: branchB.id },
+    });
+    // Independent CASHIER assignment for the same user — must survive untouched.
+    await db.userRoleScope.create({
+      data: { userId: admin.id, roleId: cashierRole.id, scopeKind: 'LOCATION', locationId: branchA.id },
+    });
+    expect(await db.userRoleScope.count({ where: { userId: admin.id } })).toBe(3);
+
+    const result = await db.$transaction(async (tx) => syncAdminCompanyScope(tx));
+
+    expect(result.usersConverted).toBe(1);
+    const adminRows = await db.userRoleScope.findMany({ where: { userId: admin.id, roleId: adminRole.id } });
+    expect(adminRows).toHaveLength(1);
+    expect(adminRows[0]).toMatchObject({ scopeKind: 'COMPANY', locationId: null });
+    const cashierRows = await db.userRoleScope.findMany({ where: { userId: admin.id, roleId: cashierRole.id } });
+    expect(cashierRows).toHaveLength(1);
+    expect(cashierRows[0]!.scopeKind).toBe('LOCATION');
   });
 });
 

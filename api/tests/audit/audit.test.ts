@@ -241,6 +241,15 @@ describe('critical operation audit', () => {
     expect((await get()).status).toBe(403);
   });
 
+  // GC4F2A: this test proves the route's exact read-only query boundary, so
+  // it deliberately uses a purpose-built LOCATION-scoped ADMIN caller rather
+  // than the shared `token` (admin@demo.local, canonical ADMIN COMPANY as of
+  // GC4F2) — a COMPANY assignment's effectiveLocationIds legitimately expands
+  // via an extra `location.findMany` (authorization-context.ts), which would
+  // encode COMPANY-context expansion into this route's own query contract
+  // instead of testing it. The LOCATION fixture is created via the plain
+  // (uninstrumented) `db` client, before `readDb` wraps it below, so this
+  // setup itself is never counted.
   it('returns BigInt-safe, bounded, deterministic newest-first pages and performs no writes', async () => {
     const timestamp = new Date('2026-01-01');
     const ids = ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000003'];
@@ -248,20 +257,23 @@ describe('critical operation audit', () => {
       const entry = await createAuditLog(db, { userId: adminId, branchId, action: 'TEST', entityType: 'Sale', entityId: id, after: { amount: 9007199254740993n } });
       await db.auditLog.update({ where: { id: entry.id }, data: { id, timestamp: index === 0 ? new Date('2026-01-02') : timestamp } });
     }
+    const adminRole = await db.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const locationAdmin = await createTestUser(db, adminRole.id, branchId);
+    const locationAdminToken = await getAuthToken(locationAdmin);
     const operations: string[] = [];
     const readDb = db.$extends({ query: { $allOperations({ operation, args, query }) {
       operations.push(operation);
       if (!['findUnique', 'findMany'].includes(operation)) throw new Error('Unexpected database operation');
       return query(args);
     } } });
-    const response = await request(createApp(readDb as unknown as PrismaClient)).get('/api/v1/audit?limit=2').set('Authorization', `Bearer ${token}`);
+    const response = await request(createApp(readDb as unknown as PrismaClient)).get('/api/v1/audit?limit=2').set('Authorization', `Bearer ${locationAdminToken}`);
     expect(response.status).toBe(200);
     expect(response.body.data.map((row: { id: string }) => row.id)).toEqual([ids[0], ids[2]]);
     expect(response.body.data[0].after).toEqual({ amount: '9007199254740993' });
     expect(operations).toEqual(['findUnique', 'findMany']);
-    expect((await get(token, '?limit=2&offset=2')).body.data.map((row: { id: string }) => row.id)).toEqual([ids[1]]);
-    expect((await get(token, '?limit=2')).body).toEqual(response.body);
+    expect((await get(locationAdminToken, '?limit=2&offset=2')).body.data.map((row: { id: string }) => row.id)).toEqual([ids[1]]);
+    expect((await get(locationAdminToken, '?limit=2')).body).toEqual(response.body);
     expect(await db.auditLog.count()).toBe(3);
-    for (const query of ['?limit=0', '?limit=101', '?offset=-1']) expect((await get(token, query)).status).toBe(400);
+    for (const query of ['?limit=0', '?limit=101', '?offset=-1']) expect((await get(locationAdminToken, query)).status).toBe(400);
   });
 });
