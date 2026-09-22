@@ -169,10 +169,57 @@ function isRootOpencode(token) {
   return path.isAbsolute(token) && path.resolve(token) === opencodePath;
 }
 
-// Strips leading `command`/`env [KEY=val ...]` wrappers and any leading git
-// `-C <path>` global option(s) (repeatable), so
-// `env git -C a -C b add opencode.json` normalizes to
-// `['git', 'add', 'opencode.json']` before the subcommand is inspected.
+// Ordinary `git` global options that can appear between `git` and the real
+// subcommand — a small data-driven model, not a full Git parser. Kept
+// self-contained here (duplicated from guard-dangerous-bash.mjs by design —
+// this file stands on its own, see the top-of-file note). Grouped by how
+// they consume tokens: no value, a value as the next separate token
+// (`-C <path>`, `-c <name>=<value>`), or a value ordinarily attached via
+// `=` (`--git-dir=<path>`) — git also accepts the latter as a separate
+// token, so both forms are handled.
+const GIT_GLOBAL_NO_VALUE = new Set([
+  '--no-pager', '-P', '--paginate', '-p', '--bare',
+  '--no-replace-objects', '--no-lazy-fetch', '--no-optional-locks', '--no-advice',
+  '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
+]);
+const GIT_GLOBAL_SEPARATE_VALUE = new Set(['-C', '-c']);
+const GIT_GLOBAL_ATTACHABLE = ['--git-dir', '--work-tree', '--namespace', '--config-env'];
+
+// Skips ordinary global options so the returned array starts at the real
+// subcommand, e.g. `git -c x=y --no-pager -C . add opencode.json` ->
+// `['git','add','opencode.json']`. An unrecognized token (including things
+// like `--version`) simply stops the scan — `words[1]` then won't match any
+// mutator this file checks for, so it's a safe no-op.
+function skipGitGlobals(words) {
+  if (words[0] !== 'git') return words;
+  let i = 1;
+  while (i < words.length) {
+    const tok = words[i];
+    if (GIT_GLOBAL_NO_VALUE.has(tok)) {
+      i += 1;
+      continue;
+    }
+    if (GIT_GLOBAL_SEPARATE_VALUE.has(tok)) {
+      i += 2;
+      continue;
+    }
+    if (GIT_GLOBAL_ATTACHABLE.includes(tok)) {
+      i += 2;
+      continue;
+    }
+    if (GIT_GLOBAL_ATTACHABLE.some((name) => tok.startsWith(`${name}=`))) {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  return ['git', ...words.slice(i)];
+}
+
+// Strips leading `command`/`env [KEY=val ...]` wrappers, a bare leading
+// `KEY=VALUE` assignment (no `env` keyword), then any ordinary git global
+// options, e.g. `FOO=x env git -c a=b -C . add opencode.json` ->
+// `['git', 'add', 'opencode.json']`.
 function normalizeGitWords(w) {
   let out = w;
   let changed = true;
@@ -189,13 +236,13 @@ function normalizeGitWords(w) {
       changed = true;
       continue;
     }
-    if (out[0] === 'git' && out[1] === '-C') {
-      out = ['git', ...out.slice(3)];
+    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(out[0] ?? '')) {
+      out = out.slice(1);
       changed = true;
       continue;
     }
   }
-  return out;
+  return skipGitGlobals(out);
 }
 
 // git subcommands that mutate the index/worktree state of a pathspec.
