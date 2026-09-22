@@ -1,6 +1,7 @@
 import { hasPermission } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS, type ProductionPermission } from '../rbac/permissions.js';
 import { PERMISSIONS, type Permission } from '../../shared/permissions.js';
+import { roleCodeValues } from '../rbac/roles.js';
 
 // Public API contract boundary (Phase 1D.1 compatibility fix, Phase 1D.3.6
 // correction). The internal Express.AuthContext (assignments/
@@ -61,20 +62,33 @@ const PUBLIC_PERMISSION_COMPATIBILITY_MAP: ReadonlyArray<readonly [ProductionPer
   [PRODUCTION_PERMISSIONS.AUDIT_VIEW, PERMISSIONS.AUDIT_VIEW],
 ];
 
-// `roles` here intentionally preserves its PRE-1D.1 semantics — derived from
-// UserBranchRole only — NOT the internal AuthContext.roles union (legacy ∪
-// Production role codes, the MANAGER->WAREHOUSE desync fix). The frontend's
-// role-display/gating logic was built against the old, UserBranchRole-only
-// meaning, and Phase 1D.1 must not silently change it.
+// D1 (Phase 1 Global Closeout): `roles` now derives exclusively from the
+// caller's Production `assignments` (authorization-context.ts already
+// guarantees every entry there passed `isProductionRoleCode` — legacy
+// `MANAGER` can never appear in `assignments`, so no extra filtering is
+// needed here). This replaces the pre-D1 contract, which derived `roles`
+// from `UserBranchRole` only and returned an empty array for any canonical
+// Production user with zero legacy rows (e.g. a corrected OWNER/ADMIN) —
+// a confirmed compatibility bug, not an authorization bug (backend
+// enforcement never read this field). `user.branchRoles` is kept on
+// `PublicUserContextSource` only because every existing call site still
+// supplies it; it no longer contributes to this projection.
+//
+// Review correction: the projected `roles` array is deduplicated AND
+// ordered by the canonical Production role catalog (`roleCodeValues`,
+// rbac/roles.ts: OWNER, ADMIN, CASHIER, SELLER, WAREHOUSE), never by
+// UserRoleScope row/database order, so a multi-role caller gets a
+// deterministic response regardless of assignment insertion order.
 export function toPublicUserContext(
   user: PublicUserContextSource,
   context: InternalContextSlice,
 ): PublicUserContext {
+  const presentRoleCodes = new Set(context.assignments.map((assignment) => assignment.roleCode));
   return {
     id: user.id,
     name: user.name,
     email: user.email,
-    roles: [...new Set(user.branchRoles.map((row) => row.role.code))],
+    roles: roleCodeValues.filter((code) => presentRoleCodes.has(code)),
     branchIds: context.effectiveLocationIds,
     // hasPermission already owns OWNER implicit authority, canonical
     // assignment qualification, and COMPANY-required policy where relevant —

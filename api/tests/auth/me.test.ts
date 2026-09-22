@@ -46,6 +46,19 @@ describe('GET /api/v1/auth/me', () => {
     expect(response.body.user.effectiveLocationIds).toBeUndefined();
   });
 
+  // D1 (Phase 1 Global Closeout): owner01@demo.local has zero legacy
+  // UserBranchRole rows and exactly one OWNER COMPANY UserRoleScope row
+  // (prisma/seed.ts's populate()) — before D1, this exact user's public
+  // roles was [] (the confirmed compatibility bug).
+  it('projects OWNER for the canonical owner01@demo.local user via /me, which has zero legacy UserBranchRole rows', async () => {
+    const owner = await prisma.user.findUniqueOrThrow({ where: { email: 'owner01@demo.local' }, select: { id: true } });
+    const response = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${await getAuthToken(owner)}`);
+    expect(response.status).toBe(200);
+    expect(response.body.user.roles).toEqual(['OWNER']);
+  });
+
   it('rejects missing and expired tokens', async () => {
     const missing = await request(app).get('/api/v1/auth/me');
     const now = Math.floor(Date.now() / 1000);
@@ -62,33 +75,58 @@ describe('GET /api/v1/auth/me', () => {
     expect(expiredResponse.status).toBe(401);
   });
 
-  it('reflects role changes in the database without issuing a new token', async () => {
+  // D1 (Phase 1 Global Closeout): RETIRES — does not merely re-value — the
+  // pre-D1 version of this test. The old test's entire PURPOSE was to prove
+  // "public roles derive from UserBranchRole only," which D1 deliberately
+  // makes untrue; keeping its name/mutation-target and only flipping the
+  // expected string would have silently erased that historical intent. The
+  // replacement proves the opposite, equally load-bearing fact:
+  //   - the JWT carries identity only (`sub`) — it is never re-issued here
+  //   - GET /auth/me rebuilds authorization from the LIVE database on every
+  //     request, exactly as before
+  //   - public `roles` now follows live Production UserRoleScope
+  //     assignments, not the legacy UserBranchRole table
+  // The legacy UserBranchRole SELLER row is deliberately left in place and
+  // now contradicts UserRoleScope (UBR: SELLER, URS: CASHIER) — asserting
+  // both directly proves the DTO is reading UserRoleScope, not UBR, for
+  // Production roles.
+  it('rebuilds public roles from live Production UserRoleScope on every /auth/me request, even while a contradictory legacy UserBranchRole row remains (UserBranchRole no longer governs public Production roles)', async () => {
     const token = await sellerToken();
-    const cashierRole = await prisma.role.findUniqueOrThrow({
-      where: { code: 'CASHIER' },
-      select: { id: true },
-    });
     const seller = await prisma.user.findUniqueOrThrow({
       where: { email: 'seller01@demo.local' },
       select: { id: true },
     });
-    await prisma.userBranchRole.deleteMany({ where: { userId: seller.id } });
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const cashierRole = await prisma.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
     const centro = await prisma.branch.findUniqueOrThrow({
       where: { code: 'CEN' },
       select: { id: true },
     });
-    await prisma.userBranchRole.create({
-      data: { userId: seller.id, branchId: centro.id, roleId: cashierRole.id },
+
+    // Sanity precondition: the legacy UserBranchRole SELLER row genuinely
+    // still exists and is left untouched below.
+    expect(
+      await prisma.userBranchRole.count({ where: { userId: seller.id, roleId: sellerRole.id } }),
+    ).toBe(1);
+
+    // Mutate ONLY the Production authority table — swap the caller's real
+    // SELLER assignment for a CASHIER LOCATION assignment at CEN.
+    await prisma.userRoleScope.deleteMany({ where: { userId: seller.id, roleId: sellerRole.id } });
+    await prisma.userRoleScope.create({
+      data: { userId: seller.id, roleId: cashierRole.id, scopeKind: 'LOCATION', locationId: centro.id },
     });
+
     const response = await request(app)
       .get('/api/v1/auth/me')
       .set('Authorization', `Bearer ${token}`);
     expect(response.status).toBe(200);
-    // Public contract (Phase 1D.1 compatibility fix): the PUBLIC `roles`
-    // field preserves its pre-1D.1 semantics — derived from UserBranchRole
-    // only, not the internal legacy+Production union AuthContext.roles now
-    // carries. Only UserBranchRole was changed above (to CASHIER).
     expect(response.body.user.roles).toEqual(['CASHIER']);
+
+    // The legacy row is still there, still saying SELLER — public roles
+    // said CASHIER anyway, proving UserBranchRole no longer governs this.
+    expect(
+      await prisma.userBranchRole.count({ where: { userId: seller.id, roleId: sellerRole.id } }),
+    ).toBe(1);
   });
 
   // GC2 (Phase 1 Global Closeout): USER_MANAGE is now COMPANY-required

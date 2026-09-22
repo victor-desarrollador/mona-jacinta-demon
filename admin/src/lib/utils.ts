@@ -68,10 +68,13 @@ export function paymentMethodLabel(method: string) {
 
 export function roleLabel(role: string) {
   const labels: Record<string, string> = {
-    SELLER: 'Vendedor',
-    CASHIER: 'Cajero',
-    MANAGER: 'Gerente',
+    OWNER: 'Dueño',
     ADMIN: 'Administrador',
+    CASHIER: 'Cajero',
+    SELLER: 'Vendedor',
+    WAREHOUSE: 'Depósito',
+    // MANAGER is legacy-only display compatibility.
+    MANAGER: 'Gerente',
   };
   return labels[role] ?? role;
 }

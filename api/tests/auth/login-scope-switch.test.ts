@@ -25,13 +25,18 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
   });
   afterAll(async () => prisma.$disconnect());
 
-  it('returns empty branchIds when UserRoleScope has been revoked, even though legacy UserBranchRole still has an assignment (no per-user legacy fallback post-SWITCH)', async () => {
+  // D1 (Phase 1 Global Closeout): supersedes this test's pre-D1 role
+  // expectation. The legacy UserBranchRole (Centro, SELLER) assignment stays
+  // exactly as seeded — it is left untouched below, purely as a fixture
+  // fact — but D1 means it must never be read back as EITHER a branch-scope
+  // fallback (Phase 1C SWITCH, unchanged) OR a public-role fallback (D1):
+  // an empty UserRoleScope is zero authorized branches AND zero public
+  // Production roles, never "fall back to whatever legacy says".
+  it('returns empty branchIds AND empty roles when UserRoleScope has been revoked, even though legacy UserBranchRole still has an assignment (no per-user legacy fallback for branch scope or public roles, post-SWITCH/D1)', async () => {
     const seller = await prisma.user.findUniqueOrThrow({ where: { email: 'seller01@demo.local' } });
     await prisma.userRoleScope.deleteMany({ where: { userId: seller.id } });
-    // The legacy UserBranchRole (Centro) assignment stays exactly as seeded —
-    // Phase 1D still needs it as the role/permission source — but it must
-    // never be read back as a branch-scope fallback: an empty UserRoleScope
-    // is zero authorized branches, not "not yet migrated".
+    // Sanity precondition: the legacy UserBranchRole SELLER row genuinely
+    // still exists and is left untouched above/below.
     await prisma.userBranchRole.findFirstOrThrow({ where: { userId: seller.id } });
 
     const response = await request(app)
@@ -39,7 +44,7 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
       .send({ email: 'seller01@demo.local', password: 'demo123' });
     expect(response.status).toBe(200);
     expect(response.body.user.branchIds).toEqual([]);
-    expect(response.body.user.roles).toEqual(['SELLER']);
+    expect(response.body.user.roles).toEqual([]);
   });
 
   it('prefers UserRoleScope over legacy UserBranchRole once it has been backfilled for this user', async () => {
@@ -85,24 +90,39 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     }
   });
 
-  it("preserves MANAGER's public roles display while projecting permissions from its Production WAREHOUSE assignment, not the legacy grant", async () => {
+  // D1 (Phase 1 Global Closeout): supersedes this test's pre-D1 purpose
+  // ("roles preserves pre-1D.1 semantics — UserBranchRole-derived only") —
+  // that is exactly the contract D1 retires. This isolates the D1 boundary
+  // itself: a legacy MANAGER UserBranchRole, by itself, contributes ZERO
+  // public Production roles/permissions.
+  //
+  // The current seed still gives manager01 a Production WAREHOUSE
+  // UserRoleScope via the existing legacy MANAGER -> WAREHOUSE backfill
+  // mapping (legacy-role-map.ts) — a known, separately-tracked D2 issue
+  // (whether/how a legacy MANAGER should gain Production authority at all).
+  // This test deliberately removes that Production assignment in the
+  // isolated TEST database only, so it can prove the D1 projection boundary
+  // in isolation without blessing that business-invalid mapping as D1's
+  // replacement contract. Neither seed.ts nor legacy-role-map.ts is touched.
+  it('projects zero public roles/permissions for a legacy MANAGER UserBranchRole with no Production assignment (D1 boundary, isolated from the D2 MANAGER->WAREHOUSE seed mapping)', async () => {
+    const manager = await prisma.user.findUniqueOrThrow({ where: { email: 'manager01@demo.local' } });
+    // Sanity precondition: the legacy UserBranchRole MANAGER row genuinely
+    // exists as seeded.
+    const managerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
+    expect(
+      await prisma.userBranchRole.count({ where: { userId: manager.id, roleId: managerRole.id } }),
+    ).toBe(1);
+
+    // Isolate the D1 projection boundary: remove the Production assignment
+    // the current seed's MANAGER->WAREHOUSE backfill created, in TEST only.
+    await prisma.userRoleScope.deleteMany({ where: { userId: manager.id } });
+
     const response = await request(app)
       .post('/api/v1/auth/login')
       .send({ email: 'manager01@demo.local', password: 'demo123' });
     expect(response.status).toBe(200);
-    // Public contract (Phase 1D.1 compatibility fix): `roles` preserves its
-    // pre-1D.1 semantics — UserBranchRole-derived only, not the internal
-    // legacy+Production union (the desync fix lives in the internal
-    // AuthContext.assignments — see authorization-context.test.ts — and is
-    // deliberately not surfaced through this public field).
-    expect(response.body.user.roles).toEqual(['MANAGER']);
-    // Phase 1D.3.6 SWITCH: `permissions` is now a non-authoritative public
-    // compatibility projection of the caller's Production authority (via
-    // hasPermission), never legacy UserBranchRole grants. manager01's legacy
-    // MANAGER role carries nearly every legacy permission, but MANAGER maps
-    // to Production WAREHOUSE (legacy-role-map.ts), which carries only
-    // INVENTORY_MANAGE among the 12 mapped compatibility permissions.
-    expect(response.body.user.permissions).toEqual(['inventory.manage']);
+    expect(response.body.user.roles).toEqual([]);
+    expect(response.body.user.permissions).toEqual([]);
   });
 
   it('never exposes internal Production authorization shapes (assignments/legacyPermissions/effectiveLocationIds) through the public login response', async () => {

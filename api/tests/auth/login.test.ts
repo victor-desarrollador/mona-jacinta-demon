@@ -58,6 +58,21 @@ describe('POST /api/v1/auth/login', () => {
     expect(Object.keys(payload).sort()).toEqual(['exp', 'iat', 'jti', 'sub']);
   });
 
+  // D1 (Phase 1 Global Closeout): owner01@demo.local is seed.ts's canonical
+  // OWNER — zero legacy UserBranchRole rows, exactly one OWNER COMPANY
+  // UserRoleScope row (see prisma/seed.ts's populate()). Before D1, this
+  // exact user publicly showed roles: [] (the confirmed compatibility bug —
+  // the pre-D1 projection derived roles from UserBranchRole only). This is
+  // the real end-to-end proof that the public contract now derives roles
+  // from Production assignments.
+  it('projects OWNER for the canonical owner01@demo.local user, which has zero legacy UserBranchRole rows', async () => {
+    const response = await request(app)
+      .post('/api/v1/auth/login')
+      .send({ email: 'owner01@demo.local', password: 'demo123' });
+    expect(response.status).toBe(200);
+    expect(response.body.user.roles).toEqual(['OWNER']);
+  });
+
   it('rejects invalid passwords and unknown users without account enumeration', async () => {
     const invalidPassword = await request(app)
       .post('/api/v1/auth/login')

@@ -6,10 +6,12 @@ import { isProductionRoleCode } from './roles.js';
 const PRODUCTION_PERMISSION_CODES = new Set<string>(productionPermissionValues);
 
 type PermissionRow = { permission: { code: string } };
-// Phase 1D.3.6: UserBranchRole contributes only role.code (for the roles[]
-// display union) — it can never again contribute a permission of any kind,
-// legacy or Production. This is now a type-level guarantee, not merely a
-// runtime filter.
+// Phase 1D.3.6: UserBranchRole contributes only role.code, merged below into
+// the internal AuthContext.roles union (legacy ∪ Production, kept for
+// internal compatibility/display only — see the D1 note on `roles` below) —
+// it can never again contribute a permission of any kind, legacy or
+// Production. This is now a type-level guarantee, not merely a runtime
+// filter.
 type LegacyBranchRoleRow = { role: { code: string } };
 type ProductionRoleScopeRow = {
   roleId: string;
@@ -38,8 +40,9 @@ export type AuthorizationContextDatabase = LocationLookupDatabase;
 // Task 1D.3.6 deleted the compatibility-window `legacyPermissions` field and
 // its computation outright — every route switched to Production
 // `assignments` by then (Tasks 1D.3.1-1D.3.5), so UserBranchRole no longer
-// contributes any permission authority at all (only role.code, for the
-// roles[] display union). `assignments` holds one entry per UserRoleScope
+// contributes any permission authority at all (only role.code, merged into
+// the internal AuthContext.roles union — see the D1 note on `roles` below).
+// `assignments` holds one entry per UserRoleScope
 // row, untouched/unmerged, so a caller with multiple assignments (e.g.
 // SELLER @ A + WAREHOUSE @ B) can never have a permission from one
 // assignment combine with a location from another — see
@@ -52,6 +55,14 @@ export async function buildAuthorizationContext(
   db: AuthorizationContextDatabase,
   user: AuthorizationContextInput,
 ): Promise<Express.AuthContext> {
+  // D1 (Phase 1 Global Closeout): this `roles` union is INTERNAL only — kept
+  // for backward-compatible internal consumers, not the public API. It may
+  // still contain a legacy-only code (e.g. MANAGER) alongside Production
+  // codes; nothing downstream may treat it as public Production authority.
+  // Public `roles` are projected exclusively from `assignments`
+  // (user-context.dto.ts's toPublicUserContext), never from this field.
+  // UserRoleScope remains the sole Production role/permission authority;
+  // UserBranchRole contributes nothing to it.
   const roles = [
     ...new Set([
       ...user.branchRoles.map((row) => row.role.code),

@@ -177,10 +177,14 @@ function paymentMethodLabel(method: PaymentMethod) {
 
 function roleLabel(role: string) {
   const labels: Record<string, string> = {
-    SELLER: "Vendedor",
-    CASHIER: "Cajero",
-    MANAGER: "Gerente",
+    OWNER: "Dueño",
     ADMIN: "Administrador",
+    CASHIER: "Cajero",
+    SELLER: "Vendedor",
+    WAREHOUSE: "Depósito",
+    // MANAGER is legacy-only display compatibility — it never participates
+    // in Production POS access logic (see resolvePosAccess above).
+    MANAGER: "Gerente",
   };
   return labels[role] ?? role;
 }
@@ -245,8 +249,32 @@ async function apiRequest<T>(
   return body as T;
 }
 
-function hasRole(user: User, role: string) {
-  return user.roles.includes(role);
+type PosMode = "seller" | "cashier" | null;
+
+// D1 (Phase 1 Global Closeout): single, shared POS access policy — owns
+// canSeller/canCashier/initialMode for BOTH the restored-session (/auth/me)
+// path and the fresh-login path, so the two can never drift. A WAREHOUSE-only
+// user (no SALE_CREATE/SALE_CHARGE — role-permission-matrix.ts) must resolve
+// to `initialMode: null`, never the old unconditional "seller" fallback.
+// OWNER/ADMIN are deliberately privileged (both workspaces, seller default)
+// per the frozen POS access policy; legacy MANAGER never participates here —
+// only current Production role codes reach `user.roles` (see
+// user-context.dto.ts's D1 projection from context.assignments).
+function resolvePosAccess(roles: string[]): { canSeller: boolean; canCashier: boolean; initialMode: PosMode } {
+  const isPrivileged = roles.includes("OWNER") || roles.includes("ADMIN");
+  const hasCashier = roles.includes("CASHIER");
+  const hasSeller = roles.includes("SELLER");
+
+  const canSeller = isPrivileged || hasSeller;
+  const canCashier = isPrivileged || hasCashier;
+
+  let initialMode: PosMode;
+  if (isPrivileged) initialMode = "seller";
+  else if (hasCashier) initialMode = "cashier";
+  else if (hasSeller) initialMode = "seller";
+  else initialMode = null;
+
+  return { canSeller, canCashier, initialMode };
 }
 
 export default function OperationsPage() {
@@ -255,7 +283,7 @@ export default function OperationsPage() {
   const [password, setPassword] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [branchId, setBranchId] = useState("");
-  const [mode, setMode] = useState<"seller" | "cashier">("cashier");
+  const [mode, setMode] = useState<PosMode>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
@@ -272,7 +300,7 @@ export default function OperationsPage() {
       .then(({ user: currentUser }) => {
         setUser(currentUser);
         setBranchId(currentUser.branchIds[0] ?? "");
-        setMode(hasRole(currentUser, "CASHIER") ? "cashier" : "seller");
+        setMode(resolvePosAccess(currentUser.roles).initialMode);
       })
       .catch(() => {
         window.localStorage.removeItem(TOKEN_KEY);
@@ -295,7 +323,7 @@ export default function OperationsPage() {
       setToken(result.accessToken);
       setUser(result.user);
       setBranchId(result.user.branchIds[0] ?? "");
-      setMode(hasRole(result.user, "CASHIER") ? "cashier" : "seller");
+      setMode(resolvePosAccess(result.user.roles).initialMode);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo iniciar sesión.");
     } finally {
@@ -308,6 +336,7 @@ export default function OperationsPage() {
     setToken(null);
     setUser(null);
     setBranchId("");
+    setMode(null);
     setError("");
   }
 
@@ -364,8 +393,7 @@ export default function OperationsPage() {
     );
   }
 
-  const canCashier = hasRole(user, "CASHIER") || hasRole(user, "MANAGER") || hasRole(user, "ADMIN");
-  const canSeller = hasRole(user, "SELLER") || hasRole(user, "MANAGER") || hasRole(user, "ADMIN");
+  const { canSeller, canCashier } = resolvePosAccess(user.roles);
 
   return (
     <main className="pos-shell">
@@ -415,8 +443,13 @@ export default function OperationsPage() {
           branchId={branchId}
           onBranchChange={setBranchId}
         />
-      ) : (
+      ) : mode === "seller" ? (
         <SellerWorkspace token={token} user={user} branchId={branchId} onBranchChange={setBranchId} />
+      ) : (
+        <section className="empty-card">
+          <h1>Sin acceso al punto de venta</h1>
+          <p className="muted">Tu usuario no tiene un rol habilitado para operar en caja o ventas.</p>
+        </section>
       )}
     </main>
   );
