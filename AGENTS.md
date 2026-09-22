@@ -57,10 +57,37 @@ SELLER
 WAREHOUSE
 ```
 
-`MANAGER` is **not** a Production V1 role. It survives only as a legacy
-`UserBranchRole` code from Demo V2, explicitly mapped to `WAREHOUSE` by
-Phase 1C's backfill (`api/src/modules/rbac/legacy-role-map.ts`). Do not use
-`MANAGER` in new code, docs, or examples.
+`MANAGER` is **not** a Production V1 role. It survives only as legacy Demo V2
+migration input (`UserBranchRole` codes), where applicable.
+
+Historical Phase 1C migration semantics mapped legacy `MANAGER` rows
+automatically to `WAREHOUSE`. That interpretation is **superseded** by an
+explicit human-approved decision (2026-09-20). Current legacy migration
+classification:
+
+```
+ADMIN   -> ELIGIBLE -> ADMIN
+CASHIER -> ELIGIBLE -> CASHIER
+SELLER  -> ELIGIBLE -> SELLER
+MANAGER -> DEFERRED -> no automatic Production role
+```
+
+A deferred `MANAGER` row gets no automatic `WAREHOUSE` conversion, no
+automatic `OWNER` conversion, and no automatic `UserRoleScope` from Phase 1C
+— it remains visible as an explicit legacy/deferred migration row, handled
+later through explicit retirement/re-provisioning decisions. `WAREHOUSE` is
+provisioned independently, as a native Production V1 role/assignment, never
+derived from `MANAGER`. **This supersession changes migration identity
+semantics only; it does not remove WAREHOUSE from Production V1.**
+
+Older wording in frozen `docs/production-v1/06-erd-data-model.md` and
+`docs/production-v1/00-master-index.md` describing "MANAGER→WAREHOUSE" is
+historical Production V1 baseline text, not the current legacy-migration
+rule; those frozen files are not edited by this note. Broader reconciliation
+of frozen Production V1 documentation against this supersession remains
+deferred to Phase 1 global closeout.
+
+Do not use `MANAGER` in new code, docs, or examples.
 
 Canonical role/permission definitions: `docs/production-v1/03-role-permission-matrix.md`.
 
@@ -79,8 +106,8 @@ Canonical role/permission definitions: `docs/production-v1/03-role-permission-ma
   `UserBranchRole` for location authority. `COMPANY` scope remains
   **fail-closed** until Phase 1D. `UserBranchRole` is retained temporarily,
   solely for legacy role/permission compatibility (not location scope).
-- **Phase 1D** (next, not started) — owns the final Production authorization
-  switch. Target business model:
+- **Phase 1D** — implemented and pushed (`ca4547569bb3a4b3778a9b6b3ed2c94d8472c52d`).
+  Owns the final Production authorization switch. Target business model:
 
   - **OWNER** — COMPANY scope, full authority.
   - **ADMIN** — COMPANY scope, operational authority over all branches and
@@ -211,8 +238,10 @@ These remain valid regardless of phase:
 
 Phase 1C closed and pushed at `7d0c2b6` ("feat: switch legacy branch scopes
 to UserRoleScope"). Gate at that commit: 37/37 test files, 310/310 tests,
-`VITEST_EXIT=0`. Phase 1D (authorization middleware/services) is next; see
-`docs/production-v1/08-implementation-roadmap.md`.
+`VITEST_EXIT=0`. Phase 1D (authorization middleware/services) is implemented
+and pushed (`ca4547569bb3a4b3778a9b6b3ed2c94d8472c52d`). Current work: Phase 1
+global closeout / D2 (deferred-legacy-MANAGER migration semantics and
+canonical-first seed); see `docs/production-v1/08-implementation-roadmap.md`.
 
 Do not use this section as a phase diary — update it in place at each
 checkpoint rather than appending history. Full history lives in `git log`.
