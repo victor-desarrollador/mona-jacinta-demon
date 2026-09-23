@@ -20,6 +20,8 @@ enum SaleStatus {
 
 enum StockMovementType {
   SALE
+  // D3: additive initial stock load (docs/production-v1/07-inventory-ledger.md §4).
+  INITIAL_STOCK
 }
 
 enum StockReservationStatus {
@@ -456,7 +458,10 @@ model CashMovement {
 model AuditLog {
   id         String   @id @default(uuid())
   userId     String
-  branchId   String
+  // D3: nullable for global COMPANY-scoped operations (product, variant,
+  // price) that have no Location. Location-specific operations always record
+  // their real branch.
+  branchId   String?
   action     String
   entityType String
   entityId   String
@@ -465,7 +470,7 @@ model AuditLog {
   after      Json?
   timestamp  DateTime @default(now()) @db.Timestamptz(3)
   user       User     @relation(fields: [userId], references: [id], onDelete: Restrict)
-  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  branch     Branch?  @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
   @@index([branchId, timestamp])
   @@index([entityType, entityId, timestamp])

@@ -276,4 +276,16 @@ describe('critical operation audit', () => {
     expect(await db.auditLog.count()).toBe(3);
     for (const query of ['?limit=0', '?limit=101', '?offset=-1']) expect((await get(locationAdminToken, query)).status).toBe(400);
   });
+  // D3: AuditLog.branchId is nullable for global COMPANY-scoped operations
+  // (product/variant/price). The only reader returns such a row with an
+  // explicit branchId null — never dropped, never defaulted to a Location.
+  it('returns a global (branchId null) audit row explicitly alongside Location-scoped rows', async () => {
+    const globalEntry = await createAuditLog(db, {
+      userId: adminId, branchId: null, action: 'PRODUCT_CREATED', entityType: 'Product', entityId: randomUUID(), after: { slug: 'x' },
+    });
+    const response = await get(token);
+    expect(response.status).toBe(200);
+    const row = response.body.data.find((entry: { id: string }) => entry.id === globalEntry.id);
+    expect(row).toMatchObject({ branchId: null, action: 'PRODUCT_CREATED', entityType: 'Product' });
+  });
 });

@@ -13,6 +13,7 @@ export const logger = pino({
       'DATABASE_URL',
       'TEST_DATABASE_URL',
       'JWT_SECRET',
+      'DEMO_SEED_PASSWORD',
     ],
     censor: '[REDACTED]',
   },

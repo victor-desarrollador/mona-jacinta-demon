@@ -253,4 +253,41 @@ describe('StockMovement represents physical inventory changes only', () => {
     expect((await db.stockMovement.findFirstOrThrow({ where: { saleId: sale.id } })).branchId).toBe(branchId);
     expect(otherBranchId).not.toBe(branchId);
   });
+  // D3: INITIAL_STOCK extends — never reinterprets — the invariant above.
+  // Initial stock is the one physical increase: +quantity on physical, one
+  // positive INITIAL_STOCK movement, reserved untouched. A later reservation
+  // still changes reserved only, and completion still produces exactly the
+  // negative SALE movement. For a row whose whole history lives in the
+  // ledger, physical equals the sum of its movements.
+  it('INITIAL_STOCK increases physical with one positive movement, and composes with reservation and SALE completion', async () => {
+    const admin = await db.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' } });
+    const adminToken = await getAuthToken(admin);
+    const fresh = await db.productVariant.create({
+      data: { productId: remeraProductId, sku: 'D3-LEDGER', barcode: 'D3-LEDGER', price: 1n, costPrice: 1n },
+    });
+
+    const loaded = await request(app)
+      .post('/api/v1/inventory/initial-stock')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ variantId: fresh.id, branchId, quantity: '10' });
+    expect(loaded.status).toBe(201);
+    const afterLoad = await inventory(fresh.id);
+    expect(afterLoad).toMatchObject({ physical: 10n, reserved: 0n });
+    const initial = await db.stockMovement.findMany({ where: { inventoryId: afterLoad.id } });
+    expect(initial).toHaveLength(1);
+    expect(initial[0]).toMatchObject({ type: 'INITIAL_STOCK', quantityDelta: 10n, saleId: null, branchId });
+
+    const saleId = await createDraftSale();
+    await addItem(saleId, fresh.id, 4);
+    expect((await sendToCashier(saleId)).status).toBe(200);
+    expect(await inventory(fresh.id)).toMatchObject({ physical: 10n, reserved: 4n });
+    expect(await db.stockMovement.count({ where: { inventoryId: afterLoad.id } })).toBe(1);
+
+    await db.sale.update({ where: { id: saleId }, data: { status: 'PAID' } });
+    expect((await complete(saleId)).status).toBe(200);
+    expect(await inventory(fresh.id)).toMatchObject({ physical: 6n, reserved: 0n });
+    const movements = await db.stockMovement.findMany({ where: { inventoryId: afterLoad.id }, orderBy: { timestamp: 'asc' } });
+    expect(movements.map((m) => [m.type, m.quantityDelta])).toEqual([['INITIAL_STOCK', 10n], ['SALE', -4n]]);
+    expect(movements.reduce((sum, m) => sum + m.quantityDelta, 0n)).toBe(6n);
+  });
 });

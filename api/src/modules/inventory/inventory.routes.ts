@@ -5,6 +5,7 @@ import { requirePermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { createInventoryController } from './inventory.controller.js';
+import { initialStockSchema } from './initial-stock.service.js';
 
 const branchQuery = z.object({ branchId: z.uuid() }).strict();
 const availabilityQuery = branchQuery.extend({
@@ -35,6 +36,19 @@ export function createInventoryRouter(database: PrismaClient): Router {
     validate(availabilityQuery, 'query'),
     inventoryRead,
     controller.getAvailability,
+  );
+  // D3: IMPORT_RUN is intentionally NOT COMPANY-required; it is paired with
+  // the target branch through the existing location-aware mechanism
+  // (branchScope 'own' -> hasPermissionAtLocation). The body is validated
+  // first so the resolver only ever receives a validated branchId.
+  router.post(
+    '/initial-stock',
+    validate(initialStockSchema),
+    requirePermission(PRODUCTION_PERMISSIONS.IMPORT_RUN, {
+      branchScope: 'own',
+      resolveResourceBranch: (req) => (req.body as { branchId: string }).branchId,
+    }),
+    controller.loadInitialStock,
   );
   return router;
 }

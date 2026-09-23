@@ -177,9 +177,25 @@ npm run dev
 
 DEMO ONLY. These are seed credentials, not infrastructure secrets.
 
-- Seller: `seller01` / `demo123`
-- Cashier: `cashier01` / `demo123`
-- Admin: `admin` / `demo123`
+| Login | Production role | Scope |
+| --- | --- | --- |
+| `owner01@demo.local` | OWNER | Company |
+| `admin@demo.local` | ADMIN | Company |
+| `seller01@demo.local` | SELLER | Centro (CEN) |
+| `cashier01@demo.local` | CASHIER | Centro (CEN) |
+| `warehouse01@demo.local` | WAREHOUSE | Depósito Central (DEP) |
+
+Local/TEST seeds use the deterministic public password `demo123`. The historical
+`manager01` identity (legacy MANAGER) is no longer seeded.
+
+**Public demo deployments must not use `demo123`.** Seed the dedicated DEMO
+database with `DEMO_SEED_PASSWORD` (16+ characters, at most 72 bytes, no
+leading/trailing spaces) set in the operator's shell for `npm run db:reset` /
+`npm run db:seed`, and share the credential privately — never in the repository,
+docs, screenshots, commits or chat logs. An invalid explicit value aborts before
+any database access; it never falls back to `demo123`. The OWNER row is only
+created (never updated) by `db:seed`, so apply a new password to an existing
+database with `db:reset`.
 
 ## Common Demo Reset Workflow
 

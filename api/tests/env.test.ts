@@ -81,4 +81,80 @@ describe('environment validation', () => {
       }),
     ).toThrow('TEST_DATABASE_URL');
   });
+
+  // D3R1: TEST_DATABASE_URL is an integration-test setting, not a runtime
+  // one. Production/development never connect with it, so they must not
+  // require it (no placeholder/DEMO URL workarounds); NODE_ENV=test does.
+  describe('TEST_DATABASE_URL by NODE_ENV', () => {
+    const withoutTestUrl: Record<string, string> = { ...input };
+    delete withoutTestUrl.TEST_DATABASE_URL;
+
+    it.each(['production', 'development'])('is optional for NODE_ENV=%s', (NODE_ENV) => {
+      const result = parseEnv({ ...withoutTestUrl, NODE_ENV });
+      expect(result.NODE_ENV).toBe(NODE_ENV);
+      expect(result.TEST_DATABASE_URL).toBeUndefined();
+      expect(result.DATABASE_URL).toBe(input.DATABASE_URL);
+    });
+
+    it('is required for NODE_ENV=test and named in the error', () => {
+      expect(() => parseEnv({ ...withoutTestUrl, NODE_ENV: 'test' })).toThrow(
+        'Invalid API environment variables: TEST_DATABASE_URL',
+      );
+    });
+
+    it('is accepted for NODE_ENV=test when valid', () => {
+      expect(parseEnv({ ...input, NODE_ENV: 'test' }).TEST_DATABASE_URL).toBe(input.TEST_DATABASE_URL);
+    });
+
+    it.each(['production', 'development', 'test'])(
+      'is still validated when supplied with NODE_ENV=%s, without echoing it',
+      (NODE_ENV) => {
+        const sensitiveInput = 'synthetic-sensitive-invalid-test-url';
+        let message = '';
+        try {
+          parseEnv({ ...input, NODE_ENV, TEST_DATABASE_URL: sensitiveInput });
+        } catch (error) {
+          message = (error as Error).message;
+        }
+        expect(message).toBe('Invalid API environment variables: TEST_DATABASE_URL');
+        expect(message.includes(sensitiveInput)).toBe(false);
+      },
+    );
+
+    it('keeps DATABASE_URL required in production', () => {
+      const withoutDatabase = { ...withoutTestUrl };
+      delete withoutDatabase.DATABASE_URL;
+      expect(() => parseEnv({ ...withoutDatabase, NODE_ENV: 'production' })).toThrow('DATABASE_URL');
+    });
+  });
+
+  // D3R1: explicit API_PORT wins, else the host-provided PORT, else 3001.
+  // The server listens on the single validated API_PORT value.
+  describe('effective port', () => {
+    it('prefers an explicit API_PORT over PORT', () => {
+      const result = parseEnv({ ...input, API_PORT: '4000', PORT: '8080' });
+      expect(result.API_PORT).toBe(4000);
+      expect(result).not.toHaveProperty('PORT');
+    });
+
+    it('falls back to PORT when API_PORT is absent', () => {
+      expect(parseEnv({ ...input, PORT: '10000' }).API_PORT).toBe(10000);
+    });
+
+    it('defaults to 3001 when neither is set', () => {
+      expect(parseEnv(input).API_PORT).toBe(3001);
+    });
+
+    it.each(['0', '65536', '1.5', 'invalid', ''])('rejects invalid fallback PORT %j', (PORT) => {
+      expect(() => parseEnv({ ...input, PORT })).toThrow('Invalid API environment variables: PORT');
+    });
+
+    it('ignores PORT entirely when an explicit API_PORT is selected', () => {
+      expect(parseEnv({ ...input, API_PORT: '4000', PORT: 'invalid' }).API_PORT).toBe(4000);
+    });
+
+    it('still rejects an invalid explicit API_PORT even when PORT is valid', () => {
+      expect(() => parseEnv({ ...input, API_PORT: 'invalid', PORT: '8080' })).toThrow('API_PORT');
+    });
+  });
 });

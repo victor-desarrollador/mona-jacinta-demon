@@ -395,9 +395,51 @@ type SeedClient = {
   ): Promise<T>;
 };
 
-async function run(prisma: SeedClient, reset: boolean) {
-  // Public, demo-only password requested by the plan. Hash before opening a transaction.
-  const passwordHash = await hash('demo123', 12);
+// D3R1: local/TEST keep the public deterministic demo123. A public DEMO
+// database is seeded with an operator-supplied password instead
+// (DEMO_SEED_PASSWORD via the db:seed/db:reset CLIs); it is validated before
+// any database access, hashed exactly like the default, never logged, never
+// echoed in errors and never persisted in plaintext.
+const DEFAULT_DEMO_PASSWORD = 'demo123';
+const OVERRIDE_MIN_LENGTH = 16;
+// bcrypt only uses the first 72 bytes; longer input would be silently truncated.
+const OVERRIDE_MAX_BYTES = 72;
+
+export type SeedOptions = { password?: string };
+
+function assertOverridePassword(password: string) {
+  if (
+    password.length < OVERRIDE_MIN_LENGTH ||
+    Buffer.byteLength(password, 'utf8') > OVERRIDE_MAX_BYTES ||
+    password.trim() !== password
+  ) {
+    throw new Error(
+      `DEMO_SEED_PASSWORD must be ${OVERRIDE_MIN_LENGTH}+ characters, at most ${OVERRIDE_MAX_BYTES} bytes, without leading/trailing spaces`,
+    );
+  }
+}
+
+// Pure password selection: the default when no override is given, otherwise
+// the validated override. Throws (before any database access) on an invalid
+// explicit override — never a silent fallback to demo123.
+export function resolveSeedPassword(options: SeedOptions = {}): string {
+  if (options.password === undefined) return DEFAULT_DEMO_PASSWORD;
+  assertOverridePassword(options.password);
+  return options.password;
+}
+
+// An explicitly supplied (even empty) value is an operator decision and is
+// validated here, before the CLI opens any database connection.
+export function demoSeedOptionsFromEnv(source: NodeJS.ProcessEnv): SeedOptions {
+  const password = source.DEMO_SEED_PASSWORD;
+  if (password === undefined) return {};
+  assertOverridePassword(password);
+  return { password };
+}
+
+async function run(prisma: SeedClient, reset: boolean, options: SeedOptions) {
+  // Validate and hash before opening a transaction.
+  const passwordHash = await hash(resolveSeedPassword(options), 12);
   await prisma.$transaction(
     async (tx) => {
       // Serialize these maintenance commands, including concurrent test invocations.
@@ -410,5 +452,5 @@ async function run(prisma: SeedClient, reset: boolean) {
   );
 }
 
-export const seedDemo = (prisma: SeedClient) => run(prisma, false);
-export const resetDemo = (prisma: SeedClient) => run(prisma, true);
+export const seedDemo = (prisma: SeedClient, options: SeedOptions = {}) => run(prisma, false, options);
+export const resetDemo = (prisma: SeedClient, options: SeedOptions = {}) => run(prisma, true, options);

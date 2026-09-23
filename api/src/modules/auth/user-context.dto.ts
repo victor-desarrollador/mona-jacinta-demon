@@ -62,6 +62,19 @@ const PUBLIC_PERMISSION_COMPATIBILITY_MAP: ReadonlyArray<readonly [ProductionPer
   [PRODUCTION_PERMISSIONS.AUDIT_VIEW, PERMISSIONS.AUDIT_VIEW],
 ];
 
+// D3 (Demo Operativa V1): additive extension for the admin catalogue/stock
+// UI. These Production codes have no legacy/public equivalent, so they are
+// projected verbatim, appended after the frozen compatibility strings above
+// (which stay unchanged and in their original order). Explicit and closed —
+// still never a dynamic dump of every Production permission. Projection
+// only: server-side requirePermission remains authoritative.
+const PUBLIC_PRODUCTION_PERMISSION_PROJECTION: readonly ProductionPermission[] = [
+  PRODUCTION_PERMISSIONS.PRODUCT_MANAGE,
+  PRODUCTION_PERMISSIONS.PRODUCT_VARIANT_MANAGE,
+  PRODUCTION_PERMISSIONS.PRICE_MANAGE,
+  PRODUCTION_PERMISSIONS.IMPORT_RUN,
+];
+
 // D1 (Phase 1 Global Closeout): `roles` now derives exclusively from the
 // caller's Production `assignments` (authorization-context.ts already
 // guarantees every entry there passed `isProductionRoleCode` — legacy
@@ -94,8 +107,11 @@ export function toPublicUserContext(
     // assignment qualification, and COMPANY-required policy where relevant —
     // reused here rather than reading assignment.permissions unions directly
     // so OWNER (zero RolePermission rows) still projects every mapped code.
-    permissions: PUBLIC_PERMISSION_COMPATIBILITY_MAP
-      .filter(([productionPermission]) => hasPermission(context, productionPermission))
-      .map(([, legacyPublicPermission]) => legacyPublicPermission),
+    permissions: [
+      ...PUBLIC_PERMISSION_COMPATIBILITY_MAP
+        .filter(([productionPermission]) => hasPermission(context, productionPermission))
+        .map(([, legacyPublicPermission]) => legacyPublicPermission),
+      ...PUBLIC_PRODUCTION_PERMISSION_PROJECTION.filter((permission) => hasPermission(context, permission)),
+    ],
   };
 }

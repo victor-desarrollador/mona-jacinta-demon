@@ -525,6 +525,127 @@ td small {
   font-weight: 850;
 }
 
+/* D3 admin catalogue / initial stock forms */
+.form-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.form-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 28px rgba(28, 48, 39, 0.05);
+}
+
+.form-card h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.form-card .muted {
+  margin: 6px 0 0;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.form-row.wide {
+  grid-template-columns: minmax(220px, 2fr) minmax(160px, 1fr) minmax(120px, 0.6fr);
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.success-banner {
+  margin: 12px 0;
+  padding: 12px 14px;
+  border: 1px solid #c9e4d4;
+  border-left: 4px solid var(--green);
+  border-radius: 7px;
+  background: #f1faf4;
+  color: var(--green-dark);
+  font-size: 13px;
+}
+
+.success-banner svg,
+.error-banner svg {
+  vertical-align: -3px;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline-form input {
+  width: 130px;
+}
+
+.inline-error {
+  flex-basis: 100%;
+  margin: 0;
+  color: #842f22;
+  font-size: 12px;
+}
+
+a.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.primary-button.compact,
+.secondary-button.compact {
+  min-height: 34px;
+  padding: 6px 10px;
+}
+
+.link-button {
+  margin-left: 12px;
+  border: 0;
+  background: none;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: underline;
+}
+
+.group-row th {
+  background: #f7f9f6;
+  text-align: left;
+}
+
+.group-row small {
+  margin-left: 10px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -537,7 +658,7 @@ td small {
   }
 
   .nav-list {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
 
   .sidebar-footer {
@@ -567,7 +688,9 @@ td small {
   .nav-list,
   .metric-grid,
   .filters,
-  .split-grid {
+  .split-grid,
+  .form-row,
+  .form-row.wide {
     grid-template-columns: 1fr;
   }
 }

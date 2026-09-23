@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -421,6 +421,37 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
           (c) => c.nextValue === 1n,
         ),
       ).toBe(true);
+    });
+  }, 180000);
+
+  it('applies an explicit override password to every canonical user, rejects demo123 for them, and restores the default', async () => {
+    await safely(async () => {
+      const secret = `synthetic-${randomUUID()}`;
+      try {
+        await resetDemo(db.prisma, { password: secret });
+        const users = await db.prisma.user.findMany();
+        expect(users).toHaveLength(5);
+        for (const user of users) {
+          expect(await compare(secret, user.passwordHash)).toBe(true);
+          expect(await compare('demo123', user.passwordHash)).toBe(false);
+          expect(user.passwordHash.includes(secret)).toBe(false);
+        }
+      } finally {
+        await resetDemo(db.prisma);
+      }
+      for (const user of await db.prisma.user.findMany()) {
+        expect(await compare('demo123', user.passwordHash)).toBe(true);
+      }
+    });
+  }, 180000);
+
+  it('leaves the database untouched when an explicit override is invalid', async () => {
+    await safely(async () => {
+      const before = await db.prisma.user.findMany({ orderBy: { id: 'asc' } });
+      await expect(resetDemo(db.prisma, { password: 'short' })).rejects.toThrow('DEMO_SEED_PASSWORD');
+      const after = await db.prisma.user.findMany({ orderBy: { id: 'asc' } });
+      // Compare internally so an assertion failure cannot expose password hashes.
+      expect(JSON.stringify(before) === JSON.stringify(after)).toBe(true);
     });
   }, 180000);
 });

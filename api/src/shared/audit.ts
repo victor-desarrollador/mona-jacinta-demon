@@ -2,7 +2,11 @@ import { Prisma } from '../generated/prisma/client.js';
 import { toJsonSafe } from './json-safe.js';
 
 type AuditData = Pick<Prisma.AuditLogUncheckedCreateInput,
-  'userId' | 'branchId' | 'action' | 'entityType' | 'entityId'> & {
+  'userId' | 'action' | 'entityType' | 'entityId'> & {
+  // D3: required, never implicitly omitted. A Location-specific operation
+  // records its real branch; only a global COMPANY-scoped operation (product,
+  // variant, price) records null. Never substitute an arbitrary Location.
+  branchId: string | null;
   before?: unknown;
   after?: unknown;
 };

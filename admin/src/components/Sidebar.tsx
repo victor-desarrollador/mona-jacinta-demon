@@ -1,4 +1,4 @@
-import { BarChart3, Building2, LayoutDashboard, PackageSearch, ReceiptText, Users } from 'lucide-react';
+import { BarChart3, Building2, LayoutDashboard, PackageSearch, ReceiptText, Shirt, Users } from 'lucide-react';
 import { NavLink } from 'react-router';
 import { canManageUsers } from '../lib/auth';
 import { cn } from '../lib/utils';
@@ -7,6 +7,7 @@ import { useAuth } from '../hooks/useAuth';
 const baseItems = [
   { to: '/', label: 'Panel principal', icon: LayoutDashboard },
   { to: '/ventas', label: 'Ventas', icon: ReceiptText },
+  { to: '/productos', label: 'Productos', icon: Shirt },
   { to: '/inventario', label: 'Inventario', icon: PackageSearch },
   { to: '/sucursales', label: 'Sucursales', icon: Building2 },
 ];

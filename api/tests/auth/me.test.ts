@@ -185,6 +185,36 @@ describe('GET /api/v1/auth/me', () => {
     expect(response.body.user.permissions).not.toContain('audit.view');
   });
 
+  // D3: additive public projection of the four Production codes the admin
+  // catalogue/stock UI needs, end to end through /auth/me for the canonical
+  // seeded users. Server-side authorization stays authoritative; this only
+  // lets the UI decide what to show.
+  it('projects PRODUCT_MANAGE/PRODUCT_VARIANT_MANAGE/PRICE_MANAGE/IMPORT_RUN for canonical ADMIN and OWNER, alongside the unchanged compatibility codes', async () => {
+    const d3Codes = ['PRODUCT_MANAGE', 'PRODUCT_VARIANT_MANAGE', 'PRICE_MANAGE', 'IMPORT_RUN'];
+    for (const email of ['admin@demo.local', 'owner01@demo.local']) {
+      const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+      const response = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${await getAuthToken(user)}`);
+      expect(response.status).toBe(200);
+      expect(response.body.user.permissions.slice(-4)).toEqual(d3Codes);
+      expect(response.body.user.permissions).toContain('report.view');
+      expect(response.body.user.permissions).toContain('user.manage');
+      expect(response.body.user).not.toHaveProperty('assignments');
+      expect(response.body.user).not.toHaveProperty('effectiveLocationIds');
+      expect(response.body.user).not.toHaveProperty('legacyPermissions');
+    }
+  });
+
+  it('projects none of the D3 catalogue/stock codes for canonical SELLER, CASHIER or WAREHOUSE', async () => {
+    for (const email of ['seller01@demo.local', 'cashier01@demo.local', 'warehouse01@demo.local']) {
+      const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
+      const response = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${await getAuthToken(user)}`);
+      expect(response.status).toBe(200);
+      for (const code of ['PRODUCT_MANAGE', 'PRODUCT_VARIANT_MANAGE', 'PRICE_MANAGE', 'IMPORT_RUN']) {
+        expect(response.body.user.permissions).not.toContain(code);
+      }
+    }
+  });
+
   it('reflects a revoked Production permission in the public permissions field on the next request, without issuing a new token', async () => {
     const admin = await prisma.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' }, select: { id: true } });
     const token = await getAuthToken(admin);

@@ -4,7 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 
 export function Login() {
   const { user, loading, login } = useAuth();
-  const [email, setEmail] = useState('manager01@demo.local');
+  const [email, setEmail] = useState('admin@demo.local');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -30,7 +30,7 @@ export function Login() {
         <div className="brand-mark">MJ</div>
         <p className="eyebrow">Mona Jacinta Administración</p>
         <h1>Ingreso gerencial</h1>
-        <p>Usá tu usuario de gerente o administrador para consultar ventas, inventario y sucursales.</p>
+        <p>Usá tu usuario de administrador para gestionar catálogo y stock, y consultar ventas, inventario y sucursales.</p>
         <form onSubmit={submit} className="login-form">
           <label>
             Correo
@@ -46,7 +46,7 @@ export function Login() {
             />
           </label>
           {error ? <p className="error-banner">{error}</p> : null}
-          <button className="primary-button" disabled={submitting}>
+          <button type="submit" className="primary-button" disabled={submitting}>
             {submitting ? 'Ingresando...' : 'Ingresar'}
           </button>
         </form>

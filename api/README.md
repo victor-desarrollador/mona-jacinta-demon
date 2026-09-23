@@ -65,11 +65,30 @@ verified TLS, distinct parsed identities and distinct live server identities. An
 unreachable or ambiguous target fails closed. Keep the local file's DEV/TEST labels
 correct: configuration is the operator's source of target identity.
 
-Demo logins are `admin@demo.local`, `manager01@demo.local`, `seller01@demo.local`
-and `cashier01@demo.local`, all with the public **demo-only** password `demo123`.
-Only bcrypt hashes are stored. User-approved point-of-sale metadata is 1–6 in
-the documented branch order. ADMIN has all 12 permissions and all six demo branch
-assignments; global authorization resolution remains Task 8's responsibility.
+| Login | Production role | Scope |
+| --- | --- | --- |
+| `owner01@demo.local` | OWNER | Company |
+| `admin@demo.local` | ADMIN | Company |
+| `seller01@demo.local` | SELLER | Centro (CEN) |
+| `cashier01@demo.local` | CASHIER | Centro (CEN) |
+| `warehouse01@demo.local` | WAREHOUSE | Depósito Central (DEP) |
+
+Local/TEST seeds use the deterministic public password `demo123`. The historical
+`manager01` identity (legacy MANAGER) is no longer seeded.
+
+**Public demo deployments must not use `demo123`.** Seed the dedicated DEMO
+database with `DEMO_SEED_PASSWORD` (16+ characters, at most 72 bytes, no
+leading/trailing spaces) set in the operator's shell for `npm run db:reset` /
+`npm run db:seed`, and share the credential privately — never in the repository,
+docs, screenshots, commits or chat logs. An invalid explicit value aborts before
+any database access; it never falls back to `demo123`. The OWNER row is only
+created (never updated) by `db:seed`, so apply a new password to an existing
+database with `db:reset`.
+
+Only bcrypt hashes are stored; the password is hashed before the seed
+transaction opens. User-approved point-of-sale metadata is 1–6 in the
+documented branch order. Each canonical user has exactly one Production
+`UserRoleScope` assignment (above) and no legacy `UserBranchRole` rows.
 
 Seed creates six variants, 36 inventory rows (20 physical units per branch/variant,
 50 at Depósito Central, zero reserved), six registers and six counters starting at 1.

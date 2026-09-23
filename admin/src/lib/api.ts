@@ -131,23 +131,80 @@ export type BackofficeUser = {
   branches: Branch[];
 };
 
+export type CatalogRef = { id: string; name: string };
+
+export type CatalogVariant = {
+  id: string;
+  productId: string;
+  sku: string;
+  barcode: string;
+  color: string | null;
+  size: string | null;
+  price: string;
+  isActive: boolean;
+};
+
+export type CatalogProduct = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  category: CatalogRef;
+  brand: CatalogRef;
+  variants: CatalogVariant[];
+};
+
+export type CreateProductBody = { name: string; slug: string; categoryId: string; brandId: string };
+
+export type CreateVariantBody = {
+  productId: string;
+  sku: string;
+  barcode: string;
+  color?: string;
+  size?: string;
+  // Integer cents as strings (BigInt-safe API contract).
+  price: string;
+  costPrice: string;
+};
+
+export type InitialStockBody = { variantId: string; branchId: string; quantity: string };
+
+export type InitialStockResult = {
+  inventory: { id: string; variantId: string; branchId: string; physical: string; reserved: string };
+  movement: { id: string; type: string; quantityDelta: string };
+};
+
 export class ApiError extends Error {
   status: number;
+  code?: string;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001/api/v1';
+const UUID = '[0-9a-fA-F-]{36}';
 const allowedBackoffice = [
   /^\/backoffice\/dashboard$/,
   /^\/backoffice\/sales(?:\?.*)?$/,
-  /^\/backoffice\/sales\/[0-9a-fA-F-]{36}$/,
+  new RegExp(`^/backoffice/sales/${UUID}$`),
   /^\/backoffice\/inventory(?:\?.*)?$/,
   /^\/backoffice\/branches$/,
   /^\/backoffice\/users$/,
+];
+// D3 admin catalogue / initial stock. Explicit method + path pairs only;
+// the backend remains the authority for every one of them.
+const allowedCatalogue: Array<[string, RegExp]> = [
+  ['GET', /^\/products(?:\?.*)?$/],
+  ['GET', /^\/categories$/],
+  ['GET', /^\/brands$/],
+  ['POST', /^\/products$/],
+  ['POST', /^\/variants$/],
+  ['PATCH', new RegExp(`^/variants/${UUID}/price$`)],
+  ['POST', /^\/inventory\/initial-stock$/],
 ];
 
 function assertAllowed(method: string, path: string) {
@@ -155,8 +212,9 @@ function assertAllowed(method: string, path: string) {
     (method === 'POST' && path === '/auth/login') ||
     (method === 'GET' && path === '/auth/me');
   const backofficeAllowed = method === 'GET' && allowedBackoffice.some((rule) => rule.test(path));
-  if (!authAllowed && !backofficeAllowed) {
-    throw new Error(`Endpoint no permitido por Task 25: ${method} ${path}`);
+  const catalogueAllowed = allowedCatalogue.some(([allowedMethod, rule]) => allowedMethod === method && rule.test(path));
+  if (!authAllowed && !backofficeAllowed && !catalogueAllowed) {
+    throw new Error(`Endpoint no permitido: ${method} ${path}`);
   }
 }
 
@@ -184,16 +242,24 @@ async function request<T>(
   const body = await response.json().catch(() => ({}));
   if (response.status === 401) options.onUnauthorized?.();
   if (!response.ok) {
-    const candidate = body as { message?: string; error?: { message?: string } };
+    const candidate = body as { message?: string; error?: { code?: string; message?: string } };
     const fallback =
       response.status === 401
         ? 'No autorizado.'
         : response.status === 403
           ? 'No tenés permiso para realizar esta acción.'
           : 'Error de API.';
-    throw new ApiError(response.status, userFacingError(candidate.message ?? candidate.error?.message, fallback));
+    throw new ApiError(
+      response.status,
+      userFacingError(candidate.message ?? candidate.error?.message, fallback),
+      candidate.error?.code,
+    );
   }
   return body as T;
+}
+
+function send<T>(method: 'POST' | 'PATCH', path: string, token: string, body: unknown, onUnauthorized: () => void) {
+  return request<T>(path, { method, token, onUnauthorized, body: JSON.stringify(body) });
 }
 
 export const api = {
@@ -226,4 +292,27 @@ export const api = {
   },
   users: (token: string, onUnauthorized: () => void) =>
     request<{ items: BackofficeUser[] }>('/backoffice/users', { token, onUnauthorized }),
+  products: (token: string, params: URLSearchParams, onUnauthorized: () => void) => {
+    const query = params.toString();
+    return request<{ items: CatalogProduct[]; pagination: { page: number; limit: number; total: number } }>(
+      `/products${query ? `?${query}` : ''}`,
+      { token, onUnauthorized },
+    );
+  },
+  categories: (token: string, onUnauthorized: () => void) =>
+    request<{ items: CatalogRef[] }>('/categories', { token, onUnauthorized }),
+  brands: (token: string, onUnauthorized: () => void) =>
+    request<{ items: CatalogRef[] }>('/brands', { token, onUnauthorized }),
+  createProduct: (token: string, body: CreateProductBody, onUnauthorized: () => void) =>
+    send<{ product: Omit<CatalogProduct, 'category' | 'brand' | 'variants' | 'description'> }>(
+      'POST', '/products', token, body, onUnauthorized,
+    ),
+  createVariant: (token: string, body: CreateVariantBody, onUnauthorized: () => void) =>
+    send<{ variant: CatalogVariant & { costPrice: string } }>('POST', '/variants', token, body, onUnauthorized),
+  updateVariantPrice: (token: string, variantId: string, price: string, onUnauthorized: () => void) =>
+    send<{ variant: CatalogVariant & { costPrice: string } }>(
+      'PATCH', `/variants/${variantId}/price`, token, { price }, onUnauthorized,
+    ),
+  loadInitialStock: (token: string, body: InitialStockBody, onUnauthorized: () => void) =>
+    send<InitialStockResult>('POST', '/inventory/initial-stock', token, body, onUnauthorized),
 };

@@ -13,3 +13,18 @@ export const productQuerySchema = z.object({
 });
 
 export type ProductQuery = z.infer<typeof productQuerySchema>;
+
+// D3: minimum real Product create contract (schema: name, slug, categoryId,
+// brandId required; description optional and deliberately not accepted
+// here). Slug is a lowercase kebab-case identifier; uniqueness is enforced
+// by the service (409) and the database.
+export const createProductSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    slug: z.string().trim().max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    categoryId: z.uuid(),
+    brandId: z.uuid(),
+  })
+  .strict();
+
+export type CreateProductInput = z.infer<typeof createProductSchema>;

@@ -16,6 +16,19 @@ export function formatARS(centsValue: string) {
   return `${sign}ARS ${grouped},${cents.toString().padStart(2, '0')}`;
 }
 
+// Suggests a slug matching the API contract (lowercase kebab-case,
+// /^[a-z0-9]+(?:-[a-z0-9]+)*$/, max 120): "Vestido Lino Añil" -> "vestido-lino-anil".
+export function slugify(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120)
+    .replace(/-+$/, '');
+}
+
 export function formatDateTime(value: string) {
   return new Intl.DateTimeFormat('es-AR', {
     dateStyle: 'short',

@@ -7,6 +7,7 @@ import { Branches } from './pages/Branches';
 import { Dashboard } from './pages/Dashboard';
 import { Inventory } from './pages/Inventory';
 import { Login } from './pages/Login';
+import { Products } from './pages/Products';
 import { SalesHistory } from './pages/SalesHistory';
 import { Users } from './pages/Users';
 
@@ -47,6 +48,7 @@ function ProtectedLayout() {
           <Routes>
             <Route index element={<Dashboard />} />
             <Route path="ventas" element={<SalesHistory />} />
+            <Route path="productos" element={<Products />} />
             <Route path="inventario" element={<Inventory />} />
             <Route path="sucursales" element={<Branches />} />
             <Route

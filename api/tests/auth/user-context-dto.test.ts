@@ -99,7 +99,10 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
     expect(dto.permissions).not.toContain('audit.view');
   });
 
-  it('projects all 12 compatibility permissions for OWNER via implicit authority, even with zero RolePermission grants', () => {
+  // D3: the projection was extended additively with the four Production
+  // catalogue/stock codes the admin UI needs; the 12 compatibility strings
+  // are unchanged and still come first, in their frozen order.
+  it('projects all 12 compatibility permissions plus the 4 D3 Production codes for OWNER via implicit authority, even with zero RolePermission grants', () => {
     const dto = toPublicUserContext(
       { id: 'u5', name: 'Owner', email: 'owner@test.local', branchRoles: [] },
       {
@@ -107,12 +110,37 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
         assignments: [assignment({ roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] })],
       },
     );
-    expect(dto.permissions.slice().sort()).toEqual(
-      [
-        'audit.view', 'cash.session.close', 'cash.session.open', 'inventory.manage', 'inventory.view',
-        'report.view', 'sale.charge', 'sale.complete', 'sale.create', 'sale.queue.view', 'sale.view', 'user.manage',
-      ].sort(),
+    expect(dto.permissions).toEqual([
+      'sale.create', 'sale.charge', 'sale.complete', 'sale.view', 'sale.queue.view', 'inventory.view',
+      'inventory.manage', 'cash.session.open', 'cash.session.close', 'user.manage', 'report.view', 'audit.view',
+      'PRODUCT_MANAGE', 'PRODUCT_VARIANT_MANAGE', 'PRICE_MANAGE', 'IMPORT_RUN',
+    ]);
+  });
+
+  // D3: the additive codes go through the same centralized hasPermission
+  // policy as the compatibility map — COMPANY-required catalogue codes never
+  // project for a LOCATION-scoped ADMIN, while IMPORT_RUN (not
+  // COMPANY-required) does. The internal context never leaks.
+  it('projects D3 catalogue codes only for a COMPANY assignment, IMPORT_RUN for LOCATION too, and never leaks internal context', () => {
+    const d3Codes = ['PRODUCT_MANAGE', 'PRODUCT_VARIANT_MANAGE', 'PRICE_MANAGE', 'IMPORT_RUN'];
+    const company = toPublicUserContext(
+      { id: 'u7', name: 'Admin', email: 'a@test.local', branchRoles: [] },
+      { effectiveLocationIds: [], assignments: [assignment({ scopeKind: 'COMPANY', locationId: null, permissions: d3Codes })] },
     );
+    expect(company.permissions).toEqual(d3Codes);
+    expect(Object.keys(company).sort()).toEqual(['branchIds', 'email', 'id', 'name', 'permissions', 'roles']);
+
+    const location = toPublicUserContext(
+      { id: 'u8', name: 'Admin', email: 'l@test.local', branchRoles: [] },
+      { effectiveLocationIds: ['loc-1'], assignments: [assignment({ permissions: d3Codes })] },
+    );
+    expect(location.permissions).toEqual(['IMPORT_RUN']);
+
+    const manager = toPublicUserContext(
+      { id: 'u9', name: 'Manager', email: 'm@test.local', branchRoles: [{ role: { code: 'MANAGER' } }] },
+      { effectiveLocationIds: [], assignments: [] },
+    );
+    expect(manager).toMatchObject({ roles: [], permissions: [] });
   });
 
   // D1: multi-assignment users must see every distinct Production role code
