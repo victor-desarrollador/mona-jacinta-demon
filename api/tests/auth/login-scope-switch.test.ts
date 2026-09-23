@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hash } from 'bcryptjs';
 import type { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -34,6 +35,13 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
   // Production roles, never "fall back to whatever legacy says".
   it('returns empty branchIds AND empty roles when UserRoleScope has been revoked, even though legacy UserBranchRole still has an assignment (no per-user legacy fallback for branch scope or public roles, post-SWITCH/D1)', async () => {
     const seller = await prisma.user.findUniqueOrThrow({ where: { email: 'seller01@demo.local' } });
+    // D2.2: normal canonical seed no longer creates UserBranchRole rows —
+    // this test's own stale legacy fixture is created explicitly here.
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const centro = await prisma.branch.findUniqueOrThrow({ where: { code: 'CEN' } });
+    await prisma.userBranchRole.create({
+      data: { userId: seller.id, branchId: centro.id, roleId: sellerRole.id },
+    });
     await prisma.userRoleScope.deleteMany({ where: { userId: seller.id } });
     // Sanity precondition: the legacy UserBranchRole SELLER row genuinely
     // still exists and is left untouched above/below.
@@ -90,36 +98,33 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     }
   });
 
-  // D1 (Phase 1 Global Closeout): supersedes this test's pre-D1 purpose
-  // ("roles preserves pre-1D.1 semantics — UserBranchRole-derived only") —
-  // that is exactly the contract D1 retires. This isolates the D1 boundary
-  // itself: a legacy MANAGER UserBranchRole, by itself, contributes ZERO
-  // public Production roles/permissions.
-  //
-  // The current seed still gives manager01 a Production WAREHOUSE
-  // UserRoleScope via the existing legacy MANAGER -> WAREHOUSE backfill
-  // mapping (legacy-role-map.ts) — a known, separately-tracked D2 issue
-  // (whether/how a legacy MANAGER should gain Production authority at all).
-  // This test deliberately removes that Production assignment in the
-  // isolated TEST database only, so it can prove the D1 projection boundary
-  // in isolation without blessing that business-invalid mapping as D1's
-  // replacement contract. Neither seed.ts nor legacy-role-map.ts is touched.
-  it('projects zero public roles/permissions for a legacy MANAGER UserBranchRole with no Production assignment (D1 boundary, isolated from the D2 MANAGER->WAREHOUSE seed mapping)', async () => {
-    const manager = await prisma.user.findUniqueOrThrow({ where: { email: 'manager01@demo.local' } });
-    // Sanity precondition: the legacy UserBranchRole MANAGER row genuinely
-    // exists as seeded.
+  // D1 (Phase 1 Global Closeout): isolates the D1 boundary itself: a legacy
+  // MANAGER UserBranchRole, by itself, contributes ZERO public Production
+  // roles/permissions. D2.2: normal canonical seed no longer creates
+  // manager01 at all (MANAGER is DEFERRED, not auto-converted — see
+  // AGENTS.md's D2 supersession note and legacy-role-map.ts), so this test
+  // owns its own dedicated legacy MANAGER fixture rather than depending on
+  // canonical seed. Neither seed.ts nor legacy-role-map.ts is touched by
+  // this fixture — it deliberately has zero Production UserRoleScope.
+  it('projects zero public roles/permissions for a legacy MANAGER UserBranchRole with no Production assignment (D1 boundary, own fixture)', async () => {
     const managerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
-    expect(
-      await prisma.userBranchRole.count({ where: { userId: manager.id, roleId: managerRole.id } }),
-    ).toBe(1);
-
-    // Isolate the D1 projection boundary: remove the Production assignment
-    // the current seed's MANAGER->WAREHOUSE backfill created, in TEST only.
-    await prisma.userRoleScope.deleteMany({ where: { userId: manager.id } });
+    const centro = await prisma.branch.findUniqueOrThrow({ where: { code: 'CEN' } });
+    const manager = await prisma.user.create({
+      data: {
+        name: 'login-scope-switch-manager',
+        email: 'login-scope-switch-manager@test.local',
+        passwordHash: await hash('demo123', 4),
+      },
+    });
+    await prisma.userBranchRole.create({
+      data: { userId: manager.id, branchId: centro.id, roleId: managerRole.id },
+    });
+    // Sanity precondition: this fixture has zero Production UserRoleScope.
+    expect(await prisma.userRoleScope.count({ where: { userId: manager.id } })).toBe(0);
 
     const response = await request(app)
       .post('/api/v1/auth/login')
-      .send({ email: 'manager01@demo.local', password: 'demo123' });
+      .send({ email: 'login-scope-switch-manager@test.local', password: 'demo123' });
     expect(response.status).toBe(200);
     expect(response.body.user.roles).toEqual([]);
     expect(response.body.user.permissions).toEqual([]);

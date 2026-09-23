@@ -6,33 +6,22 @@ import {
   type CompanyBootstrap,
 } from '../../src/modules/organization/organization.service.js';
 
-// Phase 1C seed/reset <-> UserRoleScope compatibility gate, analogous to
-// seed-integration.test.ts's Phase 1B gate. Confirms the regression this
-// plan's review found: clear() cascades UserRoleScope to 0 via its
-// User/Role deletes, but populate() never used to recreate it — resetDemo()
-// would silently regress an already-backfilled UserRoleScope state back to
-// empty. Fixed by populate() calling
-// rbac/scope-backfill.service.ts's syncUserRoleScopeFromUserBranchRole(tx)
-// as its last step, on the same transaction — never a nested one — and only
-// when Location (Phase 1A) already exists for this database (see the first
-// test below for the genuinely-brand-new-database case).
+// Seed/reset <-> UserRoleScope gate.
 //
-// GC4F2 (Phase 1 Global Closeout) addendum: the historical Phase1C
-// transitional state (6 ADMIN LOCATION rows, one per legacy branch) is no
-// longer the seed's final state. Immediately after the Phase1C sync,
-// populate() also runs admin-company-backfill.service.ts's
-// syncAdminCompanyScope(tx) (same transaction, never nested), collapsing
-// every ADMIN LOCATION row into exactly one ADMIN COMPANY row — the Phase 1D
-// canonical target (AGENTS.md "Roles — Production V1"). This file therefore
-// asserts the FINAL canonical scope shape (5 rows), not the intermediate
-// Phase1C-only shape (10 rows) — see expectCanonicalPhase1ScopeState below.
-// verifyUserRoleScopeBackfill() itself is unchanged and untouched: its
-// contract is "prove Phase1C legacy-derived LOCATION parity," which the
-// final canonical state deliberately no longer satisfies for ADMIN (that
-// verifier's own tests live in scope-backfill.test.ts and still assert its
-// original, correct semantics) — using it as this file's final-state gate
-// would misuse that contract, so this file no longer does.
-describe('Demo seed/reset lifecycle preserves the UserRoleScope backfill (Phase 1C) and converges ADMIN to canonical COMPANY scope (Phase 1D, GC4F2)', () => {
+// D2.2 (Phase 1 Global Closeout, supersedes the Phase1C/GC4F2 design this
+// file used to assert): normal canonical seed is Production-native. It no
+// longer creates legacy UserBranchRole rows, no longer runs the historical
+// Phase1C UserBranchRole -> UserRoleScope sync, and no longer runs the GC4F2
+// ADMIN-company convergence step. populate() provisions the five canonical
+// identities' Production assignments directly:
+//   OWNER COMPANY, ADMIN COMPANY (always),
+//   SELLER LOCATION CEN, CASHIER LOCATION CEN, WAREHOUSE LOCATION DEP (only
+//   once Location exists; missing/inconsistent CEN or DEP fails closed).
+// Legacy MANAGER is never converted to any Production role (D2.1: DEFERRED),
+// and seedDemo on a database that still carries historical migration input
+// (a legacy manager01 + UserBranchRole rows) must leave that input intact —
+// retiring it is a separate, human-approved recovery step.
+describe('Demo seed/reset lifecycle provisions canonical Production UserRoleScope directly (D2.2)', () => {
   let db: Awaited<ReturnType<typeof openSeedDatabase>>;
 
   const FALLBACK_COMPANY_BOOTSTRAP: CompanyBootstrap = {
@@ -63,66 +52,57 @@ describe('Demo seed/reset lifecycle preserves the UserRoleScope backfill (Phase 
     await safely(() => backfillLocationsFromBranches(db.prisma, bootstrap));
   }
 
-  // Asserts the FINAL canonical Phase 1 demo scope shape, once Location
-  // exists: ADMIN COMPANY (never LOCATION), WAREHOUSE/SELLER/CASHIER each
-  // exactly one LOCATION(CEN), OWNER exactly one COMPANY, MANAGER never a
-  // Production UserRoleScope (legacy-only), and exactly 5 UserRoleScope rows
-  // total. Reads actual Role/User/Location ids throughout — never assumes
-  // iteration order.
+  // Asserts the canonical Production scope shape for the five canonical
+  // identities, once Location exists. Reads actual Role/User/Location ids
+  // throughout — never assumes iteration order. Global UserBranchRole /
+  // UserRoleScope totals are asserted by the clean-reset callers only (see
+  // expectCleanCanonicalState), since the historical-preservation test below
+  // deliberately carries extra legacy input.
   async function expectCanonicalPhase1ScopeState() {
-    expect(await db.prisma.userBranchRole.count()).toBe(9);
-    expect(await db.prisma.userRoleScope.count()).toBe(5);
+    const centralLocation = await db.prisma.location.findUniqueOrThrow({ where: { code: 'CEN' } });
+    const depotLocation = await db.prisma.location.findUniqueOrThrow({ where: { code: 'DEP' } });
+    const centralBranch = await db.prisma.branch.findUniqueOrThrow({ where: { code: 'CEN' } });
+    const depotBranch = await db.prisma.branch.findUniqueOrThrow({ where: { code: 'DEP' } });
+    expect(centralLocation.id).toBe(centralBranch.id);
+    expect(depotLocation.id).toBe(depotBranch.id);
 
-    const centralBranch = await db.prisma.branch.findFirstOrThrow({ where: { code: 'CEN' } });
+    const expectSingleScope = async (
+      email: string,
+      roleCode: string,
+      scope: { scopeKind: 'COMPANY' | 'LOCATION'; locationId: string | null },
+    ) => {
+      const role = await db.prisma.role.findUniqueOrThrow({ where: { code: roleCode } });
+      const user = await db.prisma.user.findUniqueOrThrow({ where: { email } });
+      const scopes = await db.prisma.userRoleScope.findMany({ where: { userId: user.id } });
+      expect(scopes).toHaveLength(1);
+      expect(scopes[0]).toMatchObject({ roleId: role.id, ...scope });
+    };
+
+    await expectSingleScope('owner01@demo.local', 'OWNER', { scopeKind: 'COMPANY', locationId: null });
+    await expectSingleScope('admin@demo.local', 'ADMIN', { scopeKind: 'COMPANY', locationId: null });
+    await expectSingleScope('seller01@demo.local', 'SELLER', { scopeKind: 'LOCATION', locationId: centralLocation.id });
+    await expectSingleScope('cashier01@demo.local', 'CASHIER', { scopeKind: 'LOCATION', locationId: centralLocation.id });
+    await expectSingleScope('warehouse01@demo.local', 'WAREHOUSE', { scopeKind: 'LOCATION', locationId: depotLocation.id });
 
     const adminRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
-    const admin = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
-    const adminScopes = await db.prisma.userRoleScope.findMany({ where: { userId: admin.id } });
-    expect(adminScopes).toHaveLength(1);
-    expect(adminScopes[0]).toMatchObject({ roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null });
     expect(
       await db.prisma.userRoleScope.count({ where: { roleId: adminRole.id, scopeKind: 'LOCATION' } }),
     ).toBe(0);
-
+    // No manager-derived WAREHOUSE: warehouse01 is the only WAREHOUSE holder.
     const warehouseRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
-    const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });
-    const managerScopes = await db.prisma.userRoleScope.findMany({ where: { userId: manager.id } });
-    expect(managerScopes).toHaveLength(1);
-    expect(managerScopes[0]).toMatchObject({
-      roleId: warehouseRole.id,
-      scopeKind: 'LOCATION',
-      locationId: centralBranch.id,
-    });
-
-    const sellerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
-    const seller = await db.prisma.user.findFirstOrThrow({ where: { name: 'seller01' } });
-    const sellerScopes = await db.prisma.userRoleScope.findMany({ where: { userId: seller.id } });
-    expect(sellerScopes).toHaveLength(1);
-    expect(sellerScopes[0]).toMatchObject({
-      roleId: sellerRole.id,
-      scopeKind: 'LOCATION',
-      locationId: centralBranch.id,
-    });
-
-    const cashierRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
-    const cashier = await db.prisma.user.findFirstOrThrow({ where: { name: 'cashier01' } });
-    const cashierScopes = await db.prisma.userRoleScope.findMany({ where: { userId: cashier.id } });
-    expect(cashierScopes).toHaveLength(1);
-    expect(cashierScopes[0]).toMatchObject({
-      roleId: cashierRole.id,
-      scopeKind: 'LOCATION',
-      locationId: centralBranch.id,
-    });
-
-    const ownerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
-    const owner = await db.prisma.user.findUniqueOrThrow({ where: { email: 'owner01@demo.local' } });
-    const ownerScopes = await db.prisma.userRoleScope.findMany({ where: { userId: owner.id } });
-    expect(ownerScopes).toHaveLength(1);
-    expect(ownerScopes[0]).toMatchObject({ roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null });
-    expect(await db.prisma.userBranchRole.count({ where: { userId: owner.id } })).toBe(0);
-
-    const managerLegacyRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'MANAGER' } });
+    expect(await db.prisma.userRoleScope.count({ where: { roleId: warehouseRole.id } })).toBe(1);
+    const managerLegacyRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
     expect(await db.prisma.userRoleScope.count({ where: { roleId: managerLegacyRole.id } })).toBe(0);
+  }
+
+  // Clean resetDemo/seedDemo-on-clean state: exactly the five canonical
+  // users, no manager01, no legacy UserBranchRole, exactly 5 scopes.
+  async function expectCleanCanonicalState() {
+    expect(await db.prisma.user.count()).toBe(5);
+    expect(await db.prisma.user.findUnique({ where: { email: 'manager01@demo.local' } })).toBeNull();
+    expect(await db.prisma.userBranchRole.count()).toBe(0);
+    expect(await db.prisma.userRoleScope.count()).toBe(5);
+    await expectCanonicalPhase1ScopeState();
   }
 
   beforeAll(async () => {
@@ -137,45 +117,43 @@ describe('Demo seed/reset lifecycle preserves the UserRoleScope backfill (Phase 
   // where Location (Phase 1A) has genuinely never been backfilled, and
   // restores Location afterward so every later test in this file can assume
   // it is present (Location is never deleted by clear()/populate(), so once
-  // restored here it persists for the rest of this file's tests). The
-  // single-scope assertion below also proves GC4F2's ADMIN-company step
-  // never fires when Phase1C's own Location gate is closed — it is never
-  // invented directly from UserBranchRole, only from Phase1C-produced
-  // UserRoleScope LOCATION rows.
-  it('resetDemo succeeds and leaves only the canonical OWNER scope when Location has never been backfilled yet', async () => {
+  // restored here it persists for the rest of this file's tests). Without
+  // Location, only the location-independent COMPANY assignments (OWNER,
+  // ADMIN) are provisioned — never an invented Company/Location, never a
+  // partial LOCATION assignment.
+  it('resetDemo succeeds with only OWNER and ADMIN COMPANY scopes when Location has never been backfilled yet', async () => {
     await db.prisma.location.deleteMany();
     await safely(() => resetDemo(db.prisma));
     expect(await db.prisma.location.count()).toBe(0);
-    expect(await db.prisma.userBranchRole.count()).toBe(9);
-    // Phase 1D.4.2: the canonical OWNER's COMPANY UserRoleScope is
-    // location-independent (see prisma/seed.ts's populate()), so it is
-    // always provisioned even on a genuinely brand-new database — unlike
-    // the UserBranchRole-derived LOCATION sync and the GC4F2 ADMIN-company
-    // convergence step, both gated on Location existing.
-    const scopes = await db.prisma.userRoleScope.findMany();
-    expect(scopes).toHaveLength(1);
-    expect(scopes[0]).toMatchObject({ scopeKind: 'COMPANY', locationId: null });
-    const owner = await db.prisma.user.findUniqueOrThrow({ where: { email: 'owner01@demo.local' } });
-    expect(scopes[0]!.userId).toBe(owner.id);
-    expect(await db.prisma.userBranchRole.count({ where: { userId: owner.id } })).toBe(0);
+    expect(await db.prisma.user.count()).toBe(5);
+    expect(await db.prisma.userBranchRole.count()).toBe(0);
+
+    const scopes = await db.prisma.userRoleScope.findMany({ include: { role: true, user: true } });
+    expect(scopes).toHaveLength(2);
+    expect(scopes.every((s) => s.scopeKind === 'COMPANY' && s.locationId === null)).toBe(true);
+    expect(scopes.map((s) => `${s.user.email}|${s.role.code}`).sort()).toEqual([
+      'admin@demo.local|ADMIN',
+      'owner01@demo.local|OWNER',
+    ]);
+    expect(await db.prisma.userRoleScope.count({ where: { scopeKind: 'LOCATION' } })).toBe(0);
 
     await ensureLocationBootstrap();
   }, 120000);
 
   it('resetDemo alone (no separate backfill call) produces the full canonical Phase 1 scope state once Location exists', async () => {
     await safely(() => resetDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
   }, 120000);
 
   it('a second resetDemo from scratch converges to the identical logical scope mapping', async () => {
     await safely(() => resetDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
     const before = (await db.prisma.userRoleScope.findMany())
       .map((s) => `${s.userId}|${s.roleId}|${s.scopeKind}|${s.locationId}`)
       .sort();
 
     await safely(() => resetDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
     const after = (await db.prisma.userRoleScope.findMany())
       .map((s) => `${s.userId}|${s.roleId}|${s.scopeKind}|${s.locationId}`)
       .sort();
@@ -185,23 +163,18 @@ describe('Demo seed/reset lifecycle preserves the UserRoleScope backfill (Phase 
 
   it('seedDemo (without reset) does not duplicate or corrupt the canonical scope state, and does not reintroduce ADMIN LOCATION', async () => {
     await safely(() => resetDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
     await safely(() => seedDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
   }, 120000);
 
-  // GC4F2 regression test: this is the exact defect GC4F's design audit
-  // identified — before this fix, populate() recreated the legacy
-  // UserBranchRole rows and re-ran only the Phase1C LOCATION sync on every
-  // seed/reset, with nothing to collapse a since-corrected ADMIN back to
-  // COMPANY. A database left in canonical state after this correction could
-  // therefore silently regress to mixed ADMIN LOCATION+COMPANY on the very
-  // next ordinary `db:reset`/`db:seed`. This test manually recreates that
-  // exact mixed state, then proves an ordinary seedDemo repairs it back to
-  // canonical, not merely a one-time backfill script run out-of-band.
+  // GC4F2 regression test (kept under D2.2): a database carrying mixed ADMIN
+  // LOCATION+COMPANY state must be converged back to ADMIN COMPANY only by
+  // an ordinary seedDemo, not merely by a one-time backfill script run
+  // out-of-band. D2.2 converges the canonical users' scopes directly.
   it('seedDemo repairs a manually-introduced mixed ADMIN LOCATION + COMPANY state back to canonical', async () => {
     await safely(() => resetDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
 
     const adminRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
     const admin = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
@@ -227,17 +200,97 @@ describe('Demo seed/reset lifecycle preserves the UserRoleScope backfill (Phase 
 
     await safely(() => seedDemo(db.prisma));
 
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
   }, 120000);
 
   it('repeated seed/reset cycles converge to the same canonical logical scope state', async () => {
     await safely(() => resetDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
     await safely(() => seedDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
     await safely(() => resetDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
     await safely(() => resetDemo(db.prisma));
-    await expectCanonicalPhase1ScopeState();
+    await expectCleanCanonicalState();
   }, 180000);
+  // D2.2 DEV-recovery input invariant: seedDemo on an existing database that
+  // still carries historical migration input (legacy manager01 + its
+  // MANAGER UserBranchRole, plus a legacy UserBranchRole on a canonical user)
+  // must NOT delete any of it — it only converges the canonical Production
+  // assignments. Retirement of that historical input is a separate,
+  // human-approved recovery checkpoint.
+  it('seedDemo preserves existing historical manager01 and legacy UserBranchRole input while converging canonical scopes', async () => {
+    await safely(() => resetDemo(db.prisma));
+    await expectCleanCanonicalState();
+
+    const managerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
+    const adminLegacyRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const central = await db.prisma.branch.findUniqueOrThrow({ where: { code: 'CEN' } });
+    const historicalManager = await db.prisma.user.create({
+      data: {
+        id: '00000000-0000-4000-8000-000000000601',
+        name: 'manager01',
+        email: 'manager01@demo.local',
+        passwordHash: 'x',
+      },
+    });
+    const admin = await db.prisma.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' } });
+    await db.prisma.userBranchRole.createMany({
+      data: [
+        { userId: historicalManager.id, branchId: central.id, roleId: managerRole.id },
+        { userId: admin.id, branchId: central.id, roleId: adminLegacyRole.id },
+      ],
+    });
+    const legacyBefore = await db.prisma.userBranchRole.findMany({ orderBy: { id: 'asc' } });
+    expect(legacyBefore).toHaveLength(2);
+
+    await safely(() => seedDemo(db.prisma));
+
+    expect(await db.prisma.user.findUnique({ where: { id: historicalManager.id } })).not.toBeNull();
+    expect(await db.prisma.userBranchRole.findMany({ orderBy: { id: 'asc' } })).toEqual(legacyBefore);
+    // Historical MANAGER input never becomes a Production assignment.
+    expect(await db.prisma.userRoleScope.count({ where: { userId: historicalManager.id } })).toBe(0);
+    await expectCanonicalPhase1ScopeState();
+    expect(await db.prisma.userRoleScope.count()).toBe(5);
+
+    // Clean reset (not seedDemo) is what removes it — via clear(), not populate().
+    await safely(() => resetDemo(db.prisma));
+    await expectCleanCanonicalState();
+  }, 180000);
+
+  // D2.2 fail-closed: once any Location exists, the canonical CEN and DEP
+  // Locations must both resolve (with Location.id == Branch.id). A missing
+  // one fails the whole seed/reset closed and rolls it back — never a
+  // silently partial authorization state.
+  for (const missingCode of ['DEP', 'CEN'] as const) {
+    it(`resetDemo and seedDemo fail closed and roll back when the canonical ${missingCode} Location is missing`, async () => {
+      await safely(() => resetDemo(db.prisma));
+      await expectCleanCanonicalState();
+      const scopeCountBefore = await db.prisma.userRoleScope.count();
+      try {
+        // Cascades that Location's own UserRoleScope rows away with it.
+        await db.prisma.location.delete({ where: { code: missingCode } });
+        expect(await db.prisma.location.count()).toBeGreaterThan(0);
+        const scopesAfterDelete = (await db.prisma.userRoleScope.findMany())
+          .map((s) => `${s.userId}|${s.roleId}|${s.scopeKind}|${s.locationId}`)
+          .sort();
+        expect(scopesAfterDelete.length).toBeLessThan(scopeCountBefore);
+
+        await expect(resetDemo(db.prisma)).rejects.toThrow();
+        await expect(seedDemo(db.prisma)).rejects.toThrow();
+
+        // Rolled back: nothing about the pre-attempt state changed.
+        expect(
+          (await db.prisma.userRoleScope.findMany())
+            .map((s) => `${s.userId}|${s.roleId}|${s.scopeKind}|${s.locationId}`)
+            .sort(),
+        ).toEqual(scopesAfterDelete);
+        expect(await db.prisma.user.count()).toBe(5);
+      } finally {
+        await ensureLocationBootstrap();
+      }
+      await safely(() => resetDemo(db.prisma));
+      await expectCleanCanonicalState();
+    }, 180000);
+  }
 });

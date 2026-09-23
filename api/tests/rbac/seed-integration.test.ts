@@ -68,15 +68,15 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
     expect(await db.prisma.role.count()).toBe(6);
     expect(await db.prisma.permission.count()).toBe(45);
     expect(await db.prisma.rolePermission.count()).toBe(101);
-    expect(await db.prisma.userBranchRole.count()).toBe(9);
-    // Phase 1C addendum: with Location bootstrapped (ensured in beforeAll
-    // below), populate() now also syncs UserRoleScope on every reset/seed —
-    // see scope-seed-integration.test.ts for the dedicated Phase 1C checks.
-    // GC4F2 addendum: populate() also converges ADMIN's Phase1C-synced
-    // LOCATION rows to a single COMPANY row immediately afterward (same
-    // transaction), so the 6 legacy ADMIN branches collapse to 1 row, not
-    // 6 — canonical final count: ADMIN COMPANY(1) + WAREHOUSE LOCATION(1) +
-    // SELLER LOCATION(1) + CASHIER LOCATION(1) + OWNER COMPANY(1) = 5. See
+    // D2.2: normal canonical seed creates NO legacy UserBranchRole rows, and
+    // every assertion here follows a clean resetDemo (or a seedDemo on top of
+    // one), so there is no historical input left either.
+    expect(await db.prisma.userBranchRole.count()).toBe(0);
+    // D2.2: populate() provisions the canonical Production assignments
+    // directly (no Phase1C legacy-derived sync, no ADMIN-company
+    // convergence step) — with Location bootstrapped (ensured in beforeAll
+    // below): OWNER COMPANY(1) + ADMIN COMPANY(1) + SELLER LOCATION CEN(1) +
+    // CASHIER LOCATION CEN(1) + WAREHOUSE LOCATION DEP(1) = 5. See
     // scope-seed-integration.test.ts's expectCanonicalPhase1ScopeState for
     // the detailed per-role/per-user shape this file's own count only
     // summarizes.
@@ -202,11 +202,32 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
     await expectFullPhase1BState();
   }, 180000);
 
+  // D2.2: canonical identities are explicit per user, never positional.
+  // id(601) is the reserved historical manager01 identity — a clean reset
+  // never creates manager01 and never reuses id(601) for anyone else. The
+  // legacy MANAGER Role row itself stays (legacy compatibility/migration
+  // input), even though no canonical user holds it.
+  it('resetDemo provisions exactly the five canonical users with explicit deterministic ids, no manager01, and id(601) unused', async () => {
+    await safely(() => resetDemo(db.prisma));
+    const canonicalId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+    const users = await db.prisma.user.findMany({ select: { id: true, email: true }, orderBy: { id: 'asc' } });
+    expect(users).toEqual([
+      { id: canonicalId(600), email: 'admin@demo.local' },
+      { id: canonicalId(602), email: 'seller01@demo.local' },
+      { id: canonicalId(603), email: 'cashier01@demo.local' },
+      { id: canonicalId(604), email: 'owner01@demo.local' },
+      { id: canonicalId(605), email: 'warehouse01@demo.local' },
+    ]);
+    expect(await db.prisma.user.findUnique({ where: { email: 'manager01@demo.local' } })).toBeNull();
+    expect(await db.prisma.user.findUnique({ where: { id: canonicalId(601) } })).toBeNull();
+    expect((await db.prisma.role.findUniqueOrThrow({ where: { code: 'MANAGER' } })).code).toBe('MANAGER');
+  }, 120000);
+
   // Phase 1D.4.2: the canonical bootstrap OWNER user, provisioned only by
   // seed/bootstrap tooling (docs/superpowers/plans/2026-09-14-phase-1d-production-authorization.md
   // Task 1D.4.2) — never through the self-service scope-assignment endpoint.
   // OWNER never existed as a legacy role code, so it must get zero
-  // UserBranchRole rows, unlike every other seeded demo user.
+  // UserBranchRole rows (D2.2: as must every other canonical seeded user).
   it('seeds a canonical OWNER user with exactly one COMPANY UserRoleScope assignment and zero legacy UserBranchRole rows', async () => {
     await safely(() => resetDemo(db.prisma));
     const owner = await db.prisma.user.findUniqueOrThrow({ where: { email: 'owner01@demo.local' } });

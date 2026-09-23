@@ -12,27 +12,27 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
   let db: PrismaClient;
   let app: ReturnType<typeof createApp>;
   let sellerId: string;
-  let managerId: string;
+  let warehouseId: string;
   let branchId: string;
   let variantId: string;
   let productId: string;
   let inventoryId: string;
   let sellerToken: string;
-  let managerToken: string;
+  let warehouseToken: string;
 
   beforeAll(async () => { db = await createTestPrismaClient(); app = createApp(db); }, 120000);
   beforeEach(async () => {
     await truncateAllTables(db);
     await seedDemo(db);
-    const [seller, manager, branch, variant] = await Promise.all([
+    const [seller, warehouse, branch, variant] = await Promise.all([
       db.user.findUniqueOrThrow({ where: { email: 'seller01@demo.local' } }),
-      db.user.findUniqueOrThrow({ where: { email: 'manager01@demo.local' } }),
+      db.user.findUniqueOrThrow({ where: { email: 'warehouse01@demo.local' } }),
       db.branch.findUniqueOrThrow({ where: { code: 'CEN' } }),
       db.productVariant.findUniqueOrThrow({ where: { sku: 'REM-NEG-M' } }),
     ]);
-    sellerId = seller.id; managerId = manager.id; branchId = branch.id; variantId = variant.id; productId = variant.productId;
+    sellerId = seller.id; warehouseId = warehouse.id; branchId = branch.id; variantId = variant.id; productId = variant.productId;
     inventoryId = (await db.inventory.findUniqueOrThrow({ where: { variantId_branchId: { variantId, branchId } } })).id;
-    sellerToken = await getAuthToken(seller); managerToken = await getAuthToken(manager);
+    sellerToken = await getAuthToken(seller); warehouseToken = await getAuthToken(warehouse);
   }, 120000);
   afterAll(async () => { await db?.$disconnect(); }, 120000);
 
@@ -47,7 +47,7 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     return db.salePayment.create({ data: { saleId, method: 'TRANSFER', amount, idempotencyKey: randomUUID() } });
   }
   const cancel = (saleId: string, token = sellerToken) => request(app).post(`/api/v1/sales/${saleId}/cancel`).set('Authorization', `Bearer ${token}`);
-  const release = (token = managerToken) => request(app).post('/api/v1/admin/reservations/release-expired').set('Authorization', `Bearer ${token}`);
+  const release = (token = warehouseToken) => request(app).post('/api/v1/admin/reservations/release-expired').set('Authorization', `Bearer ${token}`);
 
   it('requires authentication, SALE_CREATE, and fresh assignment/permission', async () => {
     const current = await sale('DRAFT');
@@ -58,9 +58,9 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await cancel(current.id)).status).toBe(403);
     await db.rolePermission.upsert({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } }, create: { roleId: role.id, permissionId: permission.id }, update: {} });
-    // Branch/reassignment subcase: authoritative LOCATION scope moves to YB.
-    // UserBranchRole stays put — this asserts fresh UserRoleScope
-    // enforcement, not a re-test of the permission check above.
+    // Branch/reassignment subcase: authoritative LOCATION scope moves to YB
+    // — this asserts fresh UserRoleScope enforcement, not a re-test of the
+    // permission check above.
     const yb = await db.branch.findUniqueOrThrow({ where: { code: 'YB' } });
     await db.userRoleScope.updateMany({ where: { userId: sellerId, scopeKind: 'LOCATION' }, data: { locationId: yb.id } });
     expect((await cancel(current.id)).status).toBe(403);
@@ -70,7 +70,11 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     // Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority.
     // UserBranchRole (role/permission authority) stays at CEN — only the
     // scope moves to YB — so this proves the legacy row can no longer veto
-    // access to a location UserRoleScope has actually authorized.
+    // access to a location UserRoleScope has actually authorized. D2.2:
+    // canonical seed creates no UserBranchRole, so the stale legacy row is
+    // this test's own explicit fixture.
+    const sellerRole = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    await db.userBranchRole.create({ data: { userId: sellerId, branchId, roleId: sellerRole.id } });
     const yb = await db.branch.findUniqueOrThrow({ where: { code: 'YB' } });
     await db.userRoleScope.updateMany({ where: { userId: sellerId, scopeKind: 'LOCATION' }, data: { locationId: yb.id } });
     const current = await db.sale.create({ data: { sellerId, branchId: yb.id, status: 'DRAFT', subtotal: 100n, total: 100n } });
@@ -123,6 +127,13 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
   });
 
   it('releases only eligible expired reservations and is repeat-safe', async () => {
+    // release-expired only touches the caller's own effective locations. The
+    // canonical warehouse01 is Production-native WAREHOUSE LOCATION DEP, so
+    // this test's reservations live at DEP (branchId/inventoryId are reset
+    // by beforeEach).
+    const dep = await db.branch.findUniqueOrThrow({ where: { code: 'DEP' } });
+    branchId = dep.id;
+    inventoryId = (await db.inventory.findUniqueOrThrow({ where: { variantId_branchId: { variantId, branchId } } })).id;
     const expired = await sale(); await reserve(expired.id, 2n);
     const fresh = await sale(); await reserve(fresh.id, 1n, new Date(Date.now() + 3600000));
     const paid = await sale(); await reserve(paid.id, 1n); await payment(paid.id, 1n);
@@ -139,20 +150,21 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
 
   it('requires INVENTORY_MANAGE and preserves stale-role authorization', async () => {
     // Phase 1D.3.1 SWITCH: /release-expired now gates on the Production
-    // INVENTORY_MANAGE grant. manager01's UserRoleScope (Phase 1C's explicit
-    // MANAGER->WAREHOUSE backfill mapping, legacy-role-map.ts) points at the
-    // real WAREHOUSE Role row, not the legacy MANAGER row — that WAREHOUSE
-    // row is what the Production assignment's permissions actually come
-    // from, so revoking the grant here (not on MANAGER) is what proves the
-    // live decision.
+    // INVENTORY_MANAGE grant. The canonical warehouse01's Production-native
+    // UserRoleScope (WAREHOUSE LOCATION DEP) points at the WAREHOUSE Role
+    // row — that row is what the Production assignment's permissions come
+    // from, so revoking the grant there is what proves the live decision.
     const role = await db.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
     const permission = await db.permission.findUniqueOrThrow({ where: { code: 'INVENTORY_MANAGE' } });
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
     expect((await release()).status).toBe(403);
     await db.rolePermission.upsert({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } }, create: { roleId: role.id, permissionId: permission.id }, update: {} });
-    // The legacy MANAGER role code itself may be renamed without affecting
-    // Production authority, since it is no longer the source of this grant.
+    // Stale legacy role state never drives Production authority: give the
+    // caller an explicit legacy MANAGER UserBranchRole (D2.2: canonical
+    // seed creates none), then rename that legacy role code — authority
+    // still comes solely from the WAREHOUSE UserRoleScope.
     const legacyRole = await db.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
+    await db.userBranchRole.create({ data: { userId: warehouseId, branchId, roleId: legacyRole.id } });
     await db.role.update({ where: { id: legacyRole.id }, data: { code: 'ADMIN_LOOKALIKE' } });
     const current = await sale(); await reserve(current.id);
     expect((await release()).status).toBe(200);
@@ -290,9 +302,18 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
 
   it('does not leave payment plus released reservation in a race', async () => {
     const current = await sale(); await reserve(current.id);
-    const paymentToken = await getAuthToken({ id: managerId });
+    // For this to be a real race at CEN, the payment caller must be able to
+    // charge there (SALE_CHARGE: the canonical CASHIER @ CEN) and the release
+    // caller must hold INVENTORY_MANAGE covering CEN — release-expired only
+    // touches the caller's own effective locations, and warehouse01 is DEP,
+    // so the canonical COMPANY-scoped ADMIN releases here.
+    const [cashier, admin] = await Promise.all([
+      db.user.findUniqueOrThrow({ where: { email: 'cashier01@demo.local' } }),
+      db.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' } }),
+    ]);
+    const paymentToken = await getAuthToken(cashier);
     const paymentResponse = request(app).post(`/api/v1/sales/${current.id}/payments`).set('Authorization', `Bearer ${paymentToken}`).send({ method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
-    const releaseResponse = release();
+    const releaseResponse = release(await getAuthToken(admin));
     const [paymentResult, expiryResult] = await Promise.all([paymentResponse, releaseResponse]);
     const persistedPayment = await db.salePayment.count({ where: { saleId: current.id } });
     const persistedReservation = await db.stockReservation.findFirstOrThrow({ where: { saleId: current.id } });

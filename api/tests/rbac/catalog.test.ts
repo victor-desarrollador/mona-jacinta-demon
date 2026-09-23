@@ -150,20 +150,35 @@ describe('Production RBAC catalog bootstrap (Phase 1B)', () => {
     expect(productionGrant).not.toBeNull();
   });
 
+  // D2.2: normal canonical seed no longer manufactures legacy
+  // UserBranchRole rows, so this test arranges its own minimal legacy
+  // fixture (a dedicated legacy MANAGER user) and proves the real invariant
+  // with an exact before/after comparison: catalog bootstrap never creates,
+  // deletes or modifies any assignment row — neither UserBranchRole nor
+  // UserRoleScope (assignment is Phase 1C's job, not the catalog's).
   it('leaves UserBranchRole (including the legacy MANAGER assignment) and UserRoleScope assignment state untouched', async () => {
-    // This suite's beforeAll resetDemo may itself have already synchronized
-    // UserRoleScope from UserBranchRole (Phase 1C, once Location exists in
-    // this shared test database) — that's a different code path's job, not
-    // this test's concern. What this test proves is that catalog bootstrap
-    // itself never creates/deletes/modifies a UserRoleScope row, so capture
-    // the count immediately before calling it and assert it is unchanged
-    // after, rather than assuming a specific absolute count.
-    const scopeCountBeforeCatalogBootstrap = await db.prisma.userRoleScope.count();
-    await bootstrapProductionRbacCatalog(db.prisma);
-    expect(await db.prisma.userBranchRole.count()).toBe(9);
-    const managerRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'MANAGER' } });
-    expect(await db.prisma.userBranchRole.count({ where: { roleId: managerRole.id } })).toBe(1);
-    // No scope assignment is ever created by catalog bootstrap (Phase 1C's job).
-    expect(await db.prisma.userRoleScope.count()).toBe(scopeCountBeforeCatalogBootstrap);
+    const managerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
+    const central = await db.prisma.branch.findUniqueOrThrow({ where: { code: 'CEN' } });
+    const legacyManager = await db.prisma.user.create({
+      data: { name: 'catalog-legacy-manager', email: 'catalog-legacy-manager@test.local', passwordHash: 'x' },
+    });
+    try {
+      await db.prisma.userBranchRole.create({
+        data: { userId: legacyManager.id, branchId: central.id, roleId: managerRole.id },
+      });
+      const snapshot = async () => ({
+        legacy: await db.prisma.userBranchRole.findMany({ orderBy: { id: 'asc' } }),
+        scopes: await db.prisma.userRoleScope.findMany({ orderBy: { id: 'asc' } }),
+      });
+      const before = await snapshot();
+      expect(before.legacy.filter((row) => row.userId === legacyManager.id)).toHaveLength(1);
+
+      await bootstrapProductionRbacCatalog(db.prisma);
+
+      expect(await snapshot()).toEqual(before);
+    } finally {
+      await db.prisma.userBranchRole.deleteMany({ where: { userId: legacyManager.id } });
+      await db.prisma.user.delete({ where: { id: legacyManager.id } });
+    }
   });
 });

@@ -44,14 +44,14 @@ describe('backoffice read API', () => {
     );
     // Phase 1D.3.5 SWITCH: Backoffice REPORT_VIEW/USER_MANAGE now gate on
     // Production assignments (req.auth.assignments), not legacy UserBranchRole
-    // report.view/user.manage. Legacy MANAGER maps to Production WAREHOUSE
-    // (legacy-role-map.ts), which carries neither REPORT_VIEW nor USER_MANAGE
-    // by default (role-permission-matrix.ts) — MANAGER can no longer stand in
-    // as "the authorized single-branch caller" these tests need. ADMIN is the
-    // only canonical role granted every Production permission by default, and
-    // can still be LOCATION-scoped during the pre-1D.4.1-backfill
-    // compatibility window this task must keep working under — a fresh
-    // LOCATION-scoped ADMIN user replaces MANAGER as the default authorized,
+    // report.view/user.manage. Legacy MANAGER confers no Production role at
+    // all (D2.1: DEFERRED), and Production WAREHOUSE carries neither
+    // REPORT_VIEW nor USER_MANAGE by default (role-permission-matrix.ts) —
+    // neither can stand in as "the authorized single-branch caller" these
+    // tests need. ADMIN is the only canonical role granted every Production
+    // permission by default, and can still be LOCATION-scoped during the
+    // pre-1D.4.1-backfill compatibility window this task must keep working
+    // under — a fresh LOCATION-scoped ADMIN user is the default authorized,
     // single-branch caller.
     const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
     const scopedAdmin = await createTestUser(prisma, adminRole.id, branches.CEN!);
@@ -232,8 +232,8 @@ describe('backoffice read API', () => {
     expect(response.status).toBe(403);
   });
 
-  it('rejects MANAGER (mapped to WAREHOUSE, no REPORT_VIEW) on Backoffice reads', async () => {
-    expect((await get('/api/v1/backoffice/dashboard', 'manager01@demo.local')).status).toBe(403);
+  it('rejects canonical WAREHOUSE (no REPORT_VIEW) on Backoffice reads', async () => {
+    expect((await get('/api/v1/backoffice/dashboard', 'warehouse01@demo.local')).status).toBe(403);
   });
 
   it('revokes Production REPORT_VIEW after token issuance and fails closed', async () => {
@@ -281,9 +281,9 @@ describe('backoffice read API', () => {
   });
 
   it('denies /users without USER_MANAGE, including a transitional LOCATION ADMIN caller', async () => {
-    // MANAGER maps to Production WAREHOUSE (legacy-role-map.ts), which
-    // carries neither USER_MANAGE nor REPORT_VIEW by default.
-    expect((await get('/api/v1/backoffice/users', 'manager01@demo.local')).status).toBe(403);
+    // Canonical WAREHOUSE carries neither USER_MANAGE nor REPORT_VIEW by
+    // default (role-permission-matrix.ts).
+    expect((await get('/api/v1/backoffice/users', 'warehouse01@demo.local')).status).toBe(403);
     // GC2: USER_MANAGE now requires COMPANY scope. GC4F2 converged
     // seedDemo's admin@demo.local to canonical ADMIN COMPANY, so it no
     // longer represents a transitional LOCATION ADMIN — this test

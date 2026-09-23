@@ -1,8 +1,7 @@
 import { hash } from 'bcryptjs';
 import type { Prisma } from '../src/generated/prisma/client.js';
 import { syncProductionRbacCatalog } from '../src/modules/rbac/catalog.service.js';
-import { syncUserRoleScopeFromUserBranchRole } from '../src/modules/rbac/scope-backfill.service.js';
-import { syncAdminCompanyScope } from '../src/modules/rbac/admin-company-backfill.service.js';
+import { ROLE_CODES, type RoleCode } from '../src/modules/rbac/roles.js';
 
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -44,6 +43,15 @@ export const branches = [
   { code: 'BAN', name: 'Banda', pointOfSaleNumber: 4 },
   { code: 'CON', name: 'Concepción', pointOfSaleNumber: 5 },
   { code: 'DEP', name: 'Depósito Central', pointOfSaleNumber: 6 },
+] as const;
+// D2.2: explicit canonical identities (see populate()). id(601) is reserved
+// for the historical manager01 identity and deliberately absent; id(604) is
+// the canonical OWNER, provisioned separately below.
+const canonicalUsers = [
+  { id: id(600), name: 'admin' },
+  { id: id(602), name: 'seller01' },
+  { id: id(603), name: 'cashier01' },
+  { id: id(605), name: 'warehouse01' },
 ] as const;
 const products = [
   {
@@ -143,17 +151,17 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
       update: register,
     });
   }
-  const users = [
-    ['admin', 'ADMIN'],
-    ['manager01', 'MANAGER'],
-    ['seller01', 'SELLER'],
-    ['cashier01', 'CASHIER'],
-  ] as const;
-  for (const [i, [name, role]] of users.entries()) {
+  // D2.2: canonical demo identities with explicit, per-user ids — never
+  // derived from array position, so removing/adding an identity can never
+  // renumber another. id(601) is RESERVED for the historical manager01
+  // identity (legacy MANAGER, D2.1: DEFERRED) and is never created or reused
+  // here. id(604) is the canonical OWNER, provisioned below. No canonical
+  // user gets a legacy UserBranchRole row: normal seed is Production-native.
+  for (const user of canonicalUsers) {
     const data = {
-      id: id(600 + i),
-      name,
-      email: `${name}@demo.local`,
+      id: user.id,
+      name: user.name,
+      email: `${user.name}@demo.local`,
       passwordHash,
       isActive: true,
       createdAt: timestamp,
@@ -164,18 +172,6 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
       where: { id: data.id },
       create: data,
       update: data,
-    });
-    await tx.userBranchRole.deleteMany({ where: { userId: data.id } });
-    const assigned = role === 'ADMIN' ? branches : branches.slice(0, 1);
-    // ADMIN receives all 12 permissions and all demo branches. Global authorization
-    // resolution belongs to Task 8; no role-check middleware or extra permission here.
-    await tx.userBranchRole.createMany({
-      data: assigned.map((branch) => ({
-        id: id(700 + i * 10 + branch.pointOfSaleNumber),
-        userId: data.id,
-        branchId: id(300 + branch.pointOfSaleNumber - 1),
-        roleId: id(200 + roles.findIndex(([code]) => code === role)),
-      })),
     });
   }
   const category = { id: id(800), name: 'Indumentaria' };
@@ -247,59 +243,16 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
   // otherwise wipe Production grants added before it ran.
   await syncProductionRbacCatalog(tx);
 
-  // Phase 1C (Production V1): keep UserRoleScope in sync with UserBranchRole
-  // on every successful seed/reset — see
-  // docs/production-v1/08-implementation-roadmap.md Phase 1C and
-  // api/tests/rbac/scope-seed-integration.test.ts. Skipped only when
-  // Company/Location (Phase 1A) has genuinely never been backfilled yet for
-  // this database (a brand-new database, before its one-time
-  // `db:backfill-company-location` run) — there is nothing to keep in sync
-  // yet, and failing here would break the documented first-time bootstrap
-  // order (demo:reset before the Location backfill exists at all,
-  // docs/development/getting-started.md). Once Location exists (the normal
-  // case for any database that has completed Phase 1A/1B bootstrap once),
-  // this always runs, and any partial/inconsistent state (a Branch with no
-  // matching Location) still fails the whole seed/reset closed, per
-  // syncUserRoleScopeFromUserBranchRole's own fail-closed checks. Runs on
-  // this same transaction — never a nested one — so a synchronization
-  // failure rolls back the entire seed/reset, not just this step.
-  //
-  // GC4F2 (Phase 1 Global Closeout): immediately afterward, converge every
-  // ADMIN LOCATION row the sync above just (re)created into a single ADMIN
-  // COMPANY row — the Phase 1D canonical target (AGENTS.md "Roles —
-  // Production V1"). Deliberately kept inside this same Location-gated block
-  // (never invoked when Phase1C is skipped): syncAdminCompanyScope only
-  // collapses existing UserRoleScope LOCATION rows, it never infers ADMIN
-  // COMPANY directly from UserBranchRole, so it would be a no-op with
-  // nothing to converge yet on a genuinely brand-new database — see the
-  // dedicated Location-never-backfilled test in
-  // scope-seed-integration.test.ts. Runs on this same transaction — never a
-  // nested one (syncAdminCompanyScope opens no transaction of its own) — so
-  // a failure here rolls back the entire seed/reset, including the Phase1C
-  // sync above; this is what makes a seed/reset run against an
-  // already-corrected database converge back to canonical instead of
-  // silently regressing to transitional mixed LOCATION+COMPANY state.
-  if ((await tx.location.count()) > 0) {
-    await syncUserRoleScopeFromUserBranchRole(tx);
-    await syncAdminCompanyScope(tx);
-  }
-
   // Phase 1D.4.2 (Production V1): canonical bootstrap OWNER user. OWNER
-  // never existed as a legacy Demo V2 role, so — unlike the demo users
-  // above — it gets no UserBranchRole row; its only authorization state is
-  // a single COMPANY UserRoleScope, per AGENTS.md's Phase 1D target model
-  // ("OWNER — COMPANY scope, full authority"). This provisions the
-  // canonical, bootstrap FIRST OWNER — the HTTP scope-assignment endpoint
-  // (Task 1D.4.3) cannot bootstrap this first OWNER itself, since
+  // never existed as a legacy Demo V2 role, so it never had a
+  // UserBranchRole row; its only authorization state is a single COMPANY
+  // UserRoleScope (converged below). This provisions the canonical,
+  // bootstrap FIRST OWNER — the HTTP scope-assignment endpoint (Task
+  // 1D.4.3) cannot bootstrap this first OWNER itself, since
   // self-modification is denied for every caller and ADMIN can never grant
   // OWNER; a later, already-bootstrapped OWNER can still grant the OWNER
-  // role to a different (non-self) user through that endpoint. Runs after
-  // syncProductionRbacCatalog (which creates the OWNER Role row) so the
-  // lookup below always resolves; location-independent, so unlike the
-  // UserRoleScope sync above it always runs, even on a genuinely brand-new
-  // database that has never had Location backfilled yet.
-  const ownerRole = await tx.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
-  const owner = await tx.user.upsert({
+  // role to a different (non-self) user through that endpoint.
+  await tx.user.upsert({
     where: { email: 'owner01@demo.local' },
     // Canonical id, matching every other seeded entity in this file — a
     // deterministic id.uuid() default would otherwise mint a fresh row on
@@ -309,10 +262,105 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
     create: { id: id(604), name: 'Owner Demo', email: 'owner01@demo.local', passwordHash },
     update: {},
   });
-  await tx.userRoleScope.deleteMany({ where: { userId: owner.id } });
-  await tx.userRoleScope.create({
-    data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
+
+  // D2.2 (Phase 1 Global Closeout): canonical Production assignments are
+  // provisioned directly — normal seed no longer runs the historical Phase1C
+  // UserBranchRole -> UserRoleScope sync or the GC4F2 ADMIN-company
+  // convergence (both stay available as standalone recovery tooling). Runs
+  // after syncProductionRbacCatalog, which creates the OWNER/WAREHOUSE Role
+  // rows, on this same transaction — a failure rolls back the whole
+  // seed/reset. Never deletes a legacy UserBranchRole row or any
+  // non-canonical user: historical migration input on an existing database
+  // (e.g. manager01) is left intact for its own human-approved recovery.
+  await convergeCanonicalScopes(tx);
+}
+
+// D2.2 canonical Production assignment per canonical identity, keyed by
+// the canonical email (the OWNER is upserted by email above). COMPANY
+// assignments are location-independent; LOCATION assignments name their
+// canonical Location by stable code, never by array position.
+const canonicalAssignments: readonly {
+  email: string;
+  roleCode: RoleCode;
+  locationCode: 'CEN' | 'DEP' | null;
+}[] = [
+  { email: 'owner01@demo.local', roleCode: ROLE_CODES.OWNER, locationCode: null },
+  { email: 'admin@demo.local', roleCode: ROLE_CODES.ADMIN, locationCode: null },
+  { email: 'seller01@demo.local', roleCode: ROLE_CODES.SELLER, locationCode: 'CEN' },
+  { email: 'cashier01@demo.local', roleCode: ROLE_CODES.CASHIER, locationCode: 'CEN' },
+  { email: 'warehouse01@demo.local', roleCode: ROLE_CODES.WAREHOUSE, locationCode: 'DEP' },
+];
+
+// Converges each canonical user's UserRoleScope rows to exactly its one
+// canonical assignment: an already-matching row is kept (generated
+// UserRoleScope ids stay stable across reseeds), anything else for that
+// user is removed, a missing target is created. Only canonical users'
+// rows are ever touched.
+//
+// Location gate: with zero Locations (Phase 1A never backfilled on this
+// database) only the COMPANY assignments are provisioned — no Company or
+// Location is ever invented here, and the LOCATION-scoped canonical users
+// get no scope. Once any Location exists, the canonical CEN and DEP
+// Locations must both resolve with Location.id == Branch.id (the Phase 1A
+// mapping); a missing or inconsistent one fails the whole seed/reset closed
+// rather than silently producing partial authorization.
+async function convergeCanonicalScopes(tx: Prisma.TransactionClient) {
+  const roleCodes = [...new Set(canonicalAssignments.map((a) => a.roleCode))];
+  const roles = await tx.role.findMany({ where: { code: { in: roleCodes } } });
+  const roleIdByCode = new Map(roles.map((role) => [role.code, role.id]));
+  const missingRoles = roleCodes.filter((code) => !roleIdByCode.has(code));
+  if (missingRoles.length > 0)
+    throw new Error(`Production Role(s) ${missingRoles.join(', ')} missing after catalog sync`);
+
+  const users = await tx.user.findMany({
+    where: { email: { in: canonicalAssignments.map((a) => a.email) } },
+    select: { id: true, email: true },
   });
+  const userIdByEmail = new Map(users.map((user) => [user.email, user.id]));
+
+  const locationIdByCode = new Map<string, string>();
+  if ((await tx.location.count()) > 0) {
+    for (const code of ['CEN', 'DEP'] as const) {
+      const [location, branch] = await Promise.all([
+        tx.location.findUnique({ where: { code } }),
+        tx.branch.findUnique({ where: { code } }),
+      ]);
+      if (!location || !branch || location.id !== branch.id)
+        throw new Error(
+          `Canonical Location ${code} is missing or does not match Branch ${code}; ` +
+            'refusing to seed a partial authorization state',
+        );
+      locationIdByCode.set(code, location.id);
+    }
+  }
+
+  for (const assignment of canonicalAssignments) {
+    const userId = userIdByEmail.get(assignment.email)!;
+    const roleId = roleIdByCode.get(assignment.roleCode)!;
+    const target =
+      assignment.locationCode === null
+        ? { roleId, scopeKind: 'COMPANY' as const, locationId: null }
+        : locationIdByCode.has(assignment.locationCode)
+          ? {
+              roleId,
+              scopeKind: 'LOCATION' as const,
+              locationId: locationIdByCode.get(assignment.locationCode)!,
+            }
+          : null;
+    const existing = await tx.userRoleScope.findMany({ where: { userId } });
+    const kept = target
+      ? existing.find(
+          (row) =>
+            row.roleId === target.roleId &&
+            row.scopeKind === target.scopeKind &&
+            row.locationId === target.locationId,
+        )
+      : undefined;
+    const stale = existing.filter((row) => row !== kept).map((row) => row.id);
+    if (stale.length > 0) await tx.userRoleScope.deleteMany({ where: { id: { in: stale } } });
+    if (target && !kept)
+      await tx.userRoleScope.create({ data: { userId, ...target } });
+  }
 }
 
 async function clear(tx: Prisma.TransactionClient) {

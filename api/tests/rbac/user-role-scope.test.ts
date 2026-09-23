@@ -173,11 +173,53 @@ describe('UserRoleScope schema invariants (Phase 1B)', () => {
     expect(await db.prisma.userRoleScope.count()).toBe(0);
   });
 
+  // D2.2: normal canonical seed no longer manufactures legacy
+  // UserBranchRole rows, so this suite owns an explicit, minimal legacy
+  // fixture (a dedicated MANAGER + SELLER legacy user) instead of relying on
+  // a global seed-produced count. The invariant is unchanged: UserRoleScope
+  // writes/deletes (this suite's Phase 1B schema surface) never fabricate,
+  // modify or destroy legacy UserBranchRole assignment state.
   it('leaves UserBranchRole (including legacy MANAGER assignments) fully intact', async () => {
-    expect(await db.prisma.userBranchRole.count()).toBe(9);
-    const managerRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'MANAGER' } });
-    expect(
-      await db.prisma.userBranchRole.count({ where: { roleId: managerRole.id } }),
-    ).toBe(1);
+    const managerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
+    const sellerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const legacyUser = await db.prisma.user.create({
+      data: {
+        name: 'user-role-scope-legacy',
+        email: `user-role-scope-legacy-${randomUUID()}@test.local`,
+        passwordHash: 'x',
+      },
+    });
+    const [central, yerbaBuena] = await Promise.all([
+      db.prisma.branch.findUniqueOrThrow({ where: { code: 'CEN' } }),
+      db.prisma.branch.findUniqueOrThrow({ where: { code: 'YB' } }),
+    ]);
+    try {
+      await db.prisma.userBranchRole.createMany({
+        data: [
+          { userId: legacyUser.id, branchId: central.id, roleId: managerRole.id },
+          { userId: legacyUser.id, branchId: yerbaBuena.id, roleId: sellerRole.id },
+        ],
+      });
+      const snapshot = () => db.prisma.userBranchRole.findMany({ orderBy: { id: 'asc' } });
+      const before = await snapshot();
+      expect(before.filter((row) => row.userId === legacyUser.id)).toHaveLength(2);
+
+      await db.prisma.userRoleScope.create({
+        data: { userId: legacyUser.id, roleId: cashierRoleId, scopeKind: 'LOCATION', locationId },
+      });
+      await db.prisma.userRoleScope.create({
+        data: { userId: legacyUser.id, roleId: adminRoleId, scopeKind: 'COMPANY', locationId: null },
+      });
+      await db.prisma.userRoleScope.deleteMany({ where: { userId: legacyUser.id } });
+
+      expect(await snapshot()).toEqual(before);
+      expect(
+        await db.prisma.userBranchRole.count({ where: { userId: legacyUser.id, roleId: managerRole.id } }),
+      ).toBe(1);
+    } finally {
+      await db.prisma.userRoleScope.deleteMany({ where: { userId: legacyUser.id } });
+      await db.prisma.userBranchRole.deleteMany({ where: { userId: legacyUser.id } });
+      await db.prisma.user.delete({ where: { id: legacyUser.id } });
+    }
   });
 });

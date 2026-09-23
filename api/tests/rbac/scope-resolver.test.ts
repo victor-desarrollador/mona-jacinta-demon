@@ -46,40 +46,71 @@ describe('UserRoleScope resolver (Phase 1C SWITCH)', () => {
     await safely(() => bootstrapProductionRbacCatalog(db.prisma));
   }, 120000);
 
+  // D2.2: normal canonical seed no longer creates any UserBranchRole rows,
+  // so this suite owns its historical legacy input explicitly — dedicated
+  // test-local identities, never canonical seed users. Tracked here so
+  // afterEach can remove exactly these fixtures (UserBranchRole -> User is
+  // onDelete: Restrict, so the legacy rows go first).
+  const fixtureUserIds: string[] = [];
+
+  async function createLegacyFixtureUser(label: string, legacyRoleCode: string, branchCodes: string[]) {
+    const legacyRole = await db.prisma.role.findUniqueOrThrow({ where: { code: legacyRoleCode } });
+    const branches = await db.prisma.branch.findMany({ where: { code: { in: branchCodes } } });
+    expect(branches).toHaveLength(branchCodes.length);
+    const user = await db.prisma.user.create({
+      data: { name: `scope-resolver-${label}`, email: `scope-resolver-${label}@test.local`, passwordHash: 'x' },
+    });
+    fixtureUserIds.push(user.id);
+    await db.prisma.userBranchRole.createMany({
+      data: branches.map((branch) => ({ userId: user.id, branchId: branch.id, roleId: legacyRole.id })),
+    });
+    return { user, branches };
+  }
+
   afterEach(async () => {
     await safely(() => db.prisma.userRoleScope.deleteMany());
+    await safely(() => db.prisma.userBranchRole.deleteMany({ where: { userId: { in: fixtureUserIds } } }));
+    await safely(() => db.prisma.user.deleteMany({ where: { id: { in: fixtureUserIds } } }));
+    fixtureUserIds.length = 0;
   });
 
   afterAll(async () => {
     if (db) await safely(() => db.close());
   });
 
-  it('resolves the backfilled LOCATION scope for a legacy MANAGER user as WAREHOUSE', async () => {
-    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });
-    const legacyAssignment = await db.prisma.userBranchRole.findFirstOrThrow({
-      where: { userId: manager.id },
-    });
+  // D2.1 supersession (AGENTS.md "Roles — Production V1"): legacy MANAGER is
+  // DEFERRED by the Phase1C backfill — it never resolves to WAREHOUSE (or
+  // any other Production role), so the resolver sees no Production scope.
+  it('resolves no Production scope for a legacy MANAGER user after Phase1C backfill (MANAGER is DEFERRED)', async () => {
+    const { user: manager } = await createLegacyFixtureUser('manager', 'MANAGER', ['CEN']);
 
-    const scopes = await resolveUserRoleScopes(db.prisma, manager.id);
-    expect(scopes).toHaveLength(1);
-    expect(scopes[0]).toMatchObject({
-      roleCode: 'WAREHOUSE',
-      scopeKind: 'LOCATION',
-      locationId: legacyAssignment.branchId,
-    });
+    const result = await backfillUserRoleScopeFromUserBranchRole(db.prisma);
+    expect(result.deferredRowCount).toBe(1);
+    expect(result.eligibleRowCount).toBe(0);
+    expect(result.created).toBe(0);
+
+    expect(await resolveUserRoleScopes(db.prisma, manager.id)).toEqual([]);
+    // The historical input itself is left intact for later recovery.
+    expect(await db.prisma.userBranchRole.count({ where: { userId: manager.id } })).toBe(1);
   });
 
-  it('resolves all 6 LOCATION scopes for the legacy ADMIN user', async () => {
+  it('resolves all 6 LOCATION scopes for a legacy ADMIN user', async () => {
+    const allBranchCodes = (await db.prisma.branch.findMany({ select: { code: true } })).map((b) => b.code);
+    expect(allBranchCodes).toHaveLength(6);
+    const { user: admin, branches } = await createLegacyFixtureUser('admin', 'ADMIN', allBranchCodes);
+
     await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    const admin = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
     const scopes = await resolveUserRoleScopes(db.prisma, admin.id);
     expect(scopes).toHaveLength(6);
     expect(scopes.every((s) => s.roleCode === 'ADMIN' && s.scopeKind === 'LOCATION')).toBe(true);
+    expect(scopes.map((s) => s.locationId).sort()).toEqual(branches.map((b) => b.id).sort());
   });
 
   it('returns an empty list for a user with no UserRoleScope rows', async () => {
     const seller = await db.prisma.user.findFirstOrThrow({ where: { name: 'seller01' } });
+    // Canonical seed provisions seller01's own SELLER CEN scope — remove it
+    // explicitly rather than relying on a previous test's afterEach.
+    await db.prisma.userRoleScope.deleteMany({ where: { userId: seller.id } });
     const scopes = await resolveUserRoleScopes(db.prisma, seller.id);
     expect(scopes).toEqual([]);
   });

@@ -82,20 +82,19 @@ describe('permission and branch authorization', () => {
     const cashier = await request(app)
       .get('/permission')
       .set('Authorization', `Bearer ${await tokenFor('cashier01')}`);
-    const manager = await request(app)
+    const warehouse = await request(app)
       .get('/permission')
-      .set('Authorization', `Bearer ${await tokenFor('manager01')}`);
+      .set('Authorization', `Bearer ${await tokenFor('warehouse01')}`);
     const admin = await request(app)
       .get('/permission')
       .set('Authorization', `Bearer ${await tokenFor('admin')}`);
     expect(seller.status).toBe(403);
     expect(cashier.status).toBe(200);
     // Phase 1D.3.6 SWITCH: this route now gates on Production
-    // SALE_QUEUE_VIEW exclusively. MANAGER maps to Production WAREHOUSE
-    // (legacy-role-map.ts), which does not carry SALE_QUEUE_VIEW by default
-    // (role-permission-matrix.ts) — unlike the legacy MANAGER Role, which
-    // did. MANAGER must fail closed here now.
-    expect(manager.status).toBe(403);
+    // SALE_QUEUE_VIEW exclusively. Canonical WAREHOUSE does not carry
+    // SALE_QUEUE_VIEW by default (role-permission-matrix.ts) — WAREHOUSE
+    // must fail closed here.
+    expect(warehouse.status).toBe(403);
     expect(admin.status).toBe(200);
   });
 
@@ -193,12 +192,16 @@ describe('permission and branch authorization', () => {
       where: { email: 'seller01@demo.local' },
       select: { id: true },
     });
-    // seedDemo already backfilled seller01 a UserRoleScope row for Centro.
-    // Revoke every scope row while leaving the legacy UserBranchRole
-    // assignment (Centro) untouched — Phase 1D still needs it as the
-    // role/permission source. An empty UserRoleScope must mean zero
-    // authorized branches for this user, not "not yet migrated": it must
-    // never fall back to the still-present legacy assignment.
+    // D2.2: normal canonical seed no longer creates UserBranchRole rows —
+    // this test's own stale legacy fixture (Centro) is created explicitly
+    // here. Revoke every scope row while leaving that legacy UserBranchRole
+    // assignment untouched. An empty UserRoleScope must mean zero authorized
+    // branches for this user, not "not yet migrated": it must never fall
+    // back to the still-present legacy assignment.
+    const sellerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    await prisma.userBranchRole.create({
+      data: { userId: seller.id, branchId: branchIds.CEN!, roleId: sellerRole.id },
+    });
     await prisma.userRoleScope.deleteMany({ where: { userId: seller.id } });
     expect(await prisma.userBranchRole.count({ where: { userId: seller.id } })).toBeGreaterThan(0);
 

@@ -103,8 +103,12 @@ describe('GET /api/v1/auth/me', () => {
       select: { id: true },
     });
 
-    // Sanity precondition: the legacy UserBranchRole SELLER row genuinely
-    // still exists and is left untouched below.
+    // D2.2: normal canonical seed no longer creates UserBranchRole rows —
+    // this test's own contradictory legacy fixture is created explicitly
+    // here and left untouched below.
+    await prisma.userBranchRole.create({
+      data: { userId: seller.id, branchId: centro.id, roleId: sellerRole.id },
+    });
     expect(
       await prisma.userBranchRole.count({ where: { userId: seller.id, roleId: sellerRole.id } }),
     ).toBe(1);
@@ -170,11 +174,11 @@ describe('GET /api/v1/auth/me', () => {
     expect(response.body.user.permissions).toContain('report.view');
   });
 
-  it('excludes report.view/user.manage/audit.view for a MANAGER caller (mapped to Production WAREHOUSE, which lacks them)', async () => {
-    const manager = await prisma.user.findUniqueOrThrow({ where: { email: 'manager01@demo.local' }, select: { id: true } });
+  it('excludes report.view/user.manage/audit.view for canonical WAREHOUSE (lacks them)', async () => {
+    const warehouse = await prisma.user.findUniqueOrThrow({ where: { email: 'warehouse01@demo.local' }, select: { id: true } });
     const response = await request(app)
       .get('/api/v1/auth/me')
-      .set('Authorization', `Bearer ${await getAuthToken(manager)}`);
+      .set('Authorization', `Bearer ${await getAuthToken(warehouse)}`);
     expect(response.status).toBe(200);
     expect(response.body.user.permissions).not.toContain('report.view');
     expect(response.body.user.permissions).not.toContain('user.manage');

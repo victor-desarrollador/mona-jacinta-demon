@@ -43,6 +43,8 @@ describe('seed target safety', () => {
 // Only this file needs a real database in Task 5. The 47 bootstrap tests keep
 // their synthetic environment. No global destructive test bootstrap is introduced.
 describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
+  const canonicalId = (n: number) =>
+    `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
   let db: Awaited<ReturnType<typeof openSeedDatabase>>;
   async function safely<T>(action: () => Promise<T>): Promise<T> {
     try {
@@ -165,7 +167,7 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
     });
   }, 180000);
 
-  it('has the exact branches, users and branch assignments with bcrypt passwords', async () => {
+  it('has the exact branches and canonical users with bcrypt passwords and no legacy branch assignments', async () => {
     await safely(async () => {
       const branches = await db.prisma.branch.findMany({
         orderBy: { pointOfSaleNumber: 'asc' },
@@ -183,58 +185,34 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
       const users = await db.prisma.user.findMany({
         include: { branchRoles: { include: { role: true, branch: true } } },
       });
-      // Phase 1D.4.2: the canonical OWNER (owner01@demo.local) never existed
-      // as a legacy Demo V2 role, so it has no `${name}@demo.local` email
-      // and no UserBranchRole/legacy-role row — keyed by email, not name, so
-      // this stays independent of database name/collation ordering. Its
-      // UserRoleScope (COMPANY, OWNER role) is proven by the dedicated
-      // tests/rbac/seed-integration.test.ts, not duplicated here.
-      const expectedUsers: Record<
-        string,
-        { name: string; role: string | null; branches: string[] }
-      > = {
-        'admin@demo.local': {
-          name: 'admin',
-          role: 'ADMIN',
-          branches: ['BAN', 'CEN', 'CON', 'DEP', 'TV', 'YB'],
-        },
-        'cashier01@demo.local': {
-          name: 'cashier01',
-          role: 'CASHIER',
-          branches: ['CEN'],
-        },
-        'manager01@demo.local': {
-          name: 'manager01',
-          role: 'MANAGER',
-          branches: ['CEN'],
-        },
-        'seller01@demo.local': {
-          name: 'seller01',
-          role: 'SELLER',
-          branches: ['CEN'],
-        },
-        'owner01@demo.local': { name: 'Owner Demo', role: null, branches: [] },
+      // D2.2: normal canonical seed provisions exactly five Production-native
+      // identities and creates NO legacy UserBranchRole rows for any of them
+      // (their Production UserRoleScope assignments are proven by the
+      // dedicated tests/rbac/seed-integration.test.ts and
+      // scope-seed-integration.test.ts, not duplicated here). The historical
+      // manager01 identity (id 601) is no longer created by a clean reset.
+      // Keyed by email so this stays independent of database collation.
+      const expectedUsers: Record<string, { id: string; name: string }> = {
+        'admin@demo.local': { id: canonicalId(600), name: 'admin' },
+        'seller01@demo.local': { id: canonicalId(602), name: 'seller01' },
+        'cashier01@demo.local': { id: canonicalId(603), name: 'cashier01' },
+        'owner01@demo.local': { id: canonicalId(604), name: 'Owner Demo' },
+        'warehouse01@demo.local': { id: canonicalId(605), name: 'warehouse01' },
       };
       expect(users.map((u) => u.email).sort()).toEqual(
         Object.keys(expectedUsers).sort(),
       );
+      expect(users.some((u) => u.email === 'manager01@demo.local')).toBe(false);
+      expect(users.some((u) => u.id === canonicalId(601))).toBe(false);
       for (const user of users) {
         const expected = expectedUsers[user.email];
         expect(expected).toBeDefined();
+        expect(user.id).toBe(expected!.id);
         expect(user.name).toBe(expected!.name);
         expect(await compare('demo123', user.passwordHash)).toBe(true);
         expect(user.passwordHash.startsWith('$2')).toBe(true);
         expect(user.isActive).toBe(true);
-        if (expected!.role === null) {
-          expect(user.branchRoles).toHaveLength(0);
-        } else {
-          expect(
-            user.branchRoles.every((r) => r.role.code === expected!.role),
-          ).toBe(true);
-        }
-        expect(user.branchRoles.map((r) => r.branch.code).sort()).toEqual(
-          expected!.branches,
-        );
+        expect(user.branchRoles).toHaveLength(0);
       }
     });
   }, 30000);

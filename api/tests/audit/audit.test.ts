@@ -191,9 +191,9 @@ describe('critical operation audit', () => {
     expect((await get(isolatedToken)).status).toBe(403);
   });
 
-  it('rejects MANAGER (mapped to WAREHOUSE, no AUDIT_VIEW)', async () => {
-    const manager = await db.user.findUniqueOrThrow({ where: { email: 'manager01@demo.local' } });
-    expect((await get(await getAuthToken(manager))).status).toBe(403);
+  it('rejects canonical WAREHOUSE (no AUDIT_VIEW)', async () => {
+    const warehouse = await db.user.findUniqueOrThrow({ where: { email: 'warehouse01@demo.local' } });
+    expect((await get(await getAuthToken(warehouse))).status).toBe(403);
   });
 
   it('authorizes via a COMPANY-scoped ADMIN assignment', async () => {

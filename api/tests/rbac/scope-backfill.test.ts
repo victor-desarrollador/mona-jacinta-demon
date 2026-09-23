@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { resetDemo } from '../../prisma/seed.js';
 import { openSeedDatabase } from '../../scripts/demo-database.js';
 import {
@@ -13,11 +13,20 @@ import {
 } from '../../src/modules/rbac/scope-backfill.service.js';
 import { parseCliArgs } from '../../scripts/backfill-user-role-scope.js';
 
-// Phase 1C: backfills UserRoleScope from the legacy UserBranchRole rows.
-// Depends on Phase 1A's Location backfill and Phase 1B's RBAC catalog
-// bootstrap having already run — both are re-run here to make this suite
-// self-sufficient regardless of test execution order.
-describe('UserRoleScope backfill from UserBranchRole (Phase 1C)', () => {
+// Phase 1C (D2.1 deferred-MANAGER): backfills UserRoleScope from legacy
+// UserBranchRole rows, classifying every legacy row's disposition explicitly
+// (ELIGIBLE -> ADMIN/CASHIER/SELLER, DEFERRED -> MANAGER, or fail-closed
+// unknown) rather than assuming every row maps to a Production role.
+//
+// D2.1: this suite no longer depends on prisma/seed.ts's normal seed to
+// manufacture its legacy UserBranchRole fixture — D2.2 will stop normal seed
+// from creating manager01/legacy UserBranchRole rows for the canonical demo
+// identities entirely. This suite owns its own explicit, self-contained
+// historical fixture (createStandardHistoricalFixture below), using
+// dedicated test-local user identities, independent of prisma/seed.ts's
+// array/position/ids. resetDemo/openSeedDatabase('test') is still used only
+// for generic baseline data (branches, RBAC catalog, Location bootstrap).
+describe('UserRoleScope backfill from UserBranchRole (Phase 1C, D2.1 deferred-MANAGER)', () => {
   let db: Awaited<ReturnType<typeof openSeedDatabase>>;
 
   const FALLBACK_COMPANY_BOOTSTRAP: CompanyBootstrap = {
@@ -33,6 +42,62 @@ describe('UserRoleScope backfill from UserBranchRole (Phase 1C)', () => {
     } catch {
       throw new Error('Scope backfill integration operation failed (database details suppressed)');
     }
+  }
+
+  async function ensureLegacyRole(code: string) {
+    const existing = await db.prisma.role.findUnique({ where: { code } });
+    if (existing) return existing;
+    return db.prisma.role.create({ data: { code, name: code } });
+  }
+
+  async function ensureFixtureUser(email: string, name: string) {
+    return db.prisma.user.upsert({
+      where: { email },
+      create: { name, email, passwordHash: 'x' },
+      update: {},
+    });
+  }
+
+  // D2.1: this migration test owns its own historical legacy fixture — it
+  // must keep passing after D2.2 removes manager01/legacy UserBranchRole
+  // rows from prisma/seed.ts's normal canonical seed. Wipes ALL
+  // UserBranchRole rows first (this file's own setup, same pattern this
+  // file's afterEach already uses for UserRoleScope) so every test starts
+  // from the exact 9-row historical shape: admin ADMIN x6 branches,
+  // manager01 MANAGER @ CEN, seller01 SELLER @ CEN, cashier01 CASHIER @ CEN.
+  async function createStandardHistoricalFixture() {
+    await db.prisma.userBranchRole.deleteMany();
+
+    const [adminRole, managerRole, sellerRole, cashierRole] = await Promise.all([
+      ensureLegacyRole('ADMIN'),
+      ensureLegacyRole('MANAGER'),
+      ensureLegacyRole('SELLER'),
+      ensureLegacyRole('CASHIER'),
+    ]);
+
+    const [admin, manager, seller, cashier] = await Promise.all([
+      ensureFixtureUser('scope-backfill-admin@test.local', 'scope-backfill-admin'),
+      ensureFixtureUser('scope-backfill-manager01@test.local', 'scope-backfill-manager01'),
+      ensureFixtureUser('scope-backfill-seller01@test.local', 'scope-backfill-seller01'),
+      ensureFixtureUser('scope-backfill-cashier01@test.local', 'scope-backfill-cashier01'),
+    ]);
+
+    const branches = await db.prisma.branch.findMany({ orderBy: { code: 'asc' } });
+    const centralBranch = branches.find((b) => b.code === 'CEN');
+    if (branches.length < 6 || !centralBranch) {
+      throw new Error('expected the 6 demo branches (including CEN) from the reset baseline');
+    }
+
+    await db.prisma.userBranchRole.createMany({
+      data: [
+        ...branches.map((branch) => ({ userId: admin.id, branchId: branch.id, roleId: adminRole.id })),
+        { userId: manager.id, branchId: centralBranch.id, roleId: managerRole.id },
+        { userId: seller.id, branchId: centralBranch.id, roleId: sellerRole.id },
+        { userId: cashier.id, branchId: centralBranch.id, roleId: cashierRole.id },
+      ],
+    });
+
+    return { admin, manager, seller, cashier, centralBranch };
   }
 
   beforeAll(async () => {
@@ -51,6 +116,18 @@ describe('UserRoleScope backfill from UserBranchRole (Phase 1C)', () => {
     await safely(() => bootstrapProductionRbacCatalog(db.prisma));
   }, 120000);
 
+  beforeEach(async () => {
+    // resetDemo's own populate() provisions canonical Production
+    // UserRoleScope rows for ITS distinct seed users (D2.2: and no legacy
+    // UserBranchRole rows at all) — unrelated to this file's dedicated
+    // fixture identities, but sharing the same tables on this hosted TEST
+    // database. Every test here owns a fully clean UserRoleScope starting
+    // state, not just an incidentally-clean one left by a previous test's
+    // afterEach.
+    await db.prisma.userRoleScope.deleteMany();
+    await createStandardHistoricalFixture();
+  });
+
   afterEach(async () => {
     await safely(() => db.prisma.userRoleScope.deleteMany());
   });
@@ -59,90 +136,264 @@ describe('UserRoleScope backfill from UserBranchRole (Phase 1C)', () => {
     if (db) await safely(() => db.close());
   });
 
-  it('backfills all 9 legacy UserBranchRole rows into LOCATION-scoped UserRoleScope rows, mapping MANAGER to WAREHOUSE explicitly', async () => {
-    // resetDemo's own seed/reset synchronization (Phase 1C, once Location
-    // exists — which this suite's beforeAll guarantees) may already have
-    // populated UserRoleScope from the freshly-reset UserBranchRole rows.
-    // This test is specifically about the backfill function creating all 9
-    // rows from scratch, so arrange an intentionally empty starting fixture
-    // rather than relying on incidental ordering with other suites sharing
-    // this test database.
-    await db.prisma.userRoleScope.deleteMany();
+  it('CASE 1: fresh backfill creates 8 eligible LOCATION scopes and defers MANAGER, with exact counters', async () => {
     const result = await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    expect(result).toEqual({ legacyRowCount: 9, created: 9, alreadyPresent: 0 });
-    expect(await db.prisma.userRoleScope.count()).toBe(9);
+    expect(result).toEqual({
+      legacyRowCount: 9,
+      eligibleRowCount: 8,
+      deferredRowCount: 1,
+      created: 8,
+      alreadyPresent: 0,
+    });
+    expect(await db.prisma.userRoleScope.count()).toBe(8);
 
-    const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });
-    const warehouseRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'WAREHOUSE' } });
-    const legacyManagerAssignment = await db.prisma.userBranchRole.findFirstOrThrow({
-      where: { userId: manager.id },
+    const manager = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-manager01@test.local' },
     });
-    const managerScope = await db.prisma.userRoleScope.findFirstOrThrow({
-      where: { userId: manager.id },
-    });
-    expect(managerScope.roleId).toBe(warehouseRole.id);
-    expect(managerScope.scopeKind).toBe('LOCATION');
-    expect(managerScope.locationId).toBe(legacyManagerAssignment.branchId);
+    expect(await db.prisma.userRoleScope.count({ where: { userId: manager.id } })).toBe(0);
 
-    const admin = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
-    const adminRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'ADMIN' } });
-    const adminLegacyAssignments = await db.prisma.userBranchRole.findMany({
-      where: { userId: admin.id },
+    const admin = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-admin@test.local' },
     });
+    const adminRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
     const adminScopes = await db.prisma.userRoleScope.findMany({ where: { userId: admin.id } });
     expect(adminScopes).toHaveLength(6);
-    expect(adminScopes.every((s) => s.roleId === adminRole.id && s.scopeKind === 'LOCATION')).toBe(
-      true,
-    );
-    expect(adminScopes.map((s) => s.locationId).sort()).toEqual(
-      adminLegacyAssignments.map((a) => a.branchId).sort(),
-    );
+    expect(adminScopes.every((s) => s.roleId === adminRole.id && s.scopeKind === 'LOCATION')).toBe(true);
   });
 
-  it('is idempotent: rerunning creates no duplicate rows and reports everything as already present', async () => {
+  it('CASE 2: is idempotent — second execution creates nothing new and reports everything already present, MANAGER still absent', async () => {
     const first = await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    expect(first.created).toBe(9);
-    const countAfterFirst = await db.prisma.userRoleScope.count();
+    expect(first).toEqual({
+      legacyRowCount: 9,
+      eligibleRowCount: 8,
+      deferredRowCount: 1,
+      created: 8,
+      alreadyPresent: 0,
+    });
 
     const second = await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    expect(second).toEqual({ legacyRowCount: 9, created: 0, alreadyPresent: 9 });
-    expect(await db.prisma.userRoleScope.count()).toBe(countAfterFirst);
+    expect(second).toEqual({
+      legacyRowCount: 9,
+      eligibleRowCount: 8,
+      deferredRowCount: 1,
+      created: 0,
+      alreadyPresent: 8,
+    });
+    expect(await db.prisma.userRoleScope.count()).toBe(8);
+
+    const manager = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-manager01@test.local' },
+    });
+    expect(await db.prisma.userRoleScope.count({ where: { userId: manager.id } })).toBe(0);
   });
 
-  it('fails closed and rolls back when a legacy UserBranchRole references an unmapped role code', async () => {
+  it('CASE 3: verifier reports eligible-only parity — ok true, eligibleRowCount 8, deferredRowCount 1, scopeCount 8', async () => {
+    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
+    const verification = await verifyUserRoleScopeBackfill(db.prisma);
+    expect(verification.ok).toBe(true);
+    expect(verification.issues).toEqual([]);
+    expect(verification).toMatchObject({
+      legacyRowCount: 9,
+      eligibleRowCount: 8,
+      deferredRowCount: 1,
+      scopeCount: 8,
+    });
+  });
+
+  it('CASE 4 (MANDATORY): verifier tolerates an independent OWNER COMPANY scope without affecting eligible-only parity', async () => {
+    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
+
+    const ownerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
+    const owner = await db.prisma.user.create({
+      data: { name: 'owner-verify-test', email: 'owner-verify-test@test.local', passwordHash: 'x' },
+    });
+    try {
+      await db.prisma.userRoleScope.create({
+        data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
+      });
+
+      const verification = await verifyUserRoleScopeBackfill(db.prisma);
+      expect(verification.ok).toBe(true);
+      expect(verification.issues).toEqual([]);
+      expect(verification).toMatchObject({
+        legacyRowCount: 9,
+        eligibleRowCount: 8,
+        deferredRowCount: 1,
+        scopeCount: 9,
+      });
+    } finally {
+      await db.prisma.userRoleScope.deleteMany({ where: { userId: owner.id } });
+      await db.prisma.user.delete({ where: { id: owner.id } });
+    }
+  });
+
+  it('CASE 5: planner reports the standard fixture with MANAGER explicitly DEFERRED, never a WAREHOUSE target', async () => {
+    const plan = await planUserRoleScopeBackfill(db.prisma);
+
+    expect(plan.legacyRowCount).toBe(9);
+    expect(plan.eligibleRowCount).toBe(8);
+    expect(plan.deferredRowCount).toBe(1);
+    expect(plan.expectedCreateCount).toBe(8);
+    expect(plan.alreadyPresentCount).toBe(0);
+    expect(plan.readyForExecution).toBe(true);
+    expect(plan.blockers).toEqual([]);
+    expect(plan.rows).toHaveLength(9);
+
+    const manager = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-manager01@test.local' },
+    });
+    const managerRow = plan.rows.find((r) => r.userId === manager.id)!;
+    expect(managerRow.disposition).toEqual({ kind: 'DEFERRED', reason: 'LEGACY_MANAGER' });
+
+    const admin = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-admin@test.local' },
+    });
+    const adminRows = plan.rows.filter((r) => r.userId === admin.id);
+    expect(adminRows).toHaveLength(6);
+    for (const row of adminRows) {
+      expect(row.disposition.kind).toBe('ELIGIBLE');
+      if (row.disposition.kind === 'ELIGIBLE') {
+        expect(row.disposition.target.productionRoleCode).toBe('ADMIN');
+        expect(row.disposition.target.wouldCreate).toBe(true);
+      }
+    }
+  });
+
+  it('CASE 6: an already-present eligible target is excluded from the create count; MANAGER is unaffected', async () => {
+    const seller = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-seller01@test.local' },
+    });
+    const sellerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+    const centralBranch = await db.prisma.branch.findFirstOrThrow({ where: { code: 'CEN' } });
+    await db.prisma.userRoleScope.create({
+      data: { userId: seller.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: centralBranch.id },
+    });
+
+    const result = await backfillUserRoleScopeFromUserBranchRole(db.prisma);
+    expect(result).toEqual({
+      legacyRowCount: 9,
+      eligibleRowCount: 8,
+      deferredRowCount: 1,
+      created: 7,
+      alreadyPresent: 1,
+    });
+  });
+
+  it('CASE 7: an unknown legacy role code fails closed — sync throws, planner blocks, verifier fails, distinct from DEFERRED', async () => {
     const ghostRole = await db.prisma.role.create({ data: { code: 'GHOST', name: 'GHOST' } });
-    // Pick a currently-live Branch from this file's own reset fixture (never
-    // an arbitrary Location — Location isn't truncated per file, so an
-    // unfiltered lookup can return a row an earlier file left behind whose
-    // matching Branch is already gone). Location.id == Branch.id (Phase 1A),
-    // and this suite's beforeAll has already backfilled every current Branch
-    // into a Location, so the explicit lookup below is guaranteed to resolve.
-    const branch = await db.prisma.branch.findFirstOrThrow();
-    const location = await db.prisma.location.findUniqueOrThrow({ where: { id: branch.id } });
-    expect(location.id).toBe(branch.id);
-    const user = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
+    const admin = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-admin@test.local' },
+    });
+    const centralBranch = await db.prisma.branch.findFirstOrThrow({ where: { code: 'CEN' } });
     const ghostAssignment = await db.prisma.userBranchRole.create({
-      data: { userId: user.id, branchId: branch.id, roleId: ghostRole.id },
+      data: { userId: admin.id, branchId: centralBranch.id, roleId: ghostRole.id },
     });
     try {
       await expect(backfillUserRoleScopeFromUserBranchRole(db.prisma)).rejects.toThrow(
-        /No explicit Production role mapping/,
+        /No explicit Production role mapping or deferral/,
       );
       expect(await db.prisma.userRoleScope.count()).toBe(0);
+
+      const plan = await planUserRoleScopeBackfill(db.prisma);
+      expect(plan.readyForExecution).toBe(false);
+      expect(plan.unmappedLegacyRoleCodes).toContain('GHOST');
+      const ghostRow = plan.rows.find((r) => r.legacyRowId === ghostAssignment.id)!;
+      expect(ghostRow.disposition).toEqual({ kind: 'BLOCKED', blocker: 'UNMAPPED_LEGACY_ROLE' });
+
+      const verification = await verifyUserRoleScopeBackfill(db.prisma);
+      expect(verification.ok).toBe(false);
+      expect(verification.issues.some((issue) => issue.includes('GHOST'))).toBe(true);
     } finally {
       await db.prisma.userBranchRole.delete({ where: { id: ghostAssignment.id } });
       await db.prisma.role.delete({ where: { id: ghostRole.id } });
     }
   });
 
-  it('fails closed and rolls back when a legacy branch has no matching Location', async () => {
-    const user = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
-    const adminRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'ADMIN' } });
+  it('CASE 8: no MANAGER -> WAREHOUSE regression — manager01 has zero Production UserRoleScope rows after Phase1C execution, specifically no WAREHOUSE target', async () => {
+    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
+    const manager = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-manager01@test.local' },
+    });
+    const warehouseRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    expect(await db.prisma.userRoleScope.count({ where: { userId: manager.id } })).toBe(0);
+    expect(
+      await db.prisma.userRoleScope.count({ where: { userId: manager.id, roleId: warehouseRole.id } }),
+    ).toBe(0);
+  });
+
+  it('CASE 9 (MANDATORY): a DEFERRED MANAGER row whose Branch has no matching Location is never MISSING_LOCATION and never blocks readiness', async () => {
+    // Dedicated, isolated scenario per Sections 15/16 — not the standard
+    // 9-row fixture: only one legacy row exists here (MANAGER, on a fresh
+    // Branch deliberately left without a matching Location), so there are no
+    // unrelated eligible-row prerequisite failures to reason about. CEN/DEP
+    // Location rows are never touched.
+    await db.prisma.userBranchRole.deleteMany();
+    const orphanBranch = await db.prisma.branch.create({
+      data: {
+        name: 'Sucursal sin Location (D2.1 Case 9)',
+        code: 'D21-ORPHAN',
+        address: 'N/A',
+        pointOfSaleNumber: 997,
+      },
+    });
+    const locationForOrphan = await db.prisma.location.findUnique({ where: { id: orphanBranch.id } });
+    expect(locationForOrphan).toBeNull(); // deliberately no matching Location
+
+    const managerRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'MANAGER' } });
+    const manager = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-manager01@test.local' },
+    });
+    const orphanAssignment = await db.prisma.userBranchRole.create({
+      data: { userId: manager.id, branchId: orphanBranch.id, roleId: managerRole.id },
+    });
+
+    try {
+      const plan = await planUserRoleScopeBackfill(db.prisma);
+      expect(plan.legacyRowCount).toBe(1);
+      expect(plan.eligibleRowCount).toBe(0);
+      expect(plan.deferredRowCount).toBe(1);
+      expect(plan.blockers).toEqual([]);
+      expect(plan.readyForExecution).toBe(true);
+      expect(plan.missingLocationBranchIds).not.toContain(orphanBranch.id);
+      const managerRow = plan.rows.find((r) => r.legacyRowId === orphanAssignment.id)!;
+      expect(managerRow.disposition).toEqual({ kind: 'DEFERRED', reason: 'LEGACY_MANAGER' });
+
+      const result = await backfillUserRoleScopeFromUserBranchRole(db.prisma);
+      expect(result).toEqual({
+        legacyRowCount: 1,
+        eligibleRowCount: 0,
+        deferredRowCount: 1,
+        created: 0,
+        alreadyPresent: 0,
+      });
+      expect(await db.prisma.userRoleScope.count()).toBe(0);
+
+      const verification = await verifyUserRoleScopeBackfill(db.prisma);
+      expect(verification.ok).toBe(true);
+      expect(verification.issues).toEqual([]);
+    } finally {
+      await db.prisma.userBranchRole.delete({ where: { id: orphanAssignment.id } });
+      await db.prisma.branch.delete({ where: { id: orphanBranch.id } });
+    }
+  });
+
+  it('never mutates UserBranchRole', async () => {
+    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
+    expect(await db.prisma.userBranchRole.count()).toBe(9);
+    const managerRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'MANAGER' } });
+    expect(await db.prisma.userBranchRole.count({ where: { roleId: managerRole.id } })).toBe(1);
+  });
+
+  it('fails closed and rolls back when an ELIGIBLE legacy branch has no matching Location', async () => {
+    const admin = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-admin@test.local' },
+    });
+    const adminRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
     const orphanBranch = await db.prisma.branch.create({
       data: { name: 'Sucursal huérfana', code: 'ORPHAN', address: 'N/A', pointOfSaleNumber: 999 },
     });
     const orphanAssignment = await db.prisma.userBranchRole.create({
-      data: { userId: user.id, branchId: orphanBranch.id, roleId: adminRole.id },
+      data: { userId: admin.id, branchId: orphanBranch.id, roleId: adminRole.id },
     });
     try {
       await expect(backfillUserRoleScopeFromUserBranchRole(db.prisma)).rejects.toThrow(
@@ -155,228 +406,23 @@ describe('UserRoleScope backfill from UserBranchRole (Phase 1C)', () => {
     }
   });
 
-  it('never mutates UserBranchRole', async () => {
-    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    expect(await db.prisma.userBranchRole.count()).toBe(9);
-    const managerRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'MANAGER' } });
-    expect(
-      await db.prisma.userBranchRole.count({ where: { roleId: managerRole.id } }),
-    ).toBe(1);
-  });
-
-  it('verify: reports ok with no issues after a correct backfill', async () => {
-    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    const verification = await verifyUserRoleScopeBackfill(db.prisma);
-    expect(verification.ok).toBe(true);
-    expect(verification.issues).toEqual([]);
-    expect(verification).toMatchObject({ legacyRowCount: 9, scopeCount: 9 });
-  });
-
-  it('verify: an unrelated non-legacy COMPANY UserRoleScope (e.g. OWNER) does not fail verification', async () => {
-    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    const ownerRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'OWNER' } });
-    const owner = await db.prisma.user.create({
-      data: { name: 'owner-verify-test', email: 'owner-verify-test@test.local', passwordHash: 'x' },
-    });
-    try {
-      await db.prisma.userRoleScope.create({
-        data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
-      });
-      const verification = await verifyUserRoleScopeBackfill(db.prisma);
-      expect(verification.ok).toBe(true);
-      expect(verification.issues).toEqual([]);
-      expect(verification).toMatchObject({ legacyRowCount: 9, scopeCount: 10 });
-    } finally {
-      await db.prisma.userRoleScope.deleteMany({ where: { userId: owner.id } });
-      await db.prisma.user.delete({ where: { id: owner.id } });
-    }
-  });
-
-  it('verify: reports a missing-assignment issue when a backfilled row is deleted', async () => {
-    await backfillUserRoleScopeFromUserBranchRole(db.prisma);
-    const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });
-    const managerScope = await db.prisma.userRoleScope.findFirstOrThrow({
-      where: { userId: manager.id },
-    });
-    await db.prisma.userRoleScope.delete({ where: { id: managerScope.id } });
-
-    const verification = await verifyUserRoleScopeBackfill(db.prisma);
-    expect(verification.ok).toBe(false);
-    expect(verification.scopeCount).toBe(8);
-    expect(verification.issues.some((issue) => issue.includes('missing UserRoleScope'))).toBe(
-      true,
-    );
-    expect(
-      verification.issues.some((issue) =>
-        issue.includes('expected 9 UserRoleScope row(s) (one per UserBranchRole), found 8'),
-      ),
-    ).toBe(true);
-  });
-
-  // GC4F1 (Phase 1 Global Closeout): read-only preflight planner for the
-  // mutation above. Every test asserts zero UserRoleScope mutation via an
-  // exact before/after snapshot, and the planner never calls
-  // syncUserRoleScopeFromUserBranchRole/backfillUserRoleScopeFromUserBranchRole.
-  it('plans the full 9-row legacy fixture with zero mutation', async () => {
-    const before = await db.prisma.userRoleScope.findMany();
-    expect(before).toHaveLength(0);
-
-    const plan = await planUserRoleScopeBackfill(db.prisma);
-
-    expect(plan.legacyRowCount).toBe(9);
-    expect(plan.currentUserRoleScopeCount).toBe(0);
-    expect(plan.expectedCreateCount).toBe(9);
-    expect(plan.alreadyPresentCount).toBe(0);
-    expect(plan.readyForExecution).toBe(true);
-    expect(plan.blockers).toEqual([]);
-    expect(plan.rows).toHaveLength(9);
-
-    const admin = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
-    const adminRows = plan.rows.filter((r) => r.userId === admin.id);
-    expect(adminRows).toHaveLength(6);
-    for (const row of adminRows) {
-      expect(row.legacyRoleCode).toBe('ADMIN');
-      expect(row.target.productionRoleCode).toBe('ADMIN');
-      expect(row.target.scopeKind).toBe('LOCATION');
-      expect(row.target.locationId).toBe(row.branchId);
-      expect(row.target.alreadyPresent).toBe(false);
-      expect(row.target.wouldCreate).toBe(true);
-      expect(row.blocker).toBeNull();
-    }
-
-    const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });
-    const managerRows = plan.rows.filter((r) => r.userId === manager.id);
-    expect(managerRows).toHaveLength(1);
-    expect(managerRows[0]!.legacyRoleCode).toBe('MANAGER');
-    expect(managerRows[0]!.target.productionRoleCode).toBe('WAREHOUSE');
-
-    const seller = await db.prisma.user.findFirstOrThrow({ where: { name: 'seller01' } });
-    const sellerRows = plan.rows.filter((r) => r.userId === seller.id);
-    expect(sellerRows).toHaveLength(1);
-    expect(sellerRows[0]!.target.productionRoleCode).toBe('SELLER');
-
-    const cashier = await db.prisma.user.findFirstOrThrow({ where: { name: 'cashier01' } });
-    const cashierRows = plan.rows.filter((r) => r.userId === cashier.id);
-    expect(cashierRows).toHaveLength(1);
-    expect(cashierRows[0]!.target.productionRoleCode).toBe('CASHIER');
-
-    const after = await db.prisma.userRoleScope.findMany();
-    expect(after).toHaveLength(0);
-  });
-
-  it('reports an already-present exact target row and excludes it from the create count', async () => {
-    const manager = await db.prisma.user.findFirstOrThrow({ where: { name: 'manager01' } });
-    const warehouseRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'WAREHOUSE' } });
-    const legacyManagerAssignment = await db.prisma.userBranchRole.findFirstOrThrow({
-      where: { userId: manager.id },
-    });
-    await db.prisma.userRoleScope.create({
-      data: {
-        userId: manager.id,
-        roleId: warehouseRole.id,
-        scopeKind: 'LOCATION',
-        locationId: legacyManagerAssignment.branchId,
-      },
-    });
-    const before = await db.prisma.userRoleScope.findMany();
-
-    const plan = await planUserRoleScopeBackfill(db.prisma);
-
-    expect(plan.legacyRowCount).toBe(9);
-    expect(plan.expectedCreateCount).toBe(8);
-    expect(plan.alreadyPresentCount).toBe(1);
-    const managerRow = plan.rows.find((r) => r.userId === manager.id)!;
-    expect(managerRow.target.alreadyPresent).toBe(true);
-    expect(managerRow.target.wouldCreate).toBe(false);
-
-    const after = await db.prisma.userRoleScope.findMany();
-    expect(after).toEqual(before);
-  });
-
   it('surfaces a coexisting COMPANY scope without treating it as something Phase1C will remove', async () => {
-    const admin = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
-    const adminRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'ADMIN' } });
+    const admin = await db.prisma.user.findUniqueOrThrow({
+      where: { email: 'scope-backfill-admin@test.local' },
+    });
+    const adminRole = await db.prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
     await db.prisma.userRoleScope.create({
       data: { userId: admin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
     });
-    const before = await db.prisma.userRoleScope.findMany();
 
     const plan = await planUserRoleScopeBackfill(db.prisma);
-
     const adminRows = plan.rows.filter((r) => r.userId === admin.id);
     expect(adminRows).toHaveLength(6);
-    expect(adminRows.every((r) => r.target.wouldCreate)).toBe(true);
     expect(plan.readyForExecution).toBe(true);
 
     const coexisting = plan.coexistingScopes.filter((s) => s.userId === admin.id);
     expect(coexisting).toHaveLength(1);
     expect(coexisting[0]).toMatchObject({ scopeKind: 'COMPANY', locationId: null, roleCode: 'ADMIN' });
-
-    const after = await db.prisma.userRoleScope.findMany();
-    expect(after).toEqual(before);
-  });
-
-  it('returns NOT READY and reports an unmapped legacy role code, without mutating', async () => {
-    const ghostRole = await db.prisma.role.create({ data: { code: 'GHOST', name: 'GHOST' } });
-    const branch = await db.prisma.branch.findFirstOrThrow();
-    const location = await db.prisma.location.findUniqueOrThrow({ where: { id: branch.id } });
-    expect(location.id).toBe(branch.id);
-    const user = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
-    const ghostAssignment = await db.prisma.userBranchRole.create({
-      data: { userId: user.id, branchId: branch.id, roleId: ghostRole.id },
-    });
-    try {
-      const plan = await planUserRoleScopeBackfill(db.prisma);
-      expect(plan.readyForExecution).toBe(false);
-      expect(plan.unmappedLegacyRoleCodes).toContain('GHOST');
-      const ghostRow = plan.rows.find((r) => r.legacyRowId === ghostAssignment.id)!;
-      expect(ghostRow.target.wouldCreate).toBe(false);
-      expect(ghostRow.blocker).toBe('UNMAPPED_LEGACY_ROLE');
-      expect(await db.prisma.userRoleScope.count()).toBe(0);
-    } finally {
-      await db.prisma.userBranchRole.delete({ where: { id: ghostAssignment.id } });
-      await db.prisma.role.delete({ where: { id: ghostRole.id } });
-    }
-  });
-
-  it('returns NOT READY and reports a missing Location, without mutating', async () => {
-    const user = await db.prisma.user.findFirstOrThrow({ where: { name: 'admin' } });
-    const adminRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'ADMIN' } });
-    const orphanBranch = await db.prisma.branch.create({
-      data: { name: 'Sucursal huérfana (GC4F1)', code: 'ORPHAN-GC4F1', address: 'N/A', pointOfSaleNumber: 998 },
-    });
-    const orphanAssignment = await db.prisma.userBranchRole.create({
-      data: { userId: user.id, branchId: orphanBranch.id, roleId: adminRole.id },
-    });
-    try {
-      const plan = await planUserRoleScopeBackfill(db.prisma);
-      expect(plan.readyForExecution).toBe(false);
-      expect(plan.missingLocationBranchIds).toContain(orphanBranch.id);
-      const orphanRow = plan.rows.find((r) => r.legacyRowId === orphanAssignment.id)!;
-      expect(orphanRow.target.wouldCreate).toBe(false);
-      expect(orphanRow.blocker).toBe('MISSING_LOCATION');
-      expect(await db.prisma.userRoleScope.count()).toBe(0);
-    } finally {
-      await db.prisma.userBranchRole.delete({ where: { id: orphanAssignment.id } });
-      await db.prisma.branch.delete({ where: { id: orphanBranch.id } });
-    }
-  });
-
-  it('returns NOT READY and reports a missing target Production role, without mutating', async () => {
-    const warehouseRole = await db.prisma.role.findFirstOrThrow({ where: { code: 'WAREHOUSE' } });
-    await db.prisma.rolePermission.deleteMany({ where: { roleId: warehouseRole.id } });
-    await db.prisma.role.delete({ where: { id: warehouseRole.id } });
-    try {
-      const plan = await planUserRoleScopeBackfill(db.prisma);
-      expect(plan.readyForExecution).toBe(false);
-      expect(plan.missingProductionRoleCodes).toContain('WAREHOUSE');
-      const managerRow = plan.rows.find((r) => r.legacyRoleCode === 'MANAGER')!;
-      expect(managerRow.target.wouldCreate).toBe(false);
-      expect(managerRow.blocker).toBe('MISSING_PRODUCTION_ROLE');
-      expect(await db.prisma.userRoleScope.count()).toBe(0);
-    } finally {
-      await bootstrapProductionRbacCatalog(db.prisma);
-    }
   });
 });
 
@@ -384,6 +430,8 @@ describe('UserRoleScope backfill from UserBranchRole (Phase 1C)', () => {
 // involved. Importing the script module (see the top-level import above)
 // must not itself open a connection — its direct-execution guard only fires
 // when the module is run as the CLI entry point, never on import.
+// D2.1: unaffected — parseCliArgs's --dry-run/--execute/--target contract is
+// unchanged by the deferred-MANAGER classification model.
 describe('parseCliArgs (GC4F1 CLI safety contract)', () => {
   it('accepts --target=test --dry-run', () => {
     expect(parseCliArgs(['--target=test', '--dry-run'])).toEqual({ ok: true, target: 'test', mode: 'dry-run' });

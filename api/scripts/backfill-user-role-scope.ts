@@ -74,6 +74,8 @@ function printDryRunReport(target: Target, plan: UserRoleScopeBackfillPlan): voi
   console.log('[db:backfill-user-role-scope] DRY RUN');
   console.log(`  target: ${target}`);
   console.log(`  legacy UserBranchRole rows: ${plan.legacyRowCount}`);
+  console.log(`  eligible rows: ${plan.eligibleRowCount}`);
+  console.log(`  deferred rows: ${plan.deferredRowCount}`);
   console.log(`  current UserRoleScope rows: ${plan.currentUserRoleScopeCount}`);
   console.log(`  would create: ${plan.expectedCreateCount}`);
   console.log(`  already present: ${plan.alreadyPresentCount}`);
@@ -85,11 +87,20 @@ function printDryRunReport(target: Target, plan: UserRoleScopeBackfillPlan): voi
   console.log('');
 
   for (const row of plan.rows) {
+    const prefix = `  ${row.email} (${row.name}) isActive=${row.isActive}: legacy ${row.legacyRoleCode}@${row.branchCode}`;
+    if (row.disposition.kind === 'DEFERRED') {
+      console.log(`${prefix} -> DEFERRED (${row.disposition.reason})`);
+      continue;
+    }
+    if (row.disposition.kind === 'BLOCKED') {
+      console.log(`${prefix} -> BLOCKED:${row.disposition.blocker}`);
+      continue;
+    }
+    const { target: rowTarget, blocker } = row.disposition;
     console.log(
-      `  ${row.email} (${row.name}) isActive=${row.isActive}: legacy ${row.legacyRoleCode}@${row.branchCode} ` +
-        `-> target ${row.target.productionRoleCode ?? 'UNMAPPED'} LOCATION(${row.target.locationCode ?? row.branchId}) ` +
-        `alreadyPresent=${row.target.alreadyPresent} wouldCreate=${row.target.wouldCreate}` +
-        (row.blocker ? ` BLOCKED:${row.blocker}` : ''),
+      `${prefix} -> target ${rowTarget.productionRoleCode} LOCATION(${rowTarget.locationCode ?? row.branchId}) ` +
+        `alreadyPresent=${rowTarget.alreadyPresent} wouldCreate=${rowTarget.wouldCreate}` +
+        (blocker ? ` BLOCKED:${blocker}` : ''),
     );
   }
   console.log('');
@@ -140,6 +151,8 @@ export async function main(argv: string[]): Promise<void> {
         console.log('[db:backfill-user-role-scope] OK');
         console.log(`  target: ${target}`);
         console.log(`  legacy UserBranchRole rows: ${result.legacyRowCount}`);
+        console.log(`  eligible rows: ${result.eligibleRowCount}`);
+        console.log(`  deferred rows: ${result.deferredRowCount}`);
         console.log(`  created: ${result.created}`);
         console.log(`  already present: ${result.alreadyPresent}`);
         console.log(`  verified UserRoleScope rows: ${verification.scopeCount}`);
