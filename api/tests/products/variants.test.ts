@@ -216,4 +216,67 @@ describe('product variants read API', () => {
       .set('Authorization', `Bearer ${sellerToken}`);
     expect(malformed.status).toBe(400);
   });
+
+  // Pilot P0.1-A: the seller catalog reports expiry-aware effective
+  // availability while `reserved` stays the raw persisted counter.
+  async function heldCatalogSale(sku: string, expiresAt: Date, partialPayment = false) {
+    const [seller, variant] = await Promise.all([
+      prisma.user.findUniqueOrThrow({ where: { email: 'seller01@demo.local' }, select: { id: true } }),
+      prisma.productVariant.findUniqueOrThrow({ where: { sku }, select: { id: true, productId: true, price: true } }),
+    ]);
+    await prisma.inventory.update({
+      where: { variantId_branchId: { variantId: variant.id, branchId: centroId } },
+      data: { physical: 1n, reserved: 1n },
+    });
+    const sale = await prisma.sale.create({
+      data: {
+        sellerId: seller.id, branchId: centroId, status: 'PENDING_PAYMENT', saleNumber: `T-CAT-${sku}`,
+        subtotal: variant.price, total: variant.price,
+        items: { create: {
+          variantId: variant.id, productId: variant.productId, productName: 'Snapshot product',
+          variantName: 'Snapshot variant', sku, quantity: 1n, unitPrice: variant.price, subtotal: variant.price,
+        } },
+      },
+    });
+    await prisma.stockReservation.create({
+      data: { saleId: sale.id, variantId: variant.id, branchId: centroId, quantity: 1n, status: 'ACTIVE', expiresAt },
+    });
+    if (partialPayment) {
+      await prisma.salePayment.create({
+        data: { saleId: sale.id, method: 'TRANSFER', amount: 1n, idempotencyKey: `partial-${sku}` },
+      });
+    }
+    return variant;
+  }
+
+  it('reports effective availability for an expired zero-payment hold and keeps raw reserved', async () => {
+    const variant = await heldCatalogSale('REM-NEG-M', new Date(Date.now() - 60 * 60 * 1000));
+    const expected = { branchId: centroId, physical: '1', reserved: '1', available: '1' };
+    const list = await request(app)
+      .get('/api/v1/variants')
+      .query({ branchId: centroId, search: 'REM-NEG-M' })
+      .set('Authorization', `Bearer ${sellerToken}`);
+    expect(list.status).toBe(200);
+    expect(list.body.items[0].inventory).toEqual([expect.objectContaining(expected)]);
+    const detail = await request(app)
+      .get(`/api/v1/variants/${variant.id}`)
+      .set('Authorization', `Bearer ${sellerToken}`);
+    expect(detail.body.variant.inventory).toEqual([expect.objectContaining(expected)]);
+    const product = await request(app)
+      .get(`/api/v1/products/${variant.productId}`)
+      .set('Authorization', `Bearer ${sellerToken}`);
+    expect(product.status).toBe(200);
+    const productVariant = product.body.product.variants.find((item: { id: string }) => item.id === variant.id);
+    expect(productVariant.inventory).toEqual([expect.objectContaining(expected)]);
+  });
+
+  it('keeps a partially paid expired hold unavailable in the seller catalog', async () => {
+    await heldCatalogSale('REM-NEG-M', new Date(Date.now() - 60 * 60 * 1000), true);
+    const list = await request(app)
+      .get('/api/v1/variants')
+      .query({ branchId: centroId, search: 'REM-NEG-M' })
+      .set('Authorization', `Bearer ${sellerToken}`);
+    expect(list.status).toBe(200);
+    expect(list.body.items[0].inventory[0]).toMatchObject({ physical: '1', reserved: '1', available: '0' });
+  });
 });

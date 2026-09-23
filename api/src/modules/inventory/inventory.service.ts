@@ -1,8 +1,13 @@
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
+import {
+  effectiveAvailability,
+  loadReleasableExpiredHolds,
+} from '../sales/reservation-holds.js';
 
-type InventoryDatabase = Pick<PrismaClient, 'inventory'>;
+type InventoryDatabase = Pick<PrismaClient, 'inventory' | 'stockReservation'>;
+type InventoryServiceOptions = { now?: () => Date };
 const branchSchema = z.uuid();
 const variantIdsSchema = z.array(z.uuid());
 const itemsSchema = z.array(
@@ -12,15 +17,29 @@ const itemsSchema = z.array(
   }),
 );
 
-function withAvailability<T extends { physical: bigint; reserved: bigint }>(
-  row: T,
-) {
-  return { ...row, available: row.physical - row.reserved };
-}
-
 // Internal callers must establish branch authorization before using this service.
 // Keep BigInts inside the service; sendJson handles the HTTP boundary.
-export function createInventoryService(database: InventoryDatabase) {
+export function createInventoryService(
+  database: InventoryDatabase,
+  { now: clock = () => new Date() }: InventoryServiceOptions = {},
+) {
+  // One captured instant and one grouped hold aggregate per operation,
+  // bounded to the already-authorized branch and the rows actually read.
+  async function withAvailability<T extends { variantId: string; physical: bigint; reserved: bigint }>(
+    branchId: string,
+    rows: T[],
+  ) {
+    const releasable = await loadReleasableExpiredHolds(
+      database,
+      rows.map(({ variantId }) => ({ branchId, variantId })),
+      clock(),
+    );
+    return rows.map((row) => ({
+      ...row,
+      available: effectiveAvailability(row.physical, row.reserved, releasable(branchId, row.variantId)).effectiveAvailable,
+    }));
+  }
+
   async function getAvailability(branchId: string, variantIds?: string[]) {
     branchSchema.parse(branchId);
     if (variantIds !== undefined) variantIdsSchema.parse(variantIds);
@@ -32,7 +51,7 @@ export function createInventoryService(database: InventoryDatabase) {
       orderBy: { variantId: 'asc' },
       select: { variantId: true, physical: true, reserved: true },
     });
-    return rows.map(withAvailability);
+    return withAvailability(branchId, rows);
   }
 
   async function getInventoryByBranch(branchId: string) {
@@ -65,11 +84,13 @@ export function createInventoryService(database: InventoryDatabase) {
         },
       },
     });
-    return rows.map(withAvailability);
+    return withAvailability(branchId, rows);
   }
 
   // Read-only pre-check, NOT a reservation or concurrency guarantee.
   // Task 12 must revalidate stock inside the reservation transaction under locks.
+  // Expiry-aware availability here is optimistic; the send-to-cashier
+  // transaction still validates the persisted counter authoritatively.
   async function checkAvailability(
     branchId: string,
     items: Array<{ variantId: string; quantity: bigint }>,

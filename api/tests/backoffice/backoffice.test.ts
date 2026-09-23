@@ -335,6 +335,42 @@ describe('backoffice read API', () => {
     expect(row).toMatchObject({ physical: '9', reserved: '4', available: '5' });
   });
 
+  it('reports expiry-aware available while keeping raw reserved for diagnostics (Pilot P0.1-A)', async () => {
+    const expiresAt = new Date(Date.now() - 60 * 60 * 1000);
+    const rows: Record<string, string> = {};
+    for (const [sku, partialPayment] of [['REM-NEG-M', false], ['JEA-AZU-42', true]] as const) {
+      const variant = variants[sku]!;
+      const inventory = await prisma.inventory.update({
+        where: { variantId_branchId: { variantId: variant.id, branchId: branches.CEN! } },
+        data: { physical: 1n, reserved: 1n },
+      });
+      rows[sku] = inventory.id;
+      const sale = await prisma.sale.create({
+        data: {
+          sellerId: users['seller01@demo.local']!, branchId: branches.CEN!, status: 'PENDING_PAYMENT',
+          saleNumber: `T-BO-${sku}`, subtotal: variant.price, total: variant.price,
+          items: { create: {
+            variantId: variant.id, productId: variant.productId, productName: 'Snapshot product',
+            variantName: 'Snapshot variant', sku, quantity: 1n, unitPrice: variant.price, subtotal: variant.price,
+          } },
+        },
+      });
+      await prisma.stockReservation.create({
+        data: { saleId: sale.id, variantId: variant.id, branchId: branches.CEN!, quantity: 1n, status: 'ACTIVE', expiresAt },
+      });
+      if (partialPayment) {
+        await prisma.salePayment.create({
+          data: { saleId: sale.id, method: 'TRANSFER', amount: 1n, idempotencyKey: `partial-${sku}` },
+        });
+      }
+    }
+    const response = await get(`/api/v1/backoffice/inventory?branchId=${branches.CEN}`);
+    expect(response.status).toBe(200);
+    const byId = (id: string) => response.body.items.find((item: { id: string }) => item.id === id);
+    expect(byId(rows['REM-NEG-M']!)).toMatchObject({ physical: '1', reserved: '1', available: '1' });
+    expect(byId(rows['JEA-AZU-42']!)).toMatchObject({ physical: '1', reserved: '1', available: '0' });
+  });
+
   it('serializes sales/detail monetary BigInts as strings', async () => {
     const sale = await createPaidSale();
     const list = await get('/api/v1/backoffice/sales');

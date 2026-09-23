@@ -5,8 +5,13 @@ import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import type { Request } from 'express';
 import type { ProductQuery } from './dto/product.dto.js';
 import type { VariantQuery } from './dto/variant.dto.js';
+import {
+  effectiveAvailability,
+  loadReleasableExpiredHolds,
+} from '../sales/reservation-holds.js';
 
-type ProductDatabase = Pick<PrismaClient, 'product' | 'productVariant'>;
+type ProductDatabase = Pick<PrismaClient, 'product' | 'productVariant' | 'stockReservation'>;
+type InventoryRow = { id: string; branchId: string; physical: bigint; reserved: bigint };
 
 const publicVariantSelect = {
   id: true,
@@ -26,14 +31,32 @@ function inventorySelect(branchIds: string[], branchId?: string) {
   } as const;
 }
 
-function inventoryWithAvailable<T extends { physical: bigint; reserved: bigint }>(
-  inventory: T[],
+// Pilot P0.1-A: `available` is expiry-aware; `reserved` stays the raw
+// persisted counter. One grouped hold aggregate per call, bounded to the
+// inventory rows already filtered to the caller's authorized branches.
+async function withEffectiveInventory<V extends { id: string; inventory: InventoryRow[] }>(
+  database: ProductDatabase,
+  variants: V[],
 ) {
-  return inventory.map((row) => ({
-    ...row,
-    physical: row.physical.toString(),
-    reserved: row.reserved.toString(),
-    available: (row.physical - row.reserved).toString(),
+  const releasable = await loadReleasableExpiredHolds(
+    database,
+    variants.flatMap((variant) =>
+      variant.inventory.map(({ branchId }) => ({ branchId, variantId: variant.id })),
+    ),
+    new Date(),
+  );
+  return variants.map((variant) => ({
+    ...variant,
+    inventory: variant.inventory.map((row) => ({
+      ...row,
+      physical: row.physical.toString(),
+      reserved: row.reserved.toString(),
+      available: effectiveAvailability(
+        row.physical,
+        row.reserved,
+        releasable(row.branchId, variant.id),
+      ).effectiveAvailable.toString(),
+    })),
   }));
 }
 
@@ -96,10 +119,7 @@ export async function getProduct(
   if (!product) throw new AppError(404, 'NOT_FOUND', 'No se encontró el producto.');
   return {
     ...product,
-    variants: product.variants.map((variant) => ({
-      ...variant,
-      inventory: inventoryWithAvailable(variant.inventory),
-    })),
+    variants: await withEffectiveInventory(database, product.variants),
   };
 }
 
@@ -141,10 +161,7 @@ export async function listVariants(
     database.productVariant.count({ where }),
   ]);
   return {
-    items: items.map((variant) => ({
-      ...variant,
-      inventory: inventoryWithAvailable(variant.inventory),
-    })),
+    items: await withEffectiveInventory(database, items),
     pagination: { page: query.page, limit: query.limit, total },
   };
 }
@@ -171,5 +188,6 @@ export async function getVariant(
     },
   });
   if (!variant) throw new AppError(404, 'NOT_FOUND', 'No se encontró la variante.');
-  return { ...variant, inventory: inventoryWithAvailable(variant.inventory) };
+  const [withAvailability] = await withEffectiveInventory(database, [variant]);
+  return withAvailability!;
 }

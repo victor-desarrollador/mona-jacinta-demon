@@ -2,6 +2,10 @@ import type { Prisma, PrismaClient } from '../../generated/prisma/client.js';
 import { assertBranchAccess, assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
+import {
+  effectiveAvailability,
+  loadReleasableExpiredHolds,
+} from '../sales/reservation-holds.js';
 
 type RequestLike = Parameters<typeof assertBranchAccess>[0];
 type BackofficeDatabase = PrismaClient;
@@ -251,6 +255,13 @@ export function createBackofficeService(database: BackofficeDatabase) {
       }),
       database.inventory.count({ where }),
     ]);
+    // Pilot P0.1-A: one grouped hold aggregate for this page's rows; raw
+    // `reserved` is kept for diagnostics, `available` is expiry-aware.
+    const releasable = await loadReleasableExpiredHolds(
+      database,
+      rows.map((row) => ({ branchId: row.branch.id, variantId: row.variant.id })),
+      new Date(),
+    );
 
     return {
       items: rows.map((row) => ({
@@ -267,7 +278,11 @@ export function createBackofficeService(database: BackofficeDatabase) {
         },
         physical: row.physical,
         reserved: row.reserved,
-        available: row.physical - row.reserved,
+        available: effectiveAvailability(
+          row.physical,
+          row.reserved,
+          releasable(row.branch.id, row.variant.id),
+        ).effectiveAvailable,
       })),
       pagination: { limit: filters.limit, offset: filters.offset, total },
     };
