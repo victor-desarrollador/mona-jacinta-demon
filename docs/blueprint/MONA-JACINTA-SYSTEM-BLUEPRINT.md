@@ -162,25 +162,24 @@ over the Demo V2 commerce core. See §5 for the separation.
 
 | Field | Value |
 | --- | --- |
-| Last verified | 2026-09-24T03:41:41Z (UTC), during Blueprint creation |
+| Last verified | 2026-09-24T18:04Z (UTC), during the P0.1-C local checkpoint |
 | Branch | `feat/production-v1` |
-| HEAD (full) | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` |
-| HEAD (short) | `e7b6cc7` — `feat(pilot): automate expired reservation reconciliation` |
+| HEAD (full) | `421b58453b7de667cb3ad6a3467a051a14dd61f7` (P0.1-C implementation checkpoint). The Blueprint commit `docs(project): record P0.1-C checkpoint` that records this sits directly on top of it; read its SHA from `git log -1`. |
+| HEAD (short) | `421b584` — `feat(pilot): enforce payment and completion hold safety` (+ the Blueprint record commit on top) |
 | Origin branch | `origin/feat/production-v1` |
 | Origin HEAD | `6aa8143069f5d4ac1558e9ee87bdf61c159bd475` (D3; verified via local remote-tracking ref, not a fresh fetch) |
-| Ahead / behind | `git rev-list --left-right --count origin/feat/production-v1...HEAD` → `0 3` (behind 0, ahead 3) |
+| Ahead / behind | `git rev-list --left-right --count origin/feat/production-v1...HEAD` → `0 6` after the Blueprint record commit (behind 0, ahead 6: `8e9699a`, `ab728be`, `e7b6cc7`, `4eb8101`, `421b584`, Blueprint record) |
 | Current phase | Pilot V1.1 — P0 safety gates (overlay on Production V1 Phase 1 closeout) |
-| Last completed engineering block | **P0.1-B2**: automatic expired-reservation reconciliation (local checkpoint `e7b6cc7`) |
-| Current documentation block | Living Blueprint creation/review (uncommitted; documentation only) |
-| Next engineering block | **P0.1-C** — payment/completion hold rules (§10, §23) |
-| Current P0.1 aggregate status | **IN PROGRESS**. P0.1-A, P0.1-B1 and P0.1-B2 are each completed, independently audited (per owner; verdict details are not recorded in the repository, see §22) and checkpointed locally. P0.1-C remains. |
+| Last completed engineering block | **P0.1-C** (local checkpoint `421b584`). Earlier: P0.1-B2 `e7b6cc7`; Living Blueprint documentation checkpoint `4eb8101`. |
+| Current engineering block | **P0.1 aggregate closeout** — awaiting the OWNER final full-suite gate (§12) |
+| P0.1-C status | **IMPLEMENTED · FOCUSED TESTS GREEN (9/9 files, 211/211) · STATIC GATES GREEN · OPENCODE REVIEWED (LOW resolved) · CODEX APPROVED (final 0/0/0/0) · LOCALLY CHECKPOINTED** at `421b58453b7de667cb3ad6a3467a051a14dd61f7`. Not pushed. Evidence: §16 P0.1-C. |
+| Current P0.1 aggregate status | **CHECKPOINTED LOCALLY — NOT YET FORMALLY CLOSED**. A (`8e9699a`), B1 (`ab728be`), B2 (`e7b6cc7`) and C (`421b584`) are all committed locally and audited (A/B1/B2 per owner; C recorded in §22). The only remaining gate is the OWNER final aggregate full suite. |
 | Working tree exceptions | `opencode.json` is modified: legitimate **local-only** configuration. Never inspect, diff, modify, restore, stage or commit it. |
-| Full-suite status | **NOT RUN for the final P0.1 aggregate, by design.** The final gate runs only after P0.1-C is completed and independently audited. Last *recorded* owner gate: Phase 1C at `7d0c2b6` (37 files / 310 tests / `VITEST_EXIT=0`). |
+| Full-suite status | **NOT RUN for the final P0.1 aggregate.** P0.1-C is now audited and checkpointed, so this is the next gate (owner only). Last *recorded* owner gate: Phase 1C at `7d0c2b6` (37 files / 310 tests / `VITEST_EXIT=0`). |
 | Full-suite ownership | **REPOSITORY OWNER ONLY** (§12). Agents never run it. |
-| Push status | P0.1-A/B1/B2 (`8e9699a`, `ab728be`, `e7b6cc7`) remain local and **must NOT be pushed yet**. |
-| Push gate | P0.1-C completed **+** independently audited (OpenCode + Codex) **+** owner-run final P0.1 full suite green. Only then push the approved local P0.1 work. |
-| Exact next action | (1) Finish the Living Blueprint review and make a local documentation checkpoint (on owner request). (2) Start P0.1-C: read §10, `docs/pilot-v1.1/00-pilot-safety-gate.md` and `payments.service.ts`/`sales.service.ts`, write the P0.1-C spec, then RED tests for active-current hold validation before payment. **Do not** run the full suite or push before P0.1-C is complete and audited. |
-
+| Push status | P0.1-A/B1/B2/C and the Blueprint checkpoints (`8e9699a`, `ab728be`, `e7b6cc7`, `4eb8101`, `421b584`, and the P0.1-C Blueprint record commit) remain local and **must NOT be pushed yet**. |
+| Push gate | P0.1-C checkpointed **(done)** **+** independently audited (OpenCode + Codex) **(done)** **+** owner-run final P0.1 full suite green **(pending)**. Only then push the approved local P0.1 work. |
+| Exact next action | **OWNER** runs the final aggregate P0.1 full suite (`cd api && NODE_ENV=test npx vitest run --reporter=verbose`) and records the result in §23 step 6. Agents must not run it. **Do not** push before it is green. |
 ---
 
 ## 3. Git Checkpoint Ledger
@@ -214,7 +213,10 @@ repository proves. `pushed` means the commit is an ancestor of
 | D3 | `6aa8143069f5d4ac1558e9ee87bdf61c159bd475` | feat(demo): add admin catalog and initial stock flow | "Demo Operativa V1": admin catalog writes and additive `INITIAL_STOCK` | [UNVERIFIED — NEEDS CONFIRMATION] | **pushed (= origin HEAD)** | Migration `20260922210000_d3_initial_stock_and_global_audit` |
 | P0.1-A | `8e9699a585cea727c03cfd15c3ed61b9b233b752` | feat(pilot): add expiry-aware effective availability | Read-side effective availability | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION] | **local only** | |
 | P0.1-B1 | `ab728be6bc78e42918998b1de53f81395865170c` | fix(pilot): make reservation expiry authoritative | Authoritative per-Sale release, system actor | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION] | **local only** | |
-| P0.1-B2 | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | feat(pilot): automate expired reservation reconciliation | Pre-send reconciliation plus opt-in sweeper | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION] | **local only (HEAD)** | |
+| P0.1-B2 | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | feat(pilot): automate expired reservation reconciliation | Pre-send reconciliation plus opt-in sweeper | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION] | **local only** | |
+| Living Blueprint | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | docs(project): add living system blueprint | This ledger + `AGENTS.md` pointer (documentation only) | OpenCode approved for local checkpoint (per owner; not recorded in repo) | **local only** | Written at `e7b6cc7`, committed on top of it |
+| P0.1-C | `421b58453b7de667cb3ad6a3467a051a14dd61f7` | feat(pilot): enforce payment and completion hold safety | Payment/completion/queue current-hold semantics | OpenCode reviewed (LOW test-evidence finding resolved); Codex: initial review (1 LOW documentation finding, corrected) + narrow recheck → final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT` | **local only** | See §16 P0.1-C |
+| P0.1-C Blueprint record | *(this commit; SHA via `git log -1`)* | docs(project): record P0.1-C checkpoint | Records the P0.1-C checkpoint and audit state (documentation only) | — | **local only (HEAD)** | On top of `421b584` |
 
 ---
 
@@ -393,10 +395,10 @@ From `07-inventory-ledger.md` §3 and §5:
 | → `DRAFT` (create) | `SALE_CREATE` at a validated active location | None | — | `SALE_CREATED` | — |
 | `DRAFT` cart edits | Owning seller (`SALE_CREATE` route; `SALE_VIEW` at the branch; `sellerId` match) | None; advisory `checkAvailability` uses effective availability (P0.1-A) | — | — | Advisory only; the reserve step decides |
 | `DRAFT` → `PENDING_PAYMENT` (send-to-cashier) | Owning seller; `SALE_CREATE` at the sale's branch | P0.1-B2 pre-send reconciliation, then a locked raw check; `reserved += qty`; `StockReservation` ACTIVE with TTL 30 min; sale number allocated | — | `SALE_SENT_TO_CASHIER` (+ `RESERVATION_RELEASED` per reconciled candidate) | Conservative `INSUFFICIENT_STOCK` if maintenance fails |
-| `PENDING_PAYMENT` payment (partial) | `SALE_CHARGE` at the branch | None | Amount ≤ remaining; idempotency key; CASH needs an OPEN session and creates a `CashMovement` | `PAYMENT_REGISTERED` | Accepted while holds are `ACTIVE` **even if `expiresAt` has passed** (P0.1-C gap) |
-| `PENDING_PAYMENT` → `PAID` | `SALE_CHARGE` | None | Accepted sum == total | `PAYMENT_REGISTERED` | Same as above |
-| Expired-hold release (Sale stays `PENDING_PAYMENT`) | System actor (sweeper / pre-send) or a human with `INVENTORY_MANAGE` (manual endpoint) | Holds `RELEASED`; `reserved −= qty`; no `StockMovement` | Only when the sale has **zero** `SalePayment` rows | `RESERVATION_RELEASED` | Sale stays `PENDING_PAYMENT` and in the queue, but payment is refused (`INVALID_RESERVATION`). Resolution flow is P0.1-C/P0.2. |
-| `PAID` → `COMPLETED` | `SALE_COMPLETE` at the branch | `physical −= qty`, `reserved −= qty`; `StockMovement SALE`; holds `CONSUMED` | Must be `PAID`; idempotent if already `COMPLETED` | `SALE_COMPLETED` | No hold-expiry rule at completion (P0.1-C). The cashier queue lists only `PENDING_PAYMENT`, so a `PAID` sale disappears from it (P0.1-C). |
+| `PENDING_PAYMENT` payment (partial) | `SALE_CHARGE` at the branch | None (payment never releases or reserves) | Idempotent replay first; then exact current ACTIVE coverage; **first payment needs unexpired holds** (`RESERVATION_EXPIRED`); later payments may follow `expiresAt` (Policy A); amount ≤ remaining; CASH needs an OPEN session | `PAYMENT_REGISTERED` (none on rejection) | Abandoned partial payment stays manual (P0.2) |
+| `PENDING_PAYMENT` → `PAID` | `SALE_CHARGE` | None | Accepted sum == total | `PAYMENT_REGISTERED` | `sale.paid` notification failure is isolated (P0.1-C) |
+| Expired-hold release (Sale stays `PENDING_PAYMENT`) | System actor (sweeper / pre-send) or a human with `INVENTORY_MANAGE` (manual endpoint) | Holds `RELEASED`; `reserved −= qty`; no `StockMovement` | Only when the sale has **zero** `SalePayment` rows | `RESERVATION_RELEASED` | Sale stays `PENDING_PAYMENT` and in the queue as `holdState: EXPIRED` (`canAcceptPayment: false`); payment is refused (`INVALID_RESERVATION`). Cancellation works; broader resolution is P0.2. |
+| `PAID` → `COMPLETED` | `SALE_COMPLETE` at the branch | `physical −= qty`, `reserved −= qty`; `StockMovement SALE`; holds `CONSUMED` | Must be `PAID`; idempotent if already `COMPLETED`; exact current ACTIVE coverage; `expiresAt` ignored (P0.1-C) | `SALE_COMPLETED` | Consumes only current ACTIVE holds; historical rows ignored. The PAID sale stays in the cashier queue until completed (P0.1-C). |
 | `DRAFT`/`PENDING_PAYMENT` → `CANCELLED` | `SALE_CREATE` at the sale's branch (no `sellerId` check in `cancelSale`) | Releases all ACTIVE holds (expired or not) | Refused if the accepted payment sum > 0 | `SALE_CANCELLED` | Cancel after a partial payment is not possible (P0.2 pending correction/cancel) |
 
 ---
@@ -531,48 +533,97 @@ and release discovery both use it.
 - **Known limitation:** batch starvation from permanently corrupt low-id Sales,
   deferred to P0.5 (DEBT-003).
 
+### P0.1-C — Payment / completion / queue current-hold semantics
+
+- **Status:** implemented, audited (OpenCode + Codex), **locally checkpointed** at `421b584`.
+- **Pure evaluator** (`hold-coverage.ts`): `evaluateCurrentHoldCoverage` and
+  `cashierHoldState`. They take no DB and no global clock, and have no side
+  effects.
+  - **Coverage rule:** ACTIVE holds only, compared with the SaleItems per
+    variant. Holds must be on the sale's own branch and have a positive
+    quantity. No missing variant and no extra ACTIVE variant.
+  - **Check order:** coverage defects are reported before expiry.
+  - **Explicit expiry policy:**
+    - `FIRST_PAYMENT { now }`: every hold must satisfy `expiresAt > now`.
+    - `PAYMENT_PROTECTED`: expiry is ignored.
+    - `PAID_COMPLETION`: expiry is ignored.
+- **Callers:** payment (plain reads under the Sale lock), completion (ACTIVE
+  rows locked `FOR UPDATE`, `id ASC`) and the queue (informational only).
+- **Release authority:** unchanged. Only B1/B2 (and cancellation) release
+  holds. Payment only **detects** expiry.
+- **[PILOT DECISION / TRANSITIONAL DIVERGENCE]:** Policy A keeps a
+  payment-protected hold counted and backing the sale after `expiresAt`.
+  - Frozen 04 ("RELEASED on expiry … if no payments were made") and 07 §5.1
+    agree that such a hold is not released.
+  - Frozen 07 §5.4's sellable formula has no payment exception, so it would
+    make the merchandise sellable again after `expiresAt`.
+  - The Pilot is the more conservative of the two (it cannot oversell). The
+    frozen docs are unchanged; Phase 3C/6B must reconcile this (DEBT-017).
+
 ---
 
 ## 10. Payment / Cashier Model
 
-### 10.1 `[CURRENT IMPLEMENTATION]` (`payments.service.ts`, `sales.service.ts`)
+### 10.1 `[CURRENT IMPLEMENTATION]` (`payments.service.ts`, `payments.controller.ts`, `sales.service.ts`) — includes P0.1-C (`421b584`)
 
 - `POST /api/v1/sales/:saleId/payments` (`SALE_CHARGE`, re-checked against the
   sale's own branch under the Sale lock). Methods: `CASH`, `TRANSFER`,
   `CARD_DEBIT`, `CARD_CREDIT`, `QR`. Amount > 0. `receivedAmount` is required
   (≥ amount) only for CASH.
-- **Idempotency:** `idempotencyKey` (UUID v4), unique on
-  `(saleId, idempotencyKey)`. A replay with the same intent returns
-  `replayed: true`. A different payload returns
-  `409 IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD`. A P2002 race is resolved
-  in a fresh transaction.
-- **Remaining:** `total − SUM(amount)`. `OVERPAYMENT` if the amount exceeds it.
-  `PAID` when the sum equals the total.
-- **Hold check:** if the sale has any reservation whose status ≠ `ACTIVE`, the
-  payment is refused with `INVALID_RESERVATION`. **`expiresAt` is not checked.**
-- **Cashier queue:** `GET /api/v1/sales/pending` (`SALE_QUEUE_VIEW`) lists
-  **only `PENDING_PAYMENT`** sales in `effectiveLocationIds`, with `paidAmount`
-  and `remainingBalance`.
-- **Completion:** `POST /api/v1/sales/:saleId/complete` (`SALE_COMPLETE`); see §8.
+- **Order inside the transaction:**
+  1. `Sale FOR UPDATE`.
+  2. Authorization.
+  3. **Idempotent replay** (same key, same intent → `200` with the original
+     payment, in any status and after any expiry; a different payload →
+     `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD`).
+  4. Status must be `PENDING_PAYMENT` (else `INVALID_SALE_STATE`).
+  5. **Current coverage** (P0.1-C). Failure → `INVALID_RESERVATION`.
+     - Zero `SalePayment` rows: every current hold must be unexpired,
+       otherwise `RESERVATION_EXPIRED`.
+     - At least one row (Policy A, row existence): expiry is ignored.
+  6. `OVERPAYMENT` check.
+  7. CASH session check.
+  8. Insert the payment (+ `CashMovement`), `PAID` on exact equality, audit.
+- **Reserved error codes:**
+  - `RESERVATION_EXPIRED` (new, P0.1-C).
+  - `INVALID_RESERVATION` (existing code; message now "La venta no tiene
+    reservas vigentes que respalden sus artículos.").
+- **Clock:** `new Date()` inside the transaction, once per new-payment
+  decision. It never comes from the request.
+- **Rejected payment:** writes nothing (no payment, cash movement, status
+  change, audit or release).
+- **Realtime:** `sale.paid` is emitted after commit, only for a new payment
+  that made the sale PAID. An emitter throw is logged as
+  `payment_notify_failed` (`saleId`, `NOTIFY_FAILED`), and the response stays
+  `201` (F-013).
+- **Cashier queue:** `GET /api/v1/sales/pending` (`SALE_QUEUE_VIEW`).
+  - Rows: `PENDING_PAYMENT` **and** `PAID` in `effectiveLocationIds`, ordered
+    by `createdAt ASC, id ASC`.
+  - Fields: `paidAmount` and exact BigInt `remainingBalance` (never clamped),
+    plus `status`, `holdState` (`VALID` | `EXPIRED` | `PAYMENT_PROTECTED` |
+    `PAID` | `COVERAGE_INVALID`) and `canAcceptPayment`.
+  - Read-only, with a constant query count.
+- **Completion:** `POST /api/v1/sales/:saleId/complete` (`SALE_COMPLETE`); see
+  §8. Lock order: Sale → ACTIVE StockReservation (`id ASC`) → Inventory
+  (`id ASC`). The consumed count must equal the locked count.
+- **Client** (`client/src/app/page.tsx`):
+  - The payment action is disabled when `canAcceptPayment === false`, with a
+    Spanish note for EXPIRED and COVERAGE_INVALID.
+  - A PAID row stays selected, and completion uses the existing `isPaid`
+    logic.
 
-### 10.2 `[P0.1-C REQUIRED]` — scope to confirm at block start
+### 10.2 P0.1-C decisions (implemented)
 
-The repository records only: *"Payment TTL enforcement and completion hold
-rules are P0.1-C"* (`docs/pilot-v1.1/00-pilot-safety-gate.md`, Known
-limitations). The topics below come from the owner's block brief and match
-gaps observed in code. Their exact acceptance criteria are
-`[UNVERIFIED — NEEDS CONFIRMATION]` until the P0.1-C spec is written.
-
-| Topic | Observed current behavior (verified) |
-| --- | --- |
-| Active-current hold validation before payment | Holds are checked for `ACTIVE` only; an `ACTIVE` hold past `expiresAt` can still be paid |
-| Zero-payment expired behavior | Released only by pre-send, sweeper (if enabled) or the manual endpoint. The sale then stays `PENDING_PAYMENT` and cannot be paid. |
-| Payment-protected behavior | Any `SalePayment` row keeps the holds `ACTIVE` indefinitely (Policy A) |
-| Stale protection | Not defined in code `[UNVERIFIED — NEEDS CONFIRMATION]` |
-| Paid-before-expiry / completion-after-expiry | Completion checks that holds are `ACTIVE` and match exactly; no expiry rule |
-| PAID cashier queue visibility | Queue excludes `PAID`, so a paid-but-not-completed sale leaves the queue (the client completes only the currently selected sale) |
-| Payment remaining calculation | `total − SUM(amount)` in the service and the queue |
-| Idempotency | Implemented (above); P0.1-C interaction with the expiry checks is to be defined |
+| Topic | Implemented behavior | Evidence |
+| --- | --- | --- |
+| Active-current hold validation before payment | Exact ACTIVE coverage required for every new payment | `paid-transition` "rejects a first payment with …" |
+| Zero-payment expired behavior | First payment rejected (`RESERVATION_EXPIRED`); no release from payment; queue `EXPIRED` | `paid-transition`, `pending-queue` |
+| Payment-protected behavior | Remaining payment allowed after `expiresAt`; coverage still exact | `paid-transition` Policy A cases |
+| Stale protection (`expectedSaleUpdatedAt` / `expectedRemaining`) | **Not implemented**: P0.2 or later | — |
+| Paid-before-expiry / completion-after-expiry | PAID completion ignores `expiresAt` | `complete-sale` P0.1-C cases |
+| PAID cashier queue visibility | PAID included; client keeps it selected | `pending-queue`, `client/src/app/cashier-queue.test.tsx` |
+| Payment remaining calculation | `total − SUM(amount)`, exact BigInt, unclamped | `pending-queue`, `paid-transition` |
+| Idempotency | Replay resolved before new-payment checks, also after PAID/COMPLETED/expiry | `paid-transition` replay cases |
 
 ### 10.3 `[P0.2 LATER]` — from the owner's brief; no repository doc yet `[UNVERIFIED — NEEDS CONFIRMATION]`
 
@@ -710,9 +761,9 @@ and push come after P0.1-C, never between slices.
 | Authoritative expiry release | YES | YES | Lazy materialization | P0.1-B1 | — | — |
 | Pre-send reconciliation | YES | YES | n/a (Pilot) | P0.1-B2 | — | — |
 | Background sweeper | YES (opt-in, default OFF) | PARTIAL — needs system actor + explicit enable | Not required by the frozen design | `reservation-sweeper.ts`, `server.ts` | Starvation; not enabled anywhere verified | P0.5 / DEBT-003 |
-| Payments (split, idempotent) | YES | PARTIAL | + transfer/installment metadata | `payments.service.ts` | No expiry check before payment | P0.1-C / 6C |
-| Cashier queue | PARTIAL | PARTIAL | — | `listPendingSales` | Excludes PAID; released sales linger | P0.1-C |
-| Completion | YES | PARTIAL | + pricing finalization | `completeSaleInTransaction` | No completion hold-expiry rule | P0.1-C / 6D |
+| Payments (split, idempotent) | YES (P0.1-C, `421b584`) | YES (audited; owner full suite pending) | + transfer/installment metadata | `payments.service.ts`, `hold-coverage.ts` | Stale-correction guards are P0.2 | 6C |
+| Cashier queue | YES (P0.1-C, `421b584`) | YES (audited; owner full suite pending) | — | `listPendingSales`, `hold-coverage.ts` | Released/expired rows stay until cancelled | P0.2 |
+| Completion | YES (P0.1-C, `421b584`) | YES (audited; owner full suite pending) | + pricing finalization | `completeSaleInTransaction` | — | 6D |
 | Cancellation | PARTIAL | PARTIAL | — | `cancelSale` | No cancel after partial payment | P0.2 |
 | Cashier correction | NO | NO | — | — | — | P0.2 |
 | Audit | YES | YES | Same | `shared/audit.ts`, `AuditLog` | — | — |
@@ -736,11 +787,14 @@ and push come after P0.1-C, never between slices.
 | `api/src/modules/sales/cancellation.service.ts` | Cancel, per-Sale expiry release, reconcile, SYSTEM/pre-send/manual entries | One Sale per transaction; exact decrement; no clamping; guarded status update; automation owns its clock | Demo V2; B1 (rewrite); B2 (`reconcileBeforeSend`, variant filter, limit) |
 | `api/src/modules/sales/cancellation.controller.ts` | Cancel and manual release HTTP | Manual scope = same-assignment `INVENTORY_MANAGE` locations | B1 |
 | `api/src/modules/sales/reservation-sweeper.ts` | Opt-in scheduler | Inert when disabled; no overlap; `stop` awaits in-flight run; no global state | B2 (new) |
-| `api/src/modules/sales/sales.service.ts` | Draft/cart, queue, completion; wires pre-send + notifications | Emit only after commit; emit failure isolated | B2 (wiring) |
+| `api/src/modules/sales/hold-coverage.ts` | Pure current-coverage evaluator + cashier hold state | No DB, no global clock; explicit expiry policy; coverage defects before expiry; ACTIVE rows only | P0.1-C (new, `421b584`) |
+| `api/src/modules/sales/sales.service.ts` | Draft/cart, queue, completion; wires pre-send + notifications | Emit only after commit; emit failure isolated; completion consumes exactly the locked ACTIVE rows; queue read-only and PENDING_PAYMENT + PAID | B2 (wiring); P0.1-C (completion, queue) |
 | `api/src/modules/sales/sales.controller.ts` | Sales HTTP | Queue accepts no client filters | B2 (options passthrough) |
 | `api/src/modules/audit/system-actor.service.ts` | System actor classify/bootstrap/resolve | Inactive, scope-less; fail closed; never repair | B1 (new) |
 | `api/scripts/bootstrap-system-actor.ts` | Operator CLI | Explicit `--target`, `--dry-run`/`--execute`; never prints the secret | B1 (new) |
-| `api/src/modules/payments/payments.service.ts` | Payments | Sale lock; idempotency; no overpayment; holds must be ACTIVE | Demo V2; 1D.3.2; **P0.1-C target** |
+| `api/src/modules/payments/payments.service.ts` | Payments | Sale lock; replay before new-payment checks; exact current coverage; first payment unexpired; never releases; no overpayment | Demo V2; 1D.3.2; P0.1-C |
+| `api/src/modules/payments/payments.controller.ts` | Payments HTTP | Committed payment result is never changed by a realtime failure | P0.1-C |
+| `client/src/app/page.tsx` (cashier workspace) | Cashier queue/payment/completion UI | Payment action honors `canAcceptPayment`; server stays authoritative | P0.1-C |
 | `api/src/modules/rbac/authorization-context.ts` | Builds `req.auth` from the DB | Assignments only from valid Production role codes | 1D; D1 |
 | `api/src/modules/rbac/authorization-policy.ts` | The only permission/scope decision point | Same-assignment rule; OWNER only COMPANY; COMPANY-required set | 1D; GC2 |
 | `api/src/middleware/authorization.ts` | `requirePermission`, `assertPermissionAtLocation` | Production permissions only | 1D |
@@ -797,6 +851,35 @@ and push come after P0.1-C, never between slices.
 | OpenCode / Codex | [UNVERIFIED — NEEDS CONFIRMATION] |
 | Deferred | P0.1-C; P0.5 starvation |
 | Commit / push | `e7b6cc7` / local only |
+
+### Living Blueprint (documentation checkpoint)
+
+| Field | Value |
+| --- | --- |
+| Goal | Persistent implementation/status/failure ledger + `AGENTS.md` pointer |
+| Start → end | `e7b6cc7` → `4eb8101d1abe1599314f7ed641748c47798fa5c4` |
+| Files | `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` (new), `AGENTS.md` (+6 lines) |
+| OpenCode | Approved for local checkpoint (per owner; not recorded in repo) |
+| Commit / push | `4eb8101` / local only |
+
+### P0.1-C — Payment / completion / cashier-queue hold semantics
+
+| Field | Value |
+| --- | --- |
+| Goal | Close the expiry → payment → PAID → completion boundary without weakening stock authority |
+| Start → end | `4eb8101` → `421b584` (`421b58453b7de667cb3ad6a3467a051a14dd61f7`) |
+| Files (source) | `api/src/modules/sales/hold-coverage.ts` (new), `api/src/modules/payments/payments.service.ts`, `api/src/modules/payments/payments.controller.ts`, `api/src/modules/sales/sales.service.ts`, `client/src/app/page.tsx` |
+| Files (tests) | `api/tests/sales/hold-coverage.test.ts` (new), `api/tests/sales/paid-transition.test.ts`, `api/tests/payments/split-payment.test.ts`, `api/tests/sales/complete-sale.test.ts`, `api/tests/sales/pending-queue.test.ts`, `client/src/app/cashier-queue.test.tsx` (new) |
+| Files (docs) | `docs/pilot-v1.1/00-pilot-safety-gate.md`, `docs/api/endpoints.md`, this Blueprint |
+| Behavior added | §9 P0.1-C and §10.1: exact current coverage; first-payment expiry; Policy A later payments; replay first; PAID completion after expiry; ACTIVE-only completion; PAID in queue + hold states; client payment gating; payment realtime isolation |
+| Explicitly excluded | P0.2 correction/cancel, stale-correction guards, any release from payment, schema/RBAC/seed changes |
+| Fixture note | Payment tests that paid item-less, hold-less sales now build a realistic held sale (item + matching ACTIVE hold); their assertions are unchanged. Item-less sales now fail closed. |
+| Tests (RED) | 23 API tests failed for the expected reasons, plus 1 client test (EXPIRED payment button); realtime isolation RED (`500` instead of `201`) |
+| Tests (GREEN) | **Authoritative final focused run** (API, on the final source, 2026-09-24 16:02:58Z start, 3044.86s, `VITEST_EXIT=0`; counts taken from the Vitest JSON reporter by file identity): **9/9 files passed, 211/211 tests passed, 0 failed, 0 skipped** — `tests/sales/hold-coverage.test.ts` 18, `tests/sales/paid-transition.test.ts` 39, `tests/payments/split-payment.test.ts` 24, `tests/sales/complete-sale.test.ts` 23, `tests/sales/pending-queue.test.ts` 25, `tests/sales/reservation-expiry.test.ts` 38, `tests/sales/cancellation.test.ts` 17, `tests/audit/audit.test.ts` 16, `tests/inventory/stock-movement-invariant.test.ts` 11. No infrastructure timeout occurred. Earlier run (superseded): 211 tests, 210 passed, 1 failed — a pre-existing order-dependent assertion (`findMany` without `orderBy` in "finalizes two variants atomically…": identical rows, swapped order), fixed with an explicit `orderBy` (RULE-017). Its per-file breakdown was mis-transcribed (`cancellation` recorded as 19 instead of 17, so the parts summed to 213); that was OpenCode's LOW bookkeeping finding, now **resolved** by the reporter-derived counts above. Client `src/app`: 10/10 (separate client run; not part of the API run above). |
+| Static gates | API lint, `tsc --noEmit`, `typecheck`, `build`: PASS. Client lint, `tsc --noEmit`, `build`: PASS. `git diff --check`: PASS. |
+| Pure-test validity | The evaluator tests were proven to catch mutants (boundary `<` vs `<=`, dropped branch check, released→EXPIRED mapping, expiry applied to protected sales) with a DB-free harness |
+| OpenCode / Codex | OpenCode: reviewed (per owner); LOW test-count bookkeeping finding resolved (see Tests (GREEN)). Codex: initial adversarial read-only review — BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1 (documentation only: stale §3 audit state), no runtime/test change required; LOW corrected; narrow recheck completed → final **0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW**, verdict `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`. |
+| Commit / push | `421b58453b7de667cb3ad6a3467a051a14dd61f7` (local) + Blueprint record commit on top / **not pushed**. Owner full-suite gate pending. |
 
 ### Older blocks (summary; strong evidence only)
 
@@ -922,6 +1005,47 @@ it is marked unverified. The defect and its fix are still verified.
 - **Mitigation:** retry; probe reachability before blaming a change; never run two vitest processes at once.
 - **Prevention:** RULE-011 · **Status:** OPEN (infrastructure).
 
+### F-010 — First payment accepted on an expired zero-payment hold `[VERIFIED]`
+
+- **Block:** P0.1-C · **Severity:** HIGH (stock integrity: an expired hold became payment-protected and outlived its TTL)
+- **Evidence:** `[VERIFIED]` — the pre-P0.1-C `payments.service.ts` (at `4eb8101`) checked only `status = ACTIVE`, never `expiresAt`. RED test observed.
+- **Detection source:** Blueprint §10.2 gap analysis and the P0.1-C RED run.
+- **Symptom:** if no pre-send or sweeper release had touched the sale, a cashier could take the first payment after the TTL. Under Policy A that payment then protected the stale hold indefinitely.
+- **Root cause:** payment validated reservation *status*, not *current validity*. Expiry had meaning only for the release paths.
+- **Fix:** `FIRST_PAYMENT` policy (`expiresAt > now`, own clock) → `RESERVATION_EXPIRED`, with no side effects.
+- **Regression tests:** `paid-transition` "rejects a first payment on an expired zero-payment hold …"; `hold-coverage` boundary tests.
+- **Prevention:** RULE-013, RULE-015 · **Status:** FIXED (`421b584`, audited) · **Files:** `payments.service.ts`, `hold-coverage.ts`.
+
+### F-011 — Historical reservation rows treated as current coverage (payment and completion) `[VERIFIED]`
+
+- **Block:** P0.1-C · **Severity:** MEDIUM (false rejection; correctly covered sales could not be paid or completed)
+- **Evidence:** `[VERIFIED]` — at `4eb8101`, payment rejected on *any* non-ACTIVE row, and completion locked all rows and threw on any non-ACTIVE row. RED tests observed for both.
+- **Symptom:** a `RELEASED` or `CONSUMED` row next to correct ACTIVE coverage blocked payment and completion.
+- **Root cause:** the code reasoned over *all* reservation rows of the sale instead of the current ACTIVE set.
+- **Fix:** both paths read ACTIVE rows only and use the shared evaluator. Completion consumes exactly the locked ACTIVE ids.
+- **Regression tests:** `paid-transition` "ignores a historical RELEASED row …"; `complete-sale` "ignores a historical RELEASED/CONSUMED row … and never re-consumes it".
+- **Prevention:** RULE-009 (extended), RULE-014 · **Status:** FIXED (`421b584`) · **Files:** `payments.service.ts`, `sales.service.ts`.
+
+### F-012 — PAID sale disappeared from the cashier queue `[VERIFIED]`
+
+- **Block:** P0.1-C · **Severity:** MEDIUM (operational: a paid sale could be left uncompleted with its stock reserved)
+- **Evidence:** `[VERIFIED]` — at `4eb8101`, `listPendingSales` filtered `status: 'PENDING_PAYMENT'`. The client re-selects only rows present in the refreshed queue. RED test observed.
+- **Symptom:** after the final payment, the queue refresh dropped the sale. If it was the last row, the cashier lost the completion action.
+- **Root cause:** the queue was modelled as "awaiting payment", not as the cashier's work (payment + completion).
+- **Fix:** the queue includes `PAID`, with `status`/`holdState`/`canAcceptPayment`.
+- **Regression tests:** `pending-queue` inclusion, hold-state and live-scope cases; client `cashier-queue.test.tsx` "keeps the sale selected and completable …".
+- **Prevention:** RULE-016 · **Status:** FIXED (`421b584`).
+
+### F-013 — Realtime failure turned a committed payment into HTTP 500 `[VERIFIED]`
+
+- **Block:** P0.1-C · **Severity:** MEDIUM (financial ambiguity at the counter)
+- **Evidence:** `[VERIFIED]` — `payments.controller.ts` at `4eb8101` called `realtime.emit` unguarded after commit. Express 5.2.1 routes the rejection to `errorHandler`. The RED test got `500` for a persisted payment.
+- **Symptom:** the cashier sees an error for money actually taken and may charge the customer again. A different-key retry is rejected (sale PAID); a same-key retry replays safely.
+- **Root cause:** the B2 realtime-isolation rule (RULE-006) had not been applied to the payment controller.
+- **Fix:** `try/catch` around the emit; `payment_notify_failed` warn log with a safe code; the response stays `201`.
+- **Regression test:** `paid-transition` "keeps a committed final payment successful when the sale.paid notification throws".
+- **Prevention:** RULE-006 (extended) · **Status:** FIXED (`421b584`). Other post-commit emits (send-to-cashier, complete, cancel, manual release) still have the pattern: DEBT-018.
+
 ### Review-history candidates not registered as failures
 
 "Interactive pre-send inherited the 100-Sale batch" and "batch starvation"
@@ -929,8 +1053,8 @@ were named as possible entries. The first is reflected only in the final
 design (`PRE_SEND_RECONCILE_LIMIT = 10`, and the Pilot doc: "a separate
 limit"). No intermediate commit shows the defect, so it is recorded as
 RULE-008 and not as a failure. Starvation is an acknowledged limitation
-(DEBT-003), not an observed failure. "PAID cashier queue" is a verified *gap*
-(§10.2) with no incident record.
+(DEBT-003), not an observed failure. The PAID cashier-queue gap later became
+F-012 when P0.1-C reproduced it in a RED test.
 
 ---
 
@@ -943,12 +1067,17 @@ RULE-008 and not as a failure. Starvation is an acknowledged limitation
 | RULE-003 | Automatic writers default **OFF** and need an explicit opt-in (`=== 'true'`). They start only from the server runtime, never `createApp()`. | Tests and deployments must not mutate data implicitly | `env.ts`, `server.ts`, sweeper static wiring tests | — |
 | RULE-004 | Authorization goes through the centralized policy (`hasPermission`/`hasPermissionAtLocation`) with permission and location from the **same assignment**. `effectiveLocationIds` is never authority. | Cross-assignment unions leak authority | `authorization-policy.ts`; escalation + scope tests | F-002, F-006, F-007 |
 | RULE-005 | Maintenance isolates units and degrades conservatively. One Sale per transaction, failures logged with safe codes, and the business path continues to its authoritative check. | One bad row must not block every release, and failures must never oversell | `reconcile`, `reconcileBeforeSend` | F-004 |
-| RULE-006 | Realtime failure never changes, retries or rolls back committed DB state, and is logged separately from DB failures. | PostgreSQL is the source of truth, and realtime is advisory | Per-release `try/catch` in `sales.service.ts` and the sweeper | F-005 |
+| RULE-006 | Realtime failure never changes, retries or rolls back committed DB state, **and never changes the HTTP result of a committed operation**. It is logged separately from DB failures. | PostgreSQL is the source of truth, and realtime is advisory | Per-release `try/catch` in `sales.service.ts`, the sweeper, `payments.controller.ts` | F-005, F-013 |
 | RULE-007 | Candidate discovery scope and Sale-level release scope are distinct: discovery may be narrow, but release is always the whole Sale's expired set. | Prevents half-released Sales and keeps one audit per Sale | B2 test "releases a nominated candidate Sale atomically…" | F-004 |
 | RULE-008 | Interactive maintenance needs a stricter latency bound than background work (10 vs 100). | Counter wait time | `PRE_SEND_RECONCILE_LIMIT`; cap test | — |
 | RULE-009 | Historical rows (`RELEASED`, `CONSUMED`, or ACTIVE on non-pending sales) never count as current releasable coverage. | Conservative availability | `releasableExpiredHoldWhere`; A tests | F-001 |
 | RULE-010 | Frozen requirements are not rewritten to match transitional code. Record the gap instead. | Keeps the target stable | `AGENTS.md`, `CLAUDE.md`, §0.6 | — |
 | RULE-011 | Treat test-infrastructure latency or timeouts as infrastructure first: use a verbose reporter, probe reachability, retry, and run only one vitest process. | Avoids false root causes | `CLAUDE.md` testing policy, §12 | F-008, F-009 |
+| RULE-013 | A payment that creates financial protection (the first payment) must validate that the stock protection it inherits is still current (`expiresAt > now`), using its own clock. | Otherwise a stale hold becomes permanent | `FIRST_PAYMENT` policy; `paid-transition` | F-010 |
+| RULE-014 | Current coverage is always the ACTIVE set compared exactly with the current items. History (RELEASED/CONSUMED) is neither coverage nor a blocker, and is never consumed again. | Historical rows coexist legitimately | `hold-coverage.ts`; payment + completion tests | F-011 |
+| RULE-015 | Expiry policy is explicit per lifecycle step (first payment / payment-protected / paid completion), never a bare boolean. Only B1/B2/cancel release holds; other paths only detect. | One release authority; no hidden semantics | `HoldExpiryPolicy`; "never writes a release … from the payment path" | F-010 |
+| RULE-016 | A work queue shows every state that still needs an action from its user (for the cashier: PENDING_PAYMENT **and** PAID), with a fail-closed state for corrupt rows. | Work must not vanish between steps | `listPendingSales`; queue + client tests | F-012 |
+| RULE-017 | Tests that assert an ordered list of DB rows must request an explicit `ORDER BY`. PostgreSQL row order is unspecified, and updates can change it. | Order-dependent assertions flake nondeterministically | `complete-sale` two-variant test (`orderBy: { variantId: 'asc' }`) | — (P0.1-C final run) |
 | RULE-012 | Privileged technical identities (the system actor) are inactive and scope-less, created only by explicit bootstrap, and fail closed when tampered. They are never repaired automatically. | Audit attribution without granting authority | `system-actor.service.ts`; system-actor tests | — |
 
 ---
@@ -957,7 +1086,7 @@ RULE-008 and not as a failure. Starvation is an acknowledged limitation
 
 | ID | Item | Why deferred | Risk | Target phase | Pilot blocker? | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| DEBT-001 | P0.1-C payment/completion hold rules (§10.2) | Next block | Payment of an expired hold; PAID leaves the queue | P0.1-C | **YES** (per Pilot sequencing) [UNVERIFIED — NEEDS CONFIRMATION] | OPEN |
+| DEBT-001 | P0.1-C payment/completion hold rules (§10.2) | — | — | P0.1-C | Was YES | **IMPLEMENTED — pending independent review / checkpoint** |
 | DEBT-002 | Cashier pending correction / pending cancel / permissions / UX | Scoped after P0.1 | Partially paid or released sales cannot be resolved | P0.2 | [UNVERIFIED — NEEDS CONFIRMATION] | OPEN |
 | DEBT-003 | Sweeper batch starvation (id-ordered; permanently corrupt low-id Sales) | Pilot doc defers it | Healthy expired holds wait for pre-send or manual release | P0.5 | No | OPEN |
 | DEBT-004 | Log aggregation / rate limiting of repeated failure logs | Not in P0.1 scope | Log noise every tick | [UNVERIFIED — NEEDS CONFIRMATION] | No | OPEN |
@@ -973,6 +1102,9 @@ RULE-008 and not as a failure. Starvation is an acknowledged limitation
 | DEBT-014 | Product-level barcode (currently unique per variant) | Roadmap | Label/scan model mismatch | 2B | [UNVERIFIED] | OPEN |
 | DEBT-015 | Test suite performance (~59 min) | Correctness first | Slow gates | — | No | OPEN |
 | DEBT-016 | `AGENTS.md` "Checkpoint" section is stale (names D2 as current work) | This block was limited to adding a minimal pointer | Misleads agents | Next docs touch, with owner approval | No | OPEN |
+| DEBT-017 | [PILOT DECISION / TRANSITIONAL DIVERGENCE] Policy A vs frozen 07 §5.4 sellable formula (no payment exception) and frozen lazy on-touch release | Pilot keeps one conservative release authority | Target design must decide explicitly | 3C/6B | No | OPEN |
+| DEBT-018 | Other post-commit realtime emits (send-to-cashier, complete, cancel, manual release) can still turn a committed result into HTTP 500 if the emitter throws | Outside P0.1-C payment scope; same-key/replay retries are idempotent | Misleading error after commit | Next realtime/POS hardening block | [UNVERIFIED — NEEDS CONFIRMATION] | OPEN |
+| DEBT-019 | Expiry decisions use each API instance's wall clock (payment, B1/B2, queue) | Pre-existing design (B1) | Clock skew shifts the boundary between instances; all paths still serialize on the Sale lock, so no double outcome | Deployment hardening | No | OPEN |
 
 ---
 
@@ -980,10 +1112,13 @@ RULE-008 and not as a failure. Starvation is an acknowledged limitation
 
 | Risk | Trigger | Impact | Existing mitigation | Next action |
 | --- | --- | --- | --- | --- |
-| Payment accepted on an expired-but-unreleased hold | Sweeper disabled and no pre-send touched the sale; the cashier charges after the TTL | The sale becomes payment-protected, and the hold outlives the TTL | Pre-send reconciliation; manual endpoint | P0.1-C |
-| Paid sale disappears from the cashier queue | Page reload or selection change between payment and completion | A PAID sale is never completed; stock stays reserved | Client completes right after payment | P0.1-C |
-| Released sale lingers in PENDING_PAYMENT | Expiry release | Queue clutter; charge attempts fail with `INVALID_RESERVATION` | Cancel works (no payments) | P0.1-C / P0.2 |
-| Unpushed local checkpoints (intentional) | 3 P0.1 commits only on this machine until the aggregate push gate | Loss of work | Local git | Keep local until P0.1-C is audited and the owner full suite is green; then push |
+| ~~Payment accepted on an expired-but-unreleased hold~~ | — | — | **CLOSED in P0.1-C (`421b584`; F-010)** | Owner full-suite gate |
+| ~~Paid sale disappears from the cashier queue~~ | — | — | **CLOSED in P0.1-C (`421b584`; F-012)** | Owner full-suite gate |
+| Released/expired sale lingers in PENDING_PAYMENT | Expiry release or expired zero-payment hold | Queue clutter; now shown as `EXPIRED`, not chargeable | Cancel works (no payments) | P0.2 |
+| Abandoned partial payment | Customer leaves after a partial payment | Hold stays protected indefinitely (Policy A); stock stays reserved | Visible as `PAYMENT_PROTECTED`; manual handling | P0.2 |
+| PAID sale with corrupt coverage | Manual data damage | Cannot complete (`INVALID_RESERVATION`); shown as `COVERAGE_INVALID` | Fail closed; audit trail | Manual/P0.2 |
+| Uncommitted P0.1-C work | Working tree only | Loss of work | Local disk | Review → owner checkpoint |
+| Unpushed local checkpoints (intentional) | 4 commits only on this machine until the aggregate push gate | Loss of work | Local git | Keep local until P0.1-C is audited and the owner full suite is green; then push |
 | Sweeper enabled without a system actor | Env flag set before bootstrap | No releases; error logs each tick (fail closed, process stays up) | Fail-closed resolution | Bootstrap before enabling (§21) |
 | Wrong-target DB mutation | Operator error with multiple local env files | Data loss on DEV/DEMO | Identity proofs, dry-run/execute, `.claude/hooks` | Keep explicit approval discipline |
 
@@ -1024,6 +1159,9 @@ RULE-008 and not as a failure. Starvation is an acknowledged limitation
 | P0.1-B1 | Codex | [UNVERIFIED — NEEDS CONFIRMATION] | — | — | `ab728be` |
 | P0.1-B2 | OpenCode | [UNVERIFIED — NEEDS CONFIRMATION] | Likely F-005 / RULE-008 (unverified attribution) | Fixed in commit | `e7b6cc7` |
 | P0.1-B2 | Codex | [UNVERIFIED — NEEDS CONFIRMATION] | — | — | `e7b6cc7` |
+| Living Blueprint | OpenCode | Approved for local checkpoint (per owner; 1 MEDIUM wording fix applied: DEBT-008) | DEBT-008 wording | Fixed before checkpoint | `4eb8101` |
+| P0.1-C | OpenCode | Reviewed; approved for Codex (per owner) | LOW: §16 focused-test per-file counts inconsistent (summed to 213 vs 211) | Resolved: counts re-derived from the completed run's JSON reporter output (211/211, exit 0) | `421b584` |
+| P0.1-C | Codex | Initial review: CHANGES REQUIRED (documentation only) — BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1. Narrow recheck: **APPROVED** — final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT` | LOW: §3 ledger still said "Pending OpenCode + Codex" | Corrected (§2, §3, §16, §22, §23); no runtime/test change required; recheck confirmed | `421b584` |
 
 The owner states that P0.1-A, P0.1-B1 and P0.1-B2 were each independently
 audited (OpenCode and Codex) before their local checkpoints. The verdict
@@ -1037,12 +1175,12 @@ blocks must record reviewer verdicts here at review time.
 
 | # | Block | Goal | Dependencies | Status | Exit condition |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Living Blueprint review | Finish review; local documentation checkpoint | — | IN REVIEW | Owner approval; exact-file commit on request (not pushed) |
-| 2 | **P0.1-C implementation** (next engineering block) | Payment TTL enforcement + completion hold rules (§10.2) | P0.1-B2 | NEXT | Spec written; RED → focused GREEN; static gates; diff review |
-| 3 | OpenCode audit of P0.1-C | Independent transversal review | 2 | PENDING | Findings resolved |
-| 4 | Codex audit of P0.1-C | Independent adversarial review | 3 | PENDING | Findings resolved |
-| 5 | Local P0.1-C checkpoint | Exact-file commit | 4 | PENDING | P0.1 aggregate (A + B1 + B2 + C) complete and audited |
-| 6 | **OWNER ONLY:** final P0.1 full-suite gate | Full suite over the whole P0.1 aggregate | 5 | PENDING | Owner records a green result here (`VITEST_EXIT=0`) |
+| 1 | Living Blueprint review | Finish review; local documentation checkpoint | — | **DONE** (`4eb8101`) | — |
+| 2 | **P0.1-C implementation** | Payment/completion/queue hold semantics (§9, §10) | P0.1-B2 | **DONE** | RED → focused GREEN; static gates; diff review; adversarial review |
+| 3 | OpenCode audit of P0.1-C | Independent transversal review | 2 | **DONE** — LOW test-count bookkeeping finding resolved (§16) | Findings resolved |
+| 4 | Codex audit of P0.1-C | Independent adversarial review | 3 | **DONE** — initial review (1 LOW documentation finding, corrected) + narrow recheck: final 0/0/0/0, APPROVED FOR LOCAL CHECKPOINT | Findings resolved; Codex approval recorded in §22 |
+| 5 | Local P0.1-C checkpoint | Exact-file commit | 4 | **DONE** (`421b584` + Blueprint record commit) | P0.1 aggregate (A + B1 + B2 + C) complete and audited |
+| 6 | **OWNER ONLY:** final P0.1 full-suite gate | Full suite over the whole P0.1 aggregate | 5 | **NEXT** (not run) | Owner records a green result here (`VITEST_EXIT=0`) |
 | 7 | Push approved local P0.1 work | Push only if step 6 is green | 6 | PENDING | origin = local HEAD; remote verified; Blueprint updated |
 | 8 | Later Pilot safety gates | P0.2 (cashier pending correction/cancel, per owner brief; no repo doc) [UNVERIFIED — NEEDS CONFIRMATION]; P0.3/P0.4 (no repository source) [UNVERIFIED — NEEDS CONFIRMATION]; P0.5 (includes sweeper starvation hardening, per Pilot doc) | 7 | PLANNED | Per verified project decisions; acceptance criteria not yet defined |
 
@@ -1079,3 +1217,7 @@ Append-only.
 | --- | --- | --- | --- | --- |
 | 2026-09-24 | Blueprint creation | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | All (0–25) | Initial ledger at the verified P0.1-B2 local checkpoint; documentation only |
 | 2026-09-24 | Pre-review correction pass | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | §2, §11, §12, §13, §17, §20, §21, §22, §23 | Corrected the P0.1 workflow order (P0.1-C next; owner full suite and push only after the whole P0.1 aggregate is audited); removed a demo credential value; added evidence labels to F-001–F-009 (F-009 is an operational observation) |
+| 2026-09-24 | P0.1-C implemented (uncommitted) | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | §2, §3, §8, §9, §10, §14, §15, §16, §17, §18, §19, §20, §22, §23, §25 | Reconciled the `4eb8101` documentation checkpoint; recorded P0.1-C behavior, F-010–F-013, RULE-013–RULE-016, DEBT-017–DEBT-019, the Policy A transitional divergence, and review readiness |
+| 2026-09-24 | P0.1-C focused-test evidence reconciled (uncommitted) | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | §2, §16, §22, §23, §25 | Resolved OpenCode's LOW test-count bookkeeping finding. Counts now come from the Vitest JSON reporter of the final focused API run (9/9 files, 211/211 tests, exit 0; `cancellation` is 17, not 19). A Claude Code/API connectivity interruption (`ECONNREFUSED`) occurred after the focused Vitest process had already completed with exit code 0; it did not affect test execution or application behavior, and is not a product F-###. The focused run was not repeated. |
+| 2026-09-24 | P0.1-C Codex initial review recorded; LOW corrected (uncommitted) | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | §2, §3, §16, §22, §23, §25 | Codex adversarial read-only review: BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1 (documentation only). The LOW was the stale §3 P0.1-C audit state ("Pending OpenCode + Codex"); corrected here. No runtime/test change required; focused-test evidence (9/9 files, 211/211) unchanged; no tests run. Final Codex approval not yet given: narrow recheck pending. |
+| 2026-09-24 | P0.1-C local checkpoint | `421b58453b7de667cb3ad6a3467a051a14dd61f7` | §2, §3, §9, §10, §14, §15, §16, §17, §20, §22, §23, §25 | Codex narrow recheck completed: final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`. Exact-file implementation commit `421b584` (13 files: source, tests, API/Pilot docs; Blueprint and `opencode.json` excluded), then this Blueprint record commit. Focused evidence unchanged (9/9 files, 211/211, 0 failed, 0 skipped, exit 0); no tests run. P0.1 is checkpointed locally but **not formally closed**: the owner final aggregate full suite is pending. Nothing pushed. |
