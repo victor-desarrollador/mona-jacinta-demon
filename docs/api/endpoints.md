@@ -126,6 +126,14 @@ Cash payments support `amount`, `receivedAmount`, and backend-calculated change 
 | --- | --- | --- | --- |
 | POST | `/api/v1/admin/reservations/release-expired` | `inventory.manage` | Release expired eligible stock reservations. |
 
+Pilot P0.1-B1 contract (see [`../pilot-v1.1/00-pilot-safety-gate.md`](../pilot-v1.1/00-pilot-safety-gate.md)):
+
+- Scope: only locations where the caller's own assignment grants `INVENTORY_MANAGE` (never the cross-assignment location union).
+- Eligible: `ACTIVE` holds with `expiresAt <= now` on `PENDING_PAYMENT` sales with zero `SalePayment` rows. Any payment row protects the hold.
+- One transaction per sale, at most 100 sales per call; release writes no `StockMovement`.
+- Response `200`: `{ "released": [{ "saleId", "branchId", "quantities": [{ "variantId", "quantity" }] }], "failed": [{ "saleId", "code" }] }`. A `failed` entry rolled back only that sale.
+- Audit: one `RESERVATION_RELEASED` per released sale, attributed to the caller, `after.trigger = "ADMIN"`.
+
 ## Architecture References
 
 See [`../architecture/mona-demo-v2.md`](../architecture/mona-demo-v2.md) for the authoritative design notes on BigInt money, DB-resolved authorization, JWT identity only, branch scoping, stock reservation lifecycle, payment idempotency, Serializable transactions, `SELECT FOR UPDATE`, and post-commit Socket.IO notifications.

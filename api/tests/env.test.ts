@@ -157,4 +157,44 @@ describe('environment validation', () => {
       expect(() => parseEnv({ ...input, API_PORT: 'invalid', PORT: '8080' })).toThrow('API_PORT');
     });
   });
+  // Pilot P0.1-B2: the expired-hold sweeper writes automatically, so it is
+  // strictly opt-in and its cadence/batch are bounded.
+  describe('reservation sweeper settings', () => {
+    it('defaults to disabled, 60000 ms and a batch of 100', () => {
+      const result = parseEnv(input);
+      expect(result.RESERVATION_SWEEPER_ENABLED).toBe(false);
+      expect(result.RESERVATION_SWEEP_INTERVAL_MS).toBe(60000);
+      expect(result.RESERVATION_SWEEP_BATCH_SIZE).toBe(100);
+    });
+
+    it.each([['true', true], ['false', false]])('parses RESERVATION_SWEEPER_ENABLED=%s', (value, expected) => {
+      expect(parseEnv({ ...input, RESERVATION_SWEEPER_ENABLED: value }).RESERVATION_SWEEPER_ENABLED).toBe(expected);
+    });
+
+    it.each(['', '1', '0', 'yes', 'TRUE', 'on'])('rejects a non-explicit boolean %j', (RESERVATION_SWEEPER_ENABLED) => {
+      expect(() => parseEnv({ ...input, RESERVATION_SWEEPER_ENABLED })).toThrow(
+        'Invalid API environment variables: RESERVATION_SWEEPER_ENABLED',
+      );
+    });
+
+    it('accepts an interval at the 1000 ms minimum', () => {
+      expect(parseEnv({ ...input, RESERVATION_SWEEP_INTERVAL_MS: '1000' }).RESERVATION_SWEEP_INTERVAL_MS).toBe(1000);
+    });
+
+    it.each(['0', '-1', '999', '1500.5', 'soon', ''])('rejects interval %j', (RESERVATION_SWEEP_INTERVAL_MS) => {
+      expect(() => parseEnv({ ...input, RESERVATION_SWEEP_INTERVAL_MS })).toThrow(
+        'Invalid API environment variables: RESERVATION_SWEEP_INTERVAL_MS',
+      );
+    });
+
+    it.each([['1', 1], ['100', 100]])('accepts batch size %s', (value, expected) => {
+      expect(parseEnv({ ...input, RESERVATION_SWEEP_BATCH_SIZE: value }).RESERVATION_SWEEP_BATCH_SIZE).toBe(expected);
+    });
+
+    it.each(['0', '-5', '101', '2.5', 'many', ''])('rejects batch size %j (max = reconciliation limit)', (RESERVATION_SWEEP_BATCH_SIZE) => {
+      expect(() => parseEnv({ ...input, RESERVATION_SWEEP_BATCH_SIZE })).toThrow(
+        'Invalid API environment variables: RESERVATION_SWEEP_BATCH_SIZE',
+      );
+    });
+  });
 });

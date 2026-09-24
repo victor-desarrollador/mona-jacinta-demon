@@ -4,7 +4,7 @@ import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 import { resolveSystemActorId } from '../audit/system-actor.service.js';
-import { releasableExpiredHoldWhere } from './reservation-holds.js';
+import { EXPIRED_HOLD_RELEASE_BATCH_LIMIT, PRE_SEND_RECONCILE_LIMIT, releasableExpiredHoldWhere } from './reservation-holds.js';
 
 type AuthScope = { userId: string; branchIds: string[] };
 type LockedSale = { id: string; branchId: string; status: string };
@@ -13,16 +13,23 @@ type LockedInventory = { id: string; variantId: string; branchId: string; physic
 
 // Pilot P0.1-B1: who a release is attributed to. ADMIN = the invoking human
 // (manual INVENTORY_MANAGE endpoint); SYSTEM = the dedicated inactive
-// system actor (automation; the scheduler itself is P0.1-B2).
-export type ReleaseActor = { userId: string; trigger: 'ADMIN' | 'SYSTEM' };
+// system actor (automation). SEND_TO_CASHIER = the system actor too, with
+// the human whose send caused the touch kept as audit context only
+// (triggeredByUserId grants nothing). Never chosen by HTTP input.
+export type ReleaseActor = {
+  userId: string;
+  trigger: 'ADMIN' | 'SYSTEM' | 'SEND_TO_CASHIER';
+  triggeredByUserId?: string;
+};
 type ReleasedQuantity = { variantId: string; quantity: bigint };
 export type ReleaseOutcome =
   | { outcome: 'RELEASED'; saleId: string; branchId: string; quantities: ReleasedQuantity[] }
   | { outcome: 'NOT_FOUND' | 'OUT_OF_SCOPE' | 'NOT_PENDING' | 'PAYMENT_PROTECTED' | 'NOTHING_EXPIRED'; saleId: string };
 type ReleasedSale = { saleId: string; branchId: string; quantities: ReleasedQuantity[] };
 export type ReconcileResult = { released: ReleasedSale[]; failed: Array<{ saleId: string; code: string }> };
+export type PreSendTarget = { branchId: string; variantIds: string[]; triggeredByUserId: string };
 
-export const EXPIRED_HOLD_RELEASE_BATCH_LIMIT = 100;
+export { EXPIRED_HOLD_RELEASE_BATCH_LIMIT };
 
 const invalidState = () => new AppError(409, 'INVALID_SALE_STATE', 'La venta no puede cancelarse en su estado actual.');
 const invalidReservation = (message = 'La reserva de la venta no es válida.') => new AppError(409, 'INVALID_RESERVATION', message);
@@ -170,7 +177,11 @@ export function createCancellationService(database: PrismaClient) {
       const released = [...quantities].map(([variantId, quantity]) => ({ variantId, quantity }));
       await createAuditLog(tx, {
         userId: options.actor.userId, branchId: sale.branchId, action: 'RESERVATION_RELEASED', entityType: 'Sale', entityId: saleId,
-        after: { saleId, reason: 'EXPIRED', trigger: options.actor.trigger, released },
+        after: {
+          saleId, reason: 'EXPIRED', trigger: options.actor.trigger,
+          ...(options.actor.triggeredByUserId ? { triggeredByUserId: options.actor.triggeredByUserId } : {}),
+          released,
+        },
       });
       return { outcome: 'RELEASED', saleId, branchId: sale.branchId, quantities: released };
     });
@@ -179,16 +190,20 @@ export function createCancellationService(database: PrismaClient) {
   // Discovery runs outside any transaction and only nominates candidates
   // (shared P0.1-A predicate, deterministic, bounded); each Sale is then
   // released in its own transaction, so one failing Sale never rolls back
-  // or blocks another. branchIds null = every location (SYSTEM only).
-  async function reconcile(options: { actor: ReleaseActor; now: Date; branchIds: string[] | null; limit?: number }): Promise<ReconcileResult> {
+  // or blocks another. branchIds null = every location (SYSTEM only);
+  // variantIds optionally narrows discovery to exact variants (pre-send).
+  async function reconcile(options: {
+    actor: ReleaseActor; now: Date; branchIds: string[] | null; variantIds?: string[]; limit?: number;
+  }): Promise<ReconcileResult> {
     const result: ReconcileResult = { released: [], failed: [] };
-    if (options.branchIds?.length === 0) return result;
+    if (options.branchIds?.length === 0 || options.variantIds?.length === 0) return result;
     const candidates = await database.stockReservation.groupBy({
       by: ['saleId'],
       where: {
         AND: [
           releasableExpiredHoldWhere(options.now),
           ...(options.branchIds ? [{ sale: { branchId: { in: options.branchIds } } }] : []),
+          ...(options.variantIds ? [{ variantId: { in: options.variantIds } }] : []),
         ],
       },
       orderBy: { saleId: 'asc' },
@@ -223,10 +238,25 @@ export function createCancellationService(database: PrismaClient) {
     return reconcile({ actor: { userId, trigger: 'SYSTEM' }, now, branchIds: null, ...(options.limit ? { limit: options.limit } : {}) });
   }
 
+  // Pilot P0.1-B2 pre-send step: releases only the target branch's expired
+  // holds of the target's variants, as system maintenance. Owns its clock
+  // like the SYSTEM entry; fails closed (throws) without a valid actor.
+  async function reconcileBeforeSend(target: PreSendTarget) {
+    const userId = await resolveSystemActorId(database);
+    const now = new Date();
+    return reconcile({
+      actor: { userId, trigger: 'SEND_TO_CASHIER', triggeredByUserId: target.triggeredByUserId },
+      now, branchIds: [target.branchId], variantIds: target.variantIds, limit: PRE_SEND_RECONCILE_LIMIT,
+    });
+  }
+
   // Manual INVENTORY_MANAGE endpoint: the invoking human is the audit actor.
   function releaseExpiredReservations(scope: AuthScope) {
     return reconcile({ actor: { userId: scope.userId, trigger: 'ADMIN' }, now: new Date(), branchIds: scope.branchIds });
   }
 
-  return { cancelSale, releaseExpiredSaleHolds, reconcileExpiredHolds, releaseExpiredHoldsAsSystem, releaseExpiredReservations };
+  return {
+    cancelSale, releaseExpiredSaleHolds, reconcileExpiredHolds, releaseExpiredHoldsAsSystem, reconcileBeforeSend,
+    releaseExpiredReservations,
+  };
 }

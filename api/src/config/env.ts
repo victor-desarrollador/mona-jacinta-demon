@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { loadRepositoryEnv } from './load-env.js';
+import { EXPIRED_HOLD_RELEASE_BATCH_LIMIT } from '../modules/sales/reservation-holds.js';
 
 const databaseUrl = z.string().refine((value) => {
   try {
@@ -69,6 +70,11 @@ const envSchema = z.object({
         )
         .min(1),
     ),
+  // Pilot P0.1-B2: the expired-hold sweeper writes automatically, so it is
+  // strictly opt-in (explicit 'true' only) and bounded.
+  RESERVATION_SWEEPER_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
+  RESERVATION_SWEEP_INTERVAL_MS: z.coerce.number().int().min(1000).default(60000),
+  RESERVATION_SWEEP_BATCH_SIZE: z.coerce.number().int().min(1).max(EXPIRED_HOLD_RELEASE_BATCH_LIMIT).default(100),
 }).transform(({ PORT, API_PORT, ...rest }, ctx) => {
   if (rest.NODE_ENV === 'test' && rest.TEST_DATABASE_URL === undefined) {
     ctx.addIssue({ code: 'custom', path: ['TEST_DATABASE_URL'], message: 'Required for tests' });

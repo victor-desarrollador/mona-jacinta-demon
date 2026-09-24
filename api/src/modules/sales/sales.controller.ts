@@ -7,7 +7,7 @@ import type { RealtimeEmitter } from '../../realtime/socket.js';
 import { REALTIME_EVENTS } from '../../realtime/socket.js';
 
 export function createSalesController(database: PrismaClient, realtime?: RealtimeEmitter) {
-  const service = createSalesService(database);
+  const service = createSalesService(database, realtime ? { realtime } : {});
   const userId = (req: Parameters<RequestHandler>[0]) => req.auth!.userId;
   return {
     pending: (async (req, res) => {

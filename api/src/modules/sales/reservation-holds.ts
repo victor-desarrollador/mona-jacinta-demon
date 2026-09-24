@@ -9,6 +9,15 @@ import type { Prisma, PrismaClient } from '../../generated/prisma/client.js';
 
 export const TECHNICAL_HOLD_TTL_MS = 30 * 60 * 1000;
 
+// Upper bound of one authoritative reconciliation batch (B1). Lives in this
+// dependency-free module so env validation can bound the sweeper batch size.
+export const EXPIRED_HOLD_RELEASE_BATCH_LIMIT = 100;
+
+// Interactive latency bound for the seller -> cashier pre-send step: at most
+// this many candidate Sales (one transaction each) before the target's own
+// reservation. A separate concern from the maintenance batch above.
+export const PRE_SEND_RECONCILE_LIMIT = 10;
+
 type HoldDatabase = Pick<PrismaClient, 'stockReservation'>;
 type BranchVariant = { branchId: string; variantId: string };
 

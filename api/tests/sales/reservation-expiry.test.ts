@@ -7,10 +7,12 @@ import { createApp } from '../../src/app.js';
 import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js';
 import { createCancellationService } from '../../src/modules/sales/cancellation.service.js';
 import { createReservationService } from '../../src/modules/sales/reservation.service.js';
+import * as holds from '../../src/modules/sales/reservation-holds.js';
 import { TECHNICAL_HOLD_TTL_MS } from '../../src/modules/sales/reservation-holds.js';
 import { bootstrapSystemActor, SYSTEM_ACTOR_USER_ID } from '../../src/modules/audit/system-actor.service.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 import { getAuthToken } from '../helpers/auth.js';
+import { logger } from '../../src/shared/logger.js';
 
 type SaleStatus = 'DRAFT' | 'PENDING_PAYMENT' | 'PAID' | 'COMPLETED' | 'CANCELLED';
 type Variant = { id: string; productId: string; sku: string; price: bigint };
@@ -421,6 +423,291 @@ describe('authoritative expired technical-hold release (Pilot P0.1-B1)', () => {
       const outcome = await service.releaseExpiredSaleHolds(atCentro.id, { actor: admin(), now: NOW, branchIds: [depId] });
       expect(outcome.outcome).toBe('OUT_OF_SCOPE');
       expect((await reservations(atCentro.id))[0]!.status).toBe('ACTIVE');
+    });
+  });
+  // Pilot P0.1-B2: before the authoritative reserve transaction, send-to-
+  // cashier releases expired zero-payment holds of the target's own branch
+  // and variants (system actor, trigger SEND_TO_CASHIER), each in its own
+  // transaction. The final locked physical - reserved check stays the only
+  // oversell authority; maintenance failures degrade to it.
+  describe('pre-send targeted reconciliation (Pilot P0.1-B2)', () => {
+    const wallExpired = () => new Date(Date.now() - HOUR);
+    const wallValid = () => new Date(Date.now() + HOUR);
+    let sellerToken: string;
+
+    beforeEach(async () => {
+      await bootstrapSystemActor(db, { createPasswordHash: async () => 'unusable-hash' });
+      sellerToken = await getAuthToken(await db.user.findUniqueOrThrow({ where: { id: sellerId } }));
+    }, 120000);
+
+    const setInventory = (variantId: string, physical: bigint, reserved: bigint, branchId = centroId) =>
+      db.inventory.update({ where: { variantId_branchId: { variantId, branchId } }, data: { physical, reserved } });
+    const draft = (variant: Variant = remera, quantity = 1n, owner = sellerId, status: SaleStatus = 'DRAFT') => db.sale.create({
+      data: {
+        sellerId: owner, branchId: centroId, status, subtotal: variant.price * quantity, total: variant.price * quantity,
+        items: { create: { variantId: variant.id, productId: variant.productId, productName: 'P', variantName: 'V', sku: variant.sku, quantity, unitPrice: variant.price, subtotal: variant.price * quantity } },
+      },
+    });
+    const send = (saleId: string, token = sellerToken, target = app) =>
+      request(target).post(`/api/v1/sales/${saleId}/send-to-cashier`).set('Authorization', `Bearer ${token}`);
+    const warnEvents = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.map(([entry]) => entry as Record<string, unknown>);
+
+    it('releases a stale expired hold on the same branch+variant, then reserves exactly', async () => {
+      await setInventory(remera.id, 1n, 0n);
+      const stale = await heldSale({ expiresAt: wallExpired() });
+      expect(await inventory(remera.id)).toMatchObject({ physical: 1n, reserved: 1n });
+      const target = await draft();
+      const response = await send(target.id);
+      expect(response.status).toBe(200);
+      expect((await reservations(stale.id)).map((row) => row.status)).toEqual(['RELEASED']);
+      expect((await reservations(target.id)).map((row) => row.status)).toEqual(['ACTIVE']);
+      expect(await inventory(remera.id)).toMatchObject({ physical: 1n, reserved: 1n });
+      expect(await db.stockMovement.count()).toBe(0);
+      const [release] = await releaseAudits(stale.id);
+      expect(release).toMatchObject({ userId: SYSTEM_ACTOR_USER_ID, branchId: centroId });
+      expect(release!.after).toEqual({
+        saleId: stale.id, reason: 'EXPIRED', trigger: 'SEND_TO_CASHIER', triggeredByUserId: sellerId,
+        released: [{ variantId: remera.id, quantity: '1' }],
+      });
+      const sent = await db.auditLog.findFirstOrThrow({ where: { action: 'SALE_SENT_TO_CASHIER', entityId: target.id } });
+      expect(sent.userId).toBe(sellerId);
+    });
+
+    it('isolates a throwing realtime emit: later notifications still go out and the send proceeds', async () => {
+      const warn = vi.spyOn(logger, 'warn');
+      await setInventory(remera.id, 3n, 0n);
+      const first = await heldSale({ id: '00000000-0000-4000-8000-0000000d0001', expiresAt: wallExpired() });
+      const second = await heldSale({ id: '00000000-0000-4000-8000-0000000d0002', expiresAt: wallExpired() });
+      const notified: string[] = [];
+      let inventoryEvents = 0;
+      const emit = vi.fn((event: string, payload: { saleId?: string }) => {
+        if (event !== 'inventory.updated') return;
+        inventoryEvents += 1;
+        if (inventoryEvents === 1) throw new Error('socket adapter down: secret-internal-detail');
+        notified.push(payload.saleId!);
+      });
+      const target = await draft();
+      expect((await send(target.id, sellerToken, createApp(db, { emit }))).status).toBe(200);
+      expect((await reservations(first.id))[0]!.status).toBe('RELEASED');
+      expect((await reservations(second.id))[0]!.status).toBe('RELEASED');
+      expect((await reservations(target.id)).map((row) => row.status)).toEqual(['ACTIVE']);
+      expect(await inventory(remera.id)).toMatchObject({ physical: 3n, reserved: 1n });
+      expect(await releaseAudits(first.id)).toHaveLength(1);
+      expect(await releaseAudits(second.id)).toHaveLength(1);
+      expect(inventoryEvents).toBe(2);
+      expect(notified).toEqual([second.id]);
+      const events = warnEvents(warn);
+      expect(events.filter((entry) => entry.event === 'reservation_pre_reconcile_notify_failed')).toEqual([
+        { event: 'reservation_pre_reconcile_notify_failed', saleId: first.id, code: 'NOTIFY_FAILED' },
+      ]);
+      expect(events.filter((entry) => entry.event === 'reservation_pre_reconcile_failed')).toEqual([]);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-internal-detail');
+    });
+
+    it('emits the existing inventory.updated event for a committed pre-send release only', async () => {
+      await setInventory(remera.id, 1n, 0n);
+      const stale = await heldSale({ expiresAt: wallExpired() });
+      const emit = vi.fn();
+      const response = await send((await draft()).id, sellerToken, createApp(db, { emit }));
+      expect(response.status).toBe(200);
+      const inventoryEvents = emit.mock.calls.filter(([event]) => event === 'inventory.updated');
+      expect(inventoryEvents).toEqual([['inventory.updated', { saleId: stale.id, branchId: centroId, quantities: [{ variantId: remera.id, quantity: 1n }] }]]);
+    });
+
+    it('caps interactive pre-send reconciliation at 10 candidate Sales; the rest stay eligible', async () => {
+      // Interactive latency bound, distinct from the 100-Sale maintenance batch.
+      const cap = 10;
+      await setInventory(remera.id, BigInt(cap + 1), 0n);
+      const candidates: Array<{ id: string }> = [];
+      for (let index = 0; index <= cap; index += 1) candidates.push(await heldSale({ expiresAt: wallExpired() }));
+      expect(await inventory(remera.id)).toMatchObject({ physical: BigInt(cap + 1), reserved: BigInt(cap + 1) });
+      const spy = vi.spyOn(db.stockReservation, 'groupBy');
+      const first = await draft();
+      expect((await send(first.id)).status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]![0]).toMatchObject({ take: cap });
+      const statuses = async () => Promise.all(candidates.map(async (sale) => (await reservations(sale.id))[0]!.status));
+      expect((await statuses()).filter((status) => status === 'RELEASED')).toHaveLength(cap);
+      expect(await db.auditLog.count({ where: { action: 'RESERVATION_RELEASED' } })).toBe(cap);
+      // One leftover expired hold + the target's new hold; never above physical.
+      expect(await inventory(remera.id)).toMatchObject({ physical: BigInt(cap + 1), reserved: 2n });
+      // The leftover is still eligible: the next send reclaims it.
+      expect((await send((await draft()).id)).status).toBe(200);
+      expect((await statuses()).every((status) => status === 'RELEASED')).toBe(true);
+      expect(await inventory(remera.id)).toMatchObject({ physical: BigInt(cap + 1), reserved: 2n });
+      const active = await db.stockReservation.aggregate({ where: { status: 'ACTIVE', variantId: remera.id, branchId: centroId }, _sum: { quantity: true } });
+      expect(active._sum.quantity).toBe(2n);
+      expect(holds.PRE_SEND_RECONCILE_LIMIT).toBe(cap);
+      expect(holds.EXPIRED_HOLD_RELEASE_BATCH_LIMIT).toBe(100);
+    });
+
+    it('releases a nominated candidate Sale atomically, including holds of variants the target does not need', async () => {
+      // Discovery is by target branch + variants; release is B1's Sale-level unit.
+      await setInventory(remera.id, 1n, 0n);
+      await setInventory(jean.id, 5n, 0n);
+      const candidate = await heldSale({ lines: [{ variant: remera, quantity: 1n }, { variant: jean, quantity: 3n }], expiresAt: wallExpired() });
+      expect(await inventory(jean.id)).toMatchObject({ physical: 5n, reserved: 3n });
+      const emit = vi.fn();
+      const target = await draft(remera);
+      expect((await send(target.id, sellerToken, createApp(db, { emit }))).status).toBe(200);
+      expect((await reservations(candidate.id)).map((row) => row.status)).toEqual(['RELEASED', 'RELEASED']);
+      expect(await inventory(remera.id)).toMatchObject({ physical: 1n, reserved: 1n });
+      expect(await inventory(jean.id)).toMatchObject({ physical: 5n, reserved: 0n });
+      const audits = await releaseAudits(candidate.id);
+      expect(audits).toHaveLength(1);
+      const after = audits[0]!.after as { trigger: string; triggeredByUserId: string; released: Array<{ variantId: string; quantity: string }> };
+      expect(audits[0]).toMatchObject({ userId: SYSTEM_ACTOR_USER_ID, branchId: centroId });
+      expect(after).toMatchObject({ trigger: 'SEND_TO_CASHIER', triggeredByUserId: sellerId });
+      expect(after.released).toHaveLength(2);
+      expect(after.released).toEqual(expect.arrayContaining([
+        { variantId: remera.id, quantity: '1' }, { variantId: jean.id, quantity: '3' },
+      ]));
+      const events = emit.mock.calls.filter(([event]) => event === 'inventory.updated');
+      expect(events).toHaveLength(1);
+      const payload = events[0]![1] as { saleId: string; branchId: string; quantities: Array<{ variantId: string; quantity: bigint }> };
+      expect(payload).toMatchObject({ saleId: candidate.id, branchId: centroId });
+      expect(payload.quantities).toHaveLength(2);
+      expect(payload.quantities).toEqual(expect.arrayContaining([
+        { variantId: remera.id, quantity: 1n }, { variantId: jean.id, quantity: 3n },
+      ]));
+      // The target's own reservation is its own authoritative transaction.
+      expect((await reservations(target.id)).map((row) => [row.variantId, row.status, row.quantity])).toEqual([[remera.id, 'ACTIVE', 1n]]);
+      expect(await db.auditLog.count({ where: { action: 'SALE_SENT_TO_CASHIER', entityId: target.id, userId: sellerId } })).toBe(1);
+    });
+
+    it('bounds discovery to one query over the target branch and exact variants', async () => {
+      await setInventory(remera.id, 5n, 0n);
+      const spy = vi.spyOn(db.stockReservation, 'groupBy');
+      const target = await db.sale.create({
+        data: {
+          sellerId, branchId: centroId, status: 'DRAFT', subtotal: 0n, total: 0n,
+          items: { create: [remera, remera, jean].map((variant) => ({ variantId: variant.id, productId: variant.productId, productName: 'P', variantName: 'V', sku: variant.sku, quantity: 1n, unitPrice: 0n, subtotal: 0n })) },
+        },
+      });
+      await setInventory(jean.id, 5n, 0n);
+      expect((await send(target.id)).status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const where = JSON.stringify(spy.mock.calls[0]![0]);
+      expect(where).toContain(JSON.stringify({ branchId: { in: [centroId] } }));
+      expect(where).toContain(JSON.stringify({ variantId: { in: [remera.id, jean.id].sort() } }));
+    });
+
+    it('never borrows stock from a payment-protected expired hold', async () => {
+      await setInventory(remera.id, 1n, 0n);
+      const protectedSale = await heldSale({ expiresAt: wallExpired() });
+      await payment(protectedSale.id);
+      const response = await send((await draft()).id);
+      expect(response.status).toBe(409);
+      expect(response.body.error?.code ?? response.body.code).toBe('INSUFFICIENT_STOCK');
+      expect((await reservations(protectedSale.id))[0]!.status).toBe('ACTIVE');
+      expect((await inventory(remera.id)).reserved).toBe(1n);
+      expect(await releaseAudits(protectedSale.id)).toHaveLength(0);
+    });
+
+    it('does not touch expired holds of another branch or another variant', async () => {
+      await setInventory(remera.id, 5n, 0n);
+      const otherBranch = await heldSale({ branchId: depId, expiresAt: wallExpired() });
+      const otherVariant = await heldSale({ variant: jean, expiresAt: wallExpired() });
+      expect((await send((await draft()).id)).status).toBe(200);
+      expect((await reservations(otherBranch.id))[0]!.status).toBe('ACTIVE');
+      expect((await reservations(otherVariant.id))[0]!.status).toBe('ACTIVE');
+      expect(await db.auditLog.count({ where: { action: 'RESERVATION_RELEASED' } })).toBe(0);
+    });
+
+    it('rejects an unauthorized, non-DRAFT or empty target before any cleanup', async () => {
+      await setInventory(remera.id, 1n, 0n);
+      const candidate = await heldSale({ expiresAt: wallExpired() });
+      const sellerRole = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+      const intruder = await db.user.create({ data: { name: 'seller-intruder', email: 'seller-intruder@test.local', passwordHash: 'x' } });
+      await db.userRoleScope.create({ data: { userId: intruder.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: centroId } });
+      const foreign = await send((await draft()).id, await getAuthToken(intruder));
+      expect(foreign.status).toBe(403);
+      const pending = await send((await draft(remera, 1n, sellerId, 'PENDING_PAYMENT')).id);
+      expect(pending.status).toBe(409);
+      expect(JSON.stringify(pending.body)).toContain('SALE_NOT_DRAFT');
+      const empty = await db.sale.create({ data: { sellerId, branchId: centroId, status: 'DRAFT', subtotal: 0n, total: 0n } });
+      const emptyResponse = await send(empty.id);
+      expect(emptyResponse.status).toBe(409);
+      expect(JSON.stringify(emptyResponse.body)).toContain('EMPTY_SALE');
+      expect((await reservations(candidate.id))[0]!.status).toBe('ACTIVE');
+      expect(await releaseAudits(candidate.id)).toHaveLength(0);
+      expect((await inventory(remera.id)).reserved).toBe(1n);
+    });
+
+    it('masks a corrupt candidate: logs it, rolls it back, and lets raw stock decide', async () => {
+      const warn = vi.spyOn(logger, 'warn');
+      // Enough raw stock: physical 5, drifted reserved 1 < hold 2.
+      await setInventory(remera.id, 5n, 0n);
+      const corrupt = await heldSale({ quantity: 2n, expiresAt: wallExpired() });
+      await setInventory(remera.id, 5n, 1n);
+      expect((await send((await draft()).id)).status).toBe(200);
+      expect((await reservations(corrupt.id))[0]!.status).toBe('ACTIVE');
+      expect((await inventory(remera.id)).reserved).toBe(2n);
+      expect(warnEvents(warn)).toContainEqual({ event: 'reservation_pre_reconcile_failed', saleId: corrupt.id, code: 'INVALID_RESERVATION' });
+      // Insufficient raw stock: physical 1, drifted reserved 1 (< hold 2, still
+      // corrupt) -> normal INSUFFICIENT_STOCK.
+      await setInventory(remera.id, 1n, 1n);
+      const blocked = await send((await draft()).id);
+      expect(blocked.status).toBe(409);
+      expect(JSON.stringify(blocked.body)).toContain('INSUFFICIENT_STOCK');
+      expect((await inventory(remera.id)).reserved).toBe(1n);
+      expect(await releaseAudits(corrupt.id)).toHaveLength(0);
+      for (const entry of warnEvents(warn)) expect(Object.keys(entry).sort()).toEqual(expect.arrayContaining(['code', 'event']));
+    });
+
+    it('fails closed without a valid system actor: no cleanup writes, safe log, authoritative result', async () => {
+      const warn = vi.spyOn(logger, 'warn');
+      await setInventory(remera.id, 1n, 0n);
+      const stale = await heldSale({ expiresAt: wallExpired() });
+      await db.user.update({ where: { id: SYSTEM_ACTOR_USER_ID }, data: { isActive: true } });
+      const tampered = await send((await draft()).id);
+      expect(tampered.status).toBe(409);
+      expect(JSON.stringify(tampered.body)).toContain('INSUFFICIENT_STOCK');
+      await db.user.delete({ where: { id: SYSTEM_ACTOR_USER_ID } });
+      const missing = await send((await draft()).id);
+      expect(missing.status).toBe(409);
+      expect((await reservations(stale.id))[0]!.status).toBe('ACTIVE');
+      expect((await inventory(remera.id)).reserved).toBe(1n);
+      expect(await db.auditLog.count({ where: { action: 'RESERVATION_RELEASED' } })).toBe(0);
+      expect(warnEvents(warn).filter((entry) => entry.code === 'SYSTEM_ACTOR_UNAVAILABLE')).toEqual([
+        { event: 'reservation_pre_reconcile_failed', code: 'SYSTEM_ACTOR_UNAVAILABLE' },
+        { event: 'reservation_pre_reconcile_failed', code: 'SYSTEM_ACTOR_UNAVAILABLE' },
+      ]);
+    });
+
+    it('two sellers racing for one reclaimed unit: exactly one wins, one release, no oversell', async () => {
+      await setInventory(remera.id, 1n, 0n);
+      const stale = await heldSale({ expiresAt: wallExpired() });
+      const sellerRole = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+      const rival = await db.user.create({ data: { name: 'seller-rival', email: 'seller-rival@test.local', passwordHash: 'x' } });
+      await db.userRoleScope.create({ data: { userId: rival.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: centroId } });
+      const [mine, theirs] = [await draft(), await draft(remera, 1n, rival.id)];
+      const responses = await Promise.all([send(mine.id), send(theirs.id, await getAuthToken(rival))]);
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 409]);
+      expect(await inventory(remera.id)).toMatchObject({ physical: 1n, reserved: 1n });
+      expect(await db.stockReservation.count({ where: { status: 'ACTIVE', variantId: remera.id, branchId: centroId } })).toBe(1);
+      expect((await reservations(stale.id))[0]!.status).toBe('RELEASED');
+      expect(await releaseAudits(stale.id)).toHaveLength(1);
+    });
+
+    it('a candidate released by pre-send can no longer be paid', async () => {
+      await setInventory(remera.id, 1n, 0n);
+      const stale = await heldSale({ expiresAt: wallExpired() });
+      expect((await send((await draft()).id)).status).toBe(200);
+      const cashier = await db.user.findUniqueOrThrow({ where: { email: 'cashier01@demo.local' } });
+      const paid = await request(app).post(`/api/v1/sales/${stale.id}/payments`).set('Authorization', `Bearer ${await getAuthToken(cashier)}`)
+        .send({ method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
+      expect(paid.status).toBe(409);
+      expect(JSON.stringify(paid.body)).toContain('INVALID_RESERVATION');
+      expect(await db.salePayment.count({ where: { saleId: stale.id } })).toBe(0);
+    });
+
+    it('a hold still valid at pre-send stays held: conservative INSUFFICIENT_STOCK', async () => {
+      await setInventory(remera.id, 1n, 0n);
+      const fresh = await heldSale({ expiresAt: wallValid() });
+      const response = await send((await draft()).id);
+      expect(response.status).toBe(409);
+      expect((await reservations(fresh.id))[0]!.status).toBe('ACTIVE');
     });
   });
 });

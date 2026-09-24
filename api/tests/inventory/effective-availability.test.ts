@@ -321,7 +321,11 @@ describe('expiry-aware effective availability (Pilot P0.1-A)', () => {
     expect(releasable(yerbaId, remera.id)).toBe(0n);
   });
 
-  it('does not weaken the authoritative send-to-cashier check (reconciliation is P0.1-B)', async () => {
+  // The lower reservation service invoked WITHOUT the P0.1-B2 pre-send
+  // reconciliation (the HTTP send path wires that in via sales.service and
+  // may release expired holds first): its locked transaction still validates
+  // the raw persisted physical - reserved, whatever the read projection says.
+  it('keeps the authoritative reserve transaction on raw physical - reserved without pre-send reconciliation', async () => {
     await setInventory(centroId, remera.id, 1n, 1n);
     await heldSale({ branchId: centroId, variant: remera, expiresAt: new Date(Date.now() - HOUR) });
     // The optimistic precheck admits the unit...

@@ -4,9 +4,13 @@ import { hasPermissionAtLocation } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
+import { logger } from '../../shared/logger.js';
 import { createInventoryService } from '../inventory/inventory.service.js';
 import type { AddSaleItemInput, UpdateSaleItemInput } from './dto/sale-item.dto.js';
 import { createReservationService } from './reservation.service.js';
+import { createCancellationService } from './cancellation.service.js';
+import type { RealtimeEmitter } from '../../realtime/socket.js';
+import { REALTIME_EVENTS } from '../../realtime/socket.js';
 
 type SaleDatabase = PrismaClient;
 
@@ -77,9 +81,27 @@ async function recalculateTotals(tx: Prisma.TransactionClient, saleId: string) {
   });
 }
 
-export function createSalesService(database: SaleDatabase) {
+export function createSalesService(database: SaleDatabase, options: { realtime?: RealtimeEmitter } = {}) {
   const inventory = createInventoryService(database);
-  const reservations = createReservationService(database);
+  const cancellation = createCancellationService(database);
+  // Pilot P0.1-B2: targeted expiry reconciliation before send-to-cashier.
+  // Each candidate release has already committed when it is returned, so
+  // the existing inventory.updated event is emitted after commit and never
+  // inside a transaction. Realtime is advisory: an emit failure is logged
+  // on its own and never reclassifies or stops a committed release.
+  const reservations = createReservationService(database, {
+    reconcileBeforeSend: async (target) => {
+      const result = await cancellation.reconcileBeforeSend(target);
+      for (const release of result.released) {
+        try {
+          options.realtime?.emit(REALTIME_EVENTS.inventoryUpdated, release);
+        } catch {
+          logger.warn({ event: 'reservation_pre_reconcile_notify_failed', saleId: release.saleId, code: 'NOTIFY_FAILED' });
+        }
+      }
+      return result;
+    },
+  });
 
   async function loadSale(saleId: string) {
     const sale = await database.sale.findUnique({ where: { id: saleId }, include: saleInclude });
