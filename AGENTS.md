@@ -189,6 +189,12 @@ conflict instead.
 document the actual current setup/workflow commands; prefer them over
 inference from code when they exist.
 
+**Living Blueprint**: `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` is
+the persistent implementation/status/failure/lessons ledger. Read it before
+substantial work; update it after implementation, review, checkpoint, and
+major decision blocks. It does **not** override frozen `docs/production-v1/*`
+requirements, and repository/git reality outranks stale Blueprint state.
+
 ---
 
 ## Evergreen engineering rules
