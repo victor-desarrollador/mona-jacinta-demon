@@ -92,6 +92,13 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     });
   }
 
+  // A historical (non-ACTIVE) row: it never contributed to Inventory.reserved.
+  async function historical(saleId: string, variantId: string, quantity: bigint, status: 'RELEASED' | 'CONSUMED') {
+    return db.stockReservation.create({
+      data: { saleId, variantId, branchId, quantity, status, expiresAt: new Date(Date.now() - 60 * 60 * 1000) },
+    });
+  }
+
   async function createReservedSale(items: Array<{ variantId: string; productId: string; quantity: bigint }>) {
     const total = items.reduce((sum, item) => sum + item.quantity, 0n);
     const sale = await db.sale.create({
@@ -225,7 +232,9 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     expect(response.body.status).toBe('COMPLETED');
     expect(await inventory(remeraId)).toMatchObject({ physical: before.remera.physical - 2n, reserved: before.remera.reserved - 2n });
     expect(await inventory(jeanId)).toMatchObject({ physical: before.jean.physical - 1n, reserved: before.jean.reserved - 1n });
-    expect(await db.stockReservation.findMany({ where: { saleId: sale.id } })).toEqual([
+    // Explicit order: without ORDER BY PostgreSQL may return the two updated
+    // rows in either order (seed variant ids sort remera before jean).
+    expect(await db.stockReservation.findMany({ where: { saleId: sale.id }, orderBy: { variantId: 'asc' } })).toEqual([
       expect.objectContaining({ variantId: remeraId, quantity: 2n, status: 'CONSUMED' }),
       expect.objectContaining({ variantId: jeanId, quantity: 1n, status: 'CONSUMED' }),
     ]);
@@ -324,6 +333,10 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     ['non-active reservation', async (saleId: string) => { await reserve(saleId, remeraId, 1n, { status: 'RELEASED' }); }],
     ['wrong-branch reservation', async (saleId: string) => { await reserve(saleId, remeraId, 1n, { branchId: otherBranchId }); }],
     ['mismatched reservation quantity', async (saleId: string) => { await reserve(saleId, remeraId, 2n); }],
+    // Pilot P0.1-C: historical rows are never current coverage, and an
+    // unexpected extra ACTIVE variant breaks exact coverage.
+    ['only historical CONSUMED coverage', async (saleId: string) => { await historical(saleId, remeraId, 1n, 'CONSUMED'); }],
+    ['an extra ACTIVE variant', async (saleId: string) => { await reserve(saleId, remeraId, 1n); await reserve(saleId, jeanId, 1n); }],
   ])('rejects a sale with %s without partial writes', async (_label, prepare) => {
     const sale = await createSale();
     await addItem(sale.id, remeraId, remeraProductId, 1n);
@@ -356,5 +369,38 @@ describe('POST /api/v1/sales/:saleId/complete', () => {
     ]);
     expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(0);
     expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } })).toBe(0);
+  });
+
+  // Pilot P0.1-C: PAID completion consumes CURRENT ACTIVE coverage only and
+  // is not blocked by the original technical-hold expiresAt.
+  describe('PAID completion and current hold coverage (Pilot P0.1-C)', () => {
+    it('completes a PAID sale whose ACTIVE hold expired long ago', async () => {
+      const sale = await createSale();
+      await addItem(sale.id, remeraId, remeraProductId, 2n);
+      await reserve(sale.id, remeraId, 2n);
+      await db.stockReservation.updateMany({ where: { saleId: sale.id }, data: { expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000) } });
+      const before = await inventory(remeraId);
+      const response = await complete(sale.id);
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('COMPLETED');
+      expect(await inventory(remeraId)).toMatchObject({ physical: before.physical - 2n, reserved: before.reserved - 2n });
+      expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: sale.id } })).status).toBe('CONSUMED');
+      expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(1);
+    });
+
+    it.each(['RELEASED', 'CONSUMED'] as const)('ignores a historical %s row next to correct current ACTIVE coverage and never re-consumes it', async (status) => {
+      const sale = await createSale();
+      await addItem(sale.id, remeraId, remeraProductId, 1n);
+      const old = await historical(sale.id, remeraId, 5n, status);
+      await reserve(sale.id, remeraId, 1n);
+      const before = await inventory(remeraId);
+      const response = await complete(sale.id);
+      expect(response.status).toBe(200);
+      expect(await inventory(remeraId)).toMatchObject({ physical: before.physical - 1n, reserved: before.reserved - 1n });
+      expect(await db.stockReservation.findUniqueOrThrow({ where: { id: old.id } })).toMatchObject({ status, quantity: 5n });
+      expect(await db.stockReservation.count({ where: { saleId: sale.id, status: 'CONSUMED' } })).toBe(status === 'CONSUMED' ? 2 : 1);
+      expect((await db.stockMovement.findFirstOrThrow({ where: { saleId: sale.id } })).quantityDelta).toBe(-1n);
+      expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } })).toBe(1);
+    });
   });
 });

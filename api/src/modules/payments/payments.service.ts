@@ -4,6 +4,7 @@ import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 import type { RegisterPaymentInput } from './dto/payment.dto.js';
+import { evaluateCurrentHoldCoverage } from '../sales/hold-coverage.js';
 
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
 type LockedSale = { id: string; branchId: string; status: string; total: bigint };
@@ -27,6 +28,16 @@ const isIdempotencyConflict = (error: unknown) => {
 
 function invalidState() {
   return new AppError(409, 'INVALID_SALE_STATE', 'La venta no admite nuevos pagos en su estado actual.');
+}
+
+// Pilot P0.1-C: stable, detail-free rejections for a NEW payment. The
+// inventory/reservation specifics are never exposed.
+function reservationExpired() {
+  return new AppError(409, 'RESERVATION_EXPIRED', 'La reserva de la venta venció; no admite un primer pago.');
+}
+
+function invalidReservation() {
+  return new AppError(409, 'INVALID_RESERVATION', 'La venta no tiene reservas vigentes que respalden sus artículos.');
 }
 
 function sameIntent(payment: SalePayment, input: RegisterPaymentInput) {
@@ -67,18 +78,26 @@ export function createPaymentsService(database: PrismaClient) {
       }
       if (sale.status !== 'PENDING_PAYMENT') throw invalidState();
 
-      // Cancellation/expiry serializes on Sale. If this sale has reservations,
-      // payment is only valid while they are still ACTIVE. This closes the
-      // payment-vs-expiry race without changing payment amounts.
-      const reservationStates = await tx.stockReservation.findMany({
-        where: { saleId },
-        select: { status: true },
-      });
-      if (reservationStates.length > 0 && reservationStates.some(({ status }) => status !== 'ACTIVE')) {
-        throw new AppError(409, 'INVALID_RESERVATION', 'La venta ya no tiene reservas activas.');
-      }
-
+      // Pilot P0.1-C: a NEW payment needs exact CURRENT hold coverage
+      // (ACTIVE rows only == current SaleItems, same branch). Every writer
+      // of StockReservation.status (B1/B2 release, cancel, complete) takes
+      // this same Sale lock first, so these plain reads cannot race them.
+      // Expiry: zero SalePayment rows -> the holds must still be unexpired;
+      // any existing row (Policy A, row existence, never the sum) protects
+      // them. The clock is read here, once per decision, never from input.
+      // Detection only: nothing is released from the payment path.
       const payments = await tx.salePayment.findMany({ where: { saleId }, select: { amount: true } });
+      const items = await tx.saleItem.findMany({ where: { saleId }, select: { variantId: true, quantity: true } });
+      const activeHolds = await tx.stockReservation.findMany({
+        where: { saleId, status: 'ACTIVE' },
+        select: { variantId: true, branchId: true, quantity: true, expiresAt: true },
+      });
+      const coverage = evaluateCurrentHoldCoverage({
+        branchId: sale.branchId, items, activeHolds,
+        policy: payments.length === 0 ? { kind: 'FIRST_PAYMENT', now: new Date() } : { kind: 'PAYMENT_PROTECTED' },
+      });
+      if (!coverage.ok) throw coverage.reason === 'EXPIRED' ? reservationExpired() : invalidReservation();
+
       const accepted = payments.reduce((sum, payment) => sum + payment.amount, 0n);
       const remaining = sale.total - accepted;
       if (input.amount > remaining) throw new AppError(409, 'OVERPAYMENT', 'El importe supera el saldo pendiente.');

@@ -15,6 +15,7 @@ Seller → cashier technical holds (`StockReservation`, TTL 30 minutes,
 | P0.1-A | Read-side effective availability ignores releasable expired holds. The raw `reserved` value is still returned. |
 | P0.1-B1 | Authoritative, idempotent per-sale release; system audit actor; manual endpoint. |
 | P0.1-B2 | Targeted release before send-to-cashier; opt-in background sweeper. |
+| P0.1-C | Payment, completion and cashier-queue rules against current hold coverage. |
 
 ## Expiry rule
 
@@ -120,6 +121,7 @@ to `RELEASE_FAILED`.
 | `reservation_sweep_failed` | error | `code`, `durationMs` |
 | `reservation_pre_reconcile_failed` | warn | `code`, optional `saleId` |
 | `reservation_pre_reconcile_notify_failed` | warn | `saleId`, `code` (`NOTIFY_FAILED`) |
+| `payment_notify_failed` | warn | `saleId`, `code` (`NOTIFY_FAILED`) — P0.1-C |
 
 `reservation_pre_reconcile_failed` covers real reconciliation/maintenance
 failures only. `reservation_pre_reconcile_notify_failed` means the realtime
@@ -146,9 +148,123 @@ back an inventory or reservation write (see
 `reservation_pre_reconcile_notify_failed` and
 `reservation_sweep_notify_failed` above).
 
+## P0.1-C — Payment, completion and cashier queue
+
+### Current hold coverage
+
+A sale's **current coverage** is its `ACTIVE` `StockReservation` rows only.
+Historical `RELEASED` and `CONSUMED` rows are never current coverage. They
+are ignored, never matched and never consumed again. Coverage is exact
+when:
+
+- every `ACTIVE` row is on the sale's own branch with a positive quantity;
+- per variant, the `ACTIVE` quantity equals the sum of the current
+  `SaleItem` quantities;
+- no required variant is missing and no unexpected `ACTIVE` variant exists.
+
+A sale with no items has no valid coverage. Nothing is repaired
+implicitly.
+
+### Payment
+
+1. An idempotent replay (same key, same intent) is resolved **first** and
+   returns the original payment, even after `PAID`/`COMPLETED` or after
+   `expiresAt`. A different new payment on a `PAID` sale is still rejected
+   (`INVALID_SALE_STATE`).
+2. A NEW payment needs a `PENDING_PAYMENT` sale with exact current coverage
+   (otherwise `INVALID_RESERVATION`).
+3. **First payment (zero `SalePayment` rows):** every current hold must be
+   unexpired, `expiresAt > now`. `expiresAt <= now` is expired, the same
+   boundary as P0.1-A/B1. An expired hold is rejected with
+   `RESERVATION_EXPIRED`.
+4. **Later payments (Policy A):** any existing `SalePayment` row, whatever
+   its amount, protects the holds. The remaining balance may be paid after
+   `expiresAt`, but exact current coverage is still required.
+5. Remaining = `Sale.total − SUM(SalePayment.amount)` in exact BigInt.
+   Equal → `PAID`, below → stays `PENDING_PAYMENT`, above → `OVERPAYMENT`.
+6. A rejected payment writes nothing: no payment, cash movement, status
+   change or audit.
+
+The payment path reads the wall clock itself, once per decision. It only
+**detects** expiry: it never decrements `Inventory.reserved`, never marks a
+hold `RELEASED` and never writes `RESERVATION_RELEASED`. Release stays owned
+by P0.1-B1/B2. There is no automatic refund or reversal for an abandoned
+partial payment. It stays a manual operational case for the Pilot (P0.2).
+
+### Payment vs expiry release
+
+Both lock the `Sale` row first, so whichever commits first decides:
+
+- If payment commits first, the release then sees a `SalePayment` row and
+  returns `PAYMENT_PROTECTED`. The hold stays `ACTIVE`.
+- If the release commits first, the hold becomes `RELEASED` and `reserved`
+  is decremented. The payment then finds no current coverage and is
+  rejected.
+
+No state can hold both an accepted payment and an expiry-released hold for
+that sale.
+
+### Completion
+
+Completion needs a `PAID` sale with exact current coverage. It consumes only
+the current `ACTIVE` holds and **ignores `expiresAt`**, so a sale paid while
+its hold was valid stays completable later (the sweeper never touches
+`PAID`). The lock order is `Sale → StockReservation (ACTIVE, id ASC) →
+Inventory (id ASC)`, the same prefix as the B1 release and cancellation.
+
+### Cashier queue
+
+`GET /api/v1/sales/pending` (`SALE_QUEUE_VIEW`) lists `PENDING_PAYMENT`
+**and** `PAID` sales, so a fully paid sale stays visible until it is
+completed. Each row adds `status`, `holdState` and `canAcceptPayment`:
+
+| `holdState` | Meaning | `canAcceptPayment` |
+| --- | --- | --- |
+| `VALID` | Pending, zero payments, exact unexpired coverage | yes |
+| `EXPIRED` | Pending, zero payments, holds expired or already released | no (cancellation remains possible) |
+| `PAYMENT_PROTECTED` | Pending, at least one payment, exact coverage | yes (remaining balance) |
+| `PAID` | Paid, exact coverage; complete it | no |
+| `COVERAGE_INVALID` | Coverage does not back the items (fail closed) | no |
+
+The queue is informational only. Payment and completion re-check everything
+under the Sale lock.
+
+### Payment realtime
+
+The `sale.paid` notification is sent only after the payment transaction has
+committed. If it throws, the error is logged as `payment_notify_failed` and
+the response stays the committed payment's `201`. It is never turned into an
+HTTP error that could read as "not charged". An idempotent replay never
+notifies again and never duplicates the payment, audit or cash movement.
+
+### [PILOT DECISION / TRANSITIONAL DIVERGENCE] Policy A vs the frozen sellable formula
+
+The frozen Production V1 documents release a technical hold on expiry only
+when no payment was made (`04-domain-rules.md`: "RELEASED on expiry or
+cancellation (if no payments were made)"; `07-inventory-ledger.md` §5.1:
+"Cancel / expiry (no payment)"). Policy A follows this.
+
+The frozen sellable formula (`07-inventory-ledger.md` §5.4) counts a hold
+only while `status = ACTIVE AND expiresAt > now()`, with no payment
+exception. Under that formula, the merchandise of a partially paid sale
+would become sellable again after `expiresAt` even though its hold is never
+released. The Pilot deliberately does **not** do this. A payment-protected
+hold keeps reducing availability (P0.1-A) and keeps backing the remaining
+payment and the completion (P0.1-C). This is the more conservative choice:
+it can never oversell.
+
+The frozen lazy "update the status when a transaction touches an expired
+record" rule (`04-domain-rules.md`) is also applied differently. The payment
+path only detects expiry. Materializing `RELEASED` stays with the single B1/B2
+release authority.
+
+The frozen documents are unchanged. The Production `StockHold` phase (3C/6B)
+must reconcile this explicitly.
+
 ## Known limitations (follow-ups)
 
 - Starvation: batches are ordered by sale id. Enough permanently corrupt
   low-id sales could occupy every batch slot. Each one is logged on every
   tick, and hardening is deferred to P0.5.
-- Payment TTL enforcement and completion hold rules are P0.1-C.
+- Pending correction/cancellation of partially paid or expired sales and
+  their cashier UX are P0.2.

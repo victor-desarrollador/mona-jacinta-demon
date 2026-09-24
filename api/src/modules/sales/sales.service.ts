@@ -9,6 +9,7 @@ import { createInventoryService } from '../inventory/inventory.service.js';
 import type { AddSaleItemInput, UpdateSaleItemInput } from './dto/sale-item.dto.js';
 import { createReservationService } from './reservation.service.js';
 import { createCancellationService } from './cancellation.service.js';
+import { cashierHoldState, canAcceptPayment, evaluateCurrentHoldCoverage, type HoldCoverageFailure } from './hold-coverage.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 import { REALTIME_EVENTS } from '../../realtime/socket.js';
 
@@ -54,6 +55,15 @@ function ensureSaleAccess(
 
 function completionConflict(code: string, message: string, details?: unknown) {
   return new AppError(409, code, message, details);
+}
+
+// Pilot P0.1-C: completion keeps its pre-existing stable codes/messages for
+// each current-coverage defect.
+function completionCoverageError(reason: HoldCoverageFailure, variantId?: string) {
+  if (reason === 'INVALID_ITEM_QUANTITY') return completionConflict('INVALID_SALE_QUANTITY', 'La venta contiene una cantidad inválida.');
+  if (reason === 'NO_ITEMS') return completionConflict('INVALID_RESERVATION', 'La venta no tiene cantidades para finalizar.');
+  if (reason === 'INVALID_HOLD') return completionConflict('INVALID_RESERVATION', 'La reserva de la venta no es válida para finalizarse.');
+  return completionConflict('INVALID_RESERVATION', 'Las reservas no respaldan exactamente los artículos de la venta.', variantId ? { variantId } : undefined);
 }
 
 function isTransientCompletionError(error: unknown) {
@@ -226,12 +236,17 @@ export function createSalesService(database: SaleDatabase, options: { realtime?:
     return loadSale(saleId);
   }
 
+  // Pilot P0.1-C: the cashier work queue is PENDING_PAYMENT + PAID, so a
+  // fully paid sale stays visible until completed. holdState and
+  // canAcceptPayment are informational (one wall-clock read per request);
+  // payment and completion re-check everything under the Sale lock.
   async function listPendingSales(branchIds: string[]) {
+    const now = new Date();
     const sales = await database.sale.findMany({
-      where: { status: 'PENDING_PAYMENT', branchId: { in: branchIds } },
+      where: { status: { in: ['PENDING_PAYMENT', 'PAID'] }, branchId: { in: branchIds } },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: {
-        id: true, saleNumber: true, subtotal: true, total: true,
+        id: true, saleNumber: true, subtotal: true, total: true, status: true, branchId: true,
         seller: { select: { name: true } },
         // Historical item snapshots only; never join the current catalog.
         items: {
@@ -243,19 +258,30 @@ export function createSalesService(database: SaleDatabase, options: { realtime?:
           },
         },
         payments: { select: { amount: true } },
+        stockReservations: {
+          where: { status: 'ACTIVE' },
+          select: { variantId: true, branchId: true, quantity: true, expiresAt: true },
+        },
       },
     });
     return sales.map((sale) => {
       const paidAmount = sale.payments.reduce((sum, payment) => sum + payment.amount, 0n);
+      const holdState = cashierHoldState({
+        status: sale.status, paymentCount: sale.payments.length, branchId: sale.branchId,
+        items: sale.items, activeHolds: sale.stockReservations, now,
+      });
       return {
         saleId: sale.id,
         saleNumber: sale.saleNumber,
         sellerName: sale.seller.name,
+        status: sale.status,
         items: sale.items,
         subtotal: sale.subtotal,
         total: sale.total,
         paidAmount,
         remainingBalance: sale.total - paidAmount,
+        holdState,
+        canAcceptPayment: canAcceptPayment(holdState),
       };
     });
   }
@@ -290,41 +316,30 @@ export function createSalesService(database: SaleDatabase, options: { realtime?:
     if (sale.status !== 'PAID') throw completionConflict('INVALID_SALE_STATE', 'La venta no está lista para finalizarse.');
 
     const items = await tx.saleItem.findMany({ where: { saleId }, select: { variantId: true, quantity: true } });
-    const requirements = new Map<string, bigint>();
-    for (const item of items) {
-      if (item.quantity <= 0n) throw completionConflict('INVALID_SALE_QUANTITY', 'La venta contiene una cantidad inválida.');
-      requirements.set(item.variantId, (requirements.get(item.variantId) ?? 0n) + item.quantity);
-    }
-    if (requirements.size === 0) throw completionConflict('INVALID_RESERVATION', 'La venta no tiene cantidades para finalizar.');
 
-    const reservations = await tx.$queryRaw<Array<{
+    // Pilot P0.1-C: only CURRENT ACTIVE holds back a completion. Historical
+    // RELEASED/CONSUMED rows are neither locked, matched nor re-consumed.
+    // A PAID sale is completable after its original expiresAt (the sweeper
+    // never touches PAID). Lock order stays Sale -> StockReservation(id
+    // ASC) -> Inventory(id ASC), the same prefix as B1 release and cancel.
+    const activeHolds = await tx.$queryRaw<Array<{
       id: string;
       variantId: string;
       branchId: string;
       quantity: bigint;
-      status: string;
+      expiresAt: Date;
     }>>`
-      SELECT id, "variantId", "branchId", quantity, status
+      SELECT id, "variantId", "branchId", quantity, "expiresAt"
       FROM "StockReservation"
-      WHERE "saleId" = ${saleId}
+      WHERE "saleId" = ${saleId} AND status = 'ACTIVE'
       ORDER BY id ASC
       FOR UPDATE
     `;
-    const reservedByVariant = new Map<string, bigint>();
-    for (const reservation of reservations) {
-      if (reservation.branchId !== sale.branchId || reservation.status !== 'ACTIVE') {
-        throw completionConflict('INVALID_RESERVATION', 'La reserva de la venta no es válida para finalizarse.');
-      }
-      reservedByVariant.set(reservation.variantId, (reservedByVariant.get(reservation.variantId) ?? 0n) + reservation.quantity);
-    }
-    if (reservedByVariant.size !== requirements.size) {
-      throw completionConflict('INVALID_RESERVATION', 'Las reservas no respaldan exactamente los artículos de la venta.');
-    }
-    for (const [variantId, required] of requirements) {
-      if (reservedByVariant.get(variantId) !== required) {
-        throw completionConflict('INVALID_RESERVATION', 'Las reservas no respaldan exactamente los artículos de la venta.', { variantId });
-      }
-    }
+    const coverage = evaluateCurrentHoldCoverage({
+      branchId: sale.branchId, items, activeHolds, policy: { kind: 'PAID_COMPLETION' },
+    });
+    if (!coverage.ok) throw completionCoverageError(coverage.reason, coverage.variantId);
+    const { requirements } = coverage;
 
     const variantIds = [...requirements.keys()];
     const inventories = await tx.$queryRaw<Array<{
@@ -371,10 +386,13 @@ export function createSalesService(database: SaleDatabase, options: { realtime?:
       finalizedInventory.push({ variantId, quantity: required });
     }
 
-    await tx.stockReservation.updateMany({
-      where: { saleId, status: 'ACTIVE' },
+    const consumed = await tx.stockReservation.updateMany({
+      where: { id: { in: activeHolds.map(({ id }) => id) }, status: 'ACTIVE' },
       data: { status: 'CONSUMED' },
     });
+    if (consumed.count !== activeHolds.length) {
+      throw completionConflict('INVALID_RESERVATION', 'La reserva de la venta no es válida para finalizarse.');
+    }
     await createAuditLog(tx, {
       userId,
       branchId: sale.branchId,

@@ -60,15 +60,22 @@ type Sale = {
   items: SaleItem[];
 };
 
+// Pilot P0.1-C: informational hold state from GET /sales/pending. The server
+// payment/completion transactions stay authoritative.
+type HoldState = "VALID" | "EXPIRED" | "PAYMENT_PROTECTED" | "PAID" | "COVERAGE_INVALID";
+
 type PendingSale = {
   saleId: string;
   saleNumber: string | null;
   sellerName: string;
+  status?: SaleStatus;
   items: SaleItem[];
   subtotal: string;
   total: string;
   paidAmount: string;
   remainingBalance: string;
+  holdState?: HoldState;
+  canAcceptPayment?: boolean;
 };
 
 type PaymentMethod = "CASH" | "TRANSFER" | "CARD_DEBIT" | "CARD_CREDIT" | "QR";
@@ -827,6 +834,7 @@ function CashierWorkspace({
   const effectivePaidAmount = completedSnapshot ? saleTotal : paidAmount;
   const remaining = displaySale ? saleTotal - effectivePaidAmount : ZERO;
   const isPaid = Boolean(displaySale && saleTotal > ZERO && remaining === ZERO);
+  const paymentBlocked = selectedSale?.canAcceptPayment === false;
   const selectedStatus = completedSale?.id === selectedSaleId ? "COMPLETED" : isPaid ? "PAID" : "PENDING_PAYMENT";
   const cashReceivedCents = arsToCents(cashReceived);
   const paymentAmountCents = arsToCents(paymentAmount);
@@ -1281,6 +1289,7 @@ function CashierWorkspace({
                 paymentLoading ||
                 completeLoading ||
                 isPaid ||
+                paymentBlocked ||
                 selectedStatus === "COMPLETED" ||
                 remaining <= ZERO ||
                 (paymentMethod === "CASH" && !cashSession)
@@ -1290,7 +1299,11 @@ function CashierWorkspace({
               <span>-&gt;</span>
             </button>
 
-            {paymentMethod === "CASH" && !cashSession ? (
+            {paymentBlocked && selectedSale?.holdState === "EXPIRED" ? (
+              <p className="cart-note">La reserva técnica venció: la venta no admite un primer pago.</p>
+            ) : paymentBlocked && selectedSale?.holdState === "COVERAGE_INVALID" ? (
+              <p className="cart-note">Las reservas de la venta no son válidas: no admite pagos.</p>
+            ) : paymentMethod === "CASH" && !cashSession ? (
               <p className="cart-note">Abre caja antes de registrar pagos en efectivo.</p>
             ) : (
               <p className="cart-note">Cada nuevo intento genera un UUID v4 de idempotencia.</p>

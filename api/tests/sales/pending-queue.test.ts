@@ -70,6 +70,15 @@ describe('cashier pending-sales queue', () => {
     });
   }
 
+  async function hold(saleId: string, quantity = 2n, options: { expiresAt?: Date; status?: 'ACTIVE' | 'RELEASED'; branchId?: string } = {}) {
+    return prisma.stockReservation.create({
+      data: {
+        saleId, variantId, branchId: options.branchId ?? centroId, quantity, status: options.status ?? 'ACTIVE',
+        expiresAt: options.expiresAt ?? new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
+  }
+
   it('rejects unauthenticated requests', async () => {
     expect((await request(app).get('/api/v1/sales/pending')).status).toBe(401);
   });
@@ -130,12 +139,16 @@ describe('cashier pending-sales queue', () => {
     expect(response.status).toBe(403);
   });
 
-  it('includes only PENDING_PAYMENT and excludes every other lifecycle state', async () => {
-    const included = await pending();
-    for (const status of ['DRAFT', 'PAID', 'COMPLETED', 'CANCELLED'] as const) await pending({ status });
+  // Pilot P0.1-C: the cashier work queue is PENDING_PAYMENT + PAID, so a
+  // fully paid sale stays visible until it is completed.
+  it('includes PENDING_PAYMENT and PAID and excludes DRAFT, COMPLETED and CANCELLED', async () => {
+    const included = await pending({ createdAt: new Date('2026-01-01T00:00:00.000Z') });
+    const paid = await pending({ status: 'PAID', createdAt: new Date('2026-01-02T00:00:00.000Z') });
+    for (const status of ['DRAFT', 'COMPLETED', 'CANCELLED'] as const) await pending({ status });
     const response = await queue();
     expect(response.status).toBe(200);
-    expect(response.body.items.map((sale: { saleId: string }) => sale.saleId)).toEqual([included.id]);
+    expect(response.body.items.map((sale: { saleId: string }) => sale.saleId)).toEqual([included.id, paid.id]);
+    expect(response.body.items.map((sale: { status: string }) => sale.status)).toEqual(['PENDING_PAYMENT', 'PAID']);
   });
 
   it('filters by current assignments and re-scopes an already issued token', async () => {
@@ -201,9 +214,12 @@ describe('cashier pending-sales queue', () => {
     await prisma.user.update({ where: { id: sellerId }, data: { name: 'Persisted seller name' } });
     const response = await queue();
     expect(response.status).toBe(200);
+    // Pilot P0.1-C: a sale without items has no honest hold coverage, so it
+    // is reported fail-closed as COVERAGE_INVALID and is not chargeable.
     expect(response.body.items).toEqual([{
-      saleId: sale.id, saleNumber: sale.saleNumber, sellerName: 'Persisted seller name',
+      saleId: sale.id, saleNumber: sale.saleNumber, sellerName: 'Persisted seller name', status: 'PENDING_PAYMENT',
       items: [], subtotal: '9000000', total: '9000000', paidAmount: '0', remainingBalance: '9000000',
+      holdState: 'COVERAGE_INVALID', canAcceptPayment: false,
     }]);
   });
 
@@ -262,8 +278,9 @@ describe('cashier pending-sales queue', () => {
     expect(smallSql.length).toBeGreaterThan(0);
     spy.mockRestore();
     for (let i = 0; i < 5; i++) {
-      const extra = await pending();
+      const extra = await pending(i % 2 === 0 ? {} : { status: 'PAID' });
       await addSnapshot(extra.id);
+      await hold(extra.id, 2n);
       await prisma.salePayment.create({ data: { saleId: extra.id, method: 'TRANSFER', amount: 1n, idempotencyKey: 'extra' } });
     }
     const tables = ['Sale', 'SaleItem', 'SalePayment', 'Inventory', 'StockReservation', 'StockMovement', 'SaleNumberCounter', 'CashRegister', 'CashSession', 'CashMovement', 'AuditLog'];
@@ -282,5 +299,59 @@ describe('cashier pending-sales queue', () => {
     expect(largeSql.length).toBe(smallSql.length);
     for (const sql of [...smallSql, ...largeSql]) expect(sql).toMatch(/^\s*SELECT\b/i);
     expect(await snapshot()).toEqual(before);
+  });
+
+  // Pilot P0.1-C: informational hold state. The payment transaction stays
+  // authoritative; the queue only tells the cashier which action is valid.
+  describe('hold state and chargeability (Pilot P0.1-C)', () => {
+    const past = () => new Date(Date.now() - 60 * 60 * 1000);
+    const row = async (saleId: string) => (await queue()).body.items.find((item: { saleId: string }) => item.saleId === saleId);
+    const partial = (saleId: string, amount = 1000000n) =>
+      prisma.salePayment.create({ data: { saleId, method: 'TRANSFER', amount, idempotencyKey: randomUUID() } });
+
+    it('reports VALID for a zero-payment sale with exact unexpired coverage', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id);
+      expect(await row(sale.id)).toMatchObject({ status: 'PENDING_PAYMENT', holdState: 'VALID', canAcceptPayment: true, remainingBalance: '9000000' });
+    });
+
+    it('reports EXPIRED for a zero-payment sale whose ACTIVE hold is past expiresAt', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past() });
+      expect(await row(sale.id)).toMatchObject({ holdState: 'EXPIRED', canAcceptPayment: false });
+    });
+
+    it('reports EXPIRED for a zero-payment sale whose hold was already RELEASED', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past(), status: 'RELEASED' });
+      expect(await row(sale.id)).toMatchObject({ status: 'PENDING_PAYMENT', holdState: 'EXPIRED', canAcceptPayment: false });
+    });
+
+    it('reports PAYMENT_PROTECTED for a partially paid sale past expiresAt, with the exact remaining balance', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past() });
+      await partial(sale.id, 1000001n);
+      expect(await row(sale.id)).toMatchObject({
+        holdState: 'PAYMENT_PROTECTED', canAcceptPayment: true, paidAmount: '1000001', remainingBalance: '7999999',
+      });
+    });
+
+    it('reports PAID with a zero remaining balance after expiresAt, and no new payment action', async () => {
+      const sale = await pending({ status: 'PAID' }); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past() });
+      await partial(sale.id, 9000000n);
+      expect(await row(sale.id)).toMatchObject({ status: 'PAID', holdState: 'PAID', canAcceptPayment: false, paidAmount: '9000000', remainingBalance: '0' });
+    });
+
+    it('reports COVERAGE_INVALID instead of hiding a mismatched or wrong-branch hold', async () => {
+      const mismatched = await pending(); await addSnapshot(mismatched.id); await hold(mismatched.id, 1n);
+      const wrongBranch = await pending(); await addSnapshot(wrongBranch.id); await hold(wrongBranch.id, 2n, { branchId: yerbaId });
+      const protectedButBroken = await pending(); await addSnapshot(protectedButBroken.id); await partial(protectedButBroken.id);
+      for (const sale of [mismatched, wrongBranch, protectedButBroken]) {
+        expect(await row(sale.id)).toMatchObject({ holdState: 'COVERAGE_INVALID', canAcceptPayment: false });
+      }
+    });
+
+    it('applies live location scope to PAID rows exactly like PENDING_PAYMENT rows', async () => {
+      const paidAtYerba = await pending({ branchId: yerbaId, status: 'PAID' });
+      expect((await queue()).body.items.map((sale: { saleId: string }) => sale.saleId)).not.toContain(paidAtYerba.id);
+      await prisma.userRoleScope.updateMany({ where: { userId: cashierId }, data: { locationId: yerbaId } });
+      expect((await queue()).body.items.map((sale: { saleId: string }) => sale.saleId)).toEqual([paidAtYerba.id]);
+    });
   });
 });

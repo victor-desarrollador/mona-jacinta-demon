@@ -67,14 +67,14 @@ DRAFT -> PENDING_PAYMENT -> PAID -> COMPLETED
 | Method | Path | Permission | Purpose |
 | --- | --- | --- | --- |
 | GET | `/api/v1/sales` | `sale.view` | List sales visible to the authenticated user. |
-| GET | `/api/v1/sales/pending` | `sale.queue.view` | List pending-payment sales for cashier queue workflows. |
+| GET | `/api/v1/sales/pending` | `sale.queue.view` | List the cashier work queue: `PENDING_PAYMENT` and `PAID` sales (Pilot P0.1-C). |
 | POST | `/api/v1/sales` | `sale.create` | Create a draft sale. |
 | GET | `/api/v1/sales/:saleId` | `sale.view` | Get sale detail. |
 | POST | `/api/v1/sales/:saleId/items` | `sale.create` | Add an item to a draft sale. |
 | PATCH | `/api/v1/sales/:saleId/items/:itemId` | `sale.create` | Update item quantity in a draft sale. |
 | DELETE | `/api/v1/sales/:saleId/items/:itemId` | `sale.create` | Remove an item from a draft sale. |
 | POST | `/api/v1/sales/:saleId/send-to-cashier` | `sale.create` with sale branch scope | Reserve stock and transition a draft sale to pending payment. |
-| POST | `/api/v1/sales/:saleId/complete` | `sale.complete` | Complete a paid sale and apply final inventory movement. |
+| POST | `/api/v1/sales/:saleId/complete` | `sale.complete` | Complete a paid sale and apply final inventory movement. Consumes only current `ACTIVE` holds, which must match the items exactly; the original `expiresAt` does not block a `PAID` sale (Pilot P0.1-C). |
 | POST | `/api/v1/sales/:saleId/cancel` | `sale.create` | Cancel an eligible draft or unpaid pending-payment sale. |
 
 ## Cash
@@ -102,6 +102,16 @@ Supported payment methods:
 - `QR`
 
 Cash payments support `amount`, `receivedAmount`, and backend-calculated change according to the existing payment contract.
+
+Pilot P0.1-C contract (see [`../pilot-v1.1/00-pilot-safety-gate.md`](../pilot-v1.1/00-pilot-safety-gate.md)):
+
+- An idempotent replay (same `idempotencyKey`, same intent) is resolved first and returns `200` with the original payment, even if the sale is now `PAID`/`COMPLETED` or its hold timestamp has passed.
+- A NEW payment requires exact current hold coverage: `ACTIVE` reservations on the sale's branch that match the current `SaleItem` quantities per variant. Otherwise `409 INVALID_RESERVATION`.
+- With zero existing payments, every current hold must be unexpired (`expiresAt > now`), otherwise `409 RESERVATION_EXPIRED`. Once any payment exists, the original `expiresAt` no longer blocks the remaining payment.
+- A rejected payment writes nothing: no `SalePayment`, `CashMovement`, status change, audit or reservation release.
+- A committed payment always returns `201` (replay: `200`). A failing `sale.paid` realtime notification is logged and never turns it into an error.
+
+`GET /api/v1/sales/pending` rows (P0.1-C, additive): `status` (`PENDING_PAYMENT` | `PAID`), `holdState` (`VALID` | `EXPIRED` | `PAYMENT_PROTECTED` | `PAID` | `COVERAGE_INVALID`) and `canAcceptPayment` (boolean). They are informational only; the payment and completion transactions re-check everything.
 
 ## Audit
 

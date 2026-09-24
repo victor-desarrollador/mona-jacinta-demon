@@ -37,8 +37,28 @@ describe('split payments', () => {
   afterAll(async () => { await db?.$disconnect(); }, 120000);
 
   async function createSale(total = 16500000n, status: 'DRAFT' | 'PENDING_PAYMENT' | 'PAID' | 'COMPLETED' | 'CANCELLED' = 'PENDING_PAYMENT') {
-    return db.sale.create({ data: {
+    const sale = await db.sale.create({ data: {
       sellerId, branchId, status, subtotal: total, total,
+    } });
+    if (status === 'PENDING_PAYMENT') await hold(sale.id, branchId);
+    return sale;
+  }
+
+  // Pilot P0.1-C: a PENDING_PAYMENT sale is chargeable only with exact,
+  // current ACTIVE hold coverage — one SaleItem + matching unexpired hold.
+  async function hold(saleId: string, saleBranchId: string) {
+    const variant = await db.productVariant.findUniqueOrThrow({ where: { sku: 'REM-NEG-M' } });
+    await db.saleItem.create({ data: {
+      saleId, variantId: variant.id, productId: variant.productId, productName: 'Snapshot product',
+      variantName: 'Snapshot variant', sku: variant.sku, quantity: 1n, unitPrice: 1n, subtotal: 1n,
+    } });
+    await db.inventory.update({
+      where: { variantId_branchId: { variantId: variant.id, branchId: saleBranchId } },
+      data: { reserved: { increment: 1n } },
+    });
+    await db.stockReservation.create({ data: {
+      saleId, variantId: variant.id, branchId: saleBranchId, quantity: 1n, status: 'ACTIVE',
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     } });
   }
 
@@ -116,6 +136,7 @@ describe('split payments', () => {
     const saleAtA = await createSale(1n);
     expect((await pay(saleAtA.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, multiToken)).status).toBe(403);
     const saleAtB = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', subtotal: 1n, total: 1n } });
+    await hold(saleAtB.id, otherBranch.id);
     expect((await pay(saleAtB.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, multiToken)).status).toBe(201);
   });
 
@@ -136,6 +157,7 @@ describe('split payments', () => {
     const otherBranch = await db.branch.findFirstOrThrow({ where: { id: { not: branchId } } });
     await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranch.id } });
     const sale = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', subtotal: 1n, total: 1n } });
+    await hold(sale.id, otherBranch.id);
     const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
     expect(response.status).toBe(201);
   });
