@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
+import { TECHNICAL_HOLD_TTL_MS } from './reservation-holds.js';
 
 type ReservationDatabase = Pick<
   PrismaClient,
@@ -92,7 +93,7 @@ async function reserveInTransaction(
   `;
   if (!counter) throw new AppError(409, 'SALE_NUMBER_COUNTER_MISSING', 'No se encontró el contador de ventas de la sucursal.');
 
-  const expiresAt = new Date(Date.now() + 30 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + TECHNICAL_HOLD_TTL_MS);
   for (const [variantId, required] of requirements) {
     const inventory = inventoryByVariant.get(variantId)!;
     await tx.inventory.update({ where: { id: inventory.id }, data: { reserved: { increment: required } } });

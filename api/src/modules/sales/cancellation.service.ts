@@ -3,11 +3,26 @@ import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
+import { resolveSystemActorId } from '../audit/system-actor.service.js';
+import { releasableExpiredHoldWhere } from './reservation-holds.js';
 
 type AuthScope = { userId: string; branchIds: string[] };
 type LockedSale = { id: string; branchId: string; status: string };
 type LockedReservation = { id: string; variantId: string; branchId: string; quantity: bigint; status: string; expiresAt: Date };
 type LockedInventory = { id: string; variantId: string; branchId: string; physical: bigint; reserved: bigint };
+
+// Pilot P0.1-B1: who a release is attributed to. ADMIN = the invoking human
+// (manual INVENTORY_MANAGE endpoint); SYSTEM = the dedicated inactive
+// system actor (automation; the scheduler itself is P0.1-B2).
+export type ReleaseActor = { userId: string; trigger: 'ADMIN' | 'SYSTEM' };
+type ReleasedQuantity = { variantId: string; quantity: bigint };
+export type ReleaseOutcome =
+  | { outcome: 'RELEASED'; saleId: string; branchId: string; quantities: ReleasedQuantity[] }
+  | { outcome: 'NOT_FOUND' | 'OUT_OF_SCOPE' | 'NOT_PENDING' | 'PAYMENT_PROTECTED' | 'NOTHING_EXPIRED'; saleId: string };
+type ReleasedSale = { saleId: string; branchId: string; quantities: ReleasedQuantity[] };
+export type ReconcileResult = { released: ReleasedSale[]; failed: Array<{ saleId: string; code: string }> };
+
+export const EXPIRED_HOLD_RELEASE_BATCH_LIMIT = 100;
 
 const invalidState = () => new AppError(409, 'INVALID_SALE_STATE', 'La venta no puede cancelarse en su estado actual.');
 const invalidReservation = (message = 'La reserva de la venta no es válida.') => new AppError(409, 'INVALID_RESERVATION', message);
@@ -100,40 +115,118 @@ export function createCancellationService(database: PrismaClient) {
     });
   }
 
-  async function releaseExpiredReservations(scope: AuthScope) {
-    if (scope.branchIds.length === 0) return { released: [] };
-    return inTransaction(async (tx) => {
-      const now = new Date();
-      const candidates = await tx.$queryRaw<{ saleId: string }[]>`
-        SELECT DISTINCT sr."saleId" FROM "StockReservation" sr
-        JOIN "Sale" s ON s.id = sr."saleId"
-        WHERE sr.status = 'ACTIVE' AND sr."expiresAt" < ${now}
-          AND s.status = 'PENDING_PAYMENT' AND s."branchId" IN (${Prisma.join(scope.branchIds)})
-        ORDER BY sr."saleId" ASC
+  // Pilot P0.1-B1: THE authoritative release of one Sale's expired,
+  // zero-payment technical holds — one Sale per Serializable transaction.
+  // Lock order: Sale -> StockReservation(id ASC) -> Inventory(id ASC), the
+  // same prefix cancelSale/payments take, so every path serializes on the
+  // Sale row first. Every condition is re-evaluated under those locks;
+  // discovery results are only hints. Any invariant failure throws and
+  // rolls back the whole Sale: writes are never clamped.
+  async function releaseExpiredSaleHolds(
+    saleId: string,
+    options: { actor: ReleaseActor; now: Date; branchIds?: string[] },
+  ): Promise<ReleaseOutcome> {
+    return inTransaction(async (tx): Promise<ReleaseOutcome> => {
+      const [sale] = await tx.$queryRaw<LockedSale[]>`SELECT id, "branchId", status FROM "Sale" WHERE id = ${saleId} FOR UPDATE`;
+      if (!sale) return { outcome: 'NOT_FOUND', saleId };
+      if (options.branchIds && !options.branchIds.includes(sale.branchId)) return { outcome: 'OUT_OF_SCOPE', saleId };
+      if (sale.status !== 'PENDING_PAYMENT') return { outcome: 'NOT_PENDING', saleId };
+      // Policy A: any SalePayment row, whatever its amount, protects the holds.
+      if (await tx.salePayment.count({ where: { saleId } }) > 0) return { outcome: 'PAYMENT_PROTECTED', saleId };
+
+      const reservations = await tx.$queryRaw<LockedReservation[]>`
+        SELECT id, "variantId", "branchId", quantity, status, "expiresAt"
+        FROM "StockReservation"
+        WHERE "saleId" = ${saleId} AND status = 'ACTIVE' AND "expiresAt" <= ${options.now}
+        ORDER BY id ASC FOR UPDATE
       `;
-      const released: Array<{ saleId: string; branchId: string; quantities: Array<{ variantId: string; quantity: bigint }> }> = [];
-      for (const candidate of candidates) {
-        const [sale] = await tx.$queryRaw<LockedSale[]>`SELECT id, "branchId", status FROM "Sale" WHERE id = ${candidate.saleId} FOR UPDATE`;
-        if (!sale || !scope.branchIds.includes(sale.branchId)) continue;
-        if (sale.status !== 'PENDING_PAYMENT') continue;
-        if (await acceptedTotal(tx, sale.id) > 0n) continue;
-        const reservations = await tx.$queryRaw<LockedReservation[]>`
-          SELECT id, "variantId", "branchId", quantity, status, "expiresAt"
-          FROM "StockReservation"
-          WHERE "saleId" = ${sale.id} AND status = 'ACTIVE' AND "expiresAt" < ${now}
-          ORDER BY id ASC FOR UPDATE
-        `;
-        const quantities = await releaseReservations(tx, sale, reservations);
-        if (quantities.length === 0) continue;
-        await createAuditLog(tx, {
-          userId: scope.userId, branchId: sale.branchId, action: 'RESERVATION_RELEASED', entityType: 'Sale', entityId: sale.id,
-          after: { saleId: sale.id, released: quantities, reason: 'EXPIRED' },
-        });
-        released.push({ saleId: sale.id, branchId: sale.branchId, quantities });
+      if (reservations.length === 0) return { outcome: 'NOTHING_EXPIRED', saleId };
+      if (reservations.some((reservation) => reservation.branchId !== sale.branchId)) throw invalidReservation('La reserva pertenece a otra sucursal.');
+
+      const quantities = new Map<string, bigint>();
+      for (const reservation of reservations) {
+        if (reservation.quantity <= 0n) throw invalidReservation();
+        quantities.set(reservation.variantId, (quantities.get(reservation.variantId) ?? 0n) + reservation.quantity);
       }
-      return { released };
+      const inventories = await tx.$queryRaw<LockedInventory[]>`
+        SELECT id, "variantId", "branchId", physical, reserved
+        FROM "Inventory"
+        WHERE "branchId" = ${sale.branchId} AND "variantId" IN (${Prisma.join([...quantities.keys()])})
+        ORDER BY id ASC FOR UPDATE
+      `;
+      const byVariant = new Map(inventories.map((inventory) => [inventory.variantId, inventory]));
+      for (const [variantId, quantity] of quantities) {
+        const inventory = byVariant.get(variantId);
+        if (!inventory) throw invalidReservation('No se encontró el inventario de la reserva.');
+        if (inventory.reserved < quantity) throw invalidReservation('El inventario reservado no puede liberar la reserva.');
+      }
+      for (const [variantId, quantity] of quantities) {
+        await tx.inventory.update({ where: { id: byVariant.get(variantId)!.id }, data: { reserved: { decrement: quantity } } });
+      }
+      const ids = reservations.map(({ id }) => id);
+      const updated = await tx.stockReservation.updateMany({ where: { id: { in: ids }, status: 'ACTIVE' }, data: { status: 'RELEASED' } });
+      if (updated.count !== ids.length) throw invalidReservation('La reserva cambió durante la liberación.');
+
+      const released = [...quantities].map(([variantId, quantity]) => ({ variantId, quantity }));
+      await createAuditLog(tx, {
+        userId: options.actor.userId, branchId: sale.branchId, action: 'RESERVATION_RELEASED', entityType: 'Sale', entityId: saleId,
+        after: { saleId, reason: 'EXPIRED', trigger: options.actor.trigger, released },
+      });
+      return { outcome: 'RELEASED', saleId, branchId: sale.branchId, quantities: released };
     });
   }
 
-  return { cancelSale, releaseExpiredReservations };
+  // Discovery runs outside any transaction and only nominates candidates
+  // (shared P0.1-A predicate, deterministic, bounded); each Sale is then
+  // released in its own transaction, so one failing Sale never rolls back
+  // or blocks another. branchIds null = every location (SYSTEM only).
+  async function reconcile(options: { actor: ReleaseActor; now: Date; branchIds: string[] | null; limit?: number }): Promise<ReconcileResult> {
+    const result: ReconcileResult = { released: [], failed: [] };
+    if (options.branchIds?.length === 0) return result;
+    const candidates = await database.stockReservation.groupBy({
+      by: ['saleId'],
+      where: {
+        AND: [
+          releasableExpiredHoldWhere(options.now),
+          ...(options.branchIds ? [{ sale: { branchId: { in: options.branchIds } } }] : []),
+        ],
+      },
+      orderBy: { saleId: 'asc' },
+      take: options.limit ?? EXPIRED_HOLD_RELEASE_BATCH_LIMIT,
+    });
+    for (const { saleId } of candidates) {
+      try {
+        const outcome = await releaseExpiredSaleHolds(saleId, {
+          actor: options.actor, now: options.now, ...(options.branchIds ? { branchIds: options.branchIds } : {}),
+        });
+        if (outcome.outcome === 'RELEASED') {
+          result.released.push({ saleId, branchId: outcome.branchId, quantities: outcome.quantities });
+        }
+      } catch (error) {
+        result.failed.push({ saleId, code: error instanceof AppError ? error.code : 'RELEASE_FAILED' });
+      }
+    }
+    return result;
+  }
+
+  function reconcileExpiredHolds(options: { actor: ReleaseActor; now: Date; branchIds: string[]; limit?: number }) {
+    return reconcile(options);
+  }
+
+  // Automatic form for P0.1-B2's future scheduler: attributed to the system
+  // actor, company-wide. Fails closed before any write if the actor is
+  // missing or tampered with. It takes no clock: expiry is always decided by
+  // its own wall clock, so no caller can release holds before they expire.
+  async function releaseExpiredHoldsAsSystem(options: { limit?: number } = {}) {
+    const userId = await resolveSystemActorId(database);
+    const now = new Date();
+    return reconcile({ actor: { userId, trigger: 'SYSTEM' }, now, branchIds: null, ...(options.limit ? { limit: options.limit } : {}) });
+  }
+
+  // Manual INVENTORY_MANAGE endpoint: the invoking human is the audit actor.
+  function releaseExpiredReservations(scope: AuthScope) {
+    return reconcile({ actor: { userId: scope.userId, trigger: 'ADMIN' }, now: new Date(), branchIds: scope.branchIds });
+  }
+
+  return { cancelSale, releaseExpiredSaleHolds, reconcileExpiredHolds, releaseExpiredHoldsAsSystem, releaseExpiredReservations };
 }

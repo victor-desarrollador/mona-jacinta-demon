@@ -132,7 +132,7 @@ describe('critical operation audit', () => {
     await cancellation.releaseExpiredReservations(scope(adminId));
     const released = await audit('RESERVATION_RELEASED', expired.id, adminId);
     expect(released.before).toBeNull();
-    expect(released.after).toEqual({ saleId: expired.id, reason: 'EXPIRED', released: [{ variantId: expect.any(String), quantity: '1' }] });
+    expect(released.after).toEqual({ saleId: expired.id, reason: 'EXPIRED', trigger: 'ADMIN', released: [{ variantId: expect.any(String), quantity: '1' }] });
   });
 
   it('normalizes nested before/after using the supplied client and rolls back with business writes', async () => {
