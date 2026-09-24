@@ -162,24 +162,24 @@ over the Demo V2 commerce core. See §5 for the separation.
 
 | Field | Value |
 | --- | --- |
-| Last verified | 2026-09-24T20:31Z (UTC), during the P0.1 final closeout |
+| Last verified | 2026-09-24T20:35Z (UTC), during the P0.1 post-push synchronization record |
 | Branch | `feat/production-v1` |
-| HEAD (full) | The P0.1 closeout commit `docs(project): close P0.1 pilot reservation safety` (read its SHA from `git log -1`), directly on top of `59e629f988e469c623a792f9867a8cf4f7a949b3` (P0.1-C Blueprint record). |
-| HEAD (short) | P0.1 closeout commit, on top of `59e629f` — `docs(project): record P0.1-C checkpoint` |
+| HEAD (full) | The post-push synchronization record `docs(project): record P0.1 remote closeout` — this documentation commit; its exact SHA is the containing Git commit (`git log -1`). It sits directly on top of the P0.1 closeout commit `7b6fce805f11486b1f3a60081adfeaf0a545b7c4`. |
+| HEAD (short) | Post-push synchronization record, on top of `7b6fce8` — `docs(project): close P0.1 pilot reservation safety` |
 | Origin branch | `origin/feat/production-v1` |
-| Origin HEAD | `6aa8143069f5d4ac1558e9ee87bdf61c159bd475` (D3; verified via local remote-tracking ref, not a fresh fetch) |
-| Ahead / behind | `git rev-list --left-right --count origin/feat/production-v1...HEAD` → `0 7` before push (behind 0, ahead 7: `8e9699a`, `ab728be`, `e7b6cc7`, `4eb8101`, `421b584`, `59e629f`, P0.1 closeout). Expected `0 0` once the approved push completes; re-verify with git. |
+| Origin HEAD | `7b6fce805f11486b1f3a60081adfeaf0a545b7c4` (P0.1 closeout) after the normal push `6aa8143..7b6fce8`, verified via the remote-tracking ref after push. This synchronization record is pushed next the same way; re-verify with git. |
+| Ahead / behind | `git rev-list --left-right --count origin/feat/production-v1...HEAD` → `0 0` verified right after the P0.1 push (origin = `7b6fce8`). This record commit makes it `0 1` until it is pushed; expected `0 0` again afterwards. |
 | Current phase | Pilot V1.1 — P0 safety gates (overlay on Production V1 Phase 1 closeout) |
-| Last completed engineering block | **P0.1 (aggregate A + B1 + B2 + C) — COMPLETE / CLOSED LOCALLY.** Slices: A `8e9699a`, B1 `ab728be`, B2 `e7b6cc7`, C `421b584`; Blueprint `4eb8101`, `59e629f`. |
+| Last completed engineering block | **P0.1 (aggregate A + B1 + B2 + C) — CLOSED AND PUSHED.** Slices: A `8e9699a`, B1 `ab728be`, B2 `e7b6cc7`, C `421b584`; Blueprint `4eb8101`, `59e629f`, closeout `7b6fce8`. |
 | Current engineering block | None in progress. Next product block: **P0.2** — cashier correction / cancellation / payment UX (not started). |
-| P0.1-C status | **IMPLEMENTED · FOCUSED TESTS GREEN (9/9 files, 211/211) · STATIC GATES GREEN · OPENCODE REVIEWED (LOW resolved) · CODEX APPROVED (final 0/0/0/0) · LOCALLY CHECKPOINTED** at `421b58453b7de667cb3ad6a3467a051a14dd61f7` · OWNER FULL SUITE GREEN (aggregate). Evidence: §16 P0.1-C. |
-| Current P0.1 aggregate status | **COMPLETE / CLOSED LOCALLY** — technical/block closeout complete. A (`8e9699a`), B1 (`ab728be`), B2 (`e7b6cc7`) and C (`421b584`) are committed locally and audited (A/B1/B2 per owner; C in §22: OpenCode complete, Codex final 0/0/0/0). Final technical gate passed: OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Focused P0.1-C evidence stays 9/9 files, 211/211. **Remote synchronization is a separate step** (see Push status). |
+| P0.1-C status | **IMPLEMENTED · FOCUSED TESTS GREEN (9/9 files, 211/211) · STATIC GATES GREEN · OPENCODE REVIEWED (LOW resolved) · CODEX APPROVED (final 0/0/0/0) · CHECKPOINTED** at `421b58453b7de667cb3ad6a3467a051a14dd61f7` · OWNER FULL SUITE GREEN (aggregate) · PUSHED. Evidence: §16 P0.1-C. |
+| Current P0.1 aggregate status | **CLOSED AND PUSHED** — technical/block closeout complete and remote synchronization complete. A (`8e9699a`), B1 (`ab728be`), B2 (`e7b6cc7`) and C (`421b584`) are committed, pushed and audited (A/B1/B2 per owner; C in §22: OpenCode complete, Codex final 0/0/0/0). Final technical gate passed: OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Focused P0.1-C evidence stays 9/9 files, 211/211. Remote synchronization: done (see Push status). |
 | Working tree exceptions | `opencode.json` is modified: legitimate **local-only** configuration. Never inspect, diff, modify, restore, stage or commit it. |
 | Full-suite status | **GREEN for the final P0.1 aggregate** at `59e629f` — OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Run manually by the OWNER (`cd api && NODE_ENV=test npx vitest run --reporter=verbose`); **no agent ran it**. The captured output shows the Vitest summary only; no separate `VITEST_EXIT` line was captured, so none is recorded. Only the known non-failing `pg` concurrent-query DeprecationWarning appeared (DEBT-009). Previous owner gate: Phase 1C at `7d0c2b6` (37 files / 310 tests / `VITEST_EXIT=0`). |
 | Full-suite ownership | **REPOSITORY OWNER ONLY** (§12). Agents never run it. |
-| Push status | At the time of this closeout commit, the 7 P0.1 commits (`8e9699a`, `ab728be`, `e7b6cc7`, `4eb8101`, `421b584`, `59e629f`, P0.1 closeout) are **local only, approved for push**. The push is the next step and is **not** claimed here; verify with `git rev-list --left-right --count origin/feat/production-v1...HEAD` (`0 0` = synchronized). |
-| Push gate | P0.1-C checkpointed **(done)** **+** independently audited (OpenCode + Codex) **(done)** **+** owner-run final P0.1 full suite green **(done: 55/55, 855/855)**. Gate satisfied: push the approved local P0.1 work (non-force). |
-| Exact next action | Push `feat/production-v1` to origin (non-force) and verify `0 0`. Then start **P0.2** (cashier correction / cancellation / payment UX) with its own requirements review — not started. |
+| Push status | **PUSHED.** The 7 P0.1 commits (`8e9699a`, `ab728be`, `e7b6cc7`, `4eb8101`, `421b584`, `59e629f`, `7b6fce8`) went out with a normal `git push origin feat/production-v1` (no force): `origin/feat/production-v1` advanced `6aa8143..7b6fce8`, verified `0 0` right after. P0.1 remote synchronization is complete. This post-push record commit is pushed the same way. |
+| Push gate | P0.1-C checkpointed **(done)** **+** independently audited (OpenCode + Codex) **(done)** **+** owner-run final P0.1 full suite green **(done: 55/55, 855/855)**. Gate satisfied; push **done** (`6aa8143..7b6fce8`, non-force). |
+| Exact next action | Start **P0.2** (cashier correction / cancellation / payment UX) with its own requirements review. P0.2 has **not** started. |
 ---
 
 ## 3. Git Checkpoint Ledger
@@ -211,13 +211,14 @@ repository proves. `pushed` means the commit is an ancestor of
 | D2.1 | `db7e8a0457dfe5ec6b8cb5a8f0e18506b0dbe1b6` | docs(rbac): record deferred legacy manager decision | MANAGER → DEFERRED governance decision (2026-09-20) | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | `AGENTS.md` "Roles — Production V1" |
 | D2.2 | `b592d56ee6f462d697055f5c819ea163202acfcf` | fix(rbac): defer legacy manager and seed canonical scopes | Canonical-first seed; no UserBranchRole from seed | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | |
 | D3 | `6aa8143069f5d4ac1558e9ee87bdf61c159bd475` | feat(demo): add admin catalog and initial stock flow | "Demo Operativa V1": admin catalog writes and additive `INITIAL_STOCK` | [UNVERIFIED — NEEDS CONFIRMATION] | **pushed (= origin HEAD)** | Migration `20260922210000_d3_initial_stock_and_global_audit` |
-| P0.1-A | `8e9699a585cea727c03cfd15c3ed61b9b233b752` | feat(pilot): add expiry-aware effective availability | Read-side effective availability | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **local only (push approved)** | |
-| P0.1-B1 | `ab728be6bc78e42918998b1de53f81395865170c` | fix(pilot): make reservation expiry authoritative | Authoritative per-Sale release, system actor | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **local only (push approved)** | |
-| P0.1-B2 | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | feat(pilot): automate expired reservation reconciliation | Pre-send reconciliation plus opt-in sweeper | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **local only (push approved)** | |
-| Living Blueprint | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | docs(project): add living system blueprint | This ledger + `AGENTS.md` pointer (documentation only) | OpenCode approved for local checkpoint (per owner; not recorded in repo) | **local only (push approved)** | Written at `e7b6cc7`, committed on top of it |
-| P0.1-C | `421b58453b7de667cb3ad6a3467a051a14dd61f7` | feat(pilot): enforce payment and completion hold safety | Payment/completion/queue current-hold semantics | OpenCode reviewed (LOW test-evidence finding resolved); Codex: initial review (1 LOW documentation finding, corrected) + narrow recheck → final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`; P0.1 owner full suite 55/55, 855/855 | **local only (push approved)** | See §16 P0.1-C |
-| P0.1-C Blueprint record | `59e629f988e469c623a792f9867a8cf4f7a949b3` | docs(project): record P0.1-C checkpoint | Records the P0.1-C checkpoint and audit state (documentation only) | — | **local only (push approved)** | On top of `421b584`; owner full suite ran at this commit |
-| P0.1 closeout | *(this commit; SHA via `git log -1`)* | docs(project): close P0.1 pilot reservation safety | Records the owner aggregate full suite and closes P0.1 (documentation only) | Owner full suite 55/55, 855/855 | **local only at commit time (HEAD); push approved** | On top of `59e629f` |
+| P0.1-A | `8e9699a585cea727c03cfd15c3ed61b9b233b752` | feat(pilot): add expiry-aware effective availability | Read-side effective availability | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **pushed** (`7b6fce8`) | |
+| P0.1-B1 | `ab728be6bc78e42918998b1de53f81395865170c` | fix(pilot): make reservation expiry authoritative | Authoritative per-Sale release, system actor | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **pushed** (`7b6fce8`) | |
+| P0.1-B2 | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | feat(pilot): automate expired reservation reconciliation | Pre-send reconciliation plus opt-in sweeper | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **pushed** (`7b6fce8`) | |
+| Living Blueprint | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | docs(project): add living system blueprint | This ledger + `AGENTS.md` pointer (documentation only) | OpenCode approved for local checkpoint (per owner; not recorded in repo) | **pushed** (`7b6fce8`) | Written at `e7b6cc7`, committed on top of it |
+| P0.1-C | `421b58453b7de667cb3ad6a3467a051a14dd61f7` | feat(pilot): enforce payment and completion hold safety | Payment/completion/queue current-hold semantics | OpenCode reviewed (LOW test-evidence finding resolved); Codex: initial review (1 LOW documentation finding, corrected) + narrow recheck → final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`; P0.1 owner full suite 55/55, 855/855 | **pushed** (`7b6fce8`) | See §16 P0.1-C |
+| P0.1-C Blueprint record | `59e629f988e469c623a792f9867a8cf4f7a949b3` | docs(project): record P0.1-C checkpoint | Records the P0.1-C checkpoint and audit state (documentation only) | — | **pushed** (`7b6fce8`) | On top of `421b584`; owner full suite ran at this commit |
+| P0.1 closeout | `7b6fce805f11486b1f3a60081adfeaf0a545b7c4` | docs(project): close P0.1 pilot reservation safety | Records the owner aggregate full suite and closes P0.1 (documentation only) | Owner full suite 55/55, 855/855 | **pushed (= origin HEAD after `6aa8143..7b6fce8`)** | On top of `59e629f` |
+| P0.1 post-push record | *(this documentation commit; exact SHA is the containing Git commit)* | docs(project): record P0.1 remote closeout | Post-push synchronization record (documentation only) | — | **HEAD; pushed normally right after it is created** | On top of `7b6fce8` |
 
 ---
 
@@ -824,7 +825,7 @@ and push come after P0.1-C, never between slices.
 | Tests | `inventory/effective-availability.test.ts` (+ variants, backoffice) |
 | OpenCode / Codex | [UNVERIFIED — NEEDS CONFIRMATION] |
 | Deferred | Authoritative release (B1), automation (B2) |
-| Commit / push | `8e9699a` / local only |
+| Commit / push | `8e9699a` / pushed (`6aa8143..7b6fce8`) |
 
 ### P0.1-B1 — Authoritative expiry release
 
@@ -838,7 +839,7 @@ and push come after P0.1-C, never between slices.
 | Tests | `sales/reservation-expiry.test.ts` (B1), `audit/system-actor.test.ts` |
 | OpenCode / Codex | [UNVERIFIED — NEEDS CONFIRMATION] |
 | Deferred | B2; P0.1-C |
-| Commit / push | `ab728be` / local only |
+| Commit / push | `ab728be` / pushed (`6aa8143..7b6fce8`) |
 
 ### P0.1-B2 — Automatic reconciliation
 
@@ -852,7 +853,7 @@ and push come after P0.1-C, never between slices.
 | Tests | `sales/reservation-sweeper.test.ts`, `sales/reservation-expiry.test.ts` (pre-send), `env.test.ts`, `inventory/effective-availability.test.ts` |
 | OpenCode / Codex | [UNVERIFIED — NEEDS CONFIRMATION] |
 | Deferred | P0.1-C; P0.5 starvation |
-| Commit / push | `e7b6cc7` / local only |
+| Commit / push | `e7b6cc7` / pushed (`6aa8143..7b6fce8`) |
 
 ### Living Blueprint (documentation checkpoint)
 
@@ -862,7 +863,7 @@ and push come after P0.1-C, never between slices.
 | Start → end | `e7b6cc7` → `4eb8101d1abe1599314f7ed641748c47798fa5c4` |
 | Files | `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` (new), `AGENTS.md` (+6 lines) |
 | OpenCode | Approved for local checkpoint (per owner; not recorded in repo) |
-| Commit / push | `4eb8101` / local only |
+| Commit / push | `4eb8101` / pushed (`6aa8143..7b6fce8`) |
 
 ### P0.1-C — Payment / completion / cashier-queue hold semantics
 
@@ -881,8 +882,8 @@ and push come after P0.1-C, never between slices.
 | Static gates | API lint, `tsc --noEmit`, `typecheck`, `build`: PASS. Client lint, `tsc --noEmit`, `build`: PASS. `git diff --check`: PASS. |
 | Pure-test validity | The evaluator tests were proven to catch mutants (boundary `<` vs `<=`, dropped branch check, released→EXPIRED mapping, expiry applied to protected sales) with a DB-free harness |
 | OpenCode / Codex | OpenCode: reviewed (per owner); LOW test-count bookkeeping finding resolved (see Tests (GREEN)). Codex: initial adversarial read-only review — BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1 (documentation only: stale §3 audit state), no runtime/test change required; LOW corrected; narrow recheck completed → final **0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW**, verdict `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`. |
-| Commit / push | `421b58453b7de667cb3ad6a3467a051a14dd61f7` + Blueprint record `59e629f` + P0.1 closeout commit / local at closeout time, push approved. |
-| Owner aggregate gate (P0.1) | **GREEN** — OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Run manually by the OWNER at `59e629f`; no agent ran it; no separate `VITEST_EXIT` line captured, so none recorded. Known non-failing `pg` DeprecationWarning only (DEBT-009). **P0.1 COMPLETE / CLOSED LOCALLY.** |
+| Commit / push | `421b58453b7de667cb3ad6a3467a051a14dd61f7` + Blueprint record `59e629f` + P0.1 closeout `7b6fce805f11486b1f3a60081adfeaf0a545b7c4` / **pushed** (`6aa8143..7b6fce8`, normal push, verified `0 0`). |
+| Owner aggregate gate (P0.1) | **GREEN** — OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Run manually by the OWNER at `59e629f`; no agent ran it; no separate `VITEST_EXIT` line captured, so none recorded. Known non-failing `pg` DeprecationWarning only (DEBT-009). **P0.1 CLOSED AND PUSHED.** |
 
 ### Older blocks (summary; strong evidence only)
 
@@ -1121,7 +1122,7 @@ F-012 when P0.1-C reproduced it in a RED test.
 | Abandoned partial payment | Customer leaves after a partial payment | Hold stays protected indefinitely (Policy A); stock stays reserved | Visible as `PAYMENT_PROTECTED`; manual handling | P0.2 |
 | PAID sale with corrupt coverage | Manual data damage | Cannot complete (`INVALID_RESERVATION`); shown as `COVERAGE_INVALID` | Fail closed; audit trail | Manual/P0.2 |
 | ~~Uncommitted P0.1-C work~~ | — | — | **CLOSED** (`421b584`) | — |
-| Unpushed local checkpoints | 7 P0.1 commits only on this machine at closeout time | Loss of work | Local git; push gate now satisfied | Push (non-force) and verify `0 0`; close this risk once origin = HEAD |
+| ~~Unpushed local P0.1 checkpoints~~ | — | — | **CLOSED**: normal push `6aa8143..7b6fce8`, verified `0 0` | — |
 | Sweeper enabled without a system actor | Env flag set before bootstrap | No releases; error logs each tick (fail closed, process stays up) | Fail-closed resolution | Bootstrap before enabling (§21) |
 | Wrong-target DB mutation | Operator error with multiple local env files | Data loss on DEV/DEMO | Identity proofs, dry-run/execute, `.claude/hooks` | Keep explicit approval discipline |
 
@@ -1143,10 +1144,9 @@ F-012 when P0.1-C reproduced it in a RED test.
   `--execute`, from `api/` **before** enabling the sweeper. Without it, the
   pre-send step and sweeper fail closed (no cleanup writes). Bootstrap state per
   environment: [UNVERIFIED — NEEDS CONFIRMATION].
-- **Push/deploy status:** origin is at D3 (`6aa8143`). P0.1-A/B1/B2 are
-  intentionally not pushed. They wait for the P0.1 aggregate push gate
-  (P0.1-C completed and audited, then the owner full suite green). Nothing is
-  deployed by this work.
+- **Push/deploy status:** P0.1 (A/B1/B2/C + Blueprint records) is pushed:
+  origin advanced `6aa8143..7b6fce8` after the owner full suite was green.
+  Nothing is deployed by this work.
 
 ---
 
@@ -1185,8 +1185,8 @@ blocks must record reviewer verdicts here at review time.
 | 4 | Codex audit of P0.1-C | Independent adversarial review | 3 | **DONE** — initial review (1 LOW documentation finding, corrected) + narrow recheck: final 0/0/0/0, APPROVED FOR LOCAL CHECKPOINT | Findings resolved; Codex approval recorded in §22 |
 | 5 | Local P0.1-C checkpoint | Exact-file commit | 4 | **DONE** (`421b584` + Blueprint record commit) | P0.1 aggregate (A + B1 + B2 + C) complete and audited |
 | 6 | **OWNER ONLY:** final P0.1 full-suite gate | Full suite over the whole P0.1 aggregate | 5 | **DONE — GREEN** (owner, manual): 55/55 files, 855/855 tests, 0 failed, 7777.98s; no separate `VITEST_EXIT` line captured | Owner records a green result here |
-| 7 | Push approved local P0.1 work | Push only if step 6 is green | 6 | **NEXT** (approved; not yet pushed at closeout commit) | origin = local HEAD; remote verified; Blueprint updated |
-| 8 | Later Pilot safety gates | **P0.2 — cashier correction / cancellation / payment UX (next product block, per owner; not started; no repo requirements doc yet)**; P0.3/P0.4 (no repository source) [UNVERIFIED — NEEDS CONFIRMATION]; P0.5 (includes sweeper starvation hardening, per Pilot doc) | 7 | PLANNED | Per verified project decisions; acceptance criteria not yet defined |
+| 7 | Push approved local P0.1 work | Push only if step 6 is green | 6 | **DONE** — normal push `6aa8143..7b6fce8`, verified `0 0` | origin = local HEAD; remote verified; Blueprint updated |
+| 8 | Later Pilot safety gates | **P0.2 — cashier correction / cancellation / payment UX (NEXT product block, per owner; not started; no repo requirements doc yet)**; P0.3/P0.4 (no repository source) [UNVERIFIED — NEEDS CONFIRMATION]; P0.5 (includes sweeper starvation hardening, per Pilot doc) | 7 | PLANNED | Per verified project decisions; acceptance criteria not yet defined |
 
 ---
 
@@ -1226,3 +1226,4 @@ Append-only.
 | 2026-09-24 | P0.1-C Codex initial review recorded; LOW corrected (uncommitted) | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | §2, §3, §16, §22, §23, §25 | Codex adversarial read-only review: BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1 (documentation only). The LOW was the stale §3 P0.1-C audit state ("Pending OpenCode + Codex"); corrected here. No runtime/test change required; focused-test evidence (9/9 files, 211/211) unchanged; no tests run. Final Codex approval not yet given: narrow recheck pending. |
 | 2026-09-24 | P0.1-C local checkpoint | `421b58453b7de667cb3ad6a3467a051a14dd61f7` | §2, §3, §9, §10, §14, §15, §16, §17, §20, §22, §23, §25 | Codex narrow recheck completed: final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`. Exact-file implementation commit `421b584` (13 files: source, tests, API/Pilot docs; Blueprint and `opencode.json` excluded), then this Blueprint record commit. Focused evidence unchanged (9/9 files, 211/211, 0 failed, 0 skipped, exit 0); no tests run. P0.1 is checkpointed locally but **not formally closed**: the owner final aggregate full suite is pending. Nothing pushed. |
 | 2026-09-24 | P0.1 final closeout | `59e629f988e469c623a792f9867a8cf4f7a949b3` | §2, §3, §12, §14, §16, §19, §20, §22, §23, §25 | OWNER ran the final aggregate P0.1 full suite manually (agents did not): 55/55 files, 855/855 tests, 0 failed, start 15:07:14 local, 7777.98s; no separate `VITEST_EXIT` line captured, so none recorded. Known non-failing `pg` DeprecationWarning (existing DEBT-009). OpenCode and Codex (final 0/0/0/0) complete; focused P0.1-C evidence unchanged (9/9, 211/211). **P0.1 COMPLETE / CLOSED LOCALLY**; push approved, remote synchronization pending at commit time. Next product block: P0.2. |
+| 2026-09-24 | P0.1 post-push synchronization record | `7b6fce805f11486b1f3a60081adfeaf0a545b7c4` | §2, §3, §16, §20, §21, §23, §25 | Post-push synchronization record — this documentation commit; its exact SHA is the containing Git commit. The P0.1 closeout commit `7b6fce8` was pushed normally (no force): `origin/feat/production-v1` advanced `6aa8143..7b6fce8`, verified `0 0`. The unpushed-P0.1-commits risk is closed; §23 push step DONE. P0.1 is **CLOSED AND PUSHED**. Test evidence unchanged (owner full suite 55/55 files, 855/855 tests, 0 failed); no new runtime validation. Next product block: P0.2 (not started). |
