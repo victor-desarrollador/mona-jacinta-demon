@@ -3,19 +3,36 @@ import type { PrismaClient } from '../../generated/prisma/client.js';
 import { sendJson } from '../../shared/json-safe.js';
 import { AppError } from '../../shared/errors.js';
 import { createSalesService } from './sales.service.js';
+import { createPendingCorrectionService } from './pending-correction.service.js';
+import { logger } from '../../shared/logger.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 import { REALTIME_EVENTS } from '../../realtime/socket.js';
 
 export function createSalesController(database: PrismaClient, realtime?: RealtimeEmitter) {
   const service = createSalesService(database, realtime ? { realtime } : {});
+  const correction = createPendingCorrectionService(database);
   const userId = (req: Parameters<RequestHandler>[0]) => req.auth!.userId;
   return {
+    correct: (async (req, res) => {
+      const result = await correction.correctPendingSale(req, String(req.params.saleId), req.body);
+      // Pilot P0.2-A: advisory, after commit. A notification failure is
+      // logged with a safe code and never turns the committed correction
+      // into an HTTP error; clients refetch authoritative state.
+      try {
+        realtime?.emit(REALTIME_EVENTS.inventoryUpdated, {
+          branchId: result.branchId, saleId: result.saleId, quantities: result.quantities,
+        });
+      } catch {
+        logger.warn({ event: 'sale_correction_notify_failed', saleId: result.saleId, code: 'NOTIFY_FAILED' });
+      }
+      sendJson(res, result);
+    }) as RequestHandler,
     pending: (async (req, res) => {
       // No client filters: branch scope comes exclusively from fresh authorization.
       if (Object.keys(req.query).length > 0) {
         throw new AppError(400, 'VALIDATION_ERROR', 'La cola no admite parámetros de consulta.');
       }
-      sendJson(res, { items: await service.listPendingSales(req.auth!.effectiveLocationIds) });
+      sendJson(res, { items: await service.listPendingSales(req.auth!.effectiveLocationIds, req.auth!) });
     }) as RequestHandler,
     create: (async (req, res) => {
       const sale = await service.createDraftSale(req, userId(req), req.body.branchId);

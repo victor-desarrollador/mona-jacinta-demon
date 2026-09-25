@@ -47,7 +47,7 @@ describe('critical operation audit', () => {
         assignments: [
           {
             roleId: 'audit-test-assignment', roleCode: 'SELLER', scopeKind: 'LOCATION', locationId: branchId,
-            permissions: ['SALE_CREATE', 'SALE_VIEW', 'SALE_COMPLETE', 'SALE_CHARGE', 'CASH_SESSION_OPEN', 'CASH_SESSION_CLOSE'],
+            permissions: ['SALE_CREATE', 'SALE_VIEW', 'SALE_COMPLETE', 'SALE_CHARGE', 'SALE_CANCEL_PENDING', 'CASH_SESSION_OPEN', 'CASH_SESSION_CLOSE'],
           },
         ],
       },
@@ -122,10 +122,10 @@ describe('critical operation audit', () => {
     const cancellation = createCancellationService(db);
     const cancelled = await draft();
     await sales.sendToCashier(cancelled.id, sellerId, [branchId]);
-    await cancellation.cancelSale(req(adminId), cancelled.id);
+    await cancellation.cancelSale(req(adminId), cancelled.id, { reason: 'DUPLICATE_SALE' });
     const entry = await audit('SALE_CANCELLED', cancelled.id, adminId);
     expect(entry.before).toEqual({ status: 'PENDING_PAYMENT' });
-    expect(entry.after).toMatchObject({ status: 'CANCELLED', released: [{ variantId: expect.any(String), quantity: '1' }] });
+    expect(entry.after).toMatchObject({ status: 'CANCELLED', reason: 'DUPLICATE_SALE', released: [{ variantId: expect.any(String), quantity: '1' }] });
     const expired = await draft();
     await sales.sendToCashier(expired.id, sellerId, [branchId]);
     await db.stockReservation.updateMany({ where: { saleId: expired.id }, data: { expiresAt: new Date(0) } });

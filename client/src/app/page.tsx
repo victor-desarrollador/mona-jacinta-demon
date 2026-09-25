@@ -76,7 +76,24 @@ type PendingSale = {
   remainingBalance: string;
   holdState?: HoldState;
   canAcceptPayment?: boolean;
+  // Pilot P0.2-C: informational eligibility for the current cashier. The
+  // /correct and /cancel transactions stay authoritative.
+  paymentCount?: number;
+  canCorrect?: boolean;
+  canCancel?: boolean;
 };
+
+type CancellationReason = "WRONG_ITEM" | "WRONG_QUANTITY" | "CUSTOMER_CHANGED_MIND" | "DUPLICATE_SALE" | "OTHER";
+
+const CANCELLATION_REASONS: Array<{ value: CancellationReason; label: string }> = [
+  { value: "WRONG_ITEM", label: "Artículo equivocado" },
+  { value: "WRONG_QUANTITY", label: "Cantidad equivocada" },
+  { value: "CUSTOMER_CHANGED_MIND", label: "El cliente desistió" },
+  { value: "DUPLICATE_SALE", label: "Venta duplicada" },
+  { value: "OTHER", label: "Otro motivo" },
+];
+
+type CorrectionLine = { variantId: string; productName: string; variantName: string; quantity: string };
 
 type PaymentMethod = "CASH" | "TRANSFER" | "CARD_DEBIT" | "CARD_CREDIT" | "QR";
 
@@ -800,6 +817,11 @@ function CashierWorkspace({
   const [paymentAmount, setPaymentAmount] = useState("");
   const [cashReceived, setCashReceived] = useState("");
   const [retryIntent, setRetryIntent] = useState<PaymentIntent | null>(null);
+  const [splitPayment, setSplitPayment] = useState(false);
+  const [correctionLines, setCorrectionLines] = useState<CorrectionLine[] | null>(null);
+  const [cancelReason, setCancelReason] = useState<CancellationReason | "" | null>(null);
+  const [cancelNote, setCancelNote] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [paymentLoading, setPaymentLoading] = useState(false);
   const [completeLoading, setCompleteLoading] = useState(false);
@@ -825,19 +847,21 @@ function CashierWorkspace({
   }, [completedSale, selectedSaleId]);
   const displaySale = selectedSale ?? completedSnapshot;
 
-  const paidAmount = useMemo(
-    () => selectedPayments.reduce((sum, payment) => sum + cents(payment.amount), ZERO),
-    [selectedPayments],
-  );
-
+  // Pilot P0.2-C: paid and remaining amounts are the server's queue values,
+  // read-only. The client never recomputes them from its payment list.
   const saleTotal = displaySale ? cents(displaySale.total) : ZERO;
-  const effectivePaidAmount = completedSnapshot ? saleTotal : paidAmount;
-  const remaining = displaySale ? saleTotal - effectivePaidAmount : ZERO;
+  const effectivePaidAmount = completedSnapshot ? saleTotal : displaySale ? cents(displaySale.paidAmount) : ZERO;
+  const remaining = completedSnapshot ? ZERO : displaySale ? cents(displaySale.remainingBalance) : ZERO;
   const isPaid = Boolean(displaySale && saleTotal > ZERO && remaining === ZERO);
   const paymentBlocked = selectedSale?.canAcceptPayment === false;
   const selectedStatus = completedSale?.id === selectedSaleId ? "COMPLETED" : isPaid ? "PAID" : "PENDING_PAYMENT";
   const cashReceivedCents = arsToCents(cashReceived);
-  const paymentAmountCents = arsToCents(paymentAmount);
+  // Split OFF: the payment is exactly the server's remaining balance.
+  const paymentAmountCents = splitPayment ? arsToCents(paymentAmount) : remaining.toString();
+  const hasPayments = (selectedSale?.paymentCount ?? 0) > 0;
+  const correctionValid = Boolean(
+    correctionLines && correctionLines.length > 0 && correctionLines.every((line) => /^[1-9][0-9]*$/.test(line.quantity)),
+  );
   const changeAmount =
     paymentMethod === "CASH" && cashReceivedCents && paymentAmountCents
       ? cents(cashReceivedCents) - cents(paymentAmountCents)
@@ -853,14 +877,26 @@ function CashierWorkspace({
   );
 
   const refreshQueue = useCallback(async () => {
-    if (!token) return;
+    if (!token) return [];
     const response = await apiRequest<{ items: PendingSale[] }>("/sales/pending", token);
     setPendingSales(response.items);
     setSelectedSaleId((current) => {
       if (current && response.items.some((sale) => sale.saleId === current)) return current;
       return response.items[0]?.saleId ?? current;
     });
+    return response.items;
   }, [token]);
+
+  // Payment-entry state derived from an authoritative remaining balance.
+  // Used when the selected sale changes AND after a committed same-sale
+  // correction (Codex P0.2): the sale id stays the same there, so a stale
+  // tender (e.g. CASH received) must never survive the new balance.
+  const resetPaymentEntry = useCallback((balance: string) => {
+    setPaymentAmount(centsToArsInput(balance));
+    setCashReceived(centsToArsInput(balance));
+    setRetryIntent(null);
+    setSplitPayment(false);
+  }, []);
 
   const refreshCash = useCallback(async () => {
     if (!token || !branchId) return;
@@ -909,10 +945,11 @@ function CashierWorkspace({
   useEffect(() => {
     if (!selectedSale) return;
     const defaultAmount = remaining > ZERO ? remaining.toString() : selectedSale.remainingBalance;
-    setPaymentAmount(centsToArsInput(defaultAmount));
-    setCashReceived(centsToArsInput(defaultAmount));
+    resetPaymentEntry(defaultAmount);
     setCompletedSale(null);
-    setRetryIntent(null);
+    setCorrectionLines(null);
+    setCancelReason(null);
+    setCancelNote("");
     // Evita pisar importes escritos durante el refresco automatico de la cola.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSaleId]);
@@ -990,7 +1027,7 @@ function CashierWorkspace({
 
   async function registerPayment() {
     if (!selectedSale) return;
-    const amount = arsToCents(paymentAmount);
+    const amount = paymentAmountCents;
     const received = paymentMethod === "CASH" ? arsToCents(cashReceived) : null;
 
     if (!amount || cents(amount) <= ZERO) {
@@ -1018,6 +1055,69 @@ function CashierWorkspace({
     };
 
     await submitPayment(intent);
+  }
+
+  function startCorrection() {
+    if (!selectedSale) return;
+    const lines = new Map<string, CorrectionLine>();
+    for (const item of selectedSale.items) {
+      const current = lines.get(item.variantId);
+      lines.set(item.variantId, {
+        variantId: item.variantId, productName: item.productName, variantName: item.variantName,
+        quantity: current ? (cents(current.quantity) + cents(item.quantity)).toString() : item.quantity,
+      });
+    }
+    setCorrectionLines([...lines.values()]);
+    setCancelReason(null);
+    setError("");
+    setNotice("");
+  }
+
+  // Pilot P0.2-A/C: the complete target list goes to the server; nothing is
+  // shown as corrected until it commits and the queue is refetched.
+  async function submitCorrection() {
+    if (!token || !selectedSale || !correctionLines || !correctionValid) return;
+    setActionLoading(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiRequest(`/sales/${selectedSale.saleId}/correct`, token, {
+        method: "POST",
+        body: JSON.stringify({ items: correctionLines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })) }),
+      });
+      setCorrectionLines(null);
+      const refreshed = (await refreshQueue()).find((sale) => sale.saleId === selectedSale.saleId);
+      if (refreshed) resetPaymentEntry(refreshed.remainingBalance);
+      setNotice("Venta corregida.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo corregir la venta.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function submitCancellation() {
+    if (!token || !selectedSale || !cancelReason) return;
+    const note = cancelNote.trim();
+    if (cancelReason === "OTHER" && !note) return;
+    setActionLoading(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiRequest(`/sales/${selectedSale.saleId}/cancel`, token, {
+        method: "POST",
+        body: JSON.stringify({ reason: cancelReason, ...(note ? { note } : {}) }),
+      });
+      setCancelReason(null);
+      setCancelNote("");
+      setSelectedPayments([]);
+      await refreshQueue();
+      setNotice("Venta cancelada.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo cancelar la venta.");
+    } finally {
+      setActionLoading(false);
+    }
   }
 
   async function completeSale() {
@@ -1192,6 +1292,123 @@ function CashierWorkspace({
                 </div>
               </section>
             </div>
+
+            {selectedSale ? (
+              <section className="sale-actions">
+                {selectedSale.status === "PENDING_PAYMENT" && hasPayments ? (
+                  <p className="cart-note">La venta tiene pagos registrados: no admite corrección ni cancelación.</p>
+                ) : null}
+
+                {selectedSale.canCorrect && !correctionLines && cancelReason === null ? (
+                  <button className="secondary-button" onClick={startCorrection} disabled={actionLoading || paymentLoading}>
+                    Corregir venta
+                  </button>
+                ) : null}
+                {selectedSale.canCancel && !correctionLines && cancelReason === null ? (
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      setCancelReason("");
+                      setCancelNote("");
+                      setError("");
+                      setNotice("");
+                    }}
+                    disabled={actionLoading || paymentLoading}
+                  >
+                    Cancelar venta
+                  </button>
+                ) : null}
+
+                {correctionLines ? (
+                  <div className="correction-panel">
+                    <h3>Corregir artículos</h3>
+                    {correctionLines.map((line) => (
+                      <div className="readonly-item" key={line.variantId}>
+                        <span>
+                          <strong>{line.productName}</strong>
+                          <small>{line.variantName}</small>
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          step={1}
+                          aria-label={`Cantidad ${line.productName}`}
+                          value={line.quantity}
+                          onChange={(event) =>
+                            setCorrectionLines((lines) =>
+                              lines?.map((current) =>
+                                current.variantId === line.variantId ? { ...current, quantity: event.target.value.trim() } : current,
+                              ) ?? null,
+                            )
+                          }
+                          disabled={actionLoading}
+                        />
+                        <button
+                          className="remove-button"
+                          onClick={() =>
+                            setCorrectionLines((lines) => lines?.filter((current) => current.variantId !== line.variantId) ?? null)
+                          }
+                          disabled={actionLoading}
+                          aria-label={`Quitar ${line.productName}`}
+                        >
+                          x
+                        </button>
+                      </div>
+                    ))}
+                    {correctionLines.length === 0 ? (
+                      <p className="cart-note">La venta no puede quedar vacía: cancelá la venta.</p>
+                    ) : null}
+                    <button className="send-button" onClick={submitCorrection} disabled={actionLoading || !correctionValid}>
+                      {actionLoading ? "Guardando..." : "Guardar corrección"}
+                    </button>
+                    <button className="secondary-button" onClick={() => setCorrectionLines(null)} disabled={actionLoading}>
+                      Descartar
+                    </button>
+                  </div>
+                ) : null}
+
+                {cancelReason !== null ? (
+                  <div className="cancel-panel">
+                    <h3>Cancelar venta</h3>
+                    <label>
+                      Motivo
+                      <select
+                        value={cancelReason}
+                        onChange={(event) => setCancelReason(event.target.value as CancellationReason | "")}
+                        disabled={actionLoading}
+                      >
+                        <option value="">Seleccioná un motivo</option>
+                        {CANCELLATION_REASONS.map((reason) => (
+                          <option key={reason.value} value={reason.value}>
+                            {reason.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Nota
+                      <textarea
+                        value={cancelNote}
+                        maxLength={500}
+                        onChange={(event) => setCancelNote(event.target.value)}
+                        disabled={actionLoading}
+                        placeholder={cancelReason === "OTHER" ? "Obligatoria para «Otro motivo»" : "Opcional"}
+                      />
+                    </label>
+                    <button
+                      className="send-button"
+                      onClick={submitCancellation}
+                      disabled={actionLoading || !cancelReason || (cancelReason === "OTHER" && !cancelNote.trim())}
+                    >
+                      {actionLoading ? "Cancelando..." : "Confirmar cancelación"}
+                    </button>
+                    <button className="secondary-button" onClick={() => setCancelReason(null)} disabled={actionLoading}>
+                      Volver
+                    </button>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
           </>
         )}
       </section>
@@ -1242,12 +1459,26 @@ function CashierWorkspace({
               </select>
             </label>
 
+            <label className="split-toggle">
+              <input
+                type="checkbox"
+                checked={splitPayment}
+                onChange={(event) => {
+                  setSplitPayment(event.target.checked);
+                  setPaymentAmount(centsToArsInput(remaining.toString()));
+                }}
+                disabled={paymentLoading || isPaid}
+              />
+              Pago parcial (dividir el cobro)
+            </label>
+
             <label>
               Importe ARS
               <input
                 inputMode="decimal"
-                value={paymentAmount}
+                value={splitPayment ? paymentAmount : centsToArsInput(remaining.toString())}
                 onChange={(event) => setPaymentAmount(event.target.value)}
+                readOnly={!splitPayment}
                 disabled={paymentLoading || isPaid}
                 placeholder="65000"
               />

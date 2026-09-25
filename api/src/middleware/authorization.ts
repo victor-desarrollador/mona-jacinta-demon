@@ -48,6 +48,22 @@ export function assertPermissionAtLocation(
   if (!hasPermissionAtLocation(req.auth, permission, branchId)) throw forbidden();
 }
 
+// Pilot P0.2-B: a coarse global gate for a route whose real decision
+// depends on persisted resource state (e.g. /cancel: SALE_CREATE for the
+// seller's own DRAFT, SALE_CANCEL_PENDING for a pending sale). It only
+// rejects callers holding none of the permissions anywhere; the service must
+// re-check the exact permission at the resource's persisted location.
+export function requireAnyPermission(permissions: readonly ProductionPermission[]): RequestHandler {
+  return (req, _res, next) => {
+    if (!req.auth) {
+      next(new AppError(401, 'UNAUTHORIZED', 'Se requiere autenticación.'));
+      return;
+    }
+    const auth = req.auth;
+    next(permissions.some((permission) => hasPermission(auth, permission)) ? undefined : forbidden());
+  };
+}
+
 // Production-only (Phase 1D.2 split, Task 1D.3.6 completed the switch).
 // Reads exclusively req.auth.assignments, through authorization-policy.ts's
 // hasPermission/hasPermissionAtLocation — this function must never accept or

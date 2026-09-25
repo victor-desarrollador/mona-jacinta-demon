@@ -7,6 +7,7 @@ import { createSalesController } from './sales.controller.js';
 import { createCancellationRouter } from './cancellation.routes.js';
 import { createDraftSaleDto, saleIdDto } from './dto/sale.dto.js';
 import { addSaleItemDto, saleItemParamsDto, updateSaleItemDto } from './dto/sale-item.dto.js';
+import { correctPendingSaleDto } from './dto/pending-correction.dto.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 
 export function createSalesRouter(database: PrismaClient, realtime?: RealtimeEmitter): Router {
@@ -31,6 +32,9 @@ export function createSalesRouter(database: PrismaClient, realtime?: RealtimeEmi
   router.patch('/:saleId/items/:itemId', validate(saleItemParamsDto, 'params'), validate(updateSaleItemDto), createPermission, controller.updateItem);
   router.delete('/:saleId/items/:itemId', validate(saleItemParamsDto, 'params'), createPermission, controller.removeItem);
   router.post('/:saleId/send-to-cashier', validate(saleIdDto, 'params'), sendPermission, controller.sendToCashier);
+  // Pilot P0.2-A: global gate here; the service re-checks the same
+  // permission against the sale's persisted branch under the Sale lock.
+  router.post('/:saleId/correct', validate(saleIdDto, 'params'), validate(correctPendingSaleDto), requirePermission(PRODUCTION_PERMISSIONS.SALE_CORRECT_PENDING), controller.correct);
   router.post('/:saleId/complete', validate(saleIdDto, 'params'), requirePermission(PRODUCTION_PERMISSIONS.SALE_COMPLETE), controller.complete);
   return router;
 }

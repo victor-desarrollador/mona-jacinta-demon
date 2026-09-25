@@ -240,7 +240,11 @@ export function createSalesService(database: SaleDatabase, options: { realtime?:
   // fully paid sale stays visible until completed. holdState and
   // canAcceptPayment are informational (one wall-clock read per request);
   // payment and completion re-check everything under the Sale lock.
-  async function listPendingSales(branchIds: string[]) {
+  // Pilot P0.2-C: canCorrect/canCancel are informational eligibility for
+  // the CALLER (live permission at the row's own persisted location, same
+  // assignment), computed in memory with no extra query. /correct and
+  // /cancel re-check everything under the Sale lock.
+  async function listPendingSales(branchIds: string[], auth?: Pick<Express.AuthContext, 'assignments'>) {
     const now = new Date();
     const sales = await database.sale.findMany({
       where: { status: { in: ['PENDING_PAYMENT', 'PAID'] }, branchId: { in: branchIds } },
@@ -282,6 +286,11 @@ export function createSalesService(database: SaleDatabase, options: { realtime?:
         remainingBalance: sale.total - paidAmount,
         holdState,
         canAcceptPayment: canAcceptPayment(holdState),
+        paymentCount: sale.payments.length,
+        canCorrect: holdState === 'VALID'
+          && Boolean(auth && hasPermissionAtLocation(auth, PRODUCTION_PERMISSIONS.SALE_CORRECT_PENDING, sale.branchId)),
+        canCancel: sale.status === 'PENDING_PAYMENT' && sale.payments.length === 0
+          && Boolean(auth && hasPermissionAtLocation(auth, PRODUCTION_PERMISSIONS.SALE_CANCEL_PENDING, sale.branchId)),
       };
     });
   }

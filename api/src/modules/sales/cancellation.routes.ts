@@ -1,16 +1,25 @@
 import { Router } from 'express';
 import type { PrismaClient } from '../../generated/prisma/client.js';
-import { requirePermission } from '../../middleware/authorization.js';
+import { requireAnyPermission, requirePermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { saleIdDto } from './dto/sale.dto.js';
+import { cancelSaleDto } from './dto/cancel-sale.dto.js';
 import { createCancellationController } from './cancellation.controller.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 
 export function createCancellationRouter(database: PrismaClient, realtime?: RealtimeEmitter): Router {
   const router = Router();
   const controller = createCancellationController(database, realtime);
-  router.post('/:saleId/cancel', validate(saleIdDto, 'params'), requirePermission(PRODUCTION_PERMISSIONS.SALE_CREATE), controller.cancel);
+  // Pilot P0.2-B: coarse gate only; cancelSale decides DRAFT (own, SALE_CREATE)
+  // vs PENDING_PAYMENT (SALE_CANCEL_PENDING) on the locked, persisted sale.
+  router.post(
+    '/:saleId/cancel',
+    validate(saleIdDto, 'params'),
+    validate(cancelSaleDto),
+    requireAnyPermission([PRODUCTION_PERMISSIONS.SALE_CREATE, PRODUCTION_PERMISSIONS.SALE_CANCEL_PENDING]),
+    controller.cancel,
+  );
   return router;
 }
 

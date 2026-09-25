@@ -75,7 +75,13 @@ DRAFT -> PENDING_PAYMENT -> PAID -> COMPLETED
 | DELETE | `/api/v1/sales/:saleId/items/:itemId` | `sale.create` | Remove an item from a draft sale. |
 | POST | `/api/v1/sales/:saleId/send-to-cashier` | `sale.create` with sale branch scope | Reserve stock and transition a draft sale to pending payment. |
 | POST | `/api/v1/sales/:saleId/complete` | `sale.complete` | Complete a paid sale and apply final inventory movement. Consumes only current `ACTIVE` holds, which must match the items exactly; the original `expiresAt` does not block a `PAID` sale (Pilot P0.1-C). |
-| POST | `/api/v1/sales/:saleId/cancel` | `sale.create` | Cancel an eligible draft or unpaid pending-payment sale. |
+| POST | `/api/v1/sales/:saleId/correct` | `SALE_CORRECT_PENDING` at the sale's location | Correct a `PENDING_PAYMENT` sale with **zero** payments: body `{ items: [{ variantId, quantity }] }` is the complete target item list (Pilot P0.2-A). |
+| POST | `/api/v1/sales/:saleId/cancel` | `DRAFT`: the owning seller with `sale.create`; `PENDING_PAYMENT`: `SALE_CANCEL_PENDING` at the sale's location | Cancel an eligible draft or zero-payment pending sale. Body `{ reason, note? }` (Pilot P0.2-B). |
+
+Pilot P0.2 contract (see [`../pilot-v1.1/00-pilot-safety-gate.md`](../pilot-v1.1/00-pilot-safety-gate.md)):
+
+- **Correction** (`/correct`): allowed only for `PENDING_PAYMENT` with no `SalePayment` row (any payment → `409 PAYMENT_ALREADY_ACCEPTED`; other states → `409 INVALID_SALE_STATE`). The current holds must cover the items exactly and be unexpired (`409 RESERVATION_EXPIRED` / `409 INVALID_RESERVATION`). `items` must list each variant once with a positive integer quantity; an empty list is rejected (`400`), so an empty sale is impossible — cancel instead. A variant missing from the list is removed (its `SaleItem` is deleted). An increase needs available stock (`409 INSUFFICIENT_STOCK`). An unchanged list → `409 NO_CHANGES`. Only `Inventory.reserved` changes; physical stock and `StockMovement` never do, and the original hold expiry is kept. Response: `{ saleId, branchId, status, subtotal, total, items, quantities }`.
+- **Cancellation** (`/cancel`): `reason` is one of `WRONG_ITEM`, `WRONG_QUANTITY`, `CUSTOMER_CHANGED_MIND`, `DUPLICATE_SALE`, `OTHER`; `note` (≤ 500 chars) is required and nonblank for `OTHER`. A `DRAFT` can be cancelled only by its own seller. Any `SalePayment` row blocks cancellation (`409 PAYMENT_ALREADY_ACCEPTED`): no refund is made and no payment or cash movement is deleted. A zero-payment pending cancellation releases the `ACTIVE` holds exactly (no `StockMovement`). There is no `PENDING_PAYMENT → DRAFT` transition.
 
 ## Cash
 
@@ -112,6 +118,8 @@ Pilot P0.1-C contract (see [`../pilot-v1.1/00-pilot-safety-gate.md`](../pilot-v1
 - A committed payment always returns `201` (replay: `200`). A failing `sale.paid` realtime notification is logged and never turns it into an error.
 
 `GET /api/v1/sales/pending` rows (P0.1-C, additive): `status` (`PENDING_PAYMENT` | `PAID`), `holdState` (`VALID` | `EXPIRED` | `PAYMENT_PROTECTED` | `PAID` | `COVERAGE_INVALID`) and `canAcceptPayment` (boolean). They are informational only; the payment and completion transactions re-check everything.
+
+Pilot P0.2-C adds, per row and for the calling user: `paymentCount` (number of `SalePayment` rows), `canCorrect` (`holdState` is `VALID` and the caller holds `SALE_CORRECT_PENDING` at the sale's location) and `canCancel` (`PENDING_PAYMENT`, zero payment rows, and `SALE_CANCEL_PENDING` at the sale's location). They are informational too: `/correct` and `/cancel` re-check everything under the Sale lock. `paidAmount` and `remainingBalance` are the server's exact values; the cashier UI displays them read-only.
 
 ## Audit
 

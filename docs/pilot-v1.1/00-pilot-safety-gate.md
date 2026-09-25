@@ -261,10 +261,102 @@ release authority.
 The frozen documents are unchanged. The Production `StockHold` phase (3C/6B)
 must reconcile this explicitly.
 
+## P0.2 — Cashier correction, cancellation and payment UX
+
+P0.2 keeps every P0.1 rule above (Policy A, expiry boundary, exact current
+coverage, PAID completion). Decisions come from the owner's P0.2 brief.
+
+### Permissions (Pilot additions to the Production catalog)
+
+| Permission | Default roles | Meaning |
+| --- | --- | --- |
+| `SALE_CORRECT_PENDING` | CASHIER, ADMIN (OWNER implicitly) | Correct a zero-payment `PENDING_PAYMENT` sale |
+| `SALE_CANCEL_PENDING` | CASHIER, ADMIN (OWNER implicitly) | Cancel a zero-payment `PENDING_PAYMENT` sale |
+
+They are catalog rows only (no schema change) and are checked live against
+the sale's persisted location through the centralized policy. No explicit
+OWNER row is created. SELLER and WAREHOUSE do not receive them. An existing
+database gets them only from the additive RBAC catalog sync (the existing
+catalog bootstrap script or the demo seed), run deliberately by the owner
+against a proven target. Nothing is added at startup.
+
+### Pending correction (P0.2-A)
+
+`POST /api/v1/sales/:saleId/correct` replaces the item list of a
+`PENDING_PAYMENT` sale that has **no `SalePayment` row**. Payment-row
+existence decides, never the payment sum; any payment blocks correction.
+
+- Same lock order as payment, completion and release: `Sale → StockReservation
+  (ACTIVE, id ASC) → Inventory (id ASC)`. Eligibility is read under the lock.
+- The current holds must cover the items exactly and be unexpired (the
+  first-payment rule). An expired or already released hold is never
+  refreshed: the sale must be cancelled instead.
+- Only `Inventory.reserved` moves, by the exact per-variant delta. An
+  increase must pass the locked `physical − reserved >= delta` check.
+  Physical stock never changes and no `StockMovement` is written.
+- Superseded holds become historical `RELEASED` rows; each changed variant
+  gets one `ACTIVE` hold that keeps the **original `expiresAt`**.
+- A removed line's `SaleItem` is physically deleted; the `SALE_CORRECTED`
+  audit keeps the full before/after item lists. New lines take the current
+  variant price; untouched lines keep their snapshot.
+- An empty result is impossible (`400`): cancel the sale instead. There is
+  no `PENDING_PAYMENT → DRAFT` transition.
+
+### Controlled cancellation (P0.2-B)
+
+- `DRAFT`: only the owning seller (persisted `sellerId`) with `SALE_CREATE`
+  at the sale's location. CASHIER, ADMIN and OWNER cannot cancel someone
+  else's draft.
+- `PENDING_PAYMENT`: `SALE_CANCEL_PENDING` at the sale's location and **no
+  `SalePayment` row**. It locks the Sale first, releases the `ACTIVE` holds
+  exactly (`reserved` decremented, physical untouched, no `StockMovement`),
+  marks the sale `CANCELLED` and writes the audit in the same transaction.
+  An expired zero-payment sale can be cancelled this way.
+- Every cancellation carries a structured `reason`: `WRONG_ITEM`,
+  `WRONG_QUANTITY`, `CUSTOMER_CHANGED_MIND`, `DUPLICATE_SALE` or `OTHER`.
+  `OTHER` requires a nonblank note (≤ 500 characters). Reason and note are
+  stored in the `SALE_CANCELLED` audit.
+- Policy A is unchanged: a partially or fully paid sale cannot be
+  cancelled (`PAYMENT_ALREADY_ACCEPTED`). There is no automatic refund, and
+  no payment or cash movement is ever deleted. Abandoned partial payments
+  stay a **manual operational case** for the Pilot.
+- Cancellation and payment both lock the Sale first, so no state can hold
+  both an accepted payment and a cancellation-released hold.
+
+### Cashier UX (P0.2-C)
+
+The server stays authoritative: the queue's eligibility flags are
+informational, and every action is re-checked under the Sale lock.
+
+- Queue rows carry `paymentCount`, `canCorrect` (VALID row + live
+  `SALE_CORRECT_PENDING` at the sale's location) and `canCancel`
+  (zero-payment `PENDING_PAYMENT` + live `SALE_CANCEL_PENDING`).
+- The cashier sees **Corregir venta** / **Cancelar venta** only when the
+  server says so; a sale with payments shows that it admits neither.
+- Correction edits quantities or removes lines of the current items
+  (adding a new variant is API-only for now) and never sends an empty list.
+  Cancellation needs a chosen reason, plus a note for `OTHER`. After success
+  the queue is refetched; a rejection shows the server's message and
+  changes nothing locally.
+- Paid and remaining amounts are the server's values, read-only.
+- Payment: with **Pago parcial** off, the amount is exactly the remaining
+  balance (read-only). With it on, the cashier enters a positive amount no
+  larger than the remaining balance. CASH received/change keep their own
+  fields. The server validates every payment.
+- P0.1 hold states are unchanged: `EXPIRED` and `COVERAGE_INVALID` are not
+  chargeable, `PAYMENT_PROTECTED` can pay its remaining balance, `PAID`
+  stays visible and completable.
+
+### Deferred
+
+Stale-client guards (`expectedSaleUpdatedAt`, `expectedRemaining`) are not
+part of P0.2.
+
 ## Known limitations (follow-ups)
 
 - Starvation: batches are ordered by sale id. Enough permanently corrupt
   low-id sales could occupy every batch slot. Each one is logged on every
   tick, and hardening is deferred to P0.5.
-- Pending correction/cancellation of partially paid or expired sales and
-  their cashier UX are P0.2.
+- Partially paid sales cannot be corrected or cancelled (P0.2 keeps Policy
+  A); their resolution stays manual. Expired zero-payment sales can be
+  cancelled, not corrected.

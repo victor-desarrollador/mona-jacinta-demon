@@ -191,7 +191,7 @@ describe('planAdminCompanyBackfill (GC4A read-only preflight)', () => {
     ]);
     expect(user.alreadyHasCompanyAssignment).toBe(false);
     expect(user.targetState).toEqual({ scopeKind: 'COMPANY', locationId: null });
-    expect(plan.canonicalAdminPermissionCodes).toHaveLength(33);
+    expect(plan.canonicalAdminPermissionCodes).toHaveLength(35);
 
     const after = await db.userRoleScope.findMany({ where: { userId: admin.id }, orderBy: { id: 'asc' } });
     expect(after).toEqual(before);
@@ -276,8 +276,8 @@ describe('planAdminCompanyBackfill (GC4A read-only preflight)', () => {
 
     const plan = await planAdminCompanyBackfill(db);
 
-    expect(plan.productionPermissionCount).toBe(33);
-    expect(plan.actualAdminPermissionCodes).toHaveLength(33);
+    expect(plan.productionPermissionCount).toBe(35);
+    expect(plan.actualAdminPermissionCodes).toHaveLength(35);
     expect(plan.actualAdminPermissionCodes).not.toContain('sale.create.legacy-test');
     expect(plan.catalogMatchesExpected).toBe(true);
     expect(plan.readyForExecution).toBe(true);

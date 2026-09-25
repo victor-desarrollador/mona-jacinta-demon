@@ -19,6 +19,7 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
   let inventoryId: string;
   let sellerToken: string;
   let warehouseToken: string;
+  let cashierToken: string;
 
   beforeAll(async () => { db = await createTestPrismaClient(); app = createApp(db); }, 120000);
   beforeEach(async () => {
@@ -33,6 +34,9 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     sellerId = seller.id; warehouseId = warehouse.id; branchId = branch.id; variantId = variant.id; productId = variant.productId;
     inventoryId = (await db.inventory.findUniqueOrThrow({ where: { variantId_branchId: { variantId, branchId } } })).id;
     sellerToken = await getAuthToken(seller); warehouseToken = await getAuthToken(warehouse);
+    // Pilot P0.2-B: PENDING_PAYMENT cancellation needs SALE_CANCEL_PENDING
+    // (CASHIER/ADMIN); SALE_CREATE now covers only the seller's own DRAFT.
+    cashierToken = await getAuthToken(await db.user.findUniqueOrThrow({ where: { email: 'cashier01@demo.local' } }));
   }, 120000);
   afterAll(async () => { await db?.$disconnect(); }, 120000);
 
@@ -46,7 +50,8 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
   async function payment(saleId: string, amount = 1n) {
     return db.salePayment.create({ data: { saleId, method: 'TRANSFER', amount, idempotencyKey: randomUUID() } });
   }
-  const cancel = (saleId: string, token = sellerToken) => request(app).post(`/api/v1/sales/${saleId}/cancel`).set('Authorization', `Bearer ${token}`);
+  // Pilot P0.2-B: every cancellation carries a structured reason.
+  const cancel = (saleId: string, token = sellerToken) => request(app).post(`/api/v1/sales/${saleId}/cancel`).set('Authorization', `Bearer ${token}`).send({ reason: 'CUSTOMER_CHANGED_MIND' });
   const release = (token = warehouseToken) => request(app).post('/api/v1/admin/reservations/release-expired').set('Authorization', `Bearer ${token}`);
 
   it('requires authentication, SALE_CREATE, and fresh assignment/permission', async () => {
@@ -95,7 +100,7 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     const current = await sale(); await db.saleItem.create({ data: { saleId: current.id, variantId, productId, productName: 'x', variantName: 'x', sku: 'x', quantity: 3n, unitPrice: 1n, subtotal: 3n } });
     await reserve(current.id, 2n); await reserve(current.id, 3n);
     const before = await db.inventory.findUniqueOrThrow({ where: { id: inventoryId } });
-    const response = await cancel(current.id);
+    const response = await cancel(current.id, cashierToken);
     expect(response.status).toBe(200);
     const after = await db.inventory.findUniqueOrThrow({ where: { id: inventoryId } });
     expect(after.physical).toBe(before.physical); expect(after.reserved).toBe(before.reserved - 5n);
@@ -106,11 +111,11 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
 
   it('rejects any accepted payment and protects all lifecycle states', async () => {
     const partial = await sale(); await reserve(partial.id); await payment(partial.id, 1n);
-    expect((await cancel(partial.id)).body.error.code).toBe('PAYMENT_ALREADY_ACCEPTED');
+    expect((await cancel(partial.id, cashierToken)).body.error.code).toBe('PAYMENT_ALREADY_ACCEPTED');
     expect((await db.sale.findUniqueOrThrow({ where: { id: partial.id } })).status).toBe('PENDING_PAYMENT');
     expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: partial.id } })).status).toBe('ACTIVE');
     for (const status of ['PAID', 'COMPLETED', 'CANCELLED'] as const) {
-      const current = await sale(status); expect((await cancel(current.id)).body.error.code).toBe('INVALID_SALE_STATE');
+      const current = await sale(status); expect((await cancel(current.id, cashierToken)).body.error.code).toBe('INVALID_SALE_STATE');
     }
   });
 
@@ -118,11 +123,11 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     const current = await sale();
     const otherBranch = await db.branch.findUniqueOrThrow({ where: { code: 'YB' } });
     await db.stockReservation.create({ data: { saleId: current.id, variantId, branchId: otherBranch.id, quantity: 1n, expiresAt: new Date(Date.now() - 1000) } });
-    expect((await cancel(current.id)).body.error.code).toBe('INVALID_RESERVATION');
+    expect((await cancel(current.id, cashierToken)).body.error.code).toBe('INVALID_RESERVATION');
     expect((await db.sale.findUniqueOrThrow({ where: { id: current.id } })).status).toBe('PENDING_PAYMENT');
     await db.stockReservation.deleteMany({ where: { saleId: current.id } });
     await reserve(current.id, 2n); await db.inventory.update({ where: { id: inventoryId }, data: { reserved: 0n } });
-    expect((await cancel(current.id)).body.error.code).toBe('INVALID_RESERVATION');
+    expect((await cancel(current.id, cashierToken)).body.error.code).toBe('INVALID_RESERVATION');
     expect((await db.sale.findUniqueOrThrow({ where: { id: current.id } })).status).toBe('PENDING_PAYMENT'); expect(await db.auditLog.count()).toBe(0);
   });
 
@@ -183,7 +188,8 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     const sellerRole = await db.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
     const user = await createTestUser(db, sellerRole.id, branchId);
     const isolatedToken = await getAuthToken(user);
-    const current = await sale('DRAFT');
+    // Pilot P0.2-B: DRAFT cancellation is seller-own only.
+    const current = await db.sale.create({ data: { sellerId: user.id, branchId, status: 'DRAFT', subtotal: 100n, total: 100n } });
     const response = await cancel(current.id, isolatedToken);
     expect(response.status).toBe(200);
   });
@@ -211,10 +217,13 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     });
 
     const ownerToken = await getAuthToken(owner);
-    const current = await sale('DRAFT');
+    // Pilot P0.2-B: OWNER cancels a zero-payment pending sale through its
+    // implicit SALE_CANCEL_PENDING authority, but never another seller's DRAFT.
+    const current = await sale('PENDING_PAYMENT');
     const response = await cancel(current.id, ownerToken);
     expect(response.status).toBe(200);
     expect(response.body.status).toBe('CANCELLED');
+    expect((await cancel((await sale('DRAFT')).id, ownerToken)).status).toBe(403);
   });
 
   it('rejects a legacy-lowercase-only sale.create grant on /cancel, once switched', async () => {
@@ -294,9 +303,9 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
       ],
     });
     const multiToken = await getAuthToken(multi);
-    const saleAtA = await db.sale.create({ data: { sellerId, branchId, status: 'DRAFT', subtotal: 100n, total: 100n } });
+    const saleAtA = await db.sale.create({ data: { sellerId: multi.id, branchId, status: 'DRAFT', subtotal: 100n, total: 100n } });
     expect((await cancel(saleAtA.id, multiToken)).status).toBe(200);
-    const saleAtB = await db.sale.create({ data: { sellerId, branchId: yb.id, status: 'DRAFT', subtotal: 100n, total: 100n } });
+    const saleAtB = await db.sale.create({ data: { sellerId: multi.id, branchId: yb.id, status: 'DRAFT', subtotal: 100n, total: 100n } });
     expect((await cancel(saleAtB.id, multiToken)).status).toBe(403);
   });
 
@@ -328,7 +337,7 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     vi.spyOn(db, '$transaction').mockImplementation(((callback: (tx: Prisma.TransactionClient) => Promise<unknown>, options: object) => original(async (tx) => {
       vi.spyOn(tx.auditLog, 'create').mockRejectedValueOnce(new Error('forced audit failure')); return callback(tx);
     }, options)) as typeof db.$transaction);
-    expect((await cancel(current.id)).status).toBe(500);
+    expect((await cancel(current.id, cashierToken)).status).toBe(500);
     expect((await db.sale.findUniqueOrThrow({ where: { id: current.id } })).status).toBe('PENDING_PAYMENT');
     expect((await db.inventory.findUniqueOrThrow({ where: { id: inventoryId } })).reserved).toBe(before.reserved);
     expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: current.id } })).status).toBe('ACTIVE'); expect(await db.auditLog.count()).toBe(0);

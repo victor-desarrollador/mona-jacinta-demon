@@ -220,6 +220,8 @@ describe('cashier pending-sales queue', () => {
       saleId: sale.id, saleNumber: sale.saleNumber, sellerName: 'Persisted seller name', status: 'PENDING_PAYMENT',
       items: [], subtotal: '9000000', total: '9000000', paidAmount: '0', remainingBalance: '9000000',
       holdState: 'COVERAGE_INVALID', canAcceptPayment: false,
+      // Pilot P0.2-C: informational eligibility for the calling cashier.
+      paymentCount: 0, canCorrect: false, canCancel: true,
     }]);
   });
 
@@ -352,6 +354,52 @@ describe('cashier pending-sales queue', () => {
       expect((await queue()).body.items.map((sale: { saleId: string }) => sale.saleId)).not.toContain(paidAtYerba.id);
       await prisma.userRoleScope.updateMany({ where: { userId: cashierId }, data: { locationId: yerbaId } });
       expect((await queue()).body.items.map((sale: { saleId: string }) => sale.saleId)).toEqual([paidAtYerba.id]);
+    });
+  });
+
+  // Pilot P0.2-C: informational correction/cancellation eligibility for the
+  // CALLER. Correction needs a VALID row (zero payments, exact unexpired
+  // coverage); cancellation needs a zero-payment PENDING_PAYMENT row; both
+  // need the live permission at the row's own location. The /correct and
+  // /cancel transactions stay authoritative.
+  describe('correction and cancellation eligibility (Pilot P0.2-C)', () => {
+    const past = () => new Date(Date.now() - 60 * 60 * 1000);
+    const row = async (saleId: string, accessToken = token) =>
+      (await queue('', accessToken)).body.items.find((item: { saleId: string }) => item.saleId === saleId);
+    const payOnce = (saleId: string, amount = 1n) =>
+      prisma.salePayment.create({ data: { saleId, method: 'TRANSFER', amount, idempotencyKey: randomUUID() } });
+
+    it('offers correction and cancellation on a VALID zero-payment sale', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id);
+      expect(await row(sale.id)).toMatchObject({ holdState: 'VALID', paymentCount: 0, canCorrect: true, canCancel: true });
+    });
+
+    it('offers only cancellation on an EXPIRED zero-payment sale', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past() });
+      expect(await row(sale.id)).toMatchObject({ holdState: 'EXPIRED', canCorrect: false, canCancel: true });
+    });
+
+    it('offers neither once any payment row exists, nor on a PAID sale', async () => {
+      const partial = await pending(); await addSnapshot(partial.id); await hold(partial.id); await payOnce(partial.id);
+      const paid = await pending({ status: 'PAID' }); await addSnapshot(paid.id); await hold(paid.id); await payOnce(paid.id, 9000000n);
+      expect(await row(partial.id)).toMatchObject({ holdState: 'PAYMENT_PROTECTED', paymentCount: 1, canCorrect: false, canCancel: false });
+      expect(await row(paid.id)).toMatchObject({ holdState: 'PAID', paymentCount: 1, canCorrect: false, canCancel: false });
+    });
+
+    it('follows the live permissions, never the role name', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id);
+      const role = await prisma.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+      const permissions = await prisma.permission.findMany({ where: { code: { in: ['SALE_CORRECT_PENDING', 'SALE_CANCEL_PENDING'] } } });
+      await prisma.rolePermission.deleteMany({ where: { roleId: role.id, permissionId: { in: permissions.map(({ id }) => id) } } });
+      expect(await row(sale.id)).toMatchObject({ holdState: 'VALID', canAcceptPayment: true, canCorrect: false, canCancel: false });
+    });
+
+    it('never offers them to a queue viewer without the pending permissions', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id);
+      const role = await prisma.role.findUniqueOrThrow({ where: { code: 'SELLER' } });
+      const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'SALE_QUEUE_VIEW' } });
+      await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+      expect(await row(sale.id, await getAuthToken({ id: sellerId }))).toMatchObject({ canCorrect: false, canCancel: false });
     });
   });
 });

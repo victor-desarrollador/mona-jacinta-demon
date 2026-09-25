@@ -45,6 +45,10 @@ export const DEFAULT_ROLE_GRANTS: Record<
     P.PUBLICATION_CHECKOUT,
     P.PUBLICATION_RETURN,
     P.SENA_CREATE,
+    // Pilot P0.2: cashier correction / cancellation of a zero-payment
+    // pending sale.
+    P.SALE_CORRECT_PENDING,
+    P.SALE_CANCEL_PENDING,
   ],
   [ROLE_CODES.WAREHOUSE]: [
     P.GOODS_RECEIPT_MANAGE,

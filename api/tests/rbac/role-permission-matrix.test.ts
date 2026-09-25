@@ -22,7 +22,7 @@ describe('Phase 1B RBAC domain module (no database)', () => {
     for (const code of roleCodeValues) expect(isProductionRoleCode(code)).toBe(true);
   });
 
-  it('has exactly the 33 permission constants from the frozen role-permission matrix', () => {
+  it('has exactly the 33 frozen-matrix permission constants plus the Pilot P0.2 additions', () => {
     const expected = [
       'PRICE_MANAGE',
       'GOODS_RECEIPT_MANAGE',
@@ -57,9 +57,12 @@ describe('Phase 1B RBAC domain module (no database)', () => {
       'SENA_CREATE',
       'SENA_MANAGE',
       'PRODUCT_IMAGE_MANAGE',
+      // Pilot P0.2 (additive, not in the frozen matrix).
+      'SALE_CORRECT_PENDING',
+      'SALE_CANCEL_PENDING',
     ];
     expect(productionPermissionValues.slice().sort()).toEqual(expected.slice().sort());
-    expect(productionPermissionValues).toHaveLength(33);
+    expect(productionPermissionValues).toHaveLength(35);
     // Constant keys equal their string values (no invented abbreviations).
     for (const [key, value] of Object.entries(PRODUCTION_PERMISSIONS)) expect(key).toBe(value);
   });
@@ -89,6 +92,8 @@ describe('Phase 1B RBAC domain module (no database)', () => {
         'PUBLICATION_CHECKOUT',
         'PUBLICATION_RETURN',
         'SENA_CREATE',
+        'SALE_CORRECT_PENDING',
+        'SALE_CANCEL_PENDING',
       ].sort(),
     );
     expect(DEFAULT_ROLE_GRANTS[ROLE_CODES.WAREHOUSE].slice().sort()).toEqual(

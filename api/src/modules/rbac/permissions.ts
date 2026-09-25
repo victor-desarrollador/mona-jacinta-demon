@@ -40,6 +40,11 @@ export const PRODUCTION_PERMISSIONS = {
   SENA_CREATE: 'SENA_CREATE',
   SENA_MANAGE: 'SENA_MANAGE',
   PRODUCT_IMAGE_MANAGE: 'PRODUCT_IMAGE_MANAGE',
+  // Pilot P0.2 additions (not in the frozen 03 matrix; additive catalog rows
+  // per its "Adding permissions" rule). Default grants: CASHIER, ADMIN;
+  // OWNER only through its implicit authority.
+  SALE_CORRECT_PENDING: 'SALE_CORRECT_PENDING',
+  SALE_CANCEL_PENDING: 'SALE_CANCEL_PENDING',
 } as const;
 
 export type ProductionPermission =

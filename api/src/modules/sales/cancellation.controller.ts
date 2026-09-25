@@ -11,7 +11,7 @@ export function createCancellationController(database: PrismaClient, realtime?: 
   const service = createCancellationService(database);
   return {
     cancel: (async (req, res) => {
-      const result = await service.cancelSale(req, String(req.params.saleId));
+      const result = await service.cancelSale(req, String(req.params.saleId), req.body);
       realtime?.emit(REALTIME_EVENTS.saleCancelled, result);
       if (result.released.length > 0) realtime?.emit(REALTIME_EVENTS.inventoryUpdated, result);
       sendJson(res, result);

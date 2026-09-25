@@ -249,10 +249,12 @@ describe('authoritative expired technical-hold release (Pilot P0.1-B1)', () => {
     it('release racing manual cancellation never double-decrements', async () => {
       const sale = await heldSale({ quantity: 2n });
       const before = await inventory(remera.id);
-      const seller = await db.user.findUniqueOrThrow({ where: { id: sellerId } });
-      const token = await getAuthToken(seller);
+      // Pilot P0.2-B: pending cancellation is SALE_CANCEL_PENDING (cashier)
+      // and carries a structured reason.
+      const cashier = await db.user.findUniqueOrThrow({ where: { email: 'cashier01@demo.local' } });
+      const token = await getAuthToken(cashier);
       const [cancelResult, releaseResult] = await Promise.allSettled([
-        request(app).post(`/api/v1/sales/${sale.id}/cancel`).set('Authorization', `Bearer ${token}`),
+        request(app).post(`/api/v1/sales/${sale.id}/cancel`).set('Authorization', `Bearer ${token}`).send({ reason: 'CUSTOMER_CHANGED_MIND' }),
         service.releaseExpiredSaleHolds(sale.id, { actor: admin(), now: NOW }),
       ]);
       expect(cancelResult.status).toBe('fulfilled');

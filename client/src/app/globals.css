@@ -1087,3 +1087,47 @@ select:focus {
     width: fit-content;
   }
 }
+
+/* Pilot P0.2-C: cashier correction / cancellation actions and split toggle. */
+.sale-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.correction-panel,
+.cancel-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.correction-panel h3,
+.cancel-panel h3 {
+  margin: 0;
+}
+
+.correction-panel input[type="number"] {
+  width: 72px;
+}
+
+.cancel-panel textarea {
+  min-height: 64px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.split-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.split-toggle input {
+  width: auto;
+}

@@ -82,7 +82,7 @@ describe('Production RBAC catalog bootstrap (Phase 1B)', () => {
     );
   });
 
-  it('persists all 33 Production permissions without touching the 12 legacy lowercase codes', async () => {
+  it('persists every Production permission without touching the 12 legacy lowercase codes', async () => {
     await bootstrapProductionRbacCatalog(db.prisma);
     const all = await db.prisma.permission.findMany();
     const codes = all.map((p) => p.code);

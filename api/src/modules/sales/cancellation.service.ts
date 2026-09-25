@@ -1,13 +1,16 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { hasPermissionAtLocation } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 import { resolveSystemActorId } from '../audit/system-actor.service.js';
 import { EXPIRED_HOLD_RELEASE_BATCH_LIMIT, PRE_SEND_RECONCILE_LIMIT, releasableExpiredHoldWhere } from './reservation-holds.js';
+import type { CancelSaleInput } from './dto/cancel-sale.dto.js';
 
 type AuthScope = { userId: string; branchIds: string[] };
 type LockedSale = { id: string; branchId: string; status: string };
+type LockedCancelSale = LockedSale & { sellerId: string };
 type LockedReservation = { id: string; variantId: string; branchId: string; quantity: bigint; status: string; expiresAt: Date };
 type LockedInventory = { id: string; variantId: string; branchId: string; physical: bigint; reserved: bigint };
 
@@ -32,6 +35,7 @@ export type PreSendTarget = { branchId: string; variantIds: string[]; triggeredB
 export { EXPIRED_HOLD_RELEASE_BATCH_LIMIT };
 
 const invalidState = () => new AppError(409, 'INVALID_SALE_STATE', 'La venta no puede cancelarse en su estado actual.');
+const cancelForbidden = () => new AppError(403, 'FORBIDDEN', 'No cuenta con permisos para cancelar esta venta.');
 const invalidReservation = (message = 'La reserva de la venta no es válida.') => new AppError(409, 'INVALID_RESERVATION', message);
 
 function transient(error: unknown) {
@@ -39,11 +43,6 @@ function transient(error: unknown) {
   const message = error instanceof Error ? error.message : '';
   return candidate.code === 'P2034' || candidate.meta?.code === '40001'
     || candidate.meta?.code === '40P01' || message.includes('40001') || message.includes('40P01');
-}
-
-async function acceptedTotal(tx: Prisma.TransactionClient, saleId: string) {
-  const payments = await tx.salePayment.findMany({ where: { saleId }, select: { amount: true } });
-  return payments.reduce((sum, payment) => sum + payment.amount, 0n);
 }
 
 async function releaseReservations(
@@ -73,7 +72,10 @@ async function releaseReservations(
     const inventory = byVariant.get(variantId)!;
     await tx.inventory.update({ where: { id: inventory.id }, data: { reserved: inventory.reserved - quantity } });
   }
-  await tx.stockReservation.updateMany({ where: { id: { in: active.map(({ id }) => id) } }, data: { status: 'RELEASED' } });
+  const released = await tx.stockReservation.updateMany({
+    where: { id: { in: active.map(({ id }) => id) }, status: 'ACTIVE' }, data: { status: 'RELEASED' },
+  });
+  if (released.count !== active.length) throw invalidReservation('La reserva cambió durante la cancelación.');
   return [...quantities].map(([variantId, quantity]) => ({ variantId, quantity }));
 }
 
@@ -92,16 +94,34 @@ export function createCancellationService(database: PrismaClient) {
     throw new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
   }
 
-  async function cancelSale(req: Parameters<typeof assertPermissionAtLocation>[0], saleId: string) {
+  // Pilot P0.2-B: controlled cancellation. Authority depends on the
+  // persisted lifecycle state, read under the Sale lock:
+  //   DRAFT            the owning seller only (persisted sellerId) with
+  //                    SALE_CREATE at the sale's location;
+  //   PENDING_PAYMENT  SALE_CANCEL_PENDING at the sale's location;
+  //   anything else    either authority, so the caller learns only
+  //                    PAYMENT_ALREADY_ACCEPTED / INVALID_SALE_STATE.
+  // Any SalePayment row blocks cancellation (Policy A: row existence, never
+  // the sum): no refund, no payment or cash-movement deletion, no release of
+  // payment-protected stock. Lock order Sale -> StockReservation (id ASC) ->
+  // Inventory (id ASC), shared with payment, completion, correction and the
+  // B1 release.
+  async function cancelSale(req: Parameters<typeof assertPermissionAtLocation>[0], saleId: string, input: CancelSaleInput) {
     return inTransaction(async (tx) => {
-      const [sale] = await tx.$queryRaw<LockedSale[]>`SELECT id, "branchId", status FROM "Sale" WHERE id = ${saleId} FOR UPDATE`;
+      const [sale] = await tx.$queryRaw<LockedCancelSale[]>`SELECT id, "branchId", "sellerId", status FROM "Sale" WHERE id = ${saleId} FOR UPDATE`;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
-      // Phase 1D.3.1 SWITCH: /cancel is gated on the Production SALE_CREATE
-      // grant, paired with this sale's own location — never a bare
-      // effectiveLocationIds membership check.
-      assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.SALE_CREATE, sale.branchId);
-      const paid = await acceptedTotal(tx, saleId);
-      if (paid > 0n) throw new AppError(409, 'PAYMENT_ALREADY_ACCEPTED', 'La venta tiene pagos aceptados.');
+      const auth = req.auth;
+      if (!auth) throw new AppError(401, 'UNAUTHORIZED', 'Se requiere autenticación.');
+      const ownDraftAuthority = sale.sellerId === auth.userId
+        && hasPermissionAtLocation(auth, PRODUCTION_PERMISSIONS.SALE_CREATE, sale.branchId);
+      const pendingAuthority = hasPermissionAtLocation(auth, PRODUCTION_PERMISSIONS.SALE_CANCEL_PENDING, sale.branchId);
+      const authorized = sale.status === 'DRAFT' ? ownDraftAuthority
+        : sale.status === 'PENDING_PAYMENT' ? pendingAuthority
+          : ownDraftAuthority || pendingAuthority;
+      if (!authorized) throw cancelForbidden();
+      if (await tx.salePayment.count({ where: { saleId } }) > 0) {
+        throw new AppError(409, 'PAYMENT_ALREADY_ACCEPTED', 'La venta tiene pagos aceptados.');
+      }
       if (sale.status !== 'DRAFT' && sale.status !== 'PENDING_PAYMENT') throw invalidState();
       const reservations = await tx.$queryRaw<LockedReservation[]>`
         SELECT id, "variantId", "branchId", quantity, status, "expiresAt"
@@ -114,9 +134,9 @@ export function createCancellationService(database: PrismaClient) {
         : [];
       await tx.sale.update({ where: { id: saleId }, data: { status: 'CANCELLED' } });
       await createAuditLog(tx, {
-        userId: req.auth!.userId, branchId: sale.branchId, action: 'SALE_CANCELLED', entityType: 'Sale', entityId: saleId,
+        userId: auth.userId, branchId: sale.branchId, action: 'SALE_CANCELLED', entityType: 'Sale', entityId: saleId,
         before: { status: sale.status },
-        after: { status: 'CANCELLED', released },
+        after: { status: 'CANCELLED', reason: input.reason, ...(input.note ? { note: input.note } : {}), released },
       });
       return { saleId, branchId: sale.branchId, status: 'CANCELLED', released };
     });
