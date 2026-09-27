@@ -61,7 +61,7 @@ describe('cross-assignment composition through a live Production-gated route (Ph
     app.use(errorHandler);
   });
 
-  afterAll(async () => db.$disconnect());
+  afterAll(async () => db?.$disconnect());
 
   it('a SELLER @ A + WAREHOUSE @ B user cannot use WAREHOUSE INVENTORY_MANAGE at A, nor SELLER INVENTORY_VIEW at B', async () => {
     const branchA = await createBranch(db);

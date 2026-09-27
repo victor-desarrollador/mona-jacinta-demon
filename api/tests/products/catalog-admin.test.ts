@@ -53,7 +53,7 @@ describe('admin catalogue API (D3)', () => {
     brandId = brand.id;
     productId = product.id;
   });
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   const auth = (token: string) => ({ Authorization: `Bearer ${token}` });
 

@@ -24,7 +24,7 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     await truncateAllTables(prisma);
     await seedDemo(prisma);
   });
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   // D1 (Phase 1 Global Closeout): supersedes this test's pre-D1 role
   // expectation. The legacy UserBranchRole (Centro, SELLER) assignment stays

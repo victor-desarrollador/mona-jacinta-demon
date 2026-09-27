@@ -28,7 +28,7 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
     await bootstrapProductionRbacCatalog(db);
   }, 120000);
 
-  afterAll(async () => db.$disconnect());
+  afterAll(async () => db?.$disconnect());
 
   // The plan's own pseudocode `authAs` includes a `legacyPermissions: []`
   // field that Express.AuthContext no longer has — Phase 1D.3.6 (already

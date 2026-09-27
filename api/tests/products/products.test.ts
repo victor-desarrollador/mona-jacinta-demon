@@ -30,7 +30,7 @@ describe('products read API', () => {
     sellerToken = await getAuthToken(seller);
     centroId = centro.id;
   });
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   it('requires authentication and the Production INVENTORY_VIEW permission', async () => {
     expect((await request(app).get('/api/v1/products')).status).toBe(401);

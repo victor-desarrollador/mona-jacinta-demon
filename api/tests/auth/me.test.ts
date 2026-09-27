@@ -19,7 +19,7 @@ describe('GET /api/v1/auth/me', () => {
     await truncateAllTables(prisma);
     await seedDemo(prisma);
   });
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   async function sellerToken() {
     const seller = await prisma.user.findUniqueOrThrow({

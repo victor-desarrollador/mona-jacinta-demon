@@ -61,7 +61,7 @@ describe('permission and branch authorization', () => {
     app.use(errorHandler);
   });
 
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   async function tokenFor(name: string) {
     const user = await prisma.user.findUniqueOrThrow({

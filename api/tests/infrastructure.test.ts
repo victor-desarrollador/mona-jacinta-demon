@@ -22,7 +22,7 @@ describe('integration test infrastructure', () => {
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    await prisma?.$disconnect();
   });
 
   it('connects to the isolated test database and truncates fixtures', async () => {

@@ -31,7 +31,7 @@ describe('Privilege escalation (Phase 1D.4/1E checklist)', () => {
     await bootstrapProductionRbacCatalog(db);
   }, 120000);
 
-  afterAll(async () => db.$disconnect());
+  afterAll(async () => db?.$disconnect());
 
   async function findRole(code: 'OWNER' | 'ADMIN' | 'CASHIER' | 'SELLER' | 'WAREHOUSE') {
     return db.role.findUniqueOrThrow({ where: { code } });

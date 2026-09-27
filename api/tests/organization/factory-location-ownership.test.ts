@@ -22,7 +22,7 @@ describe('factory Location ownership under the canonical Company (Phase 1C corre
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    await prisma?.$disconnect();
   });
 
   it('creates a factory Location under the single canonical Company, and cleanup removes only that Location', async () => {

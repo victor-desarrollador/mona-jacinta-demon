@@ -29,7 +29,7 @@ describe('backfillAdminCompanyScope (Phase 1D.4.1)', () => {
     await bootstrapProductionRbacCatalog(db);
   });
 
-  afterAll(async () => db.$disconnect());
+  afterAll(async () => db?.$disconnect());
 
   it("converts an ADMIN user's LOCATION UserRoleScope rows into a single COMPANY assignment", async () => {
     const adminRole = await db.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
@@ -167,7 +167,7 @@ describe('planAdminCompanyBackfill (GC4A read-only preflight)', () => {
     await bootstrapProductionRbacCatalog(db);
   });
 
-  afterAll(async () => db.$disconnect());
+  afterAll(async () => db?.$disconnect());
 
   it('plans a single ADMIN LOCATION user for conversion without mutating anything', async () => {
     const adminRole = await db.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });

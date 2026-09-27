@@ -66,10 +66,16 @@ function connected(client: ClientSocket) {
 beforeAll(async () => {
   database.user.findUnique.mockResolvedValue(userWithBranches([centroId]));
   token = await getAuthToken({ id: userId });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => {
-    port = (server.address() as { port: number }).port;
-    resolve();
-  }));
+  // TEST-H2: a listen error must fail this hook, not escape as an unhandled
+  // 'error' event while the hook waits for its timeout.
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      port = (server.address() as { port: number }).port;
+      resolve();
+    });
+  });
 });
 
 afterAll(async () => {

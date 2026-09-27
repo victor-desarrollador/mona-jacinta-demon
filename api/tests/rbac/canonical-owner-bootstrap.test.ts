@@ -30,7 +30,7 @@ describe('canonical OWNER bootstrap (GC4F3)', () => {
     await bootstrapProductionRbacCatalog(db);
   });
 
-  afterAll(async () => db.$disconnect());
+  afterAll(async () => db?.$disconnect());
 
   async function ownerRoleId() {
     return (await db.role.findUniqueOrThrow({ where: { code: 'OWNER' } })).id;

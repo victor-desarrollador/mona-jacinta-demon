@@ -21,7 +21,7 @@ describe('POST /api/v1/auth/login', () => {
     await truncateAllTables(prisma);
     await seedDemo(prisma);
   });
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   it('returns an access token and current user context for valid credentials', async () => {
     const response = await request(app)

@@ -238,35 +238,39 @@ describe('middleware/auth.ts wiring (Phase 1D.1)', () => {
     const { bootstrapProductionRbacCatalog } = await import('../../src/modules/rbac/catalog.service.js');
     const { getAuthToken } = await import('../helpers/auth.js');
     const db = await createTestPrismaClient();
-    await truncateAllTables(db);
-    await bootstrapProductionRbacCatalog(db);
-    const branch = await createBranch(db);
-    await ensureTestLocation(db, branch.id);
-    const cashierRole = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
-    const user = await db.user.create({
-      data: { name: 'no-legacy-user', email: 'no-legacy@test.local', passwordHash: 'x' },
-    });
-    await db.userRoleScope.create({
-      data: { userId: user.id, roleId: cashierRole.id, scopeKind: 'LOCATION', locationId: branch.id },
-    });
-    const token = await getAuthToken({ id: user.id });
-    const middleware = createRequireAuth(db);
-    const req = { headers: { authorization: `Bearer ${token}` } } as unknown as Request;
-    await new Promise<void>((resolve, reject) =>
-      middleware(req, {} as Response, (err?: unknown) => (err ? reject(err) : resolve())),
-    );
-    if (!req.auth) {
-      throw new Error('Expected auth context');
+    // TEST-H2: release the client even when an assertion below fails.
+    try {
+      await truncateAllTables(db);
+      await bootstrapProductionRbacCatalog(db);
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const cashierRole = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+      const user = await db.user.create({
+        data: { name: 'no-legacy-user', email: 'no-legacy@test.local', passwordHash: 'x' },
+      });
+      await db.userRoleScope.create({
+        data: { userId: user.id, roleId: cashierRole.id, scopeKind: 'LOCATION', locationId: branch.id },
+      });
+      const token = await getAuthToken({ id: user.id });
+      const middleware = createRequireAuth(db);
+      const req = { headers: { authorization: `Bearer ${token}` } } as unknown as Request;
+      await new Promise<void>((resolve, reject) =>
+        middleware(req, {} as Response, (err?: unknown) => (err ? reject(err) : resolve())),
+      );
+      if (!req.auth) {
+        throw new Error('Expected auth context');
+      }
+      expect(req.auth.assignments).toEqual([
+        {
+          roleId: cashierRole.id,
+          roleCode: 'CASHIER',
+          scopeKind: 'LOCATION',
+          locationId: branch.id,
+          permissions: expect.arrayContaining(['CASH_SESSION_OPEN']),
+        },
+      ]);
+    } finally {
+      await db.$disconnect();
     }
-    expect(req.auth.assignments).toEqual([
-      {
-        roleId: cashierRole.id,
-        roleCode: 'CASHIER',
-        scopeKind: 'LOCATION',
-        locationId: branch.id,
-        permissions: expect.arrayContaining(['CASH_SESSION_OPEN']),
-      },
-    ]);
-    await db.$disconnect();
   });
 });

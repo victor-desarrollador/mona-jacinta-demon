@@ -50,7 +50,7 @@ describe('seller draft sales', () => {
     jeanId = jean.id;
   });
 
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   const postSale = (body: Record<string, unknown> = {}) =>
     request(app).post('/api/v1/sales').set('Authorization', `Bearer ${token}`).send(body);

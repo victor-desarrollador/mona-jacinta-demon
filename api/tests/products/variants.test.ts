@@ -30,7 +30,7 @@ describe('product variants read API', () => {
     centroId = centro.id;
     yerbaId = yerba.id;
   });
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   it('lists variants and filters by product, search, and authorized branch', async () => {
     const product = await prisma.product.findUniqueOrThrow({

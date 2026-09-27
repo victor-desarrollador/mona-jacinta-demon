@@ -58,7 +58,7 @@ describe('backoffice read API', () => {
     users['scoped-admin'] = scopedAdmin.id;
   }, 120000);
 
-  afterAll(async () => prisma.$disconnect(), 120000);
+  afterAll(async () => prisma?.$disconnect(), 120000);
 
   async function token(email: string) {
     return getAuthToken({ id: users[email]! });

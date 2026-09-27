@@ -30,7 +30,7 @@ describe('system audit actor bootstrap (Pilot P0.1-B1)', () => {
     vi.restoreAllMocks();
     process.exitCode = undefined;
   });
-  afterAll(async () => db.$disconnect());
+  afterAll(async () => db?.$disconnect());
 
   const actorRow = () => db.user.findUnique({ where: { id: SYSTEM_ACTOR_USER_ID } });
 

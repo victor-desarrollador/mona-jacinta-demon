@@ -55,7 +55,7 @@ describe('POST /api/v1/sales/:saleId/send-to-cashier', () => {
     jeanId = jean.id;
   });
 
-  afterAll(async () => prisma.$disconnect());
+  afterAll(async () => prisma?.$disconnect());
 
   async function createSale(token = sellerToken, branchId = centroId) {
     const response = await request(app)
