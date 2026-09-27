@@ -2,6 +2,10 @@
 
 Status: Approved (Phase 0C) — **backup/restore automation is IMPLEMENTED AND VALIDATED**
 (see §0 below for the real drill). Deterministic seed strategy is implemented and validated.
+**Revised for the TEST-only backup/restore contract** (`mona-test-backup/v1`, owner
+project-ref attestation, live TEST marker proof before any restore, no DEV contact on the
+TEST path) — see "TEST-only revision" at the
+end of §0. The DEMO backup path is unchanged.
 Scope: **Development process** — same nature as `docs/development/migrations.md`: discipline
 and procedure, not a Production V1 business requirement. Nothing here changes
 `api/prisma/schema.prisma`, migration history, or application code.
@@ -58,6 +62,29 @@ status` failure handling (§9), and post-restore verification checking only a ha
 manifest comparison). Both were validated non-destructively — see §8/§9 for what changed and
 how each was confirmed.
 
+**TEST-only revision (supersedes the TEST parts of the Phase 0C record above).** The TEST
+backup and restore paths were rebuilt so that TEST work never contacts DEV:
+
+- `backup.mjs --target=test` and `restore.mjs` never import `scripts/check-databases.mjs` /
+  `proveIdentities()` and never read `DATABASE_URL`. They read only `TEST_DATABASE_URL`, from
+  `.env.development` in the working directory (as text; it is not loaded into
+  `process.env`), so run them from the repository root.
+- The TEST target is bound by **owner project-ref attestation**:
+  `--confirm-project-ref=<test-project-ref>` is required and must be the tenant that
+  `TEST_DATABASE_URL` routes to (§6.2, §7). For restore, attestation is necessary but not
+  sufficient: before `pg_restore` runs, restore also proves the live TEST identity marker
+  (`mona_test_guard`) against the pinned `TEST_DATABASE_MARKER_ID` (§7 step 5). Backup stays
+  attestation-only. It only reads TEST, and it must work before the marker exists, because
+  the marker installer requires a verified backup first.
+- A TEST backup is now a **set** of two files: the `.dump` and a
+  `<dump>.manifest.json` in the `mona-test-backup/v1` format (§6.2). The old `.sha256` and
+  `.counts.json` sidecars are no longer produced or accepted on the TEST path. Pre-revision
+  artifacts that only have those sidecars are refused by restore (§7.1).
+- The DEMO backup path (`backup.mjs --target=demo`, §6.1) is unchanged: it still calls
+  `proveIdentities()` and still writes the `.sha256` and `.counts.json` sidecars.
+- §11 is a historical record of the Phase 0C drill. Its commands and its artifact format
+  are no longer accepted by the current tools.
+
 ---
 
 ## 1. Scope and threat model
@@ -101,7 +128,7 @@ extended to backup/restore:
 | Environment | Today | Backup source? | Restore target? |
 |---|---|---|---|
 | DEV/DEMO (`DATABASE_URL`, Supabase project `mona-jacinta-demo`) | active | **yes** — the only intended backup *source* today | **no** — never an automated restore target; see §6 |
-| TEST (`TEST_DATABASE_URL`, Supabase project `mona-jacinta-test`) | active | no (fully reproducible from seed + migrations; a backup of TEST has no value TEST's own reset/seed cycle doesn't already provide) | **yes** — the *only* approved automated restore-drill target |
+| TEST (`TEST_DATABASE_URL`, Supabase project `mona-jacinta-test`) | active | only through the strict TEST path (§6.2): for restore drills, and as the backup that `scripts/database/test-marker.mjs --execute` requires (`--backup=<test_*.dump>`) before it installs the TEST identity marker. TEST data itself stays reproducible from seed + migrations | **yes** — the *only* approved automated restore target (§7) |
 | Production (future) | does not exist yet | will be its own backup source once it exists | restore into production is explicitly **not** designed here — it requires its own dedicated, separately-reviewed path per §6 and is out of scope for Phase 0C |
 
 The same rules from `docs/development/migrations.md` §3 carry over unchanged: physically
@@ -128,9 +155,13 @@ already exists and is already tested, rather than re-deriving it:
   PostgreSQL 16+, prints only a redacted summary). Confirmed working in this phase
   (`npm run db:check` → both reachable, both PostgreSQL 17.x, distinct identities proven).
   Minimally refactored in this phase to export its check as `proveIdentities()` (same checks,
-  same output, guarded to only auto-run when the file is executed directly) so
-  `scripts/database/backup.mjs`/`restore.mjs` call the exact same proof instead of a second,
-  competing implementation — confirmed identical CLI output before/after the refactor.
+  same output, guarded to only auto-run when the file is executed directly) so the backup
+  tooling calls the exact same proof instead of a second, competing implementation —
+  confirmed identical CLI output before/after the refactor. **Current use:** only the DEMO
+  backup path (`backup.mjs --target=demo`, §6.1) calls it. The TEST backup path (§6.2) and
+  `restore.mjs` (§7) no longer call it, because it opens a connection to DEV; they bind TEST
+  by owner project-ref attestation instead, and restore additionally proves the live TEST
+  identity marker (§7 step 5).
 - **`api/scripts/demo-database.ts`** (`parseTarget`, `assertDistinct`, `readDemoTargets`,
   `openSeedDatabase`) — the same style of check, scoped to the seed/reset path, requiring an
   explicit `Target` (`'demo' | 'test'`), rejecting connection-string overrides, rejecting
@@ -156,10 +187,12 @@ convention alone.
 ```
 
 - `<environment>`: `demo` (matches the `DATABASE_URL` / `mona-jacinta-demo` project) — the
-  intended routine backup source. `test` is also accepted by `backup.mjs` — used only for the
-  §11 validation drill, so the drill's destructive restore never has to move DEV/demo data
-  across environments — not because TEST has ongoing backup value in its own right (§1/§6).
-  `prod` remains rejected outright: production does not exist yet.
+  intended routine backup source. `test` is also accepted by `backup.mjs`, only through the
+  strict TEST path (§6.2), which requires `--confirm-project-ref`. It exists for restore
+  drills (so a destructive restore never has to move DEV/demo data across environments) and
+  for the pre-install backup that the TEST marker installer requires (§2) — not because
+  TEST data has ongoing backup value in its own right (§1). Only `test_*.dump` artifacts can
+  ever be restored (§7). `prod` remains rejected outright: production does not exist yet.
 - `<purpose>`: a short tag for why the backup was taken — `manual`, `pre-migration`,
   `scheduled` (scheduling itself is not implemented — see §10), or `drill` (used for §11).
 - `<utc-timestamp>`: `YYYYMMDDTHHMMSSZ` (UTC, sortable, unambiguous — never local time, never
@@ -173,8 +206,14 @@ Example (illustrative — not a real produced artifact): `demo_pre-migration_202
 username, or any part of a connection string in the filename. The filename is metadata about
 *when and why*, never *where* or *who*.
 
-Every artifact is accompanied by a `.sha256` sidecar file (§9) with the same base name:
-`demo_pre-migration_20260401T140500Z.dump.sha256`.
+Companion files depend on the path that produced the artifact:
+
+- **DEMO** (`demo_*.dump`, §6.1): a `.sha256` sidecar (§9) and a `.counts.json` row-count
+  file (§8) with the same base name, e.g. `demo_pre-migration_20260401T140500Z.dump.sha256`.
+- **TEST** (`test_*.dump`, §6.2): exactly one companion, the manifest
+  `test_<purpose>_<utc-timestamp>.dump.manifest.json` in the `mona-test-backup/v1` format.
+  It carries the dump's size, SHA-256 and row counts. No `.sha256` or `.counts.json` is
+  written for TEST.
 
 ---
 
@@ -230,10 +269,17 @@ pg_dump --format=custom --no-owner --no-acl --schema=public --file=<tmp-path> <d
 
 ## 6. Backup creation procedure (implemented: `scripts/database/backup.mjs`)
 
-`node scripts/database/backup.mjs --target=<demo|test> [--purpose=<manual|pre-migration|scheduled|drill>]`
+`backup.mjs` has two paths. Any `--target=test…` argument selects the strict TEST path
+(§6.2), so an ambiguous `--target=demo --target=test` is rejected there instead of running a
+DEMO backup. Every other invocation takes the DEMO path (§6.1).
+
+### 6.1 DEMO path (unchanged)
+
+`node scripts/database/backup.mjs --target=demo [--purpose=<manual|pre-migration|scheduled|drill>]`
 
 1. `--target` is **required** and must be exactly `demo` or `test` — no default, no
-   fallback. (`prod` is rejected: production does not exist yet, per §2.)
+   fallback. (`prod` is rejected: production does not exist yet, per §2.) A `test` value
+   never reaches this path; it is routed to §6.2.
 2. Calls `proveIdentities()` (§3 — the same function `npm run db:check` uses) to verify DEV
    and TEST are both reachable and provably distinct before doing anything else. Any failure
    here aborts with no dump attempted.
@@ -248,37 +294,149 @@ pg_dump --format=custom --no-owner --no-acl --schema=public --file=<tmp-path> <d
    never a connection string, host, username, or password. Any `pg_dump` failure message has
    those same values redacted before being printed.
 
-**§2's original design (DEV as the only backup source, TEST never a source) still holds for
-routine backups.** The `test` target exists because Phase 0C's validation drill deliberately
-backs up and restores TEST only, so the destructive drill never copies real DEV/demo data
-across environments (§11) — it is not a statement that TEST backups have ongoing operational
-value beyond the drill (§1 still applies: TEST is fully reproducible from seed + migrations).
+**§2's original design (DEV as the routine backup source) still holds.** DEMO artifacts are
+not restorable by `restore.mjs` at all: restore accepts only `test_*.dump` sets (§7).
+
+### 6.2 TEST path (strict, DEV-free)
+
+`node scripts/database/backup.mjs --target=test --confirm-project-ref=<test-project-ref> [--purpose=<manual|pre-migration|scheduled|drill>]`
+
+`<test-project-ref>` is a placeholder for the 20-character lowercase ref of the TEST
+Supabase project — the `<ref>` in the `postgres.<ref>` user of `TEST_DATABASE_URL`. It is
+compared, never printed. Never write the real value into documentation or commit messages.
+
+1. **Arguments are strict.** Only `--target`, `--purpose` and `--confirm-project-ref` are
+   accepted, each at most once, as `--key=value`. Unknown, duplicated or positional arguments
+   fail with `phase=args`, and rejected values are never echoed. `--confirm-project-ref` is
+   required and must be 20 lowercase letters/digits. `--purpose` defaults to `manual`.
+2. **Configuration.** Reads `TEST_DATABASE_URL` from `.env.development` in the working
+   directory (as text, without loading it into `process.env`). It must be a single
+   `postgres://`/`postgresql://` URL with user, password, host and database and no query or
+   fragment. `DATABASE_URL` is never read, and `proveIdentities()` is never called.
+3. **Owner attestation.** `--confirm-project-ref` must equal the tenant in the
+   `postgres.<ref>` user of `TEST_DATABASE_URL`; otherwise `phase=target`, before any tool
+   runs or file is written. A URL whose user is not `postgres.<ref>` cannot be attested and
+   is refused.
+4. **Refuses to overwrite.** If the dump, the manifest or either `.tmp` file already exists
+   under that name, it fails without touching anything.
+5. **Dump.** Runs `pg_dump --format=custom --no-owner --no-acl --schema=public` (§5) against
+   TEST only, to `<name>.dump.tmp` in `backups/database/`. An empty or missing dump fails.
+6. **Checksum and counts.** Computes the dump's SHA-256 and captures the row counts of every
+   `public` table from TEST. An empty or failed count capture fails the backup.
+7. **Manifest.** Writes `<name>.dump.manifest.json.tmp` in the `mona-test-backup/v1` format:
+   `format`, `environment: "test"`, a per-run `setId` (UUID v4), `createdAt`, `purpose`,
+   `dump: { file, bytes, sha256 }`, `counts`, and `manifestSha256` (SHA-256 over the
+   canonical JSON of all other fields). The file must be byte-identical to its canonical
+   rendering: two-space-indented JSON with one trailing newline.
+8. **Producer self-check.** Before anything is finalized, the backup runs the exact consumer
+   verification that restore uses (§7 step 4) on the temp pair. That includes
+   `pg_restore --list`, the table set matching the manifest counts, and no `mona_test_guard`
+   schema in the archive.
+9. **Finalize.** Hard-links the manifest, then the dump, to their final names (never
+   overwriting), then removes the `.tmp` files. The dump is linked last, so an interruption
+   never leaves a final `.dump` without its manifest. On any failure, everything this run
+   created is removed.
+10. **Output** is redacted metadata only: environment, purpose, artifact and manifest names,
+    size, set id, SHA-256, table count, and
+    `identity: owner project-ref attestation (bootstrap); TEST connection only`. Error text is
+    scrubbed of the URL, host, user, password, tenant ref and port.
+
+The manifest detects mixed runs, edits and truncation. It is **not** a signature: anyone who
+can rewrite both files can forge a consistent set (no secret key exists here). Protect
+`backups/` like any other sensitive directory (§9).
 
 ## 7. Restore procedure (implemented: `scripts/database/restore.mjs`)
 
-`node scripts/database/restore.mjs --target=test --file=<path-to-.dump>`
+`node scripts/database/restore.mjs --target=test --file=backups/database/test_<purpose>_<utc-timestamp>.dump --confirm-project-ref=<test-project-ref>`
 
-1. `--target` must be **exactly** `test` — any other value (including `demo`) is rejected
-   immediately, before any database is touched. There is no automated path to restore into
-   DEV or a future production target; this is enforced in code, not by convention.
-2. `--file` is required and must point to an existing artifact with an existing `.sha256`
-   sidecar next to it — missing either fails closed before any identity check.
-3. Calls `proveIdentities()` (§3), identically to backup — refuses to proceed on any
-   ambiguity.
-4. Verifies the artifact's SHA-256 against its sidecar (§9) — a mismatch aborts before
-   `pg_restore` ever runs.
-5. Runs `pg_restore --list` against the archive (reads the table of contents only, touches no
-   database) and requires at least one `TABLE DATA` entry — proves the archive is readable
-   before the destructive step.
-6. Runs `pg_restore --format=custom --no-owner --no-acl --clean --if-exists --exit-on-error
-   --single-transaction --dbname=<database>` against the proven TEST connection only, using
-   the same non-shell, env-var-only credential handling as backup (§5).
-7. Runs post-restore verification (§8); any failure there is reported as an overall restore
-   failure, not a passed restore with a caveat.
+Run it from the repository root. `restore.mjs` never imports `scripts/check-databases.mjs` /
+`proveIdentities()` and never reads `DATABASE_URL`. It connects only through
+`TEST_DATABASE_URL`: the `pg_restore` child, the row-count client, and the
+`prisma migrate status` child (which is given `DATABASE_URL=<the TEST URL>` explicitly, §8).
+
+1. **Arguments are strict.** Only `--target`, `--file` and `--confirm-project-ref` are
+   accepted, each exactly once, as `--key=value`; rejected values are never echoed.
+   `--target` must be **exactly** `test`: any other value (including `demo`) fails with
+   `phase=args` before any file or database is touched. There is no automated path to
+   restore into DEV or a future production target; this is enforced in code, not by
+   convention. `--file` is required. `--confirm-project-ref` is required and must be 20
+   lowercase letters/digits. **The Phase 0C form without `--confirm-project-ref` is no
+   longer valid** and fails with `phase=args`.
+2. **Configuration.** Reads `TEST_DATABASE_URL` from `.env.development` in the working
+   directory, with the same rules as §6.2 step 2. A missing or malformed value fails with
+   `phase=config` (value not shown).
+3. **Owner attestation and pinned marker id.** `--confirm-project-ref` must equal the
+   tenant in the `postgres.<ref>` user of `TEST_DATABASE_URL`; otherwise `phase=target`,
+   before the artifact is even opened. Attestation is necessary but **not sufficient**: the
+   live marker proof in step 5 is also required. `TEST_DATABASE_MARKER_ID` must then be set
+   in the same `.env.development`, as a canonical lowercase version-4 UUID; otherwise
+   `phase=config`, again before the artifact is opened or TEST is contacted.
+4. **Artifact verification (`openVerifiedBackup`), before `pg_restore` touches TEST.** A
+   failure here is `phase=verify` with `refusing to restore: <reason>`:
+   - the file name must be `test_<purpose>_<YYYYMMDDTHHMMSSZ>.dump` (a `demo_*.dump` is
+     refused);
+   - the dump and `<dump>.manifest.json` must both exist as regular files, not symlinks;
+   - the manifest must be strict UTF-8 and byte-identical to its canonical rendering. It
+     must have exactly the `mona-test-backup/v1` keys, `format: "mona-test-backup/v1"`
+     (any other version is refused), `environment: "test"`, a UUID-v4 `setId`, a known
+     `purpose` matching the file name, a `dump.file` equal to this dump's name, and a
+     matching `manifestSha256`;
+   - the dump is copied into a private temporary snapshot, and the snapshot's size and
+     SHA-256 must equal `dump.bytes` / `dump.sha256`;
+   - `pg_restore --list` on the snapshot must list exactly one `public` `TABLE DATA` entry
+     per table in the manifest counts, and nothing from the `mona_test_guard` schema.
+5. **Live TEST marker proof — the last gate before the first destructive action.**
+   Immediately before `pg_restore`, restore opens its own short-lived connection with the
+   same `TEST_DATABASE_URL` fields, using verified TLS (bundled CA, certificate and
+   hostname). On that connection it proves, read-only, that the database holds exactly the
+   canonical TEST identity marker with the pinned id (`test-marker.mjs`
+   `proveInstalledMarker`). The proof runs one `REPEATABLE READ READ ONLY` transaction,
+   always rolled back, which does the following:
+   - pins `search_path` to `pg_catalog, pg_temp` and bounds the lock and statement time;
+   - takes `LOCK TABLE mona_test_guard.database_identity IN ACCESS SHARE MODE` before its
+     first read;
+   - checks the canonical marker structure (the same verification the installer uses) and
+     exactly one row with `environment = 'test'` and `marker_id` equal to the pinned id.
+
+   Any other result fails closed with `phase=marker` and `…; nothing was restored`, and
+   `pg_restore` is never spawned. That covers:
+   - marker not installed, a different id, no row or several rows, or a non-`test` row;
+   - a non-canonical table (extra column, trigger, etc.);
+   - an unverified TLS connection;
+   - any connection or query error. Only a safe error code is printed (`code=…`, or
+     `code=unexpected`), never the error text.
+
+   The proof connection is always closed. `DATABASE_URL` is never read.
+6. **Restore.** Runs `pg_restore --format=custom --no-owner --no-acl --clean --if-exists
+   --exit-on-error --single-transaction --dbname=<database>` on the **verified snapshot**
+   (the original path is never read again), against TEST only, with the non-shell,
+   env-var-only credential handling of §5. A public-only archive restored with `--clean`
+   never drops the marker schema.
+7. **Post-restore verification (§8).** Row counts must exactly equal the manifest counts,
+   and `prisma migrate status` must report "up to date". Any failure is reported as an
+   overall restore failure (`phase=counts` / `phase=migrate`), with output redacted.
+   Removal of the private snapshot is always attempted afterwards. If it fails, restore prints
+   the fixed line `WARNING: the private verified snapshot could not be removed (path not
+   shown); the restore outcome above is unchanged` and keeps the outcome it already
+   reported. A success stays a success, a failure stays that failure, and a restore that
+   has already run is never reported as "nothing was restored".
+8. **Output** is redacted: artifact name and set id, a "manifest, sha256, archive
+   readability and table set verified" line, the row counts, the migrate status, and
+   `identity: owner project-ref attestation + live TEST marker proof (pinned
+   TEST_DATABASE_MARKER_ID); TEST connection only`.
 
 **Never restore into DEV or a future production target.** This is a hard rejection in
 `restore.mjs` (step 1), not a documented convention someone could bypass by passing a
 different flag value.
+
+### 7.1 Pre-revision (legacy) artifacts are refused
+
+Artifacts produced before the TEST-only revision — a `.dump` with only a `.sha256` and a
+`.counts.json` next to it, such as the §11 drill artifact — have no
+`.dump.manifest.json`. `restore.mjs` refuses them at step 4 (`dump or manifest is missing,
+not a regular file, or a symlink`) and fails closed. This is intentional: there is no
+conversion tool. Do not hand-write a manifest for an old dump. Take a fresh backup with
+§6.2 instead.
 
 ## 8. Restore verification (implemented, real result in §11)
 
@@ -291,18 +449,20 @@ invent a number for state that is intentionally variable. Replaced with a manife
 fingerprint that never invents anything:
 
 - `backup.mjs` captures row counts for **every table in the `public` schema** (discovered
-  dynamically via `pg_tables`, not a hand-picked list — 22 tables today: all 21 application
-  tables plus `_prisma_migrations`) from the **source** database immediately after the dump,
-  and writes them to `<artifact>.counts.json` alongside the `.sha256` sidecar. If this capture
-  fails, the whole backup is discarded (artifact + sidecar deleted) rather than left as a
-  partially-verifiable success.
-- `restore.mjs` **requires** that manifest to exist (fails closed before touching TEST if it's
-  missing or unparseable — confirmed: restoring the pre-this-revision drill artifact, which
-  predates the manifest, correctly fails with "artifact has no .counts.json manifest") and,
-  after `pg_restore` returns success, re-queries the exact same tables against the restored
-  TEST database and requires an **exact match** against the manifest — i.e. "the restore
-  reproduced what was actually backed up," not "the restore matches some hardcoded
-  expectation." This covers all 22 tables, not 7, without ever inventing a count.
+  dynamically via `pg_tables`, not a hand-picked list — 22 tables at the time of the Phase 0C
+  drill: all 21 application tables plus `_prisma_migrations`) from the **source** database
+  immediately after the dump. Where they are stored depends on the path. The DEMO path
+  (§6.1) writes them to `<artifact>.counts.json` alongside the `.sha256` sidecar. The TEST
+  path (§6.2) writes them into the `counts` field of the `mona-test-backup/v1` manifest,
+  covered by `manifestSha256`. If the capture fails, the whole backup is discarded rather
+  than left as a partially-verifiable success.
+- `restore.mjs` **requires** the TEST manifest (§7 step 4). It fails closed before touching
+  TEST if the manifest is missing, malformed, from another run, or of another version.
+  `.counts.json` is no longer read (§7.1). After `pg_restore` returns success, restore
+  re-queries exactly the tables in the manifest's `counts` against the restored TEST database
+  and requires an **exact match** — i.e. "the restore reproduced what was actually backed
+  up," not "the restore matches some hardcoded expectation." This covers every table the
+  backup counted, without ever inventing a count.
 - Separately, `prisma migrate status` is run against the restored TEST target (via a
   `DATABASE_URL` environment override scoped to that one child process only — the same
   pattern `api/tests/seed.test.ts` already uses to point the Prisma CLI at TEST, not a second,
@@ -312,7 +472,8 @@ fingerprint that never invents anything:
   `DATABASE_URL` is the real TEST connection string.
 
 This was validated non-destructively (not by repeating the destructive restore drill): a
-fresh, read-only `db:backup --target=test --purpose=drill` after this change produced a
+fresh, read-only `db:backup --target=test --purpose=drill` (the pre-revision command; today
+it also needs `--confirm-project-ref`, §6.2) after this change produced a
 22-table manifest against the live TEST database with the exact expected values (all business
 tables at 0, all seed-fixed tables matching §14's known baseline, including `UserBranchRole`
 at 9 — 6 for ADMIN's all-branch assignment + 1 each for the other three demo users — which the
@@ -328,10 +489,13 @@ performs an actual restore.
 - **Backup files are never committed.** `backups/` was added to `.gitignore` before
   `backup.mjs` ever wrote an artifact to `backups/database/`; confirmed with `git status
   --short --ignored` and `git check-ignore -v` against a real produced artifact (§11).
-- **Checksums**: every artifact gets a SHA-256 sidecar (`<artifact>.sha256`, plain text,
-  standard `sha256sum`-compatible format — cross-checked against the system `sha256sum`
-  binary in §11 and byte-identical) computed immediately after creation and verified
-  immediately before restore. A checksum mismatch is a hard failure (§15) — never a warning.
+- **Checksums**: every DEMO artifact gets a SHA-256 sidecar (`<artifact>.sha256`, plain
+  text, standard `sha256sum`-compatible format — cross-checked against the system
+  `sha256sum` binary in §11 and byte-identical) computed immediately after creation. Every
+  TEST artifact's SHA-256 and byte size are recorded instead in its
+  `mona-test-backup/v1` manifest (§6.2). Restore verifies them on a private snapshot
+  immediately before `pg_restore` (§7 step 4). A checksum or size mismatch is a hard
+  failure (§17) — never a warning.
 - **Secrets**: never printed, logged, embedded in filenames, embedded in checksums'
   surrounding text, or written into this document. This repeats
   `docs/development/migrations.md` §3's rule verbatim because it is the same rule applied to
@@ -370,6 +534,13 @@ backup tooling from §§4–7 to exist first). Guidance for whoever implements i
 
 ## 11. Recovery drill checklist — real result
 
+> **Historical record (Phase 0C, pre-revision contract).** This drill used the old TEST
+> flow: `proveIdentities()`, the `.sha256` sidecar, `.counts.json`, and commands without
+> `--confirm-project-ref`. Those commands are no longer valid. The drill artifact has no
+> `mona-test-backup/v1` manifest, so the current `restore.mjs` refuses it (§7.1). This
+> repository records no real destructive restore drill under the TEST-only contract.
+> Current procedures: §6.2 (backup) and §7 (restore).
+
 Run once, for real, in this phase, entirely against TEST (DEV was never written to):
 
 - [x] `pg_dump`, `pg_restore` confirmed installed (17.11) and version-compatible with
@@ -388,7 +559,7 @@ Run once, for real, in this phase, entirely against TEST (DEV was never written 
       of the artifact byte-for-byte, and separately matches the `.sha256` sidecar restore.mjs
       itself checked before restoring.
 - [x] Archive readability was verified with `pg_restore --list` before the destructive step
-      (per §7 step 5) — the archive's table of contents listed all 21 application tables plus
+      (then the restore procedure's step 5; today §7 step 4) — the archive's table of contents listed all 21 application tables plus
       `_prisma_migrations` as `TABLE DATA` entries, with **zero** `EVENT TRIGGER` entries
       (confirmed by comparing an unscoped test dump against the `--schema=public` dump — see
       §5's recorded finding).
@@ -487,7 +658,11 @@ Every destructive path already in the repository, and every one designed in this
 shares the same shape — restated here as the single governing rule for this document:
 
 1. Identity of the target must be **proven**, not assumed, immediately before the
-   destructive action (§3).
+   destructive action (§3). The TEST restore (§7) meets this rule with the live TEST marker
+   proof in §7 step 5; owner project-ref attestation is only its precondition. The proof runs
+   on its own connection just before `pg_restore` opens a new session with the same
+   connection fields. The proof binds the *database* those fields address, not
+   `pg_restore`'s session itself.
 2. The proof must show the target is the *specific* environment the operation is scoped to
    (TEST for `truncateAllTables`/restore-drill; DEV/demo for `resetDemo`/backup-source) —
    never "any non-production-looking database."
@@ -546,8 +721,14 @@ specifically. Fail closed, always, on:
 - missing `pg_dump`/`pg_restore` (the state this document was originally written under,
   before client tooling was installed — see §0)
 - a checksum mismatch on the artifact being restored
+- on the TEST path: a missing `--confirm-project-ref` or one that does not match
+  `TEST_DATABASE_URL`; a missing or non-canonical `TEST_DATABASE_MARKER_ID`; a live TEST
+  marker proof that fails or cannot run (§7 step 5); a missing, malformed, non-canonical, edited or other-version
+  (`format` ≠ `mona-test-backup/v1`) manifest; a manifest from another run; a
+  pre-revision artifact with only `.sha256`/`.counts.json` (§7.1); an archive whose table set
+  differs from the manifest counts, or that contains the `mona_test_guard` schema
 - an incomplete/interrupted dump (no partial artifact is ever left at the final path — write
-  to a temp path, rename only on success)
+  to a temp path, finalize only on success)
 - post-restore verification (§8) failing
 - any attempt to restore into DEV or a future production target through the automated path
 
@@ -558,14 +739,22 @@ report exactly what failed, and let a human decide the next step.
 
 Before running any backup:
 - [ ] `pg_dump` confirmed installed and version-appropriate.
-- [ ] DEV identity verified distinct from TEST (`npm run db:check`).
+- [ ] DEMO backup (§6.1) only: DEV identity verified distinct from TEST (`npm run db:check`).
+      Do **not** run `db:check` for TEST-only work: it connects to DEV.
+- [ ] TEST backup (§6.2) only: run from the repository root; the TEST project ref to pass
+      as `--confirm-project-ref` confirmed by the owner (never written down anywhere).
 - [ ] Backup destination directory exists and is gitignored.
 
 Before running any restore:
 - [ ] `pg_restore` confirmed installed and version-appropriate.
 - [ ] Target is explicitly TEST — never assumed, never defaulted.
-- [ ] TEST identity re-verified distinct from DEV immediately before the restore.
-- [ ] Artifact checksum verified against its `.sha256` sidecar.
+- [ ] Run from the repository root; `--confirm-project-ref` is the owner-confirmed TEST
+      project ref, and `.env.development` pins `TEST_DATABASE_MARKER_ID` to the installed
+      TEST marker id. Restore proves that marker live before `pg_restore` (§7 step 5) and
+      refuses otherwise.
+- [ ] The artifact is a `test_*.dump` with its `.dump.manifest.json` next to it. A
+      pre-revision artifact with only `.sha256`/`.counts.json` is refused (§7.1). Size,
+      SHA-256 and table set are verified by `restore.mjs` itself (§7 step 4).
 - [ ] Post-restore verification plan (§8) is ready to run immediately after restore.
 - [ ] No secrets will be printed at any step (dry-run the command's expected output mentally
       before running it against a real target).
