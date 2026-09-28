@@ -162,24 +162,28 @@ over the Demo V2 commerce core. See §5 for the separation.
 
 | Field | Value |
 | --- | --- |
-| Last verified | 2026-09-25T01:40Z (UTC), recording the P0.2 local checkpoint |
+| Last verified | 2026-09-28 (UTC), final documentation reconciliation of the validated checkpoint |
 | Branch | `feat/production-v1` |
-| HEAD (full) | The P0.2 Blueprint checkpoint commit `docs(project): record P0.2 local checkpoint` — this documentation checkpoint; its exact SHA is the containing Git commit (`git log -1`). It sits directly on top of the P0.2 implementation commit `e3ce087a7408646d97e1b0f204be8ee1c447fdae`. |
-| HEAD (short) | P0.2 Blueprint checkpoint, on top of `e3ce087` — `feat(pilot): implement P0.2 cashier correction and cancellation` |
+| Validated implementation baseline | `113c57adf865268cf2df4add41d8090f5511ed2b`: `feat(db): add PILOT catalog bootstrap tooling` (step D). The owner full suite ran at this commit. |
+| HEAD (full) | The documentation commit `docs: reconcile Production V1 validated checkpoint`, which changes documentation only. Its exact SHA is the containing Git commit (`git log -1`). It sits directly on top of `113c57a`. |
+| HEAD (short) | Documentation reconciliation, on top of `113c57a` (`feat(db): add PILOT catalog bootstrap tooling`) |
+| Commit chain since the P0.2 record | `a04478c` (P0.2 Blueprint record) → **A1** `8a95f0d` → **A2** `41ee882` → **A3** `0d7ac5d` → **C** `3868e5a` → **D** `113c57a` → this documentation commit. The order is linear and each commit's parent was verified with git. See §3. |
 | Origin branch | `origin/feat/production-v1` |
-| Origin HEAD | `289c545a1a717eb032f85dd47b158dca47c008fb` (P0.1 remote-closeout record; P0.2 not pushed) |
-| Ahead / behind | `git rev-list --left-right --count origin/feat/production-v1...HEAD` → `0 2` expected after the P0.2 Blueprint checkpoint (`e3ce087` + this record). Re-verify with git. |
-| Current phase | Pilot V1.1 — P0 safety gates (overlay on Production V1 Phase 1 closeout) |
-| Last completed engineering block | **P0.2 (A + B + C) — LOCALLY CHECKPOINTED** at `e3ce087` (not yet OWNER-full-suite approved, not pushed). Previous: P0.1 CLOSED AND PUSHED (`7b6fce8`, record `289c545`). |
-| Current engineering block | **P0.2 closeout** — awaiting the OWNER full suite. P0.2: IMPLEMENTED (A, B, C) · API aggregate focused 19/19, 393/393 · client 3/3, 28/28 · STATIC GATES GREEN · OpenCode complete (0/0/0/6 LOW) · Codex complete (initial 0/0/0/2 → corrections → narrow **0/0/0/0**, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`) · **LOCAL CHECKPOINT `e3ce087`** · NOT PUSHED. |
+| Origin HEAD | `289c545a1a717eb032f85dd47b158dca47c008fb`, from the local remote-tracking ref (not fetched during this reconciliation). P0.2 and A1–D are **not pushed**. |
+| Ahead / behind | Against the local remote-tracking ref, `git rev-list --left-right --count origin/feat/production-v1...HEAD` was `0 7` at `113c57a`. Expect `0 8` after this documentation commit. Re-verify with git. |
+| Current phase | Pilot V1.1 P0 safety gates and TEST/PILOT database-safety tooling (overlay on Production V1 Phase 1 closeout) |
+| Last completed engineering block | **A1–A3 (TEST safety: backup/restore, runtime identity guard TEST-H1, cleanup lifecycle TEST-H2/H2.1) and C–D (PILOT bootstrap tooling).** Independently audited: `APPROVED FOR OWNER FULL SUITE`. Covered by the owner full suite at `113c57a`. Not pushed. |
+| Current engineering block | **Validated checkpoint recorded.** The implementation is validated at `113c57a`. The next gate is the final read-only OpenCode audit of this documentation reconciliation. |
+| P0.2 status | Implemented and locally checkpointed at `e3ce087` (record `a04478c`); OpenCode + Codex final 0/0/0/0. The owner full suite at `113c57a` includes `e3ce087`, so P0.2's owner full-suite gate is now covered by that run. P0.2's final closeout and push are **not** done. |
 | P0.1-C status | **IMPLEMENTED · FOCUSED TESTS GREEN (9/9 files, 211/211) · STATIC GATES GREEN · OPENCODE REVIEWED (LOW resolved) · CODEX APPROVED (final 0/0/0/0) · CHECKPOINTED** at `421b58453b7de667cb3ad6a3467a051a14dd61f7` · OWNER FULL SUITE GREEN (aggregate) · PUSHED. Evidence: §16 P0.1-C. |
 | Current P0.1 aggregate status | **CLOSED AND PUSHED** — technical/block closeout complete and remote synchronization complete. A (`8e9699a`), B1 (`ab728be`), B2 (`e7b6cc7`) and C (`421b584`) are committed, pushed and audited (A/B1/B2 per owner; C in §22: OpenCode complete, Codex final 0/0/0/0). Final technical gate passed: OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Focused P0.1-C evidence stays 9/9 files, 211/211. Remote synchronization: done (see Push status). |
 | Working tree exceptions | `opencode.json` is modified: legitimate **local-only** configuration. Never inspect, diff, modify, restore, stage or commit it. |
-| Full-suite status | **NOT RUN for P0.2** — OWNER ONLY; it is the next gate. Last owner gate: P0.1 aggregate at `59e629f` (55/55 files, 855/855 tests, 0 failed). |
+| Full-suite status | **OWNER full suite at `113c57a`: the Vitest result is PASS.** 59/59 test files passed, 1082/1082 tests passed, duration 8461.73s. The final Vitest summary showed zero failed files and zero failed tests. The wrapper's `FULL_SUITE_EXIT` was **NOT OBSERVED**: the terminal closed after the final Vitest summary, before the shell wrapper printed it. No exit code is recorded, and none may be assumed. After recovery the owner saw no vitest or npm-test process, the branch and HEAD unchanged, and no working-tree change outside `opencode.json`. Previous owner gate: P0.1 aggregate at `59e629f` (55/55, 855/855). |
+| Pre-suite TEST backup | `test_manual_20260928T130605Z.dump`: 66797 bytes, SHA-256 `d84708690f8be67d14e000f5dea89f18c8f4ffc62122781a87fd7a1ec8d40934`, set id `8852ffc9-e5a2-42cb-888e-e9aa2b316d19`, 25 tables. The owner verified the manifest (artifact, SHA, set id, `environment=test`, `purpose=manual`) and `pg_restore --list`. During this reconciliation the local size and SHA-256 were re-checked read-only and matched. The backup was **not** restored. |
 | Full-suite ownership | **REPOSITORY OWNER ONLY** (§12). Agents never run it. |
-| Push status | P0.1 pushed (origin `289c545`). **P0.2 is local only** (`e3ce087` + its Blueprint record) and must NOT be pushed before the OWNER full suite is green. |
-| Push gate | P0.2 checkpointed **(done)** + independently audited, OpenCode + Codex **(done)** + OWNER full suite green **(pending)**. Only then final closeout and push. |
-| Exact next action | **OWNER** runs the full suite (`cd api && NODE_ENV=test npx vitest run --reporter=verbose`) over `e3ce087` + record; then final P0.2 closeout, then push. Agents do not run it. |
+| Push status | P0.1 pushed (origin `289c545`). **P0.2 (`e3ce087`, `a04478c`), A1–D and this documentation commit are local only.** No push has occurred. |
+| Push gate | The owner's explicit decision after the final read-only OpenCode audit of this reconciliation. |
+| Exact next action | Run the **final read-only OpenCode audit** of this documentation commit. Then the owner decides on P0.2 closeout and the push. Agents do not push and do not run the full suite. |
 ---
 
 ## 3. Git Checkpoint Ledger
@@ -219,8 +223,14 @@ repository proves. `pushed` means the commit is an ancestor of
 | P0.1-C Blueprint record | `59e629f988e469c623a792f9867a8cf4f7a949b3` | docs(project): record P0.1-C checkpoint | Records the P0.1-C checkpoint and audit state (documentation only) | — | **pushed** (`7b6fce8`) | On top of `421b584`; owner full suite ran at this commit |
 | P0.1 closeout | `7b6fce805f11486b1f3a60081adfeaf0a545b7c4` | docs(project): close P0.1 pilot reservation safety | Records the owner aggregate full suite and closes P0.1 (documentation only) | Owner full suite 55/55, 855/855 | **pushed (= origin HEAD after `6aa8143..7b6fce8`)** | On top of `59e629f` |
 | P0.1 post-push record | *(this documentation commit; exact SHA is the containing Git commit)* | docs(project): record P0.1 remote closeout | Post-push synchronization record (documentation only) | — | **HEAD; pushed normally right after it is created** | On top of `7b6fce8` |
-| P0.2 | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` | feat(pilot): implement P0.2 cashier correction and cancellation | Cashier correction / cancellation / payment UX | OpenCode: complete — 0/0/0/6 LOW (L-1…L-5 deferred, L-6 fixed); Codex: initial 0/0/0/2 → corrections → narrow **0/0/0/0**, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT` | **local only** | See §16 P0.2 |
-| P0.2 Blueprint record | *(this documentation checkpoint; exact SHA is the containing Git commit)* | docs(project): record P0.2 local checkpoint | Records the P0.2 checkpoint and audit state (documentation only) | — | **local only (HEAD)** | On top of `e3ce087` |
+| P0.2 | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` | feat(pilot): implement P0.2 cashier correction and cancellation | Cashier correction / cancellation / payment UX | OpenCode: complete — 0/0/0/6 LOW (L-1…L-5 deferred, L-6 fixed); Codex: initial 0/0/0/2 → corrections → narrow **0/0/0/0**, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`; covered by the owner full suite at `113c57a` (59/59, 1082/1082) | **local only** | See §16 P0.2 |
+| P0.2 Blueprint record | `a04478c930a69cee6c0c3b174de7636a711b622d` | docs(project): record P0.2 local checkpoint | Records the P0.2 checkpoint and audit state (documentation only) | — | **local only** | On top of `e3ce087` |
+| A1 — TEST backup/restore | `8a95f0d1d8b749cb523c703b3a7f30e14d5f6dad` | feat(db): add safe TEST backup and restore tooling | DEV-free TEST backup path (`mona-test-backup/v1` manifest), TEST-only restore gated on the live TEST marker, TEST marker installer | Independent OpenCode audit of A1–D: `APPROVED FOR OWNER FULL SUITE` (0/0/0/0); owner full suite at `113c57a` | **local only** | 8 files: `scripts/database/*` + `docs/development/backup-restore-seed.md`. See §16 |
+| A2 — TEST-H1 | `41ee88231d309610816d6d01a467158226bcf0ac` | test(db): enforce TEST runtime identity guard | The `api/` test harness proves TEST from its own marker; it never reads or connects to `DATABASE_URL` (DEV) | Same audit; owner full suite at `113c57a` | **local only** | 4 files under `api/`. See §16 |
+| A3 — TEST-H2 / H2.1 | `0d7ac5d179fe8b48a146339b935152ba53df69d9` | test(db): harden TEST cleanup lifecycle | Teardown can no longer replace a setup failure or leak a TEST handle; AST cleanup scanner | Same audit; owner full suite at `113c57a` | **local only** | 21 files under `api/tests/`. See §16 |
+| C — PILOT database bootstrap | `3868e5a4b97c7404dd0e65a89b10d7be8a160934` | feat(db): add safe PILOT database bootstrap tooling | OWNER-only PILOT marker, guarded migrate, additive bootstrap (tooling only) | Same audit; owner full suite at `113c57a` | **local only** | 6 new files in `scripts/database/`. No live PILOT execution recorded. See §16 |
+| D — PILOT catalog bootstrap | `113c57adf865268cf2df4add41d8090f5511ed2b` | feat(db): add PILOT catalog bootstrap tooling | OWNER-only additive synthetic PILOT catalog (tooling only) | Same audit; **owner full suite PASS at this commit (59/59, 1082/1082; wrapper exit NOT OBSERVED)** | **local only (validated implementation baseline)** | 2 new files in `scripts/database/`. No live PILOT execution recorded. See §16 |
+| Validated checkpoint record | *(this documentation commit; exact SHA is the containing Git commit)* | docs: reconcile Production V1 validated checkpoint | Records A1–D, the independent audit and the owner full suite (documentation only: `AGENTS.md` + this Blueprint) | Pending final read-only OpenCode audit | **local only (HEAD)** | On top of `113c57a` |
 
 ---
 
@@ -233,7 +243,7 @@ repository proves. `pushed` means the commit is an ancestor of
 | `client/` | Operations POS (Next.js 16 / React 19) for SELLER/CASHIER | `src/app/page.tsx` | Demo V2-era seller/cashier UI; D1 changed role projection handling |
 | `api/prisma/` | Schema, migrations, deterministic seed | `schema.prisma`, `seed.ts`, `migrations/` (4) | Transitional inventory model (§6) |
 | `api/scripts/` | Explicit operator scripts (dry-run/execute) | `bootstrap-system-actor.ts`, `bootstrap-canonical-owner.ts`, `bootstrap-rbac-catalog.ts`, `backfill-*.ts`, `reset-demo.ts`, `seed-demo.ts`, `demo-database.ts` | Never run implicitly |
-| `scripts/database/` (root) | Backup/restore with identity proof | `backup.mjs`, `restore.mjs`, `lib.mjs` | Manual only (Phase 0C) |
+| `scripts/database/` (root) | Backup/restore with identity proof; TEST marker installer; OWNER-only PILOT tooling | `backup.mjs`, `restore.mjs`, `lib.mjs`, `test-marker.mjs` (A1); `pilot-marker.mjs`, `pilot-migrate.mjs`, `pilot-bootstrap.mjs` (C); `pilot-catalog-bootstrap.mjs` (D); zero-DB `*.test.mjs` (`node --test`) | Manual only. Restore is TEST-only. PILOT tools read a private URL file, never `.env*`. No live PILOT run is recorded |
 | `api/src/config/` | Environment parsing, Prisma client | `env.ts`, `load-env.ts`, `prisma.ts` | Zod env; sweeper variables are opt-in |
 | `api/src/middleware/` | Auth, authorization gate, validation, rate limiting, errors | `auth.ts`, `authorization.ts`, `validation.ts`, `rateLimit.ts` | Production-only `requirePermission` |
 | `api/src/modules/auth/` | Login, `/me`, JWT, public user-context DTO | `auth.service.ts`, `tokens.ts`, `user-context.dto.ts` | Identity-only JWT (15 min); no refresh |
@@ -670,6 +680,7 @@ gaps and notes L-1…L-5 (DEBT-023).
 | **Historical DEV / DEMO** | `DATABASE_URL`; Supabase project `mona-jacinta-demo` (`docs/development/database.md`) | Read-only inspection; the only intended backup *source* | Reset, seed, backfill, migrate, bootstrap or otherwise mutate it **without explicit human approval in the current conversation**; be an automated restore target |
 | **TEST** | `TEST_DATABASE_URL`; Supabase project `mona-jacinta-test` | Destructive integration tests (truncate per test), restore drills | Be used for anything the suite does not own; run two vitest processes at once (both truncate TEST) |
 | **DEMO / Pilot deployment DB** | `getting-started.md` refers to "the dedicated DEMO database", seeded with `DEMO_SEED_PASSWORD`. Untracked local files `.env.development.demo-candidate` and `.env.development.dev-backup.correct` exist (never read them). | [UNVERIFIED — NEEDS CONFIRMATION]: whether a distinct Pilot DB exists and which file targets it | Mutate without explicit approval; seed it with the public local/TEST demo credential |
+| **PILOT (tooling target, C/D)** | Addressed only by `scripts/database/pilot-*.mjs`, from a private URL file under `~/.config/mona-jacinta` with verified TLS. Never `.env*`, `DATABASE_URL` or `TEST_DATABASE_URL`. Proven by the canonical `mona_pilot_guard.database_identity` marker; a TEST marker is refused | OWNER-only marker install/check, guarded migrate, additive bootstrap and catalog bootstrap, via `--dry-run` → `--execute`. Migrate, bootstrap and catalog bootstrap are also bound to a plan digest | Be reached by agents or runtime code; fall back to TEST/DEV. Whether the live PILOT database exists and was bootstrapped is **not recorded in the repository** and is not claimed |
 | **Production** | Does not exist yet (`backup-restore-seed.md` §2) | — | — |
 
 Immutable operational rules:
@@ -678,13 +689,18 @@ Immutable operational rules:
    target identity. Scripts take an explicit `--target` and a
    `--dry-run`/`--execute` split.
 2. **TEST is the only destructive target.** `tests/setup.ts` runs
-   `assertTestDatabaseIsolation()` before any test file. It proves, read-only,
-   that DEV and TEST are distinct (parsed identity + live metadata) and fails
-   closed.
-3. Side effect to know: every `api/` vitest run (`setupFiles` + `globalSetup`)
-   opens **read-only** metadata connections to DEV as well as TEST, even for
-   DB-free test files. When a task forbids contacting DEV, do not run vitest
-   with the repo config.
+   `assertTestDatabaseIsolation()` before any test file. Since A2 (`41ee882`,
+   TEST-H1) it proves TEST from TEST's own identity marker
+   (`mona_test_guard.database_identity`, pinned marker id). The check is
+   read-only, runs under `ACCESS SHARE`, and verifies the full canonical
+   structure. It fails closed on a missing, copied or malformed marker.
+   Destructive helpers accept only proven clients. *(Before A2 this was a
+   DEV-vs-TEST comparison. That wording is superseded.)*
+3. Since A2, the `api/` vitest harness (`setupFiles` + `globalSetup`) never
+   reads or connects to `DATABASE_URL` (DEV). `setup.ts` replaces it with an
+   unresolvable placeholder, so an accidental default-client query fails
+   loudly. *(Superseded: "every vitest run opens read-only metadata
+   connections to DEV".)*
 4. The system actor is bootstrapped explicitly, per target, and never at
    startup or by the seed. Its bootstrap status on any environment is
    [UNVERIFIED — NEEDS CONFIRMATION].
@@ -707,8 +723,11 @@ tooling; SHA-256 from their sidecars):
 | `demo_pre-migration_20260912T182246Z.dump` | `c1a4bc1b1682159aa943f370f523d0c92c174e59082fdf9eba8235929e7c2358` |
 | `demo_pre-migration_20260912T191459Z.dump` | `5e72315836b0578aba94c6cd2ff313b226623d0b3a8a4700715f9f2ff1484b7f` |
 | `demo_manual_20260912T202029Z.dump` | `32a083ebda9bc111404d01f6e5a6ae9ce15bcf48d7ab904ebb9674df9af22cc6` |
+| `test_manual_20260928T130605Z.dump` (TEST, `mona-test-backup/v1` manifest; set id `8852ffc9-e5a2-42cb-888e-e9aa2b316d19`; 66797 bytes; 25 tables; taken before the owner full suite at `113c57a`) | `d84708690f8be67d14e000f5dea89f18c8f4ffc62122781a87fd7a1ec8d40934` |
 
-No backup newer than 2026-09-12 is present locally. D3's migration
+The newest local backup is the TEST pre-suite set from 2026-09-28. It was not
+restored, and no live restore was run as part of A1–D. The newest DEV/DEMO
+backup is still 2026-09-12. D3's migration
 (2026-09-22) has no matching local `pre-migration` artifact
 [UNVERIFIED — NEEDS CONFIRMATION whether one was taken elsewhere].
 
@@ -731,7 +750,8 @@ No backup newer than 2026-09-12 is present locally. D3's migration
   **whole aggregate** (for P0.1: A + B1 + B2 + C) is complete and
   independently audited. `NODE_ENV=test npx vitest run --reporter=verbose`.
   About 58m41s for 310 tests at `7d0c2b6`; 7777.98s (~2h10m) for 55 files /
-  855 tests at `59e629f` (P0.1 aggregate). It is slow because it runs against
+  855 tests at `59e629f` (P0.1 aggregate); 8461.73s (~2h21m) for 59 files /
+  1082 tests at `113c57a` (validated checkpoint). It is slow because it runs against
   hosted TEST (~100 ms/round-trip, `fileParallelism: false`). Slow is not hung.
 - **Push** the aggregate's local checkpoints only after that owner full suite is green.
 
@@ -833,7 +853,11 @@ and push come after P0.1-C, never between slices.
 | `api/src/config/env.ts` | Zod env | Sweeper opt-in, exact booleans, bounded values; errors name variables only | D3; B2 |
 | `api/src/modules/inventory/inventory.service.ts` | Availability reads and pre-checks | Read-only; expiry-aware | P0.1-A |
 | `api/src/modules/inventory/initial-stock.service.ts` | Additive initial stock | `physical += qty` only; one movement + audit | D3 |
-| `api/tests/setup.ts`, `api/tests/helpers/test-db.ts` | DB isolation proof, truncation | Fail closed; destructive only on TEST | Phase 0 |
+| `api/tests/setup.ts`, `api/tests/helpers/test-db.ts` | TEST identity proof, proven TEST clients, truncation | Fail closed; destructive only on proven TEST clients; `DATABASE_URL` never read; adapter-owned pool ended by `$disconnect()` | Phase 0; A2 (TEST-H1) |
+| `api/scripts/demo-database.ts` (`openProvenTestPool`, `verifyTestMarkerFacts`, `MARKER_FACTS_SQL`) | TEST marker verification for the test harness and `openSeedDatabase('test')` | READ ONLY transaction + `ACCESS SHARE`; canonical structure incl. no inheritance; facts SQL identical to `test-marker.mjs` (asserted by `test-db-guard.test.ts`) | A2 (TEST-H1) |
+| `api/tests/test-db-guard.test.ts`, `api/tests/test-cleanup.test.ts` | Zero-DB tests: identity guard; AST cleanup-lifecycle scanner | Allowlist, fail closed; hermetic exemption limited to `test-db-guard` | A2; A3 (TEST-H2/H2.1) |
+| `scripts/database/test-marker.mjs`, `backup.mjs`, `restore.mjs`, `lib.mjs` | TEST marker installer; DEV-free TEST backup; TEST-only restore | Restore proves the live TEST marker first; manifest byte-exact; archives containing `mona_test_guard` refused | Phase 0C; A1 |
+| `scripts/database/pilot-marker.mjs`, `pilot-migrate.mjs`, `pilot-bootstrap.mjs`, `pilot-catalog-bootstrap.mjs` | OWNER-only PILOT marker, migrate, bootstrap, catalog bootstrap | Private URL file only; PILOT marker proof; TEST marker refused; plan digest; absent → create, exact → no-op, else rollback; cleanup never replaces an established outcome; no secrets printed | C; D |
 
 ---
 
@@ -935,7 +959,69 @@ and push come after P0.1-C, never between slices.
 | Codex initial review | Independent adversarial read-only review: **BLOCKER 0 / HIGH 0 / MEDIUM 0 / LOW 2**, verdict **`PILOT P0.2 CODEX CHANGES REQUIRED`**. **LOW #1:** stale CASH tender after a same-sale correction — the payment-entry reset depended on `selectedSaleId`, which a correction does not change, so `cashReceived` kept the old balance (e.g. 10000) while the amount became the new one (5000); the server could record `receivedAmount`/`changeAmount` that were false (net cash still correct). **LOW #2:** stale Blueprint §8 (cancel = `SALE_CREATE`, no `sellerId` check, payment-sum semantics) and §10.3 (P0.2 shown as later work). |
 | Codex corrections (applied) | **#1:** new client regression in `client/src/app/cashier-p02.test.tsx` ("resets the CASH tender to the new server balance after a same-sale correction") — RED against the previous code (amount 5000, `Recibido` still 10000), GREEN after the fix. Fix in `client/src/app/page.tsx`: `refreshQueue` returns the refreshed rows; a shared `resetPaymentEntry(balance)` (amount, CASH received, retry intent, split toggle) is used by the selection effect and, after a committed correction, with the refreshed server row's `remainingBalance`. No API change. Client: 3/3 files, **28/28** (`cashier-p02` 18, `cashier-queue` 4, `page` 6); client lint, `tsc --noEmit`, `build`, `git diff --check`: PASS. The API aggregate (19/19, 393/393) is unchanged — no API source changed. **#2:** §8 and §10.3 rewritten to the current P0.2 semantics. **Narrow recheck: COMPLETE — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW; final verdict `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`.** |
 | Final audited state | P0.2-A, P0.2-B, P0.2-C implemented. OpenCode complete (0/0/0/6 LOW, non-blocking). Codex complete: initial 0/0/0/2 LOW (`PILOT P0.2 CODEX CHANGES REQUIRED`) → both corrections applied → narrow recheck **0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW**, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`. Evidence retained: API aggregate focused 19/19 files, 393/393 tests, 0 failed, 0 skipped, `VITEST_EXIT=0`; client 3/3 files, 27/27 before the Codex fix and **28/28** after it (new same-sale CASH-tender regression). Static gates GREEN. FULL SUITE: OWNER ONLY — NOT RUN. |
-| Commit / push | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` (28 files: runtime, tests, `docs/api/endpoints.md`, Pilot doc; Blueprint and `opencode.json` excluded) + this Blueprint record / **local only, NOT pushed** |
+| Commit / push | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` (28 files: runtime, tests, `docs/api/endpoints.md`, Pilot doc; Blueprint and `opencode.json` excluded) + Blueprint record `a04478c930a69cee6c0c3b174de7636a711b622d` / **local only, NOT pushed** |
+| Owner full-suite coverage (added 2026-09-28) | The owner full suite at `113c57a` (a descendant of `e3ce087`) passed 59/59 files and 1082/1082 tests; the wrapper exit was not observed (see §16 "Validated checkpoint"). P0.2's final closeout and push are still pending. |
+
+### A1 — TEST backup / restore / marker tooling
+
+| Field | Value |
+| --- | --- |
+| Goal | A backup and restore path for TEST that never contacts DEV, plus the TEST identity marker installer that TEST-H1 depends on |
+| Start → end | `a04478c` → `8a95f0d1d8b749cb523c703b3a7f30e14d5f6dad` |
+| Files | `scripts/database/backup.mjs`, `restore.mjs`, `lib.mjs`, `test-marker.mjs` (new); zero-DB tests `backup.test.mjs`, `restore.test.mjs`, `test-marker.test.mjs` (new); `docs/development/backup-restore-seed.md` |
+| Behavior added | `backup.mjs --target=test` reads only `TEST_DATABASE_URL`, needs owner project-ref attestation, and writes a `<name>.dump` + `<name>.dump.manifest.json` set (`mona-test-backup/v1`). `restore.mjs` is TEST-only and proves the live TEST marker before `pg_restore`. It refuses archives that contain `mona_test_guard`. The marker installer requires a verified backup first. |
+| Explicitly excluded | Any live restore as part of this block; any DEV/DEMO restore path |
+
+### A2 — TEST-H1 runtime identity guard
+
+| Field | Value |
+| --- | --- |
+| Goal | The `api/` test harness proves TEST from its own marker and never contacts DEV |
+| Start → end | `8a95f0d` → `41ee88231d309610816d6d01a467158226bcf0ac` |
+| Files | `api/scripts/demo-database.ts`, `api/tests/helpers/test-db.ts`, `api/tests/setup.ts`; `api/tests/test-db-guard.test.ts` (new) |
+| Behavior added | `openProvenTestPool` / `verifyTestMarkerFacts`: a READ ONLY transaction with `ACCESS SHARE` verifies the canonical marker structure, including no inheritance or partition parent/child. `setup.ts` swaps `DATABASE_URL` for an unresolvable placeholder. `createTestPrismaClient()` hands PrismaPg a pool *configuration*, so the adapter owns the pool and ends it on `$disconnect()`. Destructive helpers accept only proven clients. Copied or malformed markers fail closed. |
+
+### A3 — TEST-H2 / H2.1 cleanup lifecycle
+
+| Field | Value |
+| --- | --- |
+| Goal | Test teardown can no longer replace a setup failure or leak a TEST handle |
+| Start → end | `41ee882` → `0d7ac5d179fe8b48a146339b935152ba53df69d9` |
+| Files | 20 modified `api/tests/**` files; `api/tests/test-cleanup.test.ts` (new) |
+| Behavior added | Guarded `db?.$disconnect()` in suite teardown (18 files); `rbac/authorization-context` releases its inline client in `try/finally`; the `realtime/socket` listen error rejects `beforeAll`; a zero-DB AST scanner enforces the canonical acquisition and release forms across `tests/` (allowlist, fail closed) |
+
+### C — PILOT database bootstrap tooling
+
+| Field | Value |
+| --- | --- |
+| Goal | OWNER-only, PILOT-only tools that stay separate from the TEST and DEMO paths |
+| Start → end | `0d7ac5d` → `3868e5a4b97c7404dd0e65a89b10d7be8a160934` |
+| Files | `scripts/database/pilot-marker.mjs`, `pilot-migrate.mjs`, `pilot-bootstrap.mjs` + zero-DB `*.test.mjs` (all new) |
+| Behavior added | `pilot-marker`: installs (additive) and proves (REPEATABLE READ READ ONLY + ACCESS SHARE) `mona_pilot_guard.database_identity`, and refuses a TEST marker. `pilot-migrate`: guarded `prisma migrate deploy` bound to an OWNER-pinned migration payload (names, sizes, SHA-256) under an allowlisted child environment. `pilot-bootstrap`: a single-transaction RBAC catalog, synthetic PILOT company and locations, the five accounts and the system actor, approved by a plan digest. Cleanup/ROLLBACK handling never replaces an established outcome and never lets a secret-bearing error escape. |
+| Explicitly excluded | Any live PILOT execution. None is recorded in the repository or claimed here. |
+
+### D — PILOT catalog bootstrap tooling
+
+| Field | Value |
+| --- | --- |
+| Goal | An OWNER-only, additive synthetic merchandise catalog for PILOT client demos |
+| Start → end | `3868e5a` → `113c57adf865268cf2df4add41d8090f5511ed2b` |
+| Files | `scripts/database/pilot-catalog-bootstrap.mjs` + `pilot-catalog-bootstrap.test.mjs` (new) |
+| Behavior added | 3 categories, 2 brands, 6 products, 16 variants and 32 stock rows at PCEN/PDEP, all marked PILOT, in ARS centavos. It re-proves the marker, PCEN/PDEP (`Location.id = Branch.id`) and the canonical OWNER in one transaction. Empty → create, exact → no-op, anything else → rollback. Writes go through the canonical catalog-admin and initial-stock services (audit, `INITIAL_STOCK`). The catalog creates **no product images**: products stay valid without `ProductImage`, which is still Phase 2D (§19 DEBT-027). |
+| Explicitly excluded | Any live PILOT execution (none recorded); ProductImage |
+
+### Validated checkpoint — A1 → A2 → A3 → C → D (recorded 2026-09-28)
+
+| Field | Value |
+| --- | --- |
+| Validated implementation baseline | `113c57adf865268cf2df4add41d8090f5511ed2b` |
+| Independent audit (before the owner gate) | OpenCode, read-only: **`APPROVED FOR OWNER FULL SUITE`**, with 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW. Gates it reported: `node --test` hermetic 300/300; hermetic Vitest `test-db-guard` + `test-cleanup` 157/157; TypeScript clean; ESLint clean. It reported that the A1→D chain is dependency-safe with exact commit boundaries. It found no TEST→DEV contact path, found that TEST destructive helpers require proven clients and that malformed or copied markers fail closed, and found the C ROLLBACK/cleanup fix to be class-wide. It found no raw PILOT password or URL cleanup escape, no PILOT fallback to TEST/DEV, and no Production runtime import of PILOT tooling. It confirmed that C/D require target proof and that TEST-H3 remains deferred. These are the audit's reported results. The agent did not re-run them during this reconciliation. |
+| Owner pre-suite preflight | TEST read-only preflight, then a fresh durable TEST backup `test_manual_20260928T130605Z.dump` (§11), with explicit OWNER authorization |
+| Owner full suite (OWNER, not an agent) | **Vitest full-suite result: PASS: 59/59 files, 1082/1082 tests**, duration 8461.73s. The final Vitest summary had zero failed files and zero failed tests. |
+| Wrapper exit code | **`FULL_SUITE_EXIT`: NOT OBSERVED.** The terminal closed after the final Vitest summary, before the surrounding shell wrapper printed it. No exit code is recorded, and none may be assumed. |
+| Post-recovery state (owner) | No vitest or npm-test process remained. Branch `feat/production-v1`, HEAD `113c57a`, and no working-tree change outside `opencode.json`. |
+| Not claimed | Live PILOT execution; a live restore; a wrapper exit of 0; TEST-H3; any push |
+| Commit / push | A1–D + this documentation commit / **local only, NOT pushed** |
 
 ### Older blocks (summary; strong evidence only)
 
@@ -1154,21 +1240,21 @@ F-012 when P0.1-C reproduced it in a RED test.
 | ID | Item | Why deferred | Risk | Target phase | Pilot blocker? | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | DEBT-001 | P0.1-C payment/completion hold rules (§10.2) | — | — | P0.1-C | Was YES | **CLOSED** — `421b584`, audited (OpenCode + Codex 0/0/0/0), P0.1 owner full suite green (55/55, 855/855) |
-| DEBT-002 | Cashier pending correction / pending cancel / permissions / UX | — | — | P0.2 | — | **IMPLEMENTED in P0.2** (`e3ce087`, audited; OWNER full suite pending) — partially paid sales remain manual by design (Policy A) |
+| DEBT-002 | Cashier pending correction / pending cancel / permissions / UX | — | — | P0.2 | — | **IMPLEMENTED in P0.2** (`e3ce087`, audited; covered by the OWNER full suite at `113c57a`, 59/59, 1082/1082; P0.2 closeout/push pending) — partially paid sales remain manual by design (Policy A) |
 | DEBT-003 | Sweeper batch starvation (id-ordered; permanently corrupt low-id Sales) | Pilot doc defers it | Healthy expired holds wait for pre-send or manual release | P0.5 | No | OPEN |
 | DEBT-004 | Log aggregation / rate limiting of repeated failure logs | Not in P0.1 scope | Log noise every tick | [UNVERIFIED — NEEDS CONFIRMATION] | No | OPEN |
 | DEBT-005 | Broader observability (metrics, alerting) | Not scoped | Silent degradation | 10C [UNVERIFIED — NEEDS CONFIRMATION] | [UNVERIFIED] | OPEN |
-| DEBT-006 | Backup automation / scheduling | `backup-restore-seed.md` §10: scheduling not implemented | Stale backups; the latest local backup is 2026-09-12 | 10C | [UNVERIFIED — NEEDS CONFIRMATION] | OPEN |
+| DEBT-006 | Backup automation / scheduling | `backup-restore-seed.md` §10: scheduling not implemented | Stale backups; latest local DEV/DEMO backup 2026-09-12; latest local TEST backup 2026-09-28 (manual, pre-suite) | 10C | [UNVERIFIED — NEEDS CONFIRMATION] | OPEN |
 | DEBT-007 | Pre-migration backup for D3 not evidenced locally | — | Recovery gap | — | [UNVERIFIED] | TO CONFIRM |
 | DEBT-008 | Session refresh absent. `env.JWT_ACCESS_TTL_SECONDS` is parsed and validated by the Zod env schema (`env.ts`), but `tokens.ts` never reads it (it imports `env` only for `JWT_SECRET`); it owns its own hardcoded 15-minute constant (`ACCESS_TOKEN_SECONDS`). The configured value and the actual token lifetime are therefore disconnected. | Not scoped | Users logged out mid-shift; config confusion | [UNVERIFIED — NEEDS CONFIRMATION] | [UNVERIFIED] | OPEN |
-| DEBT-009 | `createTestPrismaClient()` pool lifecycle; `pg` concurrent-query deprecation warning | Pre-existing (`CLAUDE.md`) | Test resource leaks; the warning ("removed in pg@9.0") becomes an error on a `pg@9` upgrade | — | No (warning appeared, non-failing, in the P0.1 owner full suite 55/55, 855/855) | OPEN |
+| DEBT-009 | `createTestPrismaClient()` pool lifecycle; `pg` concurrent-query deprecation warning | Pre-existing (`CLAUDE.md`) | Test resource leaks; the warning ("removed in pg@9.0") becomes an error on a `pg@9` upgrade | — | No (warning appeared, non-failing, in the P0.1 owner full suite 55/55, 855/855) | **PARTIAL**: since A2 (`41ee882`) `createTestPrismaClient()` hands the adapter a pool configuration, so the adapter owns the pool and ends it on `$disconnect()`. The helper no longer creates a pool that callers cannot end. The `pg` concurrent-query warning is not verified as resolved and stays OPEN |
 | DEBT-010 | Socket.IO scope is a connection-time snapshot | Documented in 1D.5 | Revoked user keeps receiving room events until reconnect | 9C | No | OPEN |
 | DEBT-011 | `backoffice/users` legacy `UserBranchRole` presentation; deferred MANAGER rows retirement | Phase 1 closeout | Confusing admin view | 10D | No | OPEN |
 | DEBT-012 | Target `InventoryBalance`/`StockMovement`/`StockHold` migration | Roadmap order | Transitional counters | 3A–3E, 6B | No | OPEN |
 | DEBT-013 | Pricing tiers (CONSUMER_FINAL / WHOLESALE, cash discount) | Roadmap | Single price only | 2C | [UNVERIFIED] | OPEN |
 | DEBT-014 | Product-level barcode (currently unique per variant) | Roadmap | Label/scan model mismatch | 2B | [UNVERIFIED] | OPEN |
-| DEBT-015 | Test suite performance (~59 min at 310 tests; 7777.98s ≈ 2h10m at 855 tests for P0.1) | Correctness first | Slow gates | — | No | OPEN |
-| DEBT-016 | `AGENTS.md` "Checkpoint" section is stale (names D2 as current work) | This block was limited to adding a minimal pointer | Misleads agents | Next docs touch, with owner approval | No | OPEN |
+| DEBT-015 | Test suite performance (~59 min at 310 tests; 7777.98s ≈ 2h10m at 855 tests for P0.1; 8461.73s ≈ 2h21m at 1082 tests at `113c57a`) | Correctness first | Slow gates | — | No | OPEN |
+| DEBT-016 | `AGENTS.md` "Checkpoint" section is stale (names D2 as current work) | This block was limited to adding a minimal pointer | Misleads agents | Next docs touch, with owner approval | No | **CLOSED**: `AGENTS.md` Checkpoint rewritten in place in the validated-checkpoint documentation commit (2026-09-28) |
 | DEBT-017 | [PILOT DECISION / TRANSITIONAL DIVERGENCE] Policy A vs frozen 07 §5.4 sellable formula (no payment exception) and frozen lazy on-touch release | Pilot keeps one conservative release authority | Target design must decide explicitly | 3C/6B | No | OPEN |
 | DEBT-018 | Other post-commit realtime emits (send-to-cashier, complete, cancel, manual release) can still turn a committed result into HTTP 500 if the emitter throws | Outside P0.1-C payment scope; same-key/replay retries are idempotent | Misleading error after commit | Next realtime/POS hardening block | [UNVERIFIED — NEEDS CONFIRMATION] | OPEN |
 | DEBT-020 | Stale-client guards (`expectedSaleUpdatedAt`, `expectedRemaining`) for correction/payment | Not approved by any repository document for P0.2 | A payment prepared against an older total is judged on the current sale (overpayment rejected; a now-partial payment is accepted) | Later block (owner decision) | No | OPEN |
@@ -1176,6 +1262,9 @@ F-012 when P0.1-C reproduced it in a RED test.
 | DEBT-023 | OpenCode P0.2 LOW findings L-1…L-5 (Codex: safe to defer — accepted debt): zero-amount payment-row regression test; duplicate-legacy-SaleItem `CORRECTION_NOT_SUPPORTED` test; correction-vs-cancellation race test; `requireAnyPermission` must only be used with a service-level location-paired re-check (L-4); stale comment in `audit.test.ts` | Recorded after the OpenCode audit; not addressed yet by instruction | Test coverage / future misuse of a coarse gate; no current defect | P0.2 correction pass or later (owner decision) | No | OPEN |
 | DEBT-024 | OpenCode L-6 / Codex LOW #1: CASH "Recibido" default not reset after a same-sale correction | — | False received/change metadata on the next CASH payment | P0.2 Codex correction pass | No | **FIXED** (`e3ce087`) — tender re-derived from the refreshed server balance; client regression test |
 | DEBT-022 | Cashier UI cannot add a new variant during correction (API supports it) | Kept P0.2-C UX minimal; needs a product search in the cashier view | Replacing an item needs the seller or an API call | Later UX block | No | OPEN |
+| DEBT-025 | **TEST-H3**: deferred follow-up of the TEST hardening series (TEST-H1 in A2, TEST-H2/H2.1 in A3) | Outside the A1–D scope. The independent audit confirmed it is deferred. The label appears nowhere in current source or tests, and its exact scope is not recorded in the repository [UNVERIFIED — NEEDS CONFIRMATION] | Unknown until scoped | Later (owner decision) | No | **OPEN / DEFERRED**: not implemented |
+| DEBT-026 | `CLAUDE.md` is stale against A2: its "Known deferred technical debt" still describes `createTestPrismaClient()` pool ownership as unresolved (see DEBT-009), and its suite-duration example is still the `7d0c2b6` figure (310 tests) | `CLAUDE.md` was outside the authorized scope of the 2026-09-28 reconciliation (only `AGENTS.md` and this Blueprint) | Agents may re-open resolved work | Next authorized docs touch | No | OPEN |
+| DEBT-027 | ProductImage (optional primary image, FR-IMG-001..004) is not implemented; no `ProductImage` model exists | Frozen roadmap Phase 2D. Business intent: images are **optional**, and a Product must stay valid and usable without one | None for current flows | 2D | No | OPEN (by design). **Frozen-doc tension recorded, not resolved:** frozen `05-architecture.md` names Supabase Storage for product images, while `AGENTS.md` says no Supabase Storage is used; this must be decided before 2D |
 | DEBT-019 | Expiry decisions use each API instance's wall clock (payment, B1/B2, queue) | Pre-existing design (B1) | Clock skew shifts the boundary between instances; all paths still serialize on the Sale lock, so no double outcome | Deployment hardening | No | OPEN |
 
 ---
@@ -1191,9 +1280,9 @@ F-012 when P0.1-C reproduced it in a RED test.
 | PAID sale with corrupt coverage | Manual data damage | Cannot complete (`INVALID_RESERVATION`); shown as `COVERAGE_INVALID` | Fail closed; audit trail | Manual/P0.2 |
 | ~~Uncommitted P0.1-C work~~ | — | — | **CLOSED** (`421b584`) | — |
 | ~~Unpushed local P0.1 checkpoints~~ | — | — | **CLOSED**: normal push `6aa8143..7b6fce8`, verified `0 0` | — |
-| P0.2 not yet OWNER-full-suite approved; OpenCode L-1…L-5 deferred | Local checkpoint `e3ce087` only | Test gaps (L-1…L-3) could hide a future regression; coarse-gate misuse (L-4); unpushed local commits | OpenCode + Codex (0/0/0/0) approved; focused gates GREEN | OWNER full suite → final closeout → push; L-1…L-5 as accepted debt (DEBT-023) |
+| Unpushed local commits (P0.2 `e3ce087`/`a04478c`, A1–D, documentation record); OpenCode P0.2 L-1…L-5 deferred | Local work only (`0 8` vs the local remote-tracking ref after the documentation commit) | Loss of local-only work; test gaps (L-1…L-3) could hide a future regression; coarse-gate misuse (L-4) | OpenCode + Codex approved P0.2; OpenCode `APPROVED FOR OWNER FULL SUITE` for A1–D; owner full suite PASS at `113c57a` (59/59, 1082/1082; wrapper exit not observed) | Final read-only OpenCode audit of the documentation record → owner decides P0.2 closeout and push; L-1…L-5 accepted debt (DEBT-023) |
 | Sweeper enabled without a system actor | Env flag set before bootstrap | No releases; error logs each tick (fail closed, process stays up) | Fail-closed resolution | Bootstrap before enabling (§21) |
-| Wrong-target DB mutation | Operator error with multiple local env files | Data loss on DEV/DEMO | Identity proofs, dry-run/execute, `.claude/hooks` | Keep explicit approval discipline |
+| Wrong-target DB mutation | Operator error with multiple local env files | Data loss on DEV/DEMO | Identity proofs, dry-run/execute, `.claude/hooks`; TEST marker (A1/A2); PILOT marker + private URL file + plan digest (C/D) | Keep explicit approval discipline; PILOT tooling OWNER-only |
 
 ---
 
@@ -1215,7 +1304,12 @@ F-012 when P0.1-C reproduced it in a RED test.
   environment: [UNVERIFIED — NEEDS CONFIRMATION].
 - **Push/deploy status:** P0.1 (A/B1/B2/C + Blueprint records) is pushed:
   origin advanced `6aa8143..7b6fce8` after the owner full suite was green.
-  Nothing is deployed by this work.
+  P0.2, A1–D and the 2026-09-28 documentation record are **local only, not
+  pushed**. The local remote-tracking ref is still `289c545`. Nothing is
+  deployed by this work.
+- **PILOT:** C/D add OWNER-only tooling only. No live PILOT marker install,
+  migrate, bootstrap or catalog bootstrap is recorded in the repository, and
+  none is claimed.
 
 ---
 
@@ -1238,6 +1332,8 @@ F-012 when P0.1-C reproduced it in a RED test.
 | P0.2 | OpenCode | **Complete** — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 6 LOW; `PILOT P0.2 APPROVED FOR CODEX REVIEW` | L-1…L-6 (§16 P0.2): 3 test gaps, 1 design note, 1 stale comment, 1 accepted UX debt | L-1…L-5 deferred as accepted debt (Codex; DEBT-023); L-6 fixed in the Codex correction pass (DEBT-024) | `e3ce087` |
 | P0.2 | Codex | Initial review: **CHANGES REQUIRED** — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 2 LOW. Narrow recheck: **APPROVED** — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT` | LOW #1 stale CASH tender after same-sale correction; LOW #2 stale Blueprint §8/§10.3 | **Corrections applied** (client fix + regression test; Blueprint §8/§10.3); OpenCode L-1…L-5 deferred as accepted debt, L-6 fixed | `e3ce087` |
 | P0.1 aggregate | OWNER full suite (manual; not an agent) | **GREEN** — 55/55 files, 855/855 tests, 0 failed (start 15:07:14 local, 7777.98s) | None; known non-failing `pg` DeprecationWarning (DEBT-009) | — | `59e629f` |
+| A1 → A2 → A3 → C → D | OpenCode (independent, read-only; before the owner gate) | **`APPROVED FOR OWNER FULL SUITE`**: 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW. Reported gates: `node --test` hermetic 300/300; hermetic Vitest `test-db-guard` + `test-cleanup` 157/157; TypeScript clean; ESLint clean | None | — (TEST-H3 confirmed deferred: DEBT-025) | `113c57a` |
+| Validated checkpoint (includes P0.2) | OWNER full suite (manual; not an agent), after a TEST read-only preflight and a fresh TEST backup | **Vitest PASS**: 59/59 files, 1082/1082 tests, 8461.73s; zero failed files and zero failed tests in the final summary. **Wrapper `FULL_SUITE_EXIT`: NOT OBSERVED** (terminal closed after the final Vitest summary) | None | — | `113c57a` |
 
 The owner states that P0.1-A, P0.1-B1 and P0.1-B2 were each independently
 audited (OpenCode and Codex) before their local checkpoints. The verdict
@@ -1258,7 +1354,12 @@ blocks must record reviewer verdicts here at review time.
 | 5 | Local P0.1-C checkpoint | Exact-file commit | 4 | **DONE** (`421b584` + Blueprint record commit) | P0.1 aggregate (A + B1 + B2 + C) complete and audited |
 | 6 | **OWNER ONLY:** final P0.1 full-suite gate | Full suite over the whole P0.1 aggregate | 5 | **DONE — GREEN** (owner, manual): 55/55 files, 855/855 tests, 0 failed, 7777.98s; no separate `VITEST_EXIT` line captured | Owner records a green result here |
 | 7 | Push approved local P0.1 work | Push only if step 6 is green | 6 | **DONE** — normal push `6aa8143..7b6fce8`, verified `0 0` | origin = local HEAD; remote verified; Blueprint updated |
-| 8 | Later Pilot safety gates | **P0.2 — cashier correction / cancellation / payment UX: IN PROGRESS (implemented, aggregate focused GREEN, uncommitted — §16 P0.2). OpenCode DONE (0/0/0/6 LOW); Codex DONE (narrow 0/0/0/0). **Local checkpoint DONE (`e3ce087` + Blueprint record).** Next: **OWNER full suite** → final closeout → push**; P0.3/P0.4 (no repository source) [UNVERIFIED — NEEDS CONFIRMATION]; P0.5 (includes sweeper starvation hardening, per Pilot doc) | 7 | PLANNED | Per verified project decisions; acceptance criteria not yet defined |
+| 8 | Later Pilot safety gates | **P0.2 — cashier correction / cancellation / payment UX: IN PROGRESS (implemented, aggregate focused GREEN, uncommitted — §16 P0.2). OpenCode DONE (0/0/0/6 LOW); Codex DONE (narrow 0/0/0/0). **Local checkpoint DONE (`e3ce087` + Blueprint record).** OWNER full suite: covered at `113c57a` (row 9). Final closeout → push: pending (row 12)**; P0.3/P0.4 (no repository source) [UNVERIFIED — NEEDS CONFIRMATION]; P0.5 (includes sweeper starvation hardening, per Pilot doc) | 7 | PLANNED | Per verified project decisions; acceptance criteria not yet defined |
+| 9 | TEST/PILOT safety tooling A1 → A2 → A3 → C → D | TEST backup/restore/marker, TEST-H1, TEST-H2/H2.1, PILOT bootstrap and catalog tooling | 8 (P0.2 checkpoint) | **DONE (local)**: independent audit `APPROVED FOR OWNER FULL SUITE`; owner full suite PASS at `113c57a` (59/59, 1082/1082; wrapper exit NOT OBSERVED) | Validated; not pushed |
+| 10 | Documentation reconciliation of the validated checkpoint | `AGENTS.md` + this Blueprint | 9 | **DONE (local)**: this documentation commit | Final read-only OpenCode audit |
+| 11 | **Final read-only OpenCode audit** of the documentation record | Independent check that the living docs match git | 10 | NEXT | Audit verdict recorded |
+| 12 | Owner decision: P0.2 closeout and push of `e3ce087`…HEAD | Remote synchronization | 11 | PENDING (owner only) | Normal push; remote verified; Blueprint updated |
+| 13 | TEST-H3 | Deferred TEST-hardening follow-up (DEBT-025) | — | DEFERRED | Scope defined by the owner |
 
 ---
 
@@ -1307,3 +1408,4 @@ Append-only.
 | 2026-09-25 | P0.2 Codex initial review recorded; required corrections applied (uncommitted) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §2, §3, §8, §10.3, §16, §19, §20, §22, §23, §25 | Codex 0/0/0/2 LOW (`PILOT P0.2 CODEX CHANGES REQUIRED`). LOW #1 fixed in the client (tender reset after same-sale correction; RED→GREEN regression; client 28/28; gates PASS). LOW #2: §8 and §10.3 corrected. OpenCode L-1…L-5 deferred (accepted debt), L-6 fixed. No API change; final Codex approval not given; narrow recheck next. |
 | 2026-09-25 | P0.2 Codex narrow recheck recorded (pre-checkpoint) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §2, §3, §16, §20, §22, §23, §25 | Codex narrow recheck 0/0/0/0, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`. OpenCode L-1…L-5 deferred (accepted debt); L-6/DEBT-024 fixed. Not OWNER-full-suite approved; not pushed. |
 | 2026-09-25 | P0.2 local checkpoint | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` | §2, §3, §16, §19, §20, §22, §23, §25 | Exact-file implementation commit `e3ce087` (28 files; Blueprint and `opencode.json` excluded), then this Blueprint record (exact SHA = the containing commit). Codex final 0/0/0/0. Evidence: API 19/19, 393/393; client 28/28 (27/27 before the Codex fix). No tests run during checkpointing. OWNER full suite NOT RUN; not pushed. |
+| 2026-09-28 | Validated checkpoint documentation reconciliation | `113c57adf865268cf2df4add41d8090f5511ed2b` | §2, §3, §4, §11, §12, §15, §16, §19, §20, §21, §22, §23, §25 | Records the A1 → A2 → A3 → C → D chain (order and boundaries verified with git), the independent OpenCode `APPROVED FOR OWNER FULL SUITE` (0/0/0/0), the fresh TEST backup (local size and SHA-256 re-checked, not restored) and the OWNER full suite at `113c57a`: Vitest PASS 59/59 files, 1082/1082 tests, 8461.73s; wrapper `FULL_SUITE_EXIT` NOT OBSERVED. Corrected §11 rules 2–3 (the test harness is DEV-free since A2). DEBT-009 partial; DEBT-016 closed; DEBT-025 (TEST-H3 deferred), DEBT-026 (stale `CLAUDE.md` debt list), DEBT-027 (ProductImage optional, Phase 2D; frozen `05` Storage tension). Documentation only; no database, no tests and no push. `docs/production-v1/*` untouched. |

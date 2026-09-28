@@ -42,6 +42,11 @@ do not assume its structure reflects Mona Jacinta's target architecture.
 - Express + Prisma are the **sole** database boundary. `client/` and `admin/`
   never see `DATABASE_URL`/`TEST_DATABASE_URL` and never talk to Postgres
   directly.
+- A separate **PILOT** database is addressed only by the OWNER-only tooling in
+  `scripts/database/pilot-*.mjs`. It reads its connection from a private file
+  outside the repository, never from `.env*`, `DATABASE_URL` or
+  `TEST_DATABASE_URL`, and has no fallback to TEST or DEV. No runtime code in
+  `api/src`, `client/` or `admin/` imports it.
 
 ---
 
@@ -166,9 +171,18 @@ Development workflow for any non-trivial change:
 
 ## Database safety
 
-- Destructive integration tests run only against **TEST**.
+- Destructive integration tests run only against **TEST**. TEST is proven by
+  its own identity marker (`mona_test_guard.database_identity`), checked
+  read-only before any test file runs. The `api/` test harness never reads or
+  connects to `DATABASE_URL` (DEV). A missing, copied or malformed marker
+  fails closed.
 - **DEV** must never be reset, backfilled, or otherwise mutated without
   explicit human approval.
+- **PILOT** tooling (marker, migrate, bootstrap, catalog bootstrap) is
+  OWNER-only. It refuses a TEST marker and uses an explicit
+  `--dry-run`/`--execute` split. Migrate, bootstrap and catalog bootstrap
+  also require the PILOT marker proof and a plan digest (migrate: a pinned
+  migration payload). Agents never execute it against a live database.
 - Never print, log, or commit `DATABASE_URL`, `TEST_DATABASE_URL`, or any
   other credential. Use `.env.example` with placeholder values only.
 - Never rewrite an already-applied Prisma migration.
@@ -242,12 +256,41 @@ These remain valid regardless of phase:
 
 ## Checkpoint
 
-Phase 1C closed and pushed at `7d0c2b6` ("feat: switch legacy branch scopes
-to UserRoleScope"). Gate at that commit: 37/37 test files, 310/310 tests,
-`VITEST_EXIT=0`. Phase 1D (authorization middleware/services) is implemented
-and pushed (`ca4547569bb3a4b3778a9b6b3ed2c94d8472c52d`). Current work: Phase 1
-global closeout / D2 (deferred-legacy-MANAGER migration semantics and
-canonical-first seed); see `docs/production-v1/08-implementation-roadmap.md`.
+**Validated implementation baseline:**
+`113c57adf865268cf2df4add41d8090f5511ed2b` on `feat/production-v1`
+("feat(db): add PILOT catalog bootstrap tooling"). It is **local only and not
+pushed**. The local remote-tracking ref `origin/feat/production-v1` is still
+`289c545` (P0.1 remote closeout).
+
+Commit chain on top of the P0.2 local checkpoint (`e3ce087` + record
+`a04478c`), in order:
+
+| Step | Commit | Subject |
+| --- | --- | --- |
+| A1 | `8a95f0d1d8b749cb523c703b3a7f30e14d5f6dad` | feat(db): add safe TEST backup and restore tooling |
+| A2 | `41ee88231d309610816d6d01a467158226bcf0ac` | test(db): enforce TEST runtime identity guard (TEST-H1) |
+| A3 | `0d7ac5d179fe8b48a146339b935152ba53df69d9` | test(db): harden TEST cleanup lifecycle (TEST-H2 / H2.1) |
+| C | `3868e5a4b97c7404dd0e65a89b10d7be8a160934` | feat(db): add safe PILOT database bootstrap tooling |
+| D | `113c57adf865268cf2df4add41d8090f5511ed2b` | feat(db): add PILOT catalog bootstrap tooling |
+
+C and D add tooling only. No live PILOT execution is part of C or D, and no
+live restore was run as part of this chain.
+
+- **Independent audit (OpenCode, read-only, before the owner gate):**
+  `APPROVED FOR OWNER FULL SUITE` with 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW.
+- **Owner full suite (run by the OWNER, not an agent) at `113c57a`:** Vitest
+  full-suite result is **PASS**: 59/59 files, 1082/1082 tests, duration
+  8461.73s, zero failed files and zero failed tests in the final Vitest
+  summary. The wrapper's `FULL_SUITE_EXIT` was **not observed**: the terminal
+  closed after the final Vitest summary, before the wrapper printed it. No
+  exit code is recorded. It was preceded by a fresh TEST backup,
+  `test_manual_20260928T130605Z.dump` (SHA-256
+  `d84708690f8be67d14e000f5dea89f18c8f4ffc62122781a87fd7a1ec8d40934`).
+- **Remaining debt:** TEST-H3 is deferred and not implemented. P0.2 closeout
+  and the push are still pending the owner's decision.
+
+Full evidence and ledgers are in
+`docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` (§2, §3, §16, §22).
 
 Do not use this section as a phase diary — update it in place at each
 checkpoint rather than appending history. Full history lives in `git log`.
