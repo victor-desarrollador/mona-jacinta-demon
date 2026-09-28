@@ -7,9 +7,12 @@
     "db:backup": "node scripts/database/backup.mjs",
     "db:restore": "node scripts/database/restore.mjs",
     "demo:reset": "npm --prefix api run db:reset",
-    "demo:seed": "npm --prefix api run db:seed"
+    "demo:seed": "npm --prefix api run db:seed",
+    "deps:check": "dependency-cruiser --config dependency-cruiser.config.cjs api/src api/tests api/scripts client/src admin/src scripts/database"
   },
   "devDependencies": {
-    "pg": "^8.13.1"
+    "dependency-cruiser": "^18.4.0",
+    "pg": "^8.13.1",
+    "typescript": "^5.9.3"
   }
 }

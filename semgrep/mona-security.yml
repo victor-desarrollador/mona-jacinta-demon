@@ -1,0 +1,72 @@
+rules:
+  - id: mona-no-dynamic-code-execution
+    message: Dynamic JavaScript execution is forbidden.
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: window.eval(...)
+      - pattern: new Function(...)
+
+  - id: mona-no-child-process-outside-db-tooling
+    message: OS process execution capability is forbidden outside scripts/database and test harnesses.
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    paths:
+      exclude:
+        - scripts/database/**
+        - api/tests/**
+    pattern-either:
+      - pattern: require("node:child_process")
+      - pattern: require("child_process")
+      - pattern: import("node:child_process")
+      - pattern: import("child_process")
+      - pattern-regex: |-
+          (?m)^[ \t]*import[ \t]+[^;\n]+[ \t]+from[ \t]+["']node:child_process["']
+      - pattern-regex: |-
+          (?m)^[ \t]*import[ \t]+[^;\n]+[ \t]+from[ \t]+["']child_process["']
+      - pattern-regex: |-
+          (?m)^[ \t]*import[ \t]+["']node:child_process["']
+      - pattern-regex: |-
+          (?m)^[ \t]*import[ \t]+["']child_process["']
+
+  - id: mona-no-weak-hash
+    message: MD5 and SHA-1 are forbidden hashing algorithms.
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    pattern-either:
+      - pattern: $CRYPTO.createHash("md5")
+      - pattern: $CRYPTO.createHash("sha1")
+
+  - id: mona-aws-access-key
+    message: AWS access-key-shaped credential found.
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    pattern-regex: |-
+      (^|[^0-9A-Z])AKIA[0-9A-Z]{16}($|[^0-9A-Z])
+
+  - id: mona-github-token
+    message: GitHub token-shaped credential found.
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    pattern-regex: |-
+      (^|[^A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{36,255}($|[^A-Za-z0-9])
+
+  - id: mona-basic-auth-url
+    message: URL contains embedded username/password credentials.
+    languages:
+      - javascript
+      - typescript
+    severity: ERROR
+    pattern-regex: |-
+      https?://[A-Za-z0-9._~%-]+:[A-Za-z0-9._~!$&()*+,;=:%-]+@

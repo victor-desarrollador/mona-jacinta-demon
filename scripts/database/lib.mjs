@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import pg from 'pg';
 
-const { Client } = pg;
+const { Client, escapeIdentifier } = pg;
 
 // Local, gitignored artifact directory (see .gitignore) — never a tracked path.
 export const ARTIFACT_DIR = fileURLToPath(new URL('../../backups/database/', import.meta.url));
@@ -126,7 +126,11 @@ export async function withVerifiedClient(conn, fn, createClient = createVerified
 // discovered dynamically — never a hand-picked/hardcoded subset). Used by both
 // backup.mjs (to capture a logical-state manifest at backup time) and restore.mjs
 // (to verify the restored state matches that manifest exactly).
-export async function tableRowCounts(conn, tables) {
+export async function tableRowCounts(
+  conn,
+  tables,
+  createClient = createVerifiedPgClient,
+) {
   return withVerifiedClient(conn, async (client) => {
     let names = tables;
     if (!names) {
@@ -135,13 +139,28 @@ export async function tableRowCounts(conn, tables) {
       );
       names = result.rows.map((row) => row.tablename);
     }
-    const counts = {};
+
+    // A PostgreSQL identifier cannot be parameterized with $1. Escape every
+    // table name as one identifier and pin it explicitly to the public schema.
+    // A null-prototype object also keeps legitimate names such as "__proto__"
+    // from mutating the result object's prototype.
+    const counts = Object.create(null);
+
     for (const name of names) {
-      const result = await client.query(`SELECT count(*)::int AS n FROM "${name}"`);
+      if (typeof name !== 'string') {
+        throw new TypeError('table name must be a string');
+      }
+
+      const tableIdentifier = escapeIdentifier(name);
+      const sql =
+        'SELECT count(*)::int AS n FROM public.' + tableIdentifier;
+
+      const result = await client.query(sql);
       counts[name] = result.rows[0].n;
     }
+
     return counts;
-  });
+  }, createClient);
 }
 
 export function sha256File(path) {

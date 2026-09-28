@@ -22,7 +22,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { isTestInvocation, main, parseTestBackupArgs } from './backup.mjs';
-import { buildBackupManifest, checkArchiveToc, LIST_CONN, openVerifiedBackup, parseBackupManifest, withVerifiedClient } from './lib.mjs';
+import { buildBackupManifest, checkArchiveToc, LIST_CONN, openVerifiedBackup, parseBackupManifest, tableRowCounts, withVerifiedClient } from './lib.mjs';
 
 const REF = 'syntheticref0000000a';
 const SECRET = 'S3cretPassw0rd';
@@ -168,6 +168,141 @@ test('parse: missing attestation, bad targets, duplicates, unknown and raw URL a
     assert.equal(parsed.ok, false, argv.join(' '));
     assertNoLeak(parsed.error);
   }
+});
+
+
+test('tableRowCounts safely quotes arbitrary public table identifiers', async () => {
+  const cases = [
+    ['User', '"User"'],
+    ['product', '"product"'],
+    ['a"b', '"a""b"'],
+    ['x"; DROP TABLE y; --', '"x""; DROP TABLE y; --"'],
+    ['public.User', '"public.User"'],
+    ['has space', '"has space"'],
+    ['semi;colon', '"semi;colon"'],
+    ['ñandú', '"ñandú"'],
+    ['__proto__', '"__proto__"'],
+    ['constructor', '"constructor"'],
+    ['a$b', '"a$b"'],
+  ];
+
+  const queries = [];
+  const client = {
+    async connect() {},
+    async end() {},
+    async query(sql) {
+      queries.push(sql);
+      return { rows: [{ n: 7 }] };
+    },
+  };
+
+  const counts = await tableRowCounts(
+    {},
+    cases.map(([name]) => name),
+    () => client,
+  );
+
+  assert.equal(Object.getPrototypeOf(counts), null);
+
+  for (const [name] of cases) {
+    assert.equal(Object.hasOwn(counts, name), true, name);
+    assert.equal(counts[name], 7, name);
+  }
+
+  assert.deepEqual(
+    queries,
+    cases.map(
+      ([, quoted]) =>
+        `SELECT count(*)::int AS n FROM public.${quoted}`,
+    ),
+  );
+});
+
+test('tableRowCounts applies the same quoting to dynamically discovered tables', async () => {
+  const queries = [];
+  let call = 0;
+
+  const client = {
+    async connect() {},
+    async end() {},
+    async query(sql) {
+      queries.push(sql);
+      call += 1;
+
+      if (call === 1) {
+        return {
+          rows: [
+            { tablename: 'User' },
+            { tablename: 'x"; DROP TABLE y; --' },
+            { tablename: '__proto__' },
+          ],
+        };
+      }
+
+      return { rows: [{ n: call }] };
+    },
+  };
+
+  const counts = await tableRowCounts({}, undefined, () => client);
+
+  assert.equal(
+    queries[0],
+    "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename",
+  );
+  assert.equal(
+    queries[1],
+    'SELECT count(*)::int AS n FROM public."User"',
+  );
+  assert.equal(
+    queries[2],
+    'SELECT count(*)::int AS n FROM public."x""; DROP TABLE y; --"',
+  );
+  assert.equal(
+    queries[3],
+    'SELECT count(*)::int AS n FROM public."__proto__"',
+  );
+
+  assert.equal(Object.getPrototypeOf(counts), null);
+  assert.equal(Object.hasOwn(counts, '__proto__'), true);
+});
+
+test('tableRowCounts fails closed on a non-string table name', async () => {
+  let tableQueries = 0;
+
+  const client = {
+    async connect() {},
+    async end() {},
+    async query() {
+      tableQueries += 1;
+      return { rows: [{ n: 1 }] };
+    },
+  };
+
+  await assert.rejects(
+    tableRowCounts({}, [123], () => client),
+    /table name must be a string/,
+  );
+
+  assert.equal(tableQueries, 0);
+});
+
+test('tableRowCounts accepts an explicit empty table list without querying tables', async () => {
+  let queries = 0;
+
+  const client = {
+    async connect() {},
+    async end() {},
+    async query() {
+      queries += 1;
+      return { rows: [{ n: 1 }] };
+    },
+  };
+
+  const counts = await tableRowCounts({}, [], () => client);
+
+  assert.equal(queries, 0);
+  assert.equal(Object.getPrototypeOf(counts), null);
+  assert.deepEqual(Object.keys(counts), []);
 });
 
 // --- DEV-free ---------------------------------------------------------------

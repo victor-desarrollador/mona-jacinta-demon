@@ -21,6 +21,10 @@ type FakePoolRecord = {
   queries: string[];
 };
 
+type FsModule = typeof import('node:fs');
+type PrismaAdapterPgModule = typeof import('@prisma/adapter-pg');
+type DotenvModule = typeof import('dotenv');
+
 const state = vi.hoisted(() => ({
   envText: '',
   databases: new Map<string, unknown>(),
@@ -30,7 +34,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock('node:fs', async (importOriginal) => {
-  const real = await importOriginal<typeof import('node:fs')>();
+  const real = await importOriginal<FsModule>();
   const readFileSync = ((path: unknown, options?: unknown) => {
     if (String(path).endsWith('.env.development')) {
       return options ? state.envText : Buffer.from(state.envText);
@@ -76,7 +80,7 @@ vi.mock('pg', () => {
 });
 
 vi.mock('@prisma/adapter-pg', async (importOriginal) => {
-  const real = await importOriginal<typeof import('@prisma/adapter-pg')>();
+  const real = await importOriginal<PrismaAdapterPgModule>();
   const PrismaPg = function (this: unknown, ...args: unknown[]) {
     state.adapterArgs.push(args);
     return new (real.PrismaPg as unknown as new (...a: unknown[]) => object)(...args);
@@ -86,7 +90,7 @@ vi.mock('@prisma/adapter-pg', async (importOriginal) => {
 
 // tests/setup.ts loads .env.development through dotenv.config; serve the fake file.
 vi.mock('dotenv', async (importOriginal) => {
-  const real = await importOriginal<typeof import('dotenv')>();
+  const real = await importOriginal<DotenvModule>();
   const config = (() => {
     Object.assign(process.env, real.parse(state.envText));
     return { parsed: {} };
