@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hermetic:
+    name: Hermetic checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            api/package-lock.json
+            client/package-lock.json
+            admin/package-lock.json
+
+      - name: Verify runtime
+        run: |
+          test "$(node --version)" = "v24.20.0"
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install API dependencies
+        run: npm --prefix api ci
+
+      - name: Install client dependencies
+        run: npm --prefix client ci
+
+      - name: Install admin dependencies
+        run: npm --prefix admin ci
+
+      - name: Generate Prisma client
+        env:
+          NODE_ENV: production
+          DATABASE_URL: "postgresql://ci:ci@127.0.0.1:1/mona_ci"
+        run: npm --prefix api run db:generate
+
+      - name: API lint
+        run: npm --prefix api run lint
+
+      - name: API typecheck
+        run: npm --prefix api run typecheck
+
+      - name: Client lint
+        run: npm --prefix client run lint
+
+      - name: Client tests
+        run: npm --prefix client test -- --reporter=dot
+
+      - name: Admin lint
+        run: npm --prefix admin run lint
+
+      - name: Admin build
+        run: npm --prefix admin run build
+
+      - name: Hermetic database tooling tests
+        run: node --test scripts/database/*.test.mjs
+
+      - name: Dependency boundaries
+        run: npm run deps:check
+
+      - name: Setup Python for Semgrep
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13.5"
+
+      - name: Install pinned Semgrep
+        run: python -m pip install semgrep==1.178.0
+
+      - name: Verify Semgrep version
+        run: test "$(semgrep --version)" = "1.178.0"
+
+      - name: Global security scan
+        shell: bash
+        run: |
+          mapfile -t TARGETS < <(
+            git ls-files -- \
+              api/src \
+              api/scripts \
+              api/tests \
+              client/src \
+              admin/src \
+              scripts \
+              .claude/hooks \
+            | grep -Ev '^api/src/generated/' \
+            | grep -E '\.(ts|tsx|js|jsx|mjs|cjs)$' \
+            | sort -u
+          )
+
+          test "${#TARGETS[@]}" -gt 0
+
+          if printf '%s\n' "${TARGETS[@]}" | grep -Fxq 'opencode.json'; then
+            echo "opencode.json must never enter the security target set"
+            exit 1
+          fi
+
+          if printf '%s\n' "${TARGETS[@]}" | grep -Eq '^api/src/generated/'; then
+            echo "generated Prisma must not enter the security target set"
+            exit 1
+          fi
+
+          semgrep scan \
+            --error \
+            --config p/secrets \
+            --config semgrep/mona-security.yml \
+            "${TARGETS[@]}"
+
+      - name: Express security scan
+        shell: bash
+        run: |
+          mapfile -t TARGETS < <(
+            git ls-files -- api/src |
+              grep -Ev '^api/src/generated/' |
+              grep -E '\.(ts|tsx|js|jsx|mjs|cjs)$' |
+              sort -u
+          )
+
+          test "${#TARGETS[@]}" -gt 0
+
+          semgrep scan \
+            --error \
+            --config p/expressjs \
+            "${TARGETS[@]}"
