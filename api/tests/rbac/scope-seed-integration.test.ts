@@ -106,7 +106,7 @@ describe('Demo seed/reset lifecycle provisions canonical Production UserRoleScop
   }
 
   beforeAll(async () => {
-    db = await safely(() => openSeedDatabase('test'));
+    db = await safely(() => openSeedDatabase('automated-test'));
   }, 120000);
 
   afterAll(async () => {

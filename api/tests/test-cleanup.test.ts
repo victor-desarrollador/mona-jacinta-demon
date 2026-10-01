@@ -808,6 +808,228 @@ describe('teardown never assumes setup succeeded (real suite)', () => {
   });
 });
 
+// Task 4: suite tests acquire their seed database through the automated selector
+// (`openSeedDatabase('automated-test', ...)`), never by pinning hosted TEST, so
+// MONA_TEST_DATABASE_TARGET=local cannot reach hosted TEST from the suite. Only a
+// direct string-literal first argument is judged: aliases and indirection are
+// already rejected by the cleanup contract above, and a computed target (the
+// globalSetup routing of its once-resolved selector) is out of this rule's reach.
+// The hermetic file is exempt because it exercises the explicit targets on purpose.
+type HostedTargetScan = { violations: string[]; calls: number };
+
+function hostedTargetAcquisitions({ path, text }: Source): HostedTargetScan {
+  const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const result: HostedTargetScan = { violations: [], calls: 0 };
+  if (hermetic(path, source)) return result;
+  each(source, (node) => {
+    if (!isIdent(node, 'openSeedDatabase') || inType(node)) return;
+    const call = node.parent;
+    if (!ts.isCallExpression(call) || call.expression !== node) return;
+    const decl = resolve(node);
+    if (decl && !ts.isImportSpecifier(decl) && !ts.isBindingElement(decl)) return; // a local mock, not the acquirer
+    result.calls += 1;
+    const target = call.arguments[0] && unwrap(call.arguments[0]);
+    if (target && ts.isStringLiteralLike(target) && target.text === 'test') {
+      const line = source.getLineAndCharacterOfPosition(call.getStart(source)).line + 1;
+      result.violations.push(`${path}:${line} openSeedDatabase('test') must be openSeedDatabase('automated-test', ...)`);
+    }
+  });
+  return result;
+}
+
+describe('integration test database acquisition follows automated target routing', () => {
+  const hosted: Array<[string, string]> = [
+    ['single-quoted hosted target', SEED(`afterAll(async () => {\n    if (db) await safely(() => db.close());\n  });`)],
+    ['double-quoted hosted target', `import { openSeedDatabase } from '../scripts/demo-database.js';\nexport const x = () => openSeedDatabase("test");\n`],
+    ['template-literal hosted target', 'import { openSeedDatabase } from \'../scripts/demo-database.js\';\nexport const x = () => openSeedDatabase(`test`);\n'],
+    ['multiline hosted target with a source argument', `import { openSeedDatabase } from '../scripts/demo-database.js';\nexport const x = () =>\n  openSeedDatabase(\n    'test',\n    process.env,\n  );\n`],
+    ['hosted target inside a wrapper helper', `import { openSeedDatabase } from '../scripts/demo-database.js';\nexport async function open() {\n  return openSeedDatabase('test');\n}\n`],
+  ];
+  const allowed: Array<[string, string]> = [
+    ['automated target', `import { openSeedDatabase } from '../scripts/demo-database.js';\nexport const x = () => openSeedDatabase('automated-test');\n`],
+    ['automated target with a source argument', `import { openSeedDatabase } from '../scripts/demo-database.js';\nexport const x = () => openSeedDatabase('automated-test', process.env);\n`],
+    ['hosted call only in a comment', `import { openSeedDatabase } from '../scripts/demo-database.js';\n// openSeedDatabase('test')\nexport const x = () => openSeedDatabase('automated-test');\n`],
+    ['hosted call only in a fixture string', `export const fixture = "openSeedDatabase('test')";\n`],
+    ['local mock shadowing the acquirer name', `import { vi } from 'vitest';\nconst openSeedDatabase = vi.fn();\nopenSeedDatabase('test');\n`],
+    ['computed target (globalSetup routing shape)', `import { openSeedDatabase } from '../scripts/demo-database.js';\nexport const x = (t: string) => openSeedDatabase(t === 'local' ? 'local-test' : 'test', process.env);\n`],
+  ];
+  const fixtureTargets = (text: string) => hostedTargetAcquisitions({ path: 'tests/fixture.test.ts', text });
+
+  it.each(hosted)('rejects: %s', (_name, text) => {
+    expect(fixtureTargets(text).violations).toHaveLength(1);
+  });
+
+  it.each(allowed)('accepts: %s', (_name, text) => {
+    expect(fixtureTargets(text).violations).toEqual([]);
+  });
+
+  it('the hermetic file may exercise the explicit hosted target', () => {
+    const mocks = `import { vi } from 'vitest';\nvi.mock('pg', () => ({}));\nvi.mock('dotenv', () => ({}));\nvi.mock('node:fs', () => ({}));\n`;
+    const call = `import { openSeedDatabase } from '../scripts/demo-database.js';\nexport const x = () => openSeedDatabase('test');\n`;
+    expect(hostedTargetAcquisitions({ path: 'tests/test-db-guard.test.ts', text: mocks + call }).violations).toEqual([]);
+    expect(hostedTargetAcquisitions({ path: 'tests/other.test.ts', text: mocks + call }).violations).toHaveLength(1);
+  });
+
+  it('no suite test pins hosted TEST', () => {
+    const results = testSources().map(hostedTargetAcquisitions);
+    expect(results.reduce((n, r) => n + r.calls, 0)).toBeGreaterThan(0);
+    expect(results.flatMap((r) => r.violations)).toEqual([]);
+  });
+});
+
+// Task 4: suite tests consume a prepared database; they never prepare it. No
+// executable code under tests/** may launch the Prisma CLI's migration/schema
+// commands (`migrate *`, `db *`): that belongs to the explicit prepare layer.
+// A child_process API is recognised through its static import (named, renamed,
+// namespace or default); its command must be static literals (process.execPath
+// counts as `node`), otherwise it fails closed because the scanner cannot prove
+// it is not Prisma. Loading child_process dynamically, or using an API as a
+// value, fails closed too. Other spawners (execa, zx, worker_threads) are not
+// recognised.
+const CHILD_PROCESS_MODULES = new Set(['child_process', 'node:child_process']);
+const CHILD_PROCESS_APIS = new Set(['exec', 'execSync', 'execFile', 'execFileSync', 'spawn', 'spawnSync', 'fork']);
+const SHELL_APIS = new Set(['exec', 'execSync']);
+const PRISMA_OWNED_BY_PREPARE = new Set(['migrate', 'db']);
+
+const moduleOf = (decl: ts.Node): string | undefined => {
+  let n: ts.Node | undefined = decl;
+  while (n && !ts.isImportDeclaration(n)) n = n.parent;
+  return n && ts.isStringLiteral(n.moduleSpecifier) ? n.moduleSpecifier.text : undefined;
+};
+
+const isPrismaEntry = (token: string): boolean =>
+  token === 'prisma' || token.startsWith('prisma@') || token.endsWith('/prisma') || token.endsWith('prisma/build/index.js');
+
+// The command a child_process call runs, as whitespace-split static tokens, or
+// null when any part of it is not a static literal.
+function commandTokens(api: string, args: ts.NodeArray<ts.Expression>): string[] | null {
+  const words = (node: ts.Expression): string[] | null => {
+    const x = unwrap(node);
+    if (ts.isStringLiteralLike(x)) return x.text.split(/\s+/).filter(Boolean);
+    if (ts.isPropertyAccessExpression(x) && isIdent(x.expression, 'process') && x.name.text === 'execPath') return ['node'];
+    return null;
+  };
+  const [command, argv] = args;
+  const head = command ? words(command) : null;
+  if (!head) return null;
+  if (SHELL_APIS.has(api) || !argv || ts.isObjectLiteralExpression(unwrap(argv))) return head;
+  const list = unwrap(argv);
+  if (!ts.isArrayLiteralExpression(list)) return null;
+  const tokens = [...head];
+  for (const element of list.elements) {
+    const w = ts.isSpreadElement(element) ? null : words(element);
+    if (!w) return null;
+    tokens.push(...w);
+  }
+  return tokens;
+}
+
+function prismaCliLaunches({ path, text }: Source): string[] {
+  // Every static or dynamic child_process load names the module literally.
+  if (!text.includes('child_process')) return [];
+  const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const bound = new Set<string>();
+  for (const s of source.statements) {
+    if (!ts.isImportDeclaration(s) || !s.importClause || !CHILD_PROCESS_MODULES.has(moduleOf(s) ?? '')) continue;
+    const { name, namedBindings } = s.importClause;
+    if (name) bound.add(name.text);
+    if (namedBindings && ts.isNamespaceImport(namedBindings)) bound.add(namedBindings.name.text);
+    if (namedBindings && ts.isNamedImports(namedBindings)) for (const el of namedBindings.elements) bound.add(el.name.text);
+  }
+  const violations: string[] = [];
+  const at = (node: ts.Node, why: string) =>
+    violations.push(`${path}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1} ${why}`);
+
+  const classify = (call: ts.CallExpression, api: string) => {
+    const tokens = commandTokens(api, call.arguments);
+    if (!tokens) return at(call, `${api} with a non-literal command/argv (cannot prove it is not the Prisma CLI)`);
+    const entry = tokens.findIndex(isPrismaEntry);
+    if (entry === -1) return;
+    const rest = tokens.slice(entry + 1);
+    const sub = rest.findIndex((t) => PRISMA_OWNED_BY_PREPARE.has(t));
+    if (sub !== -1) at(call, `${api} launches \`prisma ${rest.slice(sub, sub + 2).join(' ')}\` (${tokens[entry]})`);
+  };
+
+  each(source, (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword || isIdent(node.expression, 'require')) &&
+      node.arguments[0] &&
+      ts.isStringLiteralLike(node.arguments[0]) &&
+      CHILD_PROCESS_MODULES.has(node.arguments[0].text)
+    ) {
+      return at(node, 'child_process loaded dynamically (import it statically so its commands can be checked)');
+    }
+    if (!ts.isIdentifier(node) || !bound.has(node.text) || isMemberName(node) || isDeclarationName(node) || inType(node)) return;
+    const decl = resolve(node);
+    if (!decl || !CHILD_PROCESS_MODULES.has(moduleOf(decl) ?? '')) return;
+    const p = node.parent;
+    if (ts.isImportSpecifier(decl)) {
+      const api = (decl.propertyName ?? decl.name).text;
+      if (!CHILD_PROCESS_APIS.has(api)) return;
+      if (!ts.isCallExpression(p) || p.expression !== node) return at(node, `child_process ${api} used as a value`);
+      return classify(p, api);
+    }
+    // Namespace or default import: only `ns.api(...)` is recognised.
+    if (ts.isPropertyAccessExpression(p) && p.expression === node) {
+      const api = p.name.text;
+      if (!CHILD_PROCESS_APIS.has(api)) return;
+      if (!ts.isCallExpression(p.parent) || p.parent.expression !== p) return at(p, `child_process ${api} used as a value`);
+      return classify(p.parent, api);
+    }
+    at(node, 'child_process module used other than through a direct `ns.api(...)` call');
+  });
+  return violations;
+}
+
+describe('suite tests never invoke the Prisma migration CLI', () => {
+  const NAMED = `import { exec, execFile, execFileSync, execSync, spawn, spawnSync } from 'node:child_process';\n`;
+  const launches: Array<[string, string]> = [
+    ['seed.test shape: execFileSync(process.execPath, [prisma/build/index.js, migrate, deploy])', `${NAMED}execFileSync(\n  process.execPath,\n  ['./node_modules/prisma/build/index.js', 'migrate', 'deploy'],\n  { cwd: '.', stdio: 'pipe' },\n);\n`],
+    ['async execFile of the entry point', `${NAMED}execFile(process.execPath, ['node_modules/prisma/build/index.js', 'migrate', 'deploy'], () => undefined);\n`],
+    ['spawnSync of .bin/prisma', `${NAMED}spawnSync('node_modules/.bin/prisma', ['migrate', 'deploy']);\n`],
+    ['spawn migrate status', `${NAMED}spawn('./node_modules/.bin/prisma', ['migrate', 'status']);\n`],
+    ['execSync through npx', `${NAMED}execSync('npx prisma migrate deploy');\n`],
+    ['exec through pnpm (migrate reset)', `${NAMED}exec('pnpm prisma migrate reset --force');\n`],
+    ['template-literal shell command (migrate resolve)', `${NAMED}execSync(\`npx prisma migrate resolve --applied x\`);\n`],
+    ['multiline argv with flags before the subcommand (migrate dev)', `${NAMED}spawnSync('npx', [\n  'prisma',\n  '--schema',\n  'prisma/schema.prisma',\n  'migrate',\n  'dev',\n]);\n`],
+    ['db push through a renamed import', `import { execFileSync as run } from 'child_process';\nrun('npx', ['prisma', 'db', 'push']);\n`],
+    ['namespace import', `import * as cp from 'node:child_process';\ncp.execFileSync('npx', ['prisma', 'migrate', 'deploy']);\n`],
+    ['default import', `import cp from 'child_process';\ncp.spawnSync('npx', ['prisma', 'migrate', 'deploy']);\n`],
+    ['call inside a skipped test', `import { it } from 'vitest';\n${NAMED}it.skip('t', () => { execSync('npx prisma migrate deploy'); });\n`],
+    ['spread argv (fail-closed)', `${NAMED}const args = ['migrate', 'deploy'];\nexecFileSync('npx', ['prisma', ...args]);\n`],
+    ['wrapper with non-literal command (fail-closed)', `${NAMED}export function run(cmd: string, argv: string[]) { return execFileSync(cmd, argv); }\n`],
+    ['template literal with a substitution (fail-closed)', `${NAMED}const sub = 'deploy';\nexecSync(\`npx prisma migrate \${sub}\`);\n`],
+    ['API used as a value', `${NAMED}const run = execFileSync;\nrun('npx', ['prisma', 'migrate', 'deploy']);\n`],
+    ['element access on the namespace', `import * as cp from 'node:child_process';\ncp['execFileSync']('npx', ['prisma', 'migrate', 'deploy']);\n`],
+    ['dynamic import of child_process', `export async function x() {\n  const { execFileSync } = await import('node:child_process');\n  execFileSync('npx', ['prisma', 'migrate', 'deploy']);\n}\n`],
+  ];
+  const allowed: Array<[string, string]> = [
+    ['command only in a comment', `${NAMED}// execFileSync(process.execPath, ['./node_modules/prisma/build/index.js', 'migrate', 'deploy'])\nexport const x = 1;\n`],
+    ['command only in a fixture string', `${NAMED}export const fixture = "execSync('npx prisma migrate deploy')";\n`],
+    ['unrelated process whose argv mentions migrate', `${NAMED}execFileSync('git', ['log', '--grep', 'migrate']);\n`],
+    ['unrelated node script named like a migration', `${NAMED}spawnSync(process.execPath, ['scripts/migrate-legacy-data.mjs'], { stdio: 'pipe' });\n`],
+    ['non-migration Prisma command', `${NAMED}execFileSync('npx', ['prisma', 'validate']);\n`],
+    ['local fake shadowing the imported API', `${NAMED}export function f() {\n  const execFileSync = (..._args: unknown[]) => undefined;\n  execFileSync('npx', ['prisma', 'migrate', 'deploy']);\n}\n`],
+    ['type-only child_process import', `import type { ChildProcess } from 'node:child_process';\nexport let child: ChildProcess | undefined;\n`],
+  ];
+  const fixtureLaunches = (text: string) => prismaCliLaunches({ path: 'tests/fixture.test.ts', text });
+
+  it.each(launches)('rejects: %s', (_name, text) => {
+    expect(fixtureLaunches(text)).toHaveLength(1);
+  });
+
+  it.each(allowed)('accepts: %s', (_name, text) => {
+    expect(fixtureLaunches(text)).toEqual([]);
+  });
+
+  it('no suite code launches a Prisma migration/schema command', () => {
+    const sources = testSources();
+    expect(sources.length).toBeGreaterThan(40);
+    expect(sources.flatMap(prismaCliLaunches)).toEqual([]);
+  });
+});
+
 describe('Prisma test-client cleanup semantics (installed @prisma/client + adapter-pg, no network)', () => {
   // Same ownership shape as createTestPrismaClient: the adapter gets a pool
   // configuration and creates/ends its own pg.Pool. Port 9 on loopback inside a

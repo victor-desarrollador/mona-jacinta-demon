@@ -35,24 +35,45 @@ export const rolePermissions = {
   MANAGER: permissions.filter((p) => p !== 'user.manage' && p !== 'audit.view'),
   ADMIN: [...permissions],
 } satisfies Record<string, readonly string[]>;
+
+// The canonical demo seed's private sources. Each canonical literal and each
+// id() derivation appears only here, inside CANONICAL_DEMO_SEED's construction;
+// populate()/convergeCanonicalScopes() consume the descriptor, never these.
 // User-approved demo metadata; these numbers are not fiscal invoice numbers.
-export const branches = [
-  { code: 'CEN', name: 'Centro', pointOfSaleNumber: 1 },
-  { code: 'YB', name: 'Yerba Buena', pointOfSaleNumber: 2 },
-  { code: 'TV', name: 'Tafí Viejo', pointOfSaleNumber: 3 },
-  { code: 'BAN', name: 'Banda', pointOfSaleNumber: 4 },
-  { code: 'CON', name: 'Concepción', pointOfSaleNumber: 5 },
-  { code: 'DEP', name: 'Depósito Central', pointOfSaleNumber: 6 },
+const demoBranches = (
+  [
+    ['CEN', 'Centro', 1],
+    ['YB', 'Yerba Buena', 2],
+    ['TV', 'Tafí Viejo', 3],
+    ['BAN', 'Banda', 4],
+    ['CON', 'Concepción', 5],
+    ['DEP', 'Depósito Central', 6],
+  ] as const
+).map(([code, name, pointOfSaleNumber], i) => ({
+  id: id(300 + i),
+  code,
+  name,
+  pointOfSaleNumber,
+  address: `Domicilio demo — ${name}`,
+}));
+// D2.2: explicit canonical identities with explicit, per-user ids — never
+// derived from array position, so removing/adding an identity can never
+// renumber another — each with its one canonical Production assignment.
+// id(601) is RESERVED for the historical manager01 identity (legacy MANAGER,
+// D2.1: DEFERRED) and is never created or reused. No canonical user gets a
+// legacy UserBranchRole row: normal seed is Production-native.
+const demoUsers = [
+  { id: id(600), name: 'admin', roleCode: ROLE_CODES.ADMIN, branchCode: null },
+  { id: id(602), name: 'seller01', roleCode: ROLE_CODES.SELLER, branchCode: 'CEN' },
+  { id: id(603), name: 'cashier01', roleCode: ROLE_CODES.CASHIER, branchCode: 'CEN' },
+  { id: id(605), name: 'warehouse01', roleCode: ROLE_CODES.WAREHOUSE, branchCode: 'DEP' },
 ] as const;
-// D2.2: explicit canonical identities (see populate()). id(601) is reserved
-// for the historical manager01 identity and deliberately absent; id(604) is
-// the canonical OWNER, provisioned separately below.
-const canonicalUsers = [
-  { id: id(600), name: 'admin' },
-  { id: id(602), name: 'seller01' },
-  { id: id(603), name: 'cashier01' },
-  { id: id(605), name: 'warehouse01' },
-] as const;
+const demoUserRows = demoUsers.map((user) => ({ ...user, email: `${user.name}@demo.local` }));
+// The canonical bootstrap OWNER (Phase 1D.4.2): upserted by email, created once.
+const demoOwner = { id: id(604), name: 'Owner Demo', email: 'owner01@demo.local' };
+const demoCategory = { id: id(800), name: 'Indumentaria' };
+const demoBrand = { id: id(801), name: 'Mona Jacinta' };
+
 const products = [
   {
     name: 'Remera Básica',
@@ -86,6 +107,158 @@ const products = [
   },
 ] as const;
 
+// Task 4: the canonical demo seed as pure, deeply frozen data — the final ids
+// and business values populate() writes, so consumers (the LOCAL_TEST baseline
+// verifier) never re-derive seed formulas. Runtime artifacts are excluded:
+// passwordHash (random bcrypt salt over resolveSeedPassword()), the OWNER's
+// database-default timestamps, generated UserRoleScope ids, and Location ids
+// (runtime-resolved: Location.id == Branch.id). The Production RBAC catalog
+// (OWNER/WAREHOUSE roles, Production permissions and grants) is owned by
+// src/modules/rbac/catalog.service.ts and is not repeated here; `roles` and
+// `permissions` are the legacy Demo V2 rows this file writes.
+export type DemoSeedCanonical = {
+  readonly permissions: readonly { readonly id: string; readonly code: string }[];
+  readonly roles: readonly {
+    readonly id: string;
+    readonly code: string;
+    readonly name: string;
+    readonly permissionCodes: readonly string[];
+  }[];
+  readonly branches: readonly {
+    readonly id: string;
+    readonly code: string;
+    readonly name: string;
+    readonly pointOfSaleNumber: number;
+    readonly address: string;
+  }[];
+  readonly saleNumberCounters: readonly { readonly id: string; readonly branchId: string; readonly nextValue: bigint }[];
+  readonly cashRegisters: readonly { readonly id: string; readonly branchId: string; readonly name: string }[];
+  // createdAt/updatedAt pinned by the seed for these users (ISO text, not a Date).
+  readonly userTimestamp: string;
+  readonly users: readonly { readonly id: string; readonly name: string; readonly email: string }[];
+  // Upserted by email and created only once; its timestamps are database defaults.
+  readonly owner: { readonly id: string; readonly name: string; readonly email: string };
+  readonly category: { readonly id: string; readonly name: string };
+  readonly brand: { readonly id: string; readonly name: string };
+  readonly products: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly slug: string;
+    readonly description: string;
+    readonly categoryId: string;
+    readonly brandId: string;
+    readonly isActive: boolean;
+  }[];
+  readonly variants: readonly {
+    readonly id: string;
+    readonly productId: string;
+    readonly color: string;
+    readonly size: string;
+    readonly sku: string;
+    readonly barcode: string;
+    readonly price: bigint;
+    readonly costPrice: bigint;
+    readonly isActive: boolean;
+  }[];
+  readonly inventory: readonly {
+    readonly id: string;
+    readonly variantId: string;
+    readonly branchId: string;
+    readonly physical: bigint;
+    readonly reserved: bigint;
+  }[];
+  // The seed never writes a legacy UserBranchRole row.
+  readonly userBranchRoles: readonly never[];
+  // Final assignments; LOCATION ones resolve to the Location whose id is the
+  // named Branch's id once Locations exist (seed #1 writes only COMPANY ones).
+  readonly assignments: readonly {
+    readonly userId: string;
+    readonly email: string;
+    readonly roleCode: RoleCode;
+    readonly scopeKind: 'COMPANY' | 'LOCATION';
+    readonly branchCode: 'CEN' | 'DEP' | null;
+  }[];
+};
+
+function freezeDeep<T>(value: T): T {
+  if (typeof value === 'object' && value !== null) {
+    for (const nested of Object.values(value)) freezeDeep(nested);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+const demoCatalog = products.map((product, i) => {
+  const row = {
+    id: id(900 + i),
+    name: product.name,
+    slug: product.slug,
+    description: 'Producto de demostración',
+    categoryId: demoCategory.id,
+    brandId: demoBrand.id,
+    isActive: true,
+  };
+  const variants = product.options.map(([color, size, sku], j) => ({
+    id: id(1000 + i * 10 + j),
+    productId: row.id,
+    color,
+    size,
+    sku,
+    barcode: `DEMO-${sku}`,
+    price: product.price,
+    costPrice: product.costPrice,
+    isActive: true,
+  }));
+  return { row, variants };
+});
+
+export const CANONICAL_DEMO_SEED: DemoSeedCanonical = freezeDeep({
+  permissions: permissions.map((code, i) => ({ id: id(100 + i), code })),
+  roles: Object.entries(rolePermissions).map(([code, grants], i) => ({
+    id: id(200 + i),
+    code,
+    name: code,
+    permissionCodes: [...grants],
+  })),
+  branches: demoBranches,
+  saleNumberCounters: demoBranches.map((branch, i) => ({ id: id(400 + i), branchId: branch.id, nextValue: 1n })),
+  cashRegisters: demoBranches.map((branch, i) => ({ id: id(500 + i), branchId: branch.id, name: 'Caja principal' })),
+  userTimestamp: timestamp.toISOString(),
+  users: demoUserRows.map(({ id: userId, name, email }) => ({ id: userId, name, email })),
+  owner: demoOwner,
+  category: demoCategory,
+  brand: demoBrand,
+  products: demoCatalog.map((entry) => entry.row),
+  variants: demoCatalog.flatMap((entry) => entry.variants),
+  inventory: demoCatalog.flatMap((entry, i) =>
+    entry.variants.flatMap((variant, j) =>
+      demoBranches.map((branch, k) => ({
+        id: id(2000 + i * 100 + j * 10 + k),
+        variantId: variant.id,
+        branchId: branch.id,
+        physical: k === 5 ? 50n : 20n,
+        reserved: 0n,
+      })),
+    ),
+  ),
+  userBranchRoles: [],
+  // D2.2 canonical Production assignment per canonical identity: COMPANY
+  // assignments are location-independent; LOCATION assignments name their
+  // canonical Location by stable Branch code, never by array position.
+  assignments: [{ ...demoOwner, roleCode: ROLE_CODES.OWNER, branchCode: null }, ...demoUserRows].map((user) => ({
+    userId: user.id,
+    email: user.email,
+    roleCode: user.roleCode,
+    scopeKind: user.branchCode === null ? ('COMPANY' as const) : ('LOCATION' as const),
+    branchCode: user.branchCode,
+  })),
+});
+
+// Compatibility projection (code, name, pointOfSaleNumber) of the canonical Branches.
+export const branches: readonly { readonly code: string; readonly name: string; readonly pointOfSaleNumber: number }[] =
+  freezeDeep(CANONICAL_DEMO_SEED.branches.map(({ code, name, pointOfSaleNumber }) => ({ code, name, pointOfSaleNumber })));
+
+
 async function assertNoOperations(tx: Prisma.TransactionClient) {
   const counts = await Promise.all([
     tx.sale.count(),
@@ -99,17 +272,18 @@ async function assertNoOperations(tx: Prisma.TransactionClient) {
 }
 
 async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
-  const roles = Object.entries(rolePermissions);
-  for (const [i, permission] of permissions.entries()) {
-    const data = { id: id(100 + i), code: permission };
+  const seed = CANONICAL_DEMO_SEED;
+  const permissionIdByCode = new Map(seed.permissions.map((permission) => [permission.code, permission.id]));
+  for (const permission of seed.permissions) {
+    const data = { id: permission.id, code: permission.code };
     await tx.permission.upsert({
       where: { id: data.id },
       create: data,
       update: data,
     });
   }
-  for (const [i, [code, grants]] of roles.entries()) {
-    const data = { id: id(200 + i), code, name: code };
+  for (const role of seed.roles) {
+    const data = { id: role.id, code: role.code, name: role.name };
     await tx.role.upsert({
       where: { id: data.id },
       create: data,
@@ -117,51 +291,41 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
     });
     await tx.rolePermission.deleteMany({ where: { roleId: data.id } });
     await tx.rolePermission.createMany({
-      data: grants.map((code) => ({
+      data: role.permissionCodes.map((code) => ({
         roleId: data.id,
-        permissionId: id(100 + permissions.findIndex((p) => p === code)),
+        permissionId: permissionIdByCode.get(code)!,
       })),
     });
   }
-  for (const [i, branch] of branches.entries()) {
-    const data = {
-      id: id(300 + i),
-      ...branch,
-      address: `Domicilio demo — ${branch.name}`,
-    };
+  for (const branch of seed.branches) {
+    const data = { ...branch };
     await tx.branch.upsert({
       where: { id: data.id },
       create: data,
       update: data,
     });
-    const counter = { id: id(400 + i), branchId: data.id, nextValue: 1n };
-    await tx.saleNumberCounter.upsert({
-      where: { id: counter.id },
-      create: counter,
-      update: counter,
-    });
-    const register = {
-      id: id(500 + i),
-      branchId: data.id,
-      name: 'Caja principal',
-    };
-    await tx.cashRegister.upsert({
-      where: { id: register.id },
-      create: register,
-      update: register,
-    });
+    for (const counter of seed.saleNumberCounters.filter((c) => c.branchId === branch.id)) {
+      const row = { ...counter };
+      await tx.saleNumberCounter.upsert({
+        where: { id: row.id },
+        create: row,
+        update: row,
+      });
+    }
+    for (const register of seed.cashRegisters.filter((r) => r.branchId === branch.id)) {
+      const row = { ...register };
+      await tx.cashRegister.upsert({
+        where: { id: row.id },
+        create: row,
+        update: row,
+      });
+    }
   }
-  // D2.2: canonical demo identities with explicit, per-user ids — never
-  // derived from array position, so removing/adding an identity can never
-  // renumber another. id(601) is RESERVED for the historical manager01
-  // identity (legacy MANAGER, D2.1: DEFERRED) and is never created or reused
-  // here. id(604) is the canonical OWNER, provisioned below. No canonical
-  // user gets a legacy UserBranchRole row: normal seed is Production-native.
-  for (const user of canonicalUsers) {
+  // D2.2: canonical demo identities from the descriptor (id(601) stays
+  // reserved there); the OWNER is provisioned separately below.
+  for (const user of seed.users) {
     const data = {
-      id: user.id,
-      name: user.name,
-      email: `${user.name}@demo.local`,
+      ...user,
       passwordHash,
       isActive: true,
       createdAt: timestamp,
@@ -174,8 +338,8 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
       update: data,
     });
   }
-  const category = { id: id(800), name: 'Indumentaria' };
-  const brand = { id: id(801), name: 'Mona Jacinta' };
+  const category = { ...seed.category };
+  const brand = { ...seed.brand };
   await tx.category.upsert({
     where: { id: category.id },
     create: category,
@@ -186,50 +350,26 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
     create: brand,
     update: brand,
   });
-  for (const [i, product] of products.entries()) {
-    const data = {
-      id: id(900 + i),
-      name: product.name,
-      slug: product.slug,
-      description: 'Producto de demostración',
-      categoryId: category.id,
-      brandId: brand.id,
-      isActive: true,
-    };
+  for (const product of seed.products) {
+    const data = { ...product };
     await tx.product.upsert({
       where: { id: data.id },
       create: data,
       update: data,
     });
-    for (const [j, [color, size, sku]] of product.options.entries()) {
-      const variant = {
-        id: id(1000 + i * 10 + j),
-        productId: data.id,
-        color,
-        size,
-        sku,
-        barcode: `DEMO-${sku}`,
-        price: product.price,
-        costPrice: product.costPrice,
-        isActive: true,
-      };
+    for (const variant of seed.variants.filter((v) => v.productId === product.id)) {
+      const row = { ...variant };
       await tx.productVariant.upsert({
-        where: { id: variant.id },
-        create: variant,
-        update: variant,
+        where: { id: row.id },
+        create: row,
+        update: row,
       });
-      for (const [k] of branches.entries()) {
-        const inventory = {
-          id: id(2000 + i * 100 + j * 10 + k),
-          variantId: variant.id,
-          branchId: id(300 + k),
-          physical: k === 5 ? 50n : 20n,
-          reserved: 0n,
-        };
+      for (const inventory of seed.inventory.filter((inv) => inv.variantId === variant.id)) {
+        const stock = { ...inventory };
         await tx.inventory.upsert({
-          where: { id: inventory.id },
-          create: inventory,
-          update: inventory,
+          where: { id: stock.id },
+          create: stock,
+          update: stock,
         });
       }
     }
@@ -253,13 +393,13 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
   // OWNER; a later, already-bootstrapped OWNER can still grant the OWNER
   // role to a different (non-self) user through that endpoint.
   await tx.user.upsert({
-    where: { email: 'owner01@demo.local' },
+    where: { email: seed.owner.email },
     // Canonical id, matching every other seeded entity in this file — a
     // deterministic id.uuid() default would otherwise mint a fresh row on
     // every full clear()/populate() cycle, breaking the file's own
     // "second resetDemo from scratch produces the exact same canonical ids"
     // invariant (see seed-integration.test.ts).
-    create: { id: id(604), name: 'Owner Demo', email: 'owner01@demo.local', passwordHash },
+    create: { ...seed.owner, passwordHash },
     update: {},
   });
 
@@ -275,22 +415,6 @@ async function populate(tx: Prisma.TransactionClient, passwordHash: string) {
   await convergeCanonicalScopes(tx);
 }
 
-// D2.2 canonical Production assignment per canonical identity, keyed by
-// the canonical email (the OWNER is upserted by email above). COMPANY
-// assignments are location-independent; LOCATION assignments name their
-// canonical Location by stable code, never by array position.
-const canonicalAssignments: readonly {
-  email: string;
-  roleCode: RoleCode;
-  locationCode: 'CEN' | 'DEP' | null;
-}[] = [
-  { email: 'owner01@demo.local', roleCode: ROLE_CODES.OWNER, locationCode: null },
-  { email: 'admin@demo.local', roleCode: ROLE_CODES.ADMIN, locationCode: null },
-  { email: 'seller01@demo.local', roleCode: ROLE_CODES.SELLER, locationCode: 'CEN' },
-  { email: 'cashier01@demo.local', roleCode: ROLE_CODES.CASHIER, locationCode: 'CEN' },
-  { email: 'warehouse01@demo.local', roleCode: ROLE_CODES.WAREHOUSE, locationCode: 'DEP' },
-];
-
 // Converges each canonical user's UserRoleScope rows to exactly its one
 // canonical assignment: an already-matching row is kept (generated
 // UserRoleScope ids stay stable across reseeds), anything else for that
@@ -305,7 +429,8 @@ const canonicalAssignments: readonly {
 // mapping); a missing or inconsistent one fails the whole seed/reset closed
 // rather than silently producing partial authorization.
 async function convergeCanonicalScopes(tx: Prisma.TransactionClient) {
-  const roleCodes = [...new Set(canonicalAssignments.map((a) => a.roleCode))];
+  const assignments = CANONICAL_DEMO_SEED.assignments;
+  const roleCodes = [...new Set(assignments.map((a) => a.roleCode))];
   const roles = await tx.role.findMany({ where: { code: { in: roleCodes } } });
   const roleIdByCode = new Map(roles.map((role) => [role.code, role.id]));
   const missingRoles = roleCodes.filter((code) => !roleIdByCode.has(code));
@@ -313,14 +438,15 @@ async function convergeCanonicalScopes(tx: Prisma.TransactionClient) {
     throw new Error(`Production Role(s) ${missingRoles.join(', ')} missing after catalog sync`);
 
   const users = await tx.user.findMany({
-    where: { email: { in: canonicalAssignments.map((a) => a.email) } },
+    where: { email: { in: assignments.map((a) => a.email) } },
     select: { id: true, email: true },
   });
   const userIdByEmail = new Map(users.map((user) => [user.email, user.id]));
 
+  const locationCodes = [...new Set(assignments.flatMap((a) => (a.branchCode === null ? [] : [a.branchCode])))];
   const locationIdByCode = new Map<string, string>();
   if ((await tx.location.count()) > 0) {
-    for (const code of ['CEN', 'DEP'] as const) {
+    for (const code of locationCodes) {
       const [location, branch] = await Promise.all([
         tx.location.findUnique({ where: { code } }),
         tx.branch.findUnique({ where: { code } }),
@@ -334,17 +460,17 @@ async function convergeCanonicalScopes(tx: Prisma.TransactionClient) {
     }
   }
 
-  for (const assignment of canonicalAssignments) {
+  for (const assignment of assignments) {
     const userId = userIdByEmail.get(assignment.email)!;
     const roleId = roleIdByCode.get(assignment.roleCode)!;
     const target =
-      assignment.locationCode === null
+      assignment.branchCode === null
         ? { roleId, scopeKind: 'COMPANY' as const, locationId: null }
-        : locationIdByCode.has(assignment.locationCode)
+        : locationIdByCode.has(assignment.branchCode)
           ? {
               roleId,
               scopeKind: 'LOCATION' as const,
-              locationId: locationIdByCode.get(assignment.locationCode)!,
+              locationId: locationIdByCode.get(assignment.branchCode)!,
             }
           : null;
     const existing = await tx.userRoleScope.findMany({ where: { userId } });

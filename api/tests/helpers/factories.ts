@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '../../src/generated/prisma/client.js';
+import { TEST_COMPANY_BOOTSTRAP } from '../../scripts/test-company-bootstrap.js';
 
 let sequence = 0;
 const unique = (prefix: string) => `${prefix}-${++sequence}`;
@@ -10,13 +11,12 @@ const unique = (prefix: string) => `${prefix}-${++sequence}`;
 // beforeAll reads whatever Company row(s) exist and fails closed the moment a
 // second one is present. So factory Locations must attach to the SAME Company
 // row Phase 1A's organization backfill already established for TEST — the one
-// tests/organization/company-location-backfill.test.ts converges to via its
-// own TEST_COMPANY_BOOTSTRAP (id/cuit fixed there). This is deliberately not
-// scripts/backfill-company-location.ts's DEMO_COMPANY_BOOTSTRAP (that script
-// uses the demo cuit unconditionally, a separate pre-existing gap, out of
-// scope here) — this cuit is what the TEST database's canonical Company
-// actually carries.
-const CANONICAL_TEST_COMPANY_CUIT = '00-11111111-1';
+// tests/organization/company-location-backfill.test.ts converges to via the
+// shared TEST_COMPANY_BOOTSTRAP (id/cuit owned by scripts/test-company-bootstrap.ts).
+// This is deliberately not scripts/backfill-company-location.ts's
+// DEMO_COMPANY_BOOTSTRAP (that script uses the demo cuit unconditionally, a
+// separate pre-existing gap, out of scope here) — this cuit is what the TEST
+// database's canonical Company actually carries.
 
 // Exported so tests/helpers/factory-cleanup.ts (and regression tests) can
 // target exactly the Locations this module creates, without touching the
@@ -41,7 +41,7 @@ export const FACTORY_LOCATION_CODE_PREFIX = 'TEST-FACTORY-LOC-';
 // FACTORY_LOCATION_CODE_PREFIX-marked Location at the start and end of each
 // Vitest invocation — see tests/helpers/factory-cleanup.ts.
 export async function ensureTestLocation(prisma: PrismaClient, branchId: string) {
-  const company = await prisma.company.findUnique({ where: { cuit: CANONICAL_TEST_COMPANY_CUIT } });
+  const company = await prisma.company.findUnique({ where: { cuit: TEST_COMPANY_BOOTSTRAP.cuit } });
   if (!company) {
     throw new Error(
       'Canonical TEST Company (Phase 1A) not found. Run `npm run db:backfill-company-location -- --target=test` ' +

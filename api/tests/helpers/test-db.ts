@@ -1,7 +1,10 @@
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, Prisma } from '../../src/generated/prisma/client.js';
 import {
+  localTestPoolConfig,
+  openProvenLocalTestPool,
   openProvenTestPool,
+  resolveAutomatedTestTarget,
   testPoolConfig,
 } from '../../scripts/demo-database.js';
 
@@ -19,19 +22,50 @@ async function proveTestDatabase() {
   return { target, fail };
 }
 
-export async function assertTestDatabaseIsolation(): Promise<void> {
-  await proveTestDatabase();
+// Task 4: LOCAL_TEST from process.env only (never the hosted TEST file target),
+// proven by its own marker; the helper closes the proof pool it opened.
+async function proveLocalTestDatabase() {
+  const { pool, target, fail } = await openProvenLocalTestPool(1);
+  try {
+    await pool.end();
+  } catch {
+    throw fail('cleanup');
+  }
+  return { target, fail };
 }
 
-// The adapter receives a pool *configuration*, so it alone creates the TEST pool
+// The one target decision: the selector is resolved before any pool exists (an
+// unknown value throws here) and 'local' never falls back to hosted TEST. The
+// adapter config is built from the same target object the proof ran against,
+// lazily, so the isolation check alone never builds one.
+async function proveSelectedTestDatabase() {
+  if (resolveAutomatedTestTarget(process.env) === 'local') {
+    const { target, fail } = await proveLocalTestDatabase();
+    return {
+      adapterConfig: () => localTestPoolConfig(target.url, 5),
+      failClientCreate: () => fail('client-create'),
+    };
+  }
+  const { target, fail } = await proveTestDatabase();
+  return {
+    adapterConfig: () => testPoolConfig(target.url, 5),
+    failClientCreate: (error: unknown) => fail('client-create', error),
+  };
+}
+
+export async function assertTestDatabaseIsolation(): Promise<void> {
+  await proveSelectedTestDatabase();
+}
+
+// The adapter receives a pool *configuration*, so it alone creates the target pool
 // on connect and ends it on every $disconnect() (a repeat $disconnect is a no-op).
 // No helper-created pool outlives this call.
 export async function createTestPrismaClient(): Promise<PrismaClient> {
-  const { target, fail } = await proveTestDatabase();
+  const { adapterConfig, failClientCreate } = await proveSelectedTestDatabase();
   let prisma: PrismaClient;
   try {
     prisma = new PrismaClient({
-      adapter: new PrismaPg(testPoolConfig(target.url, 5), {
+      adapter: new PrismaPg(adapterConfig(), {
         onPoolError: () => {
           /* Never emit credentials from pg errors. */
         },
@@ -42,7 +76,7 @@ export async function createTestPrismaClient(): Promise<PrismaClient> {
       log: [],
     });
   } catch (error) {
-    throw fail('client-create', error);
+    throw failClientCreate(error);
   }
   provenClients.add(prisma);
   return prisma;

@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resetDemo } from '../../prisma/seed.js';
 import { openSeedDatabase } from '../../scripts/demo-database.js';
+import { TEST_COMPANY_BOOTSTRAP } from '../../scripts/test-company-bootstrap.js';
 import {
   backfillLocationsFromBranches,
   ensureCompany,
   locationTypeForBranchCode,
   verifyBackfill,
-  type CompanyBootstrap,
 } from '../../src/modules/organization/organization.service.js';
 
 // Only this file needs a real database. Migration 20260912182432_add_company_location
@@ -15,15 +15,10 @@ import {
 describe('Company/Location backfill (Phase 1A)', () => {
   let db: Awaited<ReturnType<typeof openSeedDatabase>>;
 
-  // Distinct from the CLI's DEMO_COMPANY_BOOTSTRAP (different id/cuit), proving
-  // the domain service takes bootstrap data from its caller rather than
-  // encoding any fixed demo identity itself.
-  const TEST_COMPANY_BOOTSTRAP: CompanyBootstrap = {
-    id: '00000000-0000-4000-9100-000000000001',
-    name: 'Mona Jacinta (test)',
-    cuit: '00-11111111-1',
-    address: 'Dirección legal test — pendiente de dato real',
-  };
+  // TEST_COMPANY_BOOTSTRAP (scripts/test-company-bootstrap.ts) is distinct from
+  // the CLI's DEMO_COMPANY_BOOTSTRAP (different id/cuit), proving the domain
+  // service takes bootstrap data from its caller rather than encoding any
+  // fixed demo identity itself.
 
   async function safely<T>(action: () => Promise<T>): Promise<T> {
     try {
@@ -34,7 +29,7 @@ describe('Company/Location backfill (Phase 1A)', () => {
   }
 
   beforeAll(async () => {
-    db = await safely(() => openSeedDatabase('test'));
+    db = await safely(() => openSeedDatabase('automated-test'));
     // Deterministic known-good Branch state, independent of any other test
     // file's leftover data — same convention as api/tests/seed.test.ts.
     await safely(() => resetDemo(db.prisma));

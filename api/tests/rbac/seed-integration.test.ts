@@ -88,7 +88,7 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
   }
 
   beforeAll(async () => {
-    db = await safely(() => openSeedDatabase('test'));
+    db = await safely(() => openSeedDatabase('automated-test'));
     await safely(() => resetDemo(db.prisma));
     await ensureLocationBootstrap();
   }, 120000);

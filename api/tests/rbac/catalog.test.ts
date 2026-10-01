@@ -41,7 +41,7 @@ describe('Production RBAC catalog bootstrap (Phase 1B)', () => {
   }
 
   beforeAll(async () => {
-    db = await safely(() => openSeedDatabase('test'));
+    db = await safely(() => openSeedDatabase('automated-test'));
     await safely(() => resetDemo(db.prisma));
   }, 120000);
 

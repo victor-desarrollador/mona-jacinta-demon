@@ -93,9 +93,19 @@ This document does **not**:
 - **Migration commands must target the intended database explicitly.** Never rely on
   shell-ambient state (a previously-exported variable, a default `.env` Prisma might pick up
   implicitly) to decide the target. `api/prisma.config.ts` is the single place that resolves
-  `DATABASE_URL` for the Prisma CLI; do not introduce a second, competing resolution path.
+  `DATABASE_URL` for the Prisma CLI (DEV/DEMO, TEST and PILOT workflows); do not introduce a
+  second, competing resolution path for `DATABASE_URL`.
   Running any `prisma migrate *` command against TEST or a future production target must be
   a deliberate, explicit choice (explicit env selection), never an accident of shell state.
+- **LOCAL_TEST is an explicit, isolated exception (Task 4).** The disposable local test
+  database has its own Prisma config, `api/prisma.local-test.config.ts`, which must always be
+  selected explicitly with `--config prisma.local-test.config.ts` — never through Prisma's
+  implicit config discovery (which does not pick that filename). It reads only
+  `LOCAL_TEST_DATABASE_URL`, accepts only the exact canonical loopback target
+  (`postgres[ql]://mona_local_test:<password>@127.0.0.1:5432/mona_local_test`, no query or
+  fragment, no TLS options), passes that same string to Prisma unchanged, and never falls back
+  to `DATABASE_URL` or `TEST_DATABASE_URL`. It validates only the target's shape; the database's
+  identity must be proven separately before any migration command runs against it.
 - **No network calls from inside a migration or its verification step** beyond the database
   connection itself (see §20). Migrations must be deterministic and reproducible offline.
 

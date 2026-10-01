@@ -31,7 +31,7 @@ describe('UserRoleScope resolver (Phase 1C SWITCH)', () => {
   }
 
   beforeAll(async () => {
-    db = await safely(() => openSeedDatabase('test'));
+    db = await safely(() => openSeedDatabase('automated-test'));
     await safely(() => resetDemo(db.prisma));
     const existingCompany = await db.prisma.company.findFirst();
     const bootstrap: CompanyBootstrap = existingCompany

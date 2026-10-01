@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
 import { compare } from 'bcryptjs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { seedDemo, resetDemo } from '../prisma/seed.js';
@@ -56,7 +55,21 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
     }
   }
   beforeAll(async () => {
-    db = await safely(() => openSeedDatabase('test'));
+    db = await safely(() => openSeedDatabase('automated-test'));
+    const prepared = await safely(async () => {
+      const tables = await db.pool.query<{ name: string }>(
+        "SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'",
+      );
+      return tables.rows.length > 0;
+    });
+    // Task 4: the suite consumes a prepared database and never prepares it
+    // (no Prisma migration from tests). Thrown outside safely() so the reason
+    // is not replaced by the generic suppressed-details message.
+    if (!prepared) {
+      throw new Error(
+        'Test database schema is not prepared; prepare the test database before running the suite',
+      );
+    }
     await safely(async () => {
       const migrations = fileURLToPath(
         new URL('../prisma/migrations/', import.meta.url),
@@ -79,27 +92,6 @@ describe('deterministic seed on dedicated TEST_DATABASE_URL', () => {
             .digest('hex'),
         ]),
       );
-      const tables = await db.pool.query<{ name: string }>(
-        "SELECT tablename AS name FROM pg_tables WHERE schemaname = 'public'",
-      );
-      if (tables.rows.length === 0) {
-        // Minimum seed-test prerequisite: apply the existing, reviewed migrations to
-        // the proven TEST target. No shadow, reset, new migration, or schema drop.
-        execFileSync(
-          process.execPath,
-          ['./node_modules/prisma/build/index.js', 'migrate', 'deploy'],
-          {
-            cwd: fileURLToPath(new URL('../', import.meta.url)),
-            env: {
-              ...process.env,
-              NODE_ENV: 'test',
-              DATABASE_URL: db.targetUrl,
-            },
-            stdio: 'pipe',
-            timeout: 60000,
-          },
-        );
-      }
       const history = await db.pool.query<{
         migration_name: string;
         checksum: string;
