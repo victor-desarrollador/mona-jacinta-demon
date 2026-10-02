@@ -8,8 +8,9 @@ Related: `docs/architecture/mona-demo-v2.md` §18, `scripts/check-databases.mjs`
 
 ## 1. Two physically isolated projects
 
-Mona Jacinta Demo V2 uses **hosted Supabase PostgreSQL** only — no local or Docker
-PostgreSQL exists anywhere in this repository. Supabase plays the same infrastructure
+Mona Jacinta Demo V2 uses **hosted Supabase PostgreSQL** for DEV/DEMO and TEST. The one
+exception is the disposable loopback LOCAL_TEST test database (Task 4, §6), which runs
+only the automated suite and only when explicitly selected. Supabase plays the same infrastructure
 role MongoDB Atlas played in the legacy Tesis project:
 
 ```text
@@ -21,7 +22,7 @@ Two physically separate Supabase projects are provisioned:
 | Environment variable | Conceptual Supabase project | Purpose |
 | -------------------- | --------------------------- | ------- |
 | `DATABASE_URL`       | `mona-jacinta-demo`         | Development and deterministic demo data |
-| `TEST_DATABASE_URL`  | `mona-jacinta-test`         | Vitest + Supertest integration tests; destructive `TRUNCATE ... RESTART IDENTITY CASCADE` targets only this database |
+| `TEST_DATABASE_URL`  | `mona-jacinta-test`         | Vitest + Supertest integration tests (default target); destructive `TRUNCATE ... RESTART IDENTITY CASCADE` targets only this database or, when explicitly selected, LOCAL_TEST (§6) — never DEV |
 
 The two projects must always remain physically isolated. They are proven distinct by a
 multi-signal, fail-closed identity check (see §§5–6) before any destructive operation is
@@ -166,7 +167,9 @@ treated as working.
 
 ## 6. Destructive-test safety: fail-closed isolation
 
-Integration tests run against `TEST_DATABASE_URL` only. Before any destructive operation
+By default, integration tests run against `TEST_DATABASE_URL`; the only other permitted
+target is the explicitly selected LOCAL_TEST database (see "LOCAL_TEST exception" below).
+Before any destructive operation
 (`TRUNCATE ... RESTART IDENTITY CASCADE`), the test bootstrap runs the **same**
 multi-signal, fail-closed isolation check used by Task 2 and reused verbatim by Task 6.
 
@@ -194,3 +197,19 @@ The check, in order:
    identity signals used (e.g. `username`, `inet_server_addr`). It never prints passwords,
    full connection URLs, query parameters, full project refs, full project-qualified
    usernames, or the values of the identity signals themselves.
+
+### LOCAL_TEST exception (Task 4)
+
+The automated suite may instead target a disposable local test database, but only when
+`MONA_TEST_DATABASE_TARGET=local` is set explicitly; with the variable absent or `test` it
+targets hosted TEST, and any other value fails closed. LOCAL_TEST is reached only through
+`LOCAL_TEST_DATABASE_URL`, which must be exactly
+`postgres[ql]://mona_local_test:<password>@127.0.0.1:5432/mona_local_test` (loopback, no
+query or TLS options), and is proven read-only before any destructive operation by its own
+marker (`mona_local_test_guard.database_identity`, matching `LOCAL_TEST_DATABASE_MARKER_ID`)
+on PostgreSQL 17+. There is no fallback between LOCAL_TEST, TEST and DEV, and DEV is never a
+destructive test target. LOCAL_TEST is provisioned per run by the CI job `local-postgres`
+(Docker `postgres:17` on loopback) or by the owner locally; its marker and baseline are
+installed only by `scripts/database/local-test-marker.mjs` and
+`scripts/database/local-test-prepare.mjs`. A LOCAL_TEST run does not replace the hosted
+TEST owner gate.

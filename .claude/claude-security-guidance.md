@@ -45,7 +45,7 @@ Never infer a Production role heuristically from a legacy role.
 
 ## Database safety
 
-- Destructive integration testing is TEST-only.
+- Destructive integration testing runs only against a marker-proven test database: hosted TEST (the default) or LOCAL_TEST (only when explicitly selected with `MONA_TEST_DATABASE_TARGET=local`). No fallback between LOCAL_TEST, TEST and DEV; DEV is never a destructive test target.
 - Never reset, backfill, truncate, or destructively mutate DEV without explicit human approval.
 - Never expose database credentials, JWT secrets, or other secrets.
 - Never rewrite an already-applied migration.

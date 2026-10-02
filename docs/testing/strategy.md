@@ -55,9 +55,15 @@ Authoritative architectural details are documented in [`../architecture/mona-dem
 
 ## Running the Suite Locally / Reproducibility
 
-The integration suite talks to real, physically separate, hosted Supabase PostgreSQL
-projects (`DATABASE_URL`, `TEST_DATABASE_URL`) — there is no local or Docker PostgreSQL
-in this repository (see `docs/development/database.md`). Before running tests:
+By default the integration suite talks to real, physically separate, hosted Supabase
+PostgreSQL projects (`DATABASE_URL`, `TEST_DATABASE_URL`). The only local PostgreSQL is
+the disposable LOCAL_TEST database, proven by its own identity marker before any
+destructive operation and used only when explicitly selected with
+`MONA_TEST_DATABASE_TARGET=local` (the CI job `local-postgres` starts an ephemeral Docker
+`postgres:17` on loopback for each run; an owner can provision one locally; see
+`docs/development/database.md` §6, "LOCAL_TEST exception"); it never falls back to TEST
+or DEV and does not replace the hosted TEST owner gate. For the default hosted run,
+before running tests:
 
 1. Populate the untracked `.env.development` at the repository root with distinct
    Supabase Session-pooler URLs for `DATABASE_URL` and `TEST_DATABASE_URL` (see

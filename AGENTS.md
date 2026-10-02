@@ -171,11 +171,21 @@ Development workflow for any non-trivial change:
 
 ## Database safety
 
-- Destructive integration tests run only against **TEST**. TEST is proven by
-  its own identity marker (`mona_test_guard.database_identity`), checked
-  read-only before any test file runs. The `api/` test harness never reads or
-  connects to `DATABASE_URL` (DEV). A missing, copied or malformed marker
-  fails closed.
+- Destructive integration tests run only against a marker-proven test
+  database, checked read-only before any test file runs:
+  - hosted **TEST** — the default target, proven by its own identity marker
+    (`mona_test_guard.database_identity`);
+  - **LOCAL_TEST** — only when explicitly selected with
+    `MONA_TEST_DATABASE_TARGET=local`: the disposable loopback database
+    `mona_local_test@127.0.0.1:5432/mona_local_test` (CI job `local-postgres`,
+    or an owner-provisioned local PostgreSQL 17+), proven by
+    `mona_local_test_guard.database_identity`.
+  Any other selector value fails closed, and neither target ever falls back to
+  the other or to DEV. The `api/` test harness never reads or connects to
+  `DATABASE_URL` (DEV); DEV is never a destructive test target. A missing,
+  copied or malformed marker fails closed. The LOCAL_TEST marker and baseline
+  are installed only by `scripts/database/local-test-marker.mjs` and
+  `scripts/database/local-test-prepare.mjs` (`--dry-run`/`--check`/`--execute`).
 - **DEV** must never be reset, backfilled, or otherwise mutated without
   explicit human approval.
 - **PILOT** tooling (marker, migrate, bootstrap, catalog bootstrap) is

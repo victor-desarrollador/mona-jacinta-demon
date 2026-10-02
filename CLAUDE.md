@@ -68,9 +68,14 @@ Full suite (only at the final gate, never during exploration):
 NODE_ENV=test npx vitest run --reporter=verbose
 ```
 
-**The integration suite is deliberately slow** — it runs against hosted
-Supabase TEST over the network (~100ms/round-trip), not a local database.
-At checkpoint `7d0c2b6`: 37 files, 310 tests, ~3521s (~58m41s). A `vitest run`
+**The integration suite is deliberately slow** — by default it runs against
+hosted Supabase TEST over the network (~100ms/round-trip), proven by its
+marker. At checkpoint `7d0c2b6`: 37 files, 310 tests, ~3521s (~58m41s). The same
+suite can target the disposable loopback LOCAL_TEST database instead (proven by
+its own marker), but only when explicitly selected with
+`MONA_TEST_DATABASE_TARGET=local` (the CI
+`local-postgres` job does this); it never falls back between LOCAL_TEST, TEST
+or DEV. A LOCAL_TEST run does not replace the hosted TEST owner gate. A `vitest run`
 with the default reporter piped to a log can look hung for many minutes
 while genuinely still running — that is expected, not a bug. Use
 `--reporter=verbose` whenever you need visible progress.
