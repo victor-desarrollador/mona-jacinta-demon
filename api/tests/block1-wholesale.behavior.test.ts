@@ -815,9 +815,9 @@ describe('Block 1 fix round — wholesale price confidentiality (N26)', () => {
     const req = requestFor(randomUUID(), [assignment('SELLER', null)]);
     const results = [
       await listProducts(db, { page: 1, limit: 20, isActive: true } as never),
-      await getProduct(db, randomUUID(), []),
+      await getProduct(db, randomUUID(), req.auth),
       await listVariants(db, req, { page: 1, limit: 20, isActive: true } as never),
-      await getVariant(db, randomUUID(), []),
+      await getVariant(db, randomUUID(), req.auth),
     ];
     expect(selects.length).toBeGreaterThanOrEqual(4);
     expect(serialize(selects)).not.toContain('wholesalePrice');

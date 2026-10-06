@@ -24,6 +24,7 @@ import { COMPANY_SCOPE_REQUIRED_FOR_ADMIN } from './permissions.js';
 // `effectiveLocationIds` (authorization-context.ts) must never become a
 // second authorization authority feeding these checks.
 type Ctx = Pick<Express.AuthContext, 'assignments'>;
+type LocationFilterCtx = Pick<Express.AuthContext, 'assignments' | 'effectiveLocationIds'>;
 
 // Reuses the existing, already-approved frozen domain list unchanged — no
 // new list, no new permission (rbac/permissions.ts's
@@ -97,6 +98,22 @@ export function hasPermissionAtLocation(ctx: Ctx, permission: string, locationId
   if (!locationId) return false;
   if (isOwner(ctx)) return true;
   return ctx.assignments.some((assignment) => assignmentQualifies(assignment, permission, locationId));
+}
+
+// Display/filter helper for list/detail projections that need all locations
+// where one permission actually qualifies. This deliberately uses
+// effectiveLocationIds only as the bounded list of real active locations; each
+// id is still re-checked through hasPermissionAtLocation so a permission from
+// one assignment cannot compose with another assignment's location.
+export function authorizedLocationIds(ctx: LocationFilterCtx, permission: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const locationId of ctx.effectiveLocationIds) {
+    if (seen.has(locationId)) continue;
+    seen.add(locationId);
+    if (hasPermissionAtLocation(ctx, permission, locationId)) result.push(locationId);
+  }
+  return result;
 }
 
 // Block 1 (2026-10-02): a business-ACTOR check, layered ON TOP of the normal

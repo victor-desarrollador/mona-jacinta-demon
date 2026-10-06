@@ -1,6 +1,7 @@
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { authorizedLocationIds } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import type { Request } from 'express';
 import type { ProductQuery } from './dto/product.dto.js';
@@ -95,8 +96,9 @@ export async function listProducts(database: ProductDatabase, query: ProductQuer
 export async function getProduct(
   database: ProductDatabase,
   id: string,
-  branchIds: string[],
+  auth?: Express.AuthContext,
 ) {
+  const branchIds = auth ? authorizedLocationIds(auth, PRODUCTION_PERMISSIONS.INVENTORY_VIEW) : [];
   const product = await database.product.findUnique({
     where: { id },
     select: {
@@ -130,7 +132,9 @@ export async function listVariants(
 ) {
   const branchId = query.branchId;
   if (branchId) assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.INVENTORY_VIEW, branchId);
-  const branchIds = req.auth?.effectiveLocationIds ?? [];
+  const branchIds = req.auth
+    ? authorizedLocationIds(req.auth, PRODUCTION_PERMISSIONS.INVENTORY_VIEW)
+    : [];
   const where = {
     isActive: query.isActive,
     ...(query.productId ? { productId: query.productId } : {}),
@@ -169,8 +173,9 @@ export async function listVariants(
 export async function getVariant(
   database: ProductDatabase,
   id: string,
-  branchIds: string[],
+  auth?: Express.AuthContext,
 ) {
+  const branchIds = auth ? authorizedLocationIds(auth, PRODUCTION_PERMISSIONS.INVENTORY_VIEW) : [];
   const variant = await database.productVariant.findUnique({
     where: { id },
     select: {

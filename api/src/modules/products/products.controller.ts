@@ -36,7 +36,7 @@ export function createProductsController(database: PrismaClient = defaultPrisma)
         product: await getProduct(
           database,
           String(req.params.id),
-          req.auth?.effectiveLocationIds ?? [],
+          req.auth,
         ),
       });
     }) as RequestHandler,
@@ -48,7 +48,7 @@ export function createProductsController(database: PrismaClient = defaultPrisma)
         variant: await getVariant(
           database,
           String(req.params.id),
-          req.auth?.effectiveLocationIds ?? [],
+          req.auth,
         ),
       });
     }) as RequestHandler,

@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from '../../generated/prisma/client.js';
-import { assertBranchAccess, assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { authorizedLocationIds } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import {
@@ -7,7 +8,7 @@ import {
   loadReleasableExpiredHolds,
 } from '../sales/reservation-holds.js';
 
-type RequestLike = Parameters<typeof assertBranchAccess>[0];
+type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
 type BackofficeDatabase = PrismaClient;
 
 export type ListSalesFilters = {
@@ -28,10 +29,10 @@ export type InventoryFilters = {
 
 function scopeBranches(req: RequestLike, branchId?: string) {
   if (branchId) {
-    assertBranchAccess(req, branchId);
+    assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.REPORT_VIEW, branchId);
     return [branchId];
   }
-  return req.auth?.effectiveLocationIds ?? [];
+  return req.auth ? authorizedLocationIds(req.auth, PRODUCTION_PERMISSIONS.REPORT_VIEW) : [];
 }
 
 function todayBounds(now = new Date()) {

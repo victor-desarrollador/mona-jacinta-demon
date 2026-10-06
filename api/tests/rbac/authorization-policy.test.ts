@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  authorizedLocationIds,
   hasBranchAccess,
   hasPermission,
   hasPermissionAtLocation,
@@ -212,6 +213,37 @@ describe('hasPermissionAtLocation (Phase 1D.2) — the cross-assignment composit
     // adminLocation's own locationId IS 'X' and it DOES hold PRICE_MANAGE in
     // its permissions array — matching the location must not rescue it.
     expect(hasPermissionAtLocation(ctx([adminLocation]), 'PRICE_MANAGE', 'X')).toBe(false);
+  });
+});
+
+describe('authorizedLocationIds (Phase 1D.3.4 read filters)', () => {
+  it('keeps only effective locations where the same assignment grants the permission', () => {
+    const inventorySeller = { ...seller, permissions: ['INVENTORY_VIEW'] };
+    expect(authorizedLocationIds({
+      ...ctx([inventorySeller, warehouse]),
+      effectiveLocationIds: ['A', 'B'],
+    }, 'INVENTORY_VIEW')).toEqual(['A']);
+  });
+
+  it('lets a qualifying COMPANY assignment cover every active effective location', () => {
+    expect(authorizedLocationIds({
+      ...ctx([adminCompany]),
+      effectiveLocationIds: ['A', 'B'],
+    }, 'SALE_VIEW')).toEqual(['A', 'B']);
+  });
+
+  it('uses OWNER implicit authority without depending on explicit grants', () => {
+    expect(authorizedLocationIds({
+      ...ctx([owner]),
+      effectiveLocationIds: ['A', 'B'],
+    }, 'INVENTORY_VIEW')).toEqual(['A', 'B']);
+  });
+
+  it('deduplicates effective locations and fails closed for empty assignments', () => {
+    expect(authorizedLocationIds({
+      ...ctx([]),
+      effectiveLocationIds: ['A', 'A', 'B'],
+    }, 'INVENTORY_VIEW')).toEqual([]);
   });
 });
 
