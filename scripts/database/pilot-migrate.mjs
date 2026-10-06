@@ -61,12 +61,16 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 // before pinning. `bytes` is the exact size: a size mismatch fails before reading.
 // Order = Prisma's lexicographic directory order. Never regenerate these from
 // whatever is on disk: a new or changed migration needs a fresh OWNER review.
+// Block 1 (20261002120000_block1_pricing_wholesale) was OWNER-approved from the
+// independently reviewed candidate bytes, re-pinned after the M1 fix (Sale
+// INSERT marker rule) at 10096 B, recomputed before pinning.
 export const APPROVED_MIGRATION_PAYLOAD = Object.freeze({
   migrations: Object.freeze([
     Object.freeze({ name: '20260907015311_init', bytes: 17328, sha256: 'a584edab13a2ae540d694578ffa3b5a622decff04e238a5cf16d3040d295e4cb' }),
     Object.freeze({ name: '20260912182432_add_company_location', bytes: 1343, sha256: '19c345aa92c79a0a613dc03ea01dcf10e91b5a75fd6f3535076d8d71b6f740af' }),
     Object.freeze({ name: '20260912191702_add_user_role_scope', bytes: 2356, sha256: '2b415411eddc1212bf60419ce49022cea38d1fc2d12cb08938ad7c953caf7f3a' }),
     Object.freeze({ name: '20260922210000_d3_initial_stock_and_global_audit', bytes: 482, sha256: '62b3b169e06a48dc2e2a3f81cee11e02a809b2733db2453c5b9eef91c15f77cf' }),
+    Object.freeze({ name: '20261002120000_block1_pricing_wholesale', bytes: 10096, sha256: '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173' }),
   ]),
   lock: Object.freeze({ bytes: 128, sha256: '99836963713b4f5b269ad49af0ed3d7b0b2e336115c2f92dc9ac683d139d0900', provider: 'postgresql' }),
 });
@@ -362,7 +366,7 @@ export async function main(argv, deps = defaultDeps) {
         ? '  project identity: derivable from the URL (value not shown); --execute requires --confirm-project-ref to match'
         : '  project identity: NOT derivable from the URL — --execute will refuse',
       `  Prisma CLI: repository-local prisma ${prisma.version} (api/node_modules/.bin/prisma → prisma/build/index.js), run with this Node binary`,
-      '  migration payload: PASS — exactly 4 OWNER-approved migrations, SHA-256 approval binding active',
+      '  migration payload: PASS — exactly 5 OWNER-approved migrations, SHA-256 approval binding active',
       ...payload.migrations.map((m, i) => `    ${i + 1}. ${m.name}  sha256 ${m.sha256}`),
       `  migration_lock.toml: PASS (provider "${payload.lock.provider}", sha256 ${payload.lock.sha256})`,
       '  payload is re-verified during --execute: before the identity proof AND again immediately before spawning',

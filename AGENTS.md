@@ -186,6 +186,29 @@ Development workflow for any non-trivial change:
   copied or malformed marker fails closed. The LOCAL_TEST marker and baseline
   are installed only by `scripts/database/local-test-marker.mjs` and
   `scripts/database/local-test-prepare.mjs` (`--dry-run`/`--check`/`--execute`).
+- **2026-10-03 — OWNER decision: LOCAL_TEST prepare/resume backup boundary**
+  (explicit OWNER policy decision; durable record
+  `~/.local/share/mona-jacinta/handoff/owner-decision-local-test-destructive-policy-20261003T184509Z.md`).
+  - Production-style LOCAL_TEST prepare/resume operations that delete or
+    transform existing rows (`scripts/database/local-test-prepare.mjs`,
+    including Block 1 seed #2 at `POST_BACKFILL`) require: a prior dry-run;
+    a durable verified backup corresponding to the current checkpoint; and
+    explicit OWNER authorization naming the target.
+  - Destructive integration tests against the explicitly disposable
+    LOCAL_TEST fixture (the permission above) are a separate testing
+    exception.
+  - That testing exception does **not** authorize the `local-test-prepare`
+    destructive resume, migration tooling, production-style data
+    preparation, any backup bypass, or any DEV/TEST/DEMO/PILOT operation.
+  - This resolves the ambiguity between the LOCAL_TEST integration-test
+    permission above and the prepare/resume backup rule.
+  - **Supersedes:** any interpretation that the LOCAL_TEST destructive-test
+    permission also exempts prepare/resume from the backup boundary.
+  - **Does not supersede:** the existing permission for disposable
+    LOCAL_TEST integration-test fixtures, provided they remain within their
+    dedicated test harness and guards (`MONA_TEST_DATABASE_TARGET=local`,
+    the marker proof, `api/tests/helpers/test-db.ts`).
+  - DEV, TEST, DEMO and PILOT are not covered by this decision.
 - **DEV** must never be reset, backfilled, or otherwise mutated without
   explicit human approval.
 - **PILOT** tooling (marker, migrate, bootstrap, catalog bootstrap) is
@@ -212,6 +235,57 @@ conflict instead.
 `docs/development/getting-started.md` and `docs/development/database.md`
 document the actual current setup/workflow commands; prefer them over
 inference from code when they exist.
+
+### Dated supersessions of frozen requirements
+
+The frozen files themselves are never edited; a supersession is recorded
+here, dated, with its exact scope. Anything not listed stays in force.
+
+**2026-10-02 — Block 1: retail list price and sale-scoped wholesale**
+(explicit owner business decision).
+
+- **Superseded — retail price.** The cash-price model: the
+  `01 = CONSUMER_FINAL` tier "`listPrice` → optional `cashDiscount` →
+  `cashPrice`" (`01-product-scope.md`, Pricing / customer codes);
+  FR-PRIC-002; the CONSUMER_FINAL part of FR-PRIC-005 (100% CASH/TRANSFER →
+  `cashPrice`, any card/QR → `listPrice`, prices never frozen before the final
+  payment composition, PENDING candidate snapshots
+  `listPrice`/`cashPrice`/`wholesalePrice`/`cost`); `cashDiscount` within
+  FR-PRIC-006 and `04-domain-rules.md`'s pricing-rule list; the
+  `cashDiscount`/`cashDiscountType` fields and the `calculatePrice` cash
+  branch (`05-architecture.md` pricing section, `06-erd-data-model.md`
+  ProductVariant); `08-implementation-roadmap.md` PHASE 2C's
+  `cashDiscount`/`cashPrice`, PHASE 6D's CONSUMER_FINAL composition pricing
+  and its required tests, and the `cashPrice` expectations of PHASE 7E and of
+  the adversarial list items 11–12.
+  **Replacement:** an ordinary retail sale uses the LIST price
+  (`ProductVariant.price`), chosen by the backend and snapshotted into
+  `SaleItem.unitPrice` when the line is written; no cash-price mode exists.
+- **Superseded — wholesale access.** Selecting wholesale through a customer
+  code: FR-PRIC-001's `02 = WHOLESALE` customer-code selection, the
+  `01`/`02` customer-code tiers (`01-product-scope.md`), `Sale.customerCode`
+  (`05-architecture.md` Sale row, `06-erd-data-model.md` Sale), and
+  `SaleItem.priceType` (`LIST`|`CASH`|`WHOLESALE`, `06-erd-data-model.md`).
+  **Replacement:** the sale's own SELLER submits a wholesale authorization
+  code for ONE DRAFT sale; the server verifies it against a configured bcrypt
+  hash (`WHOLESALE_AUTH_CODE_HASH`; the code is never stored, logged, audited
+  or returned) and sets `Sale.pricingMode = WHOLESALE`, repricing every line
+  from `ProductVariant.wholesalePrice` (NULL = unavailable, fails closed;
+  `0 < wholesalePrice <= price`). A CASHIER — a persisted CASHIER LOCATION
+  assignment at the sale's location, never company ADMIN/OWNER authority
+  alone, never the sale's own seller — must confirm before any payment;
+  a WHOLESALE sale can never be PAID or COMPLETED without that confirmation
+  (also a DB CHECK). `Sale.pricingMode` is the single price-mode fact for all
+  of a sale's lines. FR-PRIC-003 (wholesale price = `wholesalePrice`) stays.
+- **NOT superseded:** the frozen documents themselves; immutable historical
+  sale-price snapshots; FR-PRIC-004 (backend-authoritative prices, client
+  prices never authoritative); FR-PRIC-006's PRICE_MANAGE / scope rule for
+  `listPrice` and `wholesalePrice`; global (not per-location) pricing; every
+  data-integrity, audit (FR-AUDIT-001), authorization and location-scope
+  requirement; the SEÑA domain except its cash-price expectations.
+- **Raised, not resolved:** the frozen sources name the list price
+  inconsistently (`listPrice`/`cost` in `05`/`06`, `price`/`costPrice` in
+  `04` and the schema); this supersession does not rename anything.
 
 **Living Blueprint**: `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` is
 the persistent implementation/status/failure/lessons ledger. Read it before

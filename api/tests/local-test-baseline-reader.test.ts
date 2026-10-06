@@ -14,6 +14,7 @@ import {
   canonicalLocations,
   classifyLocalTestBaseline,
   defaultLocalTestCanonicalBaseline,
+  readFactsOnTransaction,
   readLocalTestBaselineFacts,
   seedPasswordState,
   type LocalTestBaselineFacts,
@@ -453,5 +454,45 @@ describe('H read failures', () => {
     await expect(readLocalTestBaselineFacts(fake.db, { passwordState: comparator().fn })).rejects.toThrow();
     expect(fake.violations).toEqual([]);
     expect(fake.calls.at(-1)?.target).toMatch(/to_regclass/);
+  });
+});
+
+
+// --- R4. the reader on a supplied transaction (no transaction of its own) ---------------------------------
+
+describe('R4 readFactsOnTransaction', () => {
+  type Tx = (fn: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+  const onTx = (options: FakeOptions = {}, passwordState = comparator().fn) => {
+    const fake = fakeDatabase({ data: exactData(), migrationRows: exactMigrationRows(), ...options });
+    const result = (fake.db.$transaction as unknown as Tx)(async (tx) => readFactsOnTransaction(tx as never, { passwordState }));
+    return { ...fake, result };
+  };
+  it('AC-099 (G22) it reads the same facts as the own-transaction reader, on the supplied transaction only: no $transaction, no set_config, no settings probe', async () => {
+    const r = onTx();
+    expect(await r.result).toEqual(expectedFacts());
+    expect(r.calls.filter((c) => c.kind === '$transaction')).toHaveLength(1); // the test's own outer transaction, none from the reader
+    expect(r.calls.filter((c) => c.channel === 'outer' && c.kind !== '$transaction')).toEqual([]);
+    expect(r.calls.filter((c) => /set_config|current_setting/.test(String(c.target)))).toEqual([]);
+    expect(r.violations).toEqual([]);
+  });
+  it('the same schema-presence outcomes as the own-transaction reader (fresh, partial, drift)', async () => {
+    for (const present of [[], ['_prisma_migrations'], ['Branch', '_prisma_migrations'], [...APPLICATION_TABLES]]) {
+      const own = await read({ present });
+      const tx = onTx({ present });
+      expect(await tx.result, JSON.stringify(present)).toEqual(own.facts);
+      expect(tx.violations).toEqual([]);
+    }
+  });
+  it('a read failure surfaces only the constant message, never the driver text', async () => {
+    const r = onTx({ failDelegate: 'user' });
+    const error = await (r.result as Promise<unknown>).then(() => null, (e: Error) => e);
+    expect((error as Error).message).toBe('LOCAL_TEST baseline facts could not be read (details not shown)');
+    expect(JSON.stringify([(error as Error).message, (error as Error).stack])).not.toContain(SENTINEL);
+    expect((error as { cause?: unknown }).cause).toBeUndefined();
+  });
+  it('its source opens no transaction and issues no session SET', () => {
+    const body = /export async function readFactsOnTransaction[\s\S]*?\n}\n/.exec(SOURCE)?.[0] ?? '';
+    expect(body.length).toBeGreaterThan(80);
+    expect(body).not.toMatch(/\$transaction|set_config|\$connect|\$disconnect|new\s+(Pool|PrismaClient)/);
   });
 });

@@ -1,5 +1,6 @@
 import { hash } from 'bcryptjs';
 import type { Prisma } from '../src/generated/prisma/client.js';
+import type { ProtectedTx } from '../scripts/local-test-fingerprint.js';
 import { syncProductionRbacCatalog } from '../src/modules/rbac/catalog.service.js';
 import { ROLE_CODES, type RoleCode } from '../src/modules/rbac/roles.js';
 
@@ -563,19 +564,31 @@ export function demoSeedOptionsFromEnv(source: NodeJS.ProcessEnv): SeedOptions {
   return { password };
 }
 
+// The seed body proper, on a transaction the CALLER owns. `run` wraps it in its own transaction (seedDemo/resetDemo, used by
+// the integration suites); the LOCAL_TEST protected resume (V2.3.3 R4) calls seedDemoOnTransaction on its single protected
+// transaction so seed #2 never opens a transaction, client or connection of its own.
+async function seedOnTransaction(tx: Prisma.TransactionClient, reset: boolean, passwordHash: string) {
+  // Serialize these maintenance commands, including concurrent test invocations.
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(506005)::text`;
+  if (reset) await clear(tx);
+  else await assertNoOperations(tx);
+  await populate(tx, passwordHash);
+}
+
+// The bcrypt hash of the seed password (cost 12, CPU only). The protected resume computes it BEFORE opening its transaction.
+export async function defaultSeedPasswordHash(options: SeedOptions = {}): Promise<string> {
+  return hash(resolveSeedPassword(options), 12);
+}
+
+// Seed #2 on the protected transaction. The bcrypt hash is computed by the caller BEFORE the transaction (CPU only).
+export async function seedDemoOnTransaction(tx: ProtectedTx, passwordHash: string): Promise<void> {
+  await seedOnTransaction(tx, false, passwordHash);
+}
+
 async function run(prisma: SeedClient, reset: boolean, options: SeedOptions) {
   // Validate and hash before opening a transaction.
   const passwordHash = await hash(resolveSeedPassword(options), 12);
-  await prisma.$transaction(
-    async (tx) => {
-      // Serialize these maintenance commands, including concurrent test invocations.
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(506005)::text`;
-      if (reset) await clear(tx);
-      else await assertNoOperations(tx);
-      await populate(tx, passwordHash);
-    },
-    { maxWait: 10000, timeout: 120000 },
-  );
+  await prisma.$transaction((tx) => seedOnTransaction(tx, reset, passwordHash), { maxWait: 10000, timeout: 120000 });
 }
 
 export const seedDemo = (prisma: SeedClient, options: SeedOptions = {}) => run(prisma, false, options);

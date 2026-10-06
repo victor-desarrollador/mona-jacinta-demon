@@ -601,6 +601,7 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
     '20260912182432_add_company_location',
     '20260912191702_add_user_role_scope',
     '20260922210000_d3_initial_stock_and_global_audit',
+    '20261002120000_block1_pricing_wholesale',
   ]);
   assert.deepEqual([...NAMES].sort(), NAMES);
   for (const m of APPROVED_MIGRATION_PAYLOAD.migrations) assert.match(m.sha256, /^[0-9a-f]{64}$/);
@@ -621,7 +622,7 @@ test('H1/P1: dry-run validates the payload and prints the names, digests and PAS
   assert.equal(r.code, 0, r.text);
   assert.equal(r.created.length, 0);
   assert.equal(r.spawned.length, 0);
-  assert.match(r.text, /migration payload: PASS — exactly 4 OWNER-approved migrations, SHA-256 approval binding active/);
+  assert.match(r.text, /migration payload: PASS — exactly 5 OWNER-approved migrations, SHA-256 approval binding active/);
   for (const m of APPROVED_MIGRATION_PAYLOAD.migrations) assert.ok(r.text.includes(`${m.name}  sha256 ${m.sha256}`), m.name);
   assert.match(r.text, new RegExp(`migration_lock\\.toml: PASS \\(provider "postgresql", sha256 ${APPROVED_MIGRATION_PAYLOAD.lock.sha256}\\)`));
   assertNoLeak(r.text);

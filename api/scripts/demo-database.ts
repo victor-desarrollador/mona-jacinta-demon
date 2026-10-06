@@ -4,6 +4,13 @@ import { parse } from 'dotenv';
 import { Pool, type ClientConfig, type PoolClient, type PoolConfig } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/generated/prisma/client.js';
+import {
+  LOCAL_TEST_LIVE_FACTS_SQL,
+  LOCAL_TEST_MARKER_FACTS_SQL,
+  LOCAL_TEST_MARKER_SQL,
+  readProtectedRows,
+  type ProtectedTx,
+} from './local-test-fingerprint.js';
 
 export const AUTOMATED_TEST_TARGET_VAR = 'MONA_TEST_DATABASE_TARGET';
 export type AutomatedTestTarget = 'test' | 'local';
@@ -131,41 +138,6 @@ export type LocalTestGuardClient = {
 const LOCAL_GUARD_SCHEMA = 'mona_local_test_guard';
 const LOCAL_GUARD_TABLE = 'database_identity';
 const LOCAL_QUALIFIED = `${LOCAL_GUARD_SCHEMA}.${LOCAL_GUARD_TABLE}`;
-const LOCAL_REL = `to_regclass('${LOCAL_QUALIFIED}')`;
-const LOCAL_TEST_LIVE_FACTS_SQL = `SELECT current_database() AS current_database, current_user AS current_user, version() AS version,
-  to_regnamespace('mona_test_guard') IS NOT NULL AS test_guard_exists,
-  to_regnamespace('mona_pilot_guard') IS NOT NULL AS pilot_guard_exists`;
-const LOCAL_TEST_MARKER_FACTS_SQL = `SELECT json_build_object(
-  'schemaOwnerIsCurrentUser', (SELECT pg_get_userbyid(n.nspowner) = current_user
-     FROM pg_namespace n WHERE n.nspname = '${LOCAL_GUARD_SCHEMA}'),
-  'relations', (SELECT coalesce(json_agg(json_build_object('name', c.relname, 'kind', c.relkind)), '[]'::json)
-     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '${LOCAL_GUARD_SCHEMA}'),
-  'table', (SELECT json_build_object(
-       'kind', c.relkind,
-       'persistence', c.relpersistence,
-       'isPartition', c.relispartition,
-       'ofType', c.reloftype <> 0,
-       'ownerIsCurrentUser', pg_get_userbyid(c.relowner) = current_user,
-       'rowSecurity', c.relrowsecurity,
-       'forceRowSecurity', c.relforcerowsecurity,
-       'hasSubclass', c.relhassubclass,
-       'parents', (SELECT count(*) FROM pg_inherits i WHERE i.inhrelid = c.oid),
-       'children', (SELECT count(*) FROM pg_inherits i WHERE i.inhparent = c.oid),
-       'hasRules', c.relhasrules,
-       'triggers', (SELECT count(*) FROM pg_trigger t WHERE t.tgrelid = c.oid))
-     FROM pg_class c WHERE c.oid = ${LOCAL_REL}),
-  'columns', (SELECT coalesce(json_agg(json_build_object(
-       'name', a.attname, 'type', format_type(a.atttypid, a.atttypmod), 'notNull', a.attnotnull,
-       'default', pg_get_expr(d.adbin, d.adrelid), 'generated', a.attgenerated, 'identity', a.attidentity,
-       'collation', (SELECT co.collname FROM pg_collation co WHERE co.oid = a.attcollation))
-       ORDER BY a.attnum), '[]'::json)
-     FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-     WHERE a.attrelid = ${LOCAL_REL} AND a.attnum > 0 AND NOT a.attisdropped),
-  'constraints', (SELECT coalesce(json_agg(json_build_object('type', con.contype, 'definition', pg_get_constraintdef(con.oid))), '[]'::json)
-     FROM pg_constraint con WHERE con.conrelid = ${LOCAL_REL} AND con.contype <> 'n')
-) AS facts`;
-const LOCAL_TEST_MARKER_SQL =
-  'SELECT environment, marker_id::text AS marker_id, installed_at IS NOT NULL AS has_installed_at FROM mona_local_test_guard.database_identity';
 // ACCESS SHARE (the strongest mode a READ ONLY transaction may take) blocks
 // DROP/ALTER of the marker; taken before the first snapshot-taking SELECT so the
 // REPEATABLE READ snapshot postdates it.
@@ -239,6 +211,34 @@ const asText = (value: unknown) => (typeof value === 'string' ? value : '');
 // row, all from one snapshot. Nothing is ever written. Any failure after BEGIN
 // attempts ROLLBACK and surfaces only the sanitized refusal: query errors may
 // carry connection details, and a failed ROLLBACK must not mask the refusal.
+type IdentityRows = Array<Record<string, unknown>>;
+
+// The verification shared by the connection-level proof and the in-transaction proof: live facts, canonical marker
+// structure and ownership, and the exact marker row. Throws only the constant refusal.
+function assertLocalTestIdentityRows(metadata: IdentityRows, structure: IdentityRows, markers: IdentityRows, expectedMarkerId: string): void {
+  if (metadata.length !== 1) throw new Error(LOCAL_TEST_IDENTITY_REFUSAL);
+  const [meta] = metadata;
+  if (meta?.test_guard_exists !== false || meta?.pilot_guard_exists !== false) {
+    throw new Error(LOCAL_TEST_IDENTITY_REFUSAL);
+  }
+  if (structure.length !== 1 || verifyLocalTestMarkerStructure(structure[0]?.facts) !== null) {
+    throw new Error(LOCAL_TEST_IDENTITY_REFUSAL);
+  }
+  assertLocalTestIdentityFacts(
+    {
+      currentDatabase: asText(meta?.current_database),
+      currentUser: asText(meta?.current_user),
+      version: asText(meta?.version),
+      markerRows: markers.map((row) => ({
+        environment: asText(row.environment),
+        markerId: asText(row.marker_id),
+        hasInstalledAt: row.has_installed_at === true,
+      })),
+    },
+    expectedMarkerId,
+  );
+}
+
 export async function proveLocalTestIdentity(
   client: LocalTestGuardClient,
   expectedMarkerId: string,
@@ -249,32 +249,9 @@ export async function proveLocalTestIdentity(
     await client.query(LOCAL_TEST_LOCK_SQL);
 
     const metadata = (await client.query(LOCAL_TEST_LIVE_FACTS_SQL)).rows;
-    if (metadata.length !== 1) throw new Error(LOCAL_TEST_IDENTITY_REFUSAL);
-    const [meta] = metadata;
-
     const structure = (await client.query(LOCAL_TEST_MARKER_FACTS_SQL)).rows;
     const markers = (await client.query(LOCAL_TEST_MARKER_SQL)).rows;
-
-    if (meta?.test_guard_exists !== false || meta?.pilot_guard_exists !== false) {
-      throw new Error(LOCAL_TEST_IDENTITY_REFUSAL);
-    }
-    if (structure.length !== 1 || verifyLocalTestMarkerStructure(structure[0]?.facts) !== null) {
-      throw new Error(LOCAL_TEST_IDENTITY_REFUSAL);
-    }
-
-    assertLocalTestIdentityFacts(
-      {
-        currentDatabase: asText(meta?.current_database),
-        currentUser: asText(meta?.current_user),
-        version: asText(meta?.version),
-        markerRows: markers.map((row) => ({
-          environment: asText(row.environment),
-          markerId: asText(row.marker_id),
-          hasInstalledAt: row.has_installed_at === true,
-        })),
-      },
-      expectedMarkerId,
-    );
+    assertLocalTestIdentityRows(metadata, structure, markers, expectedMarkerId);
 
     await client.query('COMMIT');
   } catch {
@@ -283,6 +260,24 @@ export async function proveLocalTestIdentity(
     } catch {
       /* The refusal below is the outcome either way. */
     }
+    throw new Error(LOCAL_TEST_IDENTITY_REFUSAL);
+  }
+}
+
+// R4: the same proof on a SUPPLIED protected transaction. It issues SELECTs only — never BEGIN, COMMIT, ROLLBACK, SET
+// or LOCK — because the transaction (isolation, search_path, locks) belongs to its owner (local-test-runtime.ts): the
+// connection-level wrapper above would COMMIT the protected transaction early. Any failure is the constant refusal;
+// the owner rolls back. The marker structure facts are accepted as an object or as a JSON string (adapter-dependent).
+export async function proveIdentityOnTransaction(tx: ProtectedTx, expectedMarkerId: string): Promise<void> {
+  try {
+    const metadata = await readProtectedRows(tx, { kind: 'identity', query: 'liveFacts' }) as IdentityRows;
+    const structure = (await readProtectedRows(tx, { kind: 'identity', query: 'markerFacts' })).map((row) => ({
+      ...row,
+      facts: typeof row.facts === 'string' ? (JSON.parse(row.facts) as unknown) : row.facts,
+    }));
+    const markers = await readProtectedRows(tx, { kind: 'identity', query: 'markerRows' }) as IdentityRows;
+    assertLocalTestIdentityRows(metadata, structure, markers, expectedMarkerId);
+  } catch {
     throw new Error(LOCAL_TEST_IDENTITY_REFUSAL);
   }
 }
@@ -944,7 +939,10 @@ async function openProvenLocalTestLifecycle(source: NodeJS.ProcessEnv) {
   const { pool, target, fail } = await openProvenLocalTestPool(1, source);
   let prisma: PrismaClient;
   try {
-    prisma = new PrismaClient({ adapter: new PrismaPg(pool), log: [] });
+    // R4: the adapter reports schema `public`, so Prisma qualifies every relation and enum cast as "public"."X"; the
+    // protected search_path is `pg_catalog, pg_temp` (public omitted), so an unqualified reference fails closed. `log: []`
+    // keeps query/parameter logging off (protected rows can appear in parameters).
+    prisma = new PrismaClient({ adapter: new PrismaPg(pool, { schema: 'public' }), log: [] });
   } catch {
     await pool.end().catch(() => undefined);
     throw fail('client-create');

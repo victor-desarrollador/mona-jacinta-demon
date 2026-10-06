@@ -6,6 +6,7 @@
 // refuses any other SQL. Run with a no-setup Vitest config (no setupFiles, no
 // globalSetup): this file needs no database.
 import { createRequire } from 'node:module';
+import { DigestSink } from '../scripts/local-test-fingerprint.js';
 import { readFileSync, realpathSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PrismaClient } from '../src/generated/prisma/client.js';
@@ -17,6 +18,7 @@ import {
   type LocalTestBaselineRuntimeDeps,
 } from '../scripts/local-test-baseline.js';
 import {
+  ResumeFailure,
   LOCAL_TEST_PROVEN_PRISMA_EXPORT,
   createLocalTestRuntime,
   type LocalTestRuntimeDeps,
@@ -335,7 +337,7 @@ describe('B. explicit, copied inputs; no environment', () => {
       readFacts,
       createBaselineRuntime,
     } as unknown as LocalTestRuntimeDeps);
-    expect(Object.keys(rt).sort()).toEqual(['backfillCompanyLocations', 'classify', 'close', 'proveIdentity', 'seedDemo', 'verifyBaseline']);
+    expect(Object.keys(rt).sort()).toEqual(['backfillCompanyLocations', 'checkOutcome', 'classify', 'close', 'proveIdentity', 'resumeSeed2', 'seedDemo', 'verifyBaseline', 'withBackupSnapshot']); // R4 adds the three protected operations
     for (const spy of [opener, canonicalBaseline, readFacts, createBaselineRuntime]) expect(spy).not.toHaveBeenCalled();
     expect(h.events).toEqual([]);
   });
@@ -415,6 +417,142 @@ describe('C. nothing runs before the first successful proof', () => {
     expect(opener).not.toHaveBeenCalled();
     await rt.proveIdentity();
     expect(opener).toHaveBeenCalledTimes(1);
+  });
+});
+
+// --- R4. the protected operations on the runtime -------------------------------------------------------------------
+
+describe('R4 protected operations (resumeSeed2, checkOutcome, withBackupSnapshot)', () => {
+  const MARKER_ID = '11111111-1111-4111-8111-111111111111';
+  const noSteps = (events: string[]) => ({
+    proveIdentity: async () => { events.push('identity'); },
+    assertSettings: async () => { events.push('settings'); },
+    proveDomain: async () => { events.push('domain'); },
+    // stateless per attempt: before the seed step the database is POST_BACKFILL (bytes P), after it EXACT_BASELINE (bytes Q)
+    classify: async () => (events.at(-1) === 'seed' || events.includes('seed-done') ? 'EXACT_BASELINE' : 'POST_BACKFILL'),
+    readState: async (_tx: unknown, sinks: readonly { write: (c: Uint8Array) => void }[]) => { for (const s of sinks) s.write(Buffer.from(events.includes('seed-done') ? 'Q' : 'P')); return { rows: new Map(), serverVersionNum: '170004', markerId: MARKER_ID, schemaDigest: 's'.repeat(64) }; },
+    seed: async () => { events.push('seed'); events.push('seed-done'); },
+    verifyTransformation: async () => { events.push('verify'); },
+  });
+  const txPrisma = (calls: { transactions: number; sql: string[]; commits: number }, opts: { failCommit?: boolean } = {}) => ({
+    $transaction: async (cb: (raw: unknown) => Promise<unknown>) => {
+      calls.transactions += 1;
+      const failThisCommit = opts.failCommit === true && calls.transactions === 1; // only the first (resume) transaction
+      const raw = { $executeRawUnsafe: async (sql: string) => { calls.sql.push(sql); return 0; }, $queryRawUnsafe: async (sql: string) => { calls.sql.push(sql); return sql.includes('pg_export_snapshot') ? [{ snapshot_id: '00000003-0000001B-1' }] : []; }, $queryRaw: async () => [] };
+      const result = await cb(raw);
+      if (failThisCommit) throw new Error('commit failed');
+      calls.commits += 1;
+      return result;
+    },
+  });
+  const rtWith = (prisma: unknown, events: string[]) => {
+    const { opener } = fakeResources();
+    opener.mockResolvedValue({ prisma: prisma as PrismaClient, proveIdentity: async () => undefined, close: async () => undefined });
+    const rt = createLocalTestRuntime(input(), { openProvenPrisma: opener, protectedSteps: noSteps(events) as unknown as LocalTestRuntimeDeps['protectedSteps'] });
+    return { rt, opener };
+  };
+  const request = (events: string[]) => {
+    const p = new DigestSink('PRE'); p.write(Buffer.from('P'));
+    return {
+      expectedFPre: p.end(),
+      passwordHash: 'h',
+      checkPreconditions: async () => { events.push('preconditions'); },
+      consumeAuthorization: async () => { events.push('consume'); },
+      persistPostWitness: async (r: { nonce: string; fPost: string }) => ({ durable: true, nonce: r.nonce, fPost: r.fPost }),
+    };
+  };
+
+  it('AC-089 the three protected operations refuse before the first proof and open nothing', async () => {
+    const { opener } = fakeResources();
+    const rt = createLocalTestRuntime(input(), { openProvenPrisma: opener });
+    expectSanitized(await rejection(rt.resumeSeed2(request([]) as never)));
+    expectSanitized(await rejection(rt.checkOutcome()));
+    expectSanitized(await rejection(rt.withBackupSnapshot(async () => 'x')));
+    expect(opener).not.toHaveBeenCalled();
+  });
+  it('AC-099 resumeSeed2 runs the owner on the SAME proven client: one transaction, no new pool/adapter/client', async () => {
+    const calls = { transactions: 0, sql: [] as string[], commits: 0 }; const events: string[] = [];
+    const { rt, opener } = rtWith(txPrisma(calls), events);
+    await rt.proveIdentity();
+    const result = await rt.resumeSeed2(request(events) as never);
+    expect(result.fPost).toMatch(/^[0-9a-f]{64}$/);
+    expect(calls).toMatchObject({ transactions: 1, commits: 1 });
+    expect(events.filter((e) => e !== 'seed-done')).toEqual(['identity', 'settings', 'domain', 'preconditions', 'consume', 'settings', 'seed', 'settings', 'verify', 'settings']);
+    expect(opener).toHaveBeenCalledTimes(1);
+    expect(h.pools).toHaveLength(0);
+    expect(h.adapters).toHaveLength(0);
+    expect(h.clients).toHaveLength(0);
+  });
+  it('after an UNKNOWN commit outcome resumeSeed2 refuses forever on this runtime (never retried); checkOutcome stays available', async () => {
+    const calls = { transactions: 0, sql: [] as string[], commits: 0 }; const events: string[] = [];
+    const { rt } = rtWith(txPrisma(calls, { failCommit: true }), events);
+    await rt.proveIdentity();
+    const failure = await rejection(rt.resumeSeed2(request(events) as never));
+    expect(failure).toBeInstanceOf(ResumeFailure);
+    expect((failure as ResumeFailure).kind).toBe('COMMIT_UNKNOWN');
+    const again = await rejection(rt.resumeSeed2(request(events) as never));
+    expect(again).not.toBeInstanceOf(ResumeFailure);
+    expectSanitized(again);
+    expect(calls.transactions).toBe(1);
+    // the seed ran in the unknown-outcome transaction; for the verifier the state is whatever the database shows now
+    events.length = 0;
+    await expect(rt.checkOutcome()).resolves.toMatchObject({ markerId: MARKER_ID });
+  });
+  it('the seed password hash is computed by the runtime BEFORE the transaction opens when the request carries none (CPU only, outside the locked window)', async () => {
+    const calls = { transactions: 0, sql: [] as string[], commits: 0 }; const events: string[] = [];
+    const prisma = txPrisma(calls);
+    const wrapped = { $transaction: async (cb: (raw: unknown) => Promise<unknown>) => { events.push('transaction-open'); return prisma.$transaction(cb); } };
+    const { opener } = fakeResources();
+    opener.mockResolvedValue({ prisma: wrapped as unknown as PrismaClient, proveIdentity: async () => undefined, close: async () => undefined });
+    const seeded: string[] = [];
+    const steps = { ...noSteps(events), seed: async (_tx: unknown, hash: string) => { seeded.push(hash); events.push('seed'); events.push('seed-done'); } };
+    const rt = createLocalTestRuntime(input(), { openProvenPrisma: opener, protectedSteps: steps as unknown as LocalTestRuntimeDeps['protectedSteps'], hashPassword: async () => { events.push('hash'); return '$2b$12$' + 'x'.repeat(53); } });
+    await rt.proveIdentity();
+    const { passwordHash, ...withoutHash } = request(events) as { passwordHash?: string };
+    void passwordHash;
+    await rt.resumeSeed2(withoutHash as never);
+    expect(seeded).toEqual(['$2b$12$' + 'x'.repeat(53)]);
+    expect(events.indexOf('hash')).toBeGreaterThan(-1);
+    expect(events.indexOf('hash')).toBeLessThan(events.indexOf('transaction-open'));
+    expect(events.filter((e) => e === 'hash')).toHaveLength(1);
+  });
+  it('a rolled-back resume does not latch: the runtime stays usable', async () => {
+    const calls = { transactions: 0, sql: [] as string[], commits: 0 }; const events: string[] = [];
+    const { rt } = rtWith(txPrisma(calls), events);
+    await rt.proveIdentity();
+    await rejection(rt.resumeSeed2({ ...request(events), consumeAuthorization: async () => { throw new Error('x'); } } as never));
+    await expect(rt.resumeSeed2(request(events) as never)).resolves.toBeDefined();
+  });
+  it('checkOutcome and withBackupSnapshot run their read-only transactions on the proven client; the snapshot id reaches the callback only', async () => {
+    const calls = { transactions: 0, sql: [] as string[], commits: 0 }; const events: string[] = [];
+    const { rt } = rtWith(txPrisma(calls), events);
+    await rt.proveIdentity();
+    const out = await rt.checkOutcome();
+    expect(out).toMatchObject({ pre: expect.stringMatching(/^[0-9a-f]{64}$/), post: expect.stringMatching(/^[0-9a-f]{64}$/), serverVersionNum: '170004', markerId: MARKER_ID, protectedDomainContractSha256: expect.stringMatching(/^[0-9a-f]{64}$/), acceptedTransformationContractSha256s: [expect.stringMatching(/^[0-9a-f]{64}$/)] });
+    let seen: unknown = null;
+    events.length = 0;
+    const value = await rt.withBackupSnapshot(async (c) => { seen = c; return 'dump-done'; });
+    expect(value).toBe('dump-done');
+    expect((seen as { snapshotId: string }).snapshotId).toBe('00000003-0000001B-1');
+    expect(h.pools).toHaveLength(0);
+  });
+  it('operations refuse after close()', async () => {
+    const calls = { transactions: 0, sql: [] as string[], commits: 0 }; const events: string[] = [];
+    const { rt } = rtWith(txPrisma(calls), events);
+    await rt.proveIdentity();
+    await rt.close();
+    expectSanitized(await rejection(rt.resumeSeed2(request(events) as never)));
+    expectSanitized(await rejection(rt.checkOutcome()));
+    expect(calls.transactions).toBe(0);
+  });
+  it('AC-021 the default steps are the real in-transaction implementations (no wrapper over a second client)', () => {
+    const source = readFileSync(new URL('../scripts/local-test-runtime.ts', import.meta.url), 'utf8');
+    const body = /function realProtectedSteps[\s\S]*?\n}\n/.exec(source)?.[0] ?? '';
+    for (const name of ['proveIdentityOnTransaction', 'proveSettingsOnTransaction', 'proveDomainOnTransaction', 'readFactsOnTransaction', 'readStateOnTransaction', 'seedDemoOnTransaction', 'verifyTransformation']) {
+      expect(body, name).toContain(name);
+    }
+    expect(body).not.toMatch(/proveLocalTestIdentity|readLocalTestBaselineFacts|seedDemo\(|new\s+(Pool|PrismaClient|PrismaPg)|\$transaction/);
+    expect(source).toContain('TRANSFORMATION_CONTRACT_SHA256');
   });
 });
 
@@ -742,10 +880,13 @@ describe('L. static boundaries', () => {
     const source = read('../scripts/local-test-runtime.ts');
     expect(source).not.toMatch(/process\.env/);
     expect(source).not.toMatch(/\bnew\s+(Pool|PrismaClient|PrismaPg|Client)\b/);
-    expect(source).not.toMatch(/\bprocess\.(on|once)\(|\bsetTimeout\(|\bsetInterval\(/);
+    expect(source).not.toMatch(/\bprocess\.(on|once)\(|\bsetInterval\(/);
+    // R4: the one timer is the default of the injectable witness-deadline timers (finite wait; gate AC-060/118).
+    expect(source.match(/(?<!timers\.)\bsetTimeout\(/g)).toHaveLength(1); // the global default; every other use goes through the injected `timers`
     expect(source).not.toMatch(/readFileSync|createHash|\brequire\s*\(|createRequire/);
+    // R4: + the pure fingerprint module (no I/O of its own) and node:crypto (random nonce/token id only).
     expect(new Set(specifiers(source))).toEqual(
-      new Set(['../src/generated/prisma/client.js', './demo-database.js', './local-test-baseline.js']),
+      new Set(['../src/generated/prisma/client.js', './demo-database.js', './local-test-baseline.js', './local-test-fingerprint.js', 'node:crypto', '../prisma/seed.js']),
     );
     expect(source).not.toMatch(/tests\/|local-test-marker|scripts\/database/);
   });
@@ -766,7 +907,7 @@ describe('M. demo-database.ts openProvenLocalTestPrisma (future helper, fake pg)
     await provenPrismaHelper();
   });
 
-  it('M2 one guarded pool, proof first, proof client released, then PrismaPg on that exact pool and PrismaClient on that adapter', async () => {
+  it('AC-111 M2 one guarded pool, proof first, proof client released, then PrismaPg on that exact pool and PrismaClient on that adapter', async () => {
     const open = await provenPrismaHelper();
     const opened = await open(SOURCE);
     expect(h.pools).toHaveLength(1);
@@ -778,6 +919,8 @@ describe('M. demo-database.ts openProvenLocalTestPrisma (future helper, fake pg)
     expect(h.adapters).toHaveLength(1);
     expect(h.adapters[0]!.pool).toBe(pool.instance);
     expect((h.adapters[0]!.options as { disposeExternalPool?: unknown } | undefined)?.disposeExternalPool ?? false).toBe(false);
+    // R4 (G47/AC-111): the protected client reports schema `public`, so every relation Prisma emits is "public"."X"-qualified
+    expect((h.adapters[0]!.options as { schema?: unknown } | undefined)?.schema).toBe('public');
     expect(h.clients).toHaveLength(1);
     expect((h.clients[0]!.options as { adapter?: unknown }).adapter).toBe(h.adapters[0]!.instance);
     expect(opened.prisma).toBe(h.clients[0]!.instance);

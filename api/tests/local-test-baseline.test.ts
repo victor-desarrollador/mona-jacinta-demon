@@ -20,6 +20,10 @@ import {
   type LocalTestCanonicalBaseline,
   type ScopeRow,
 } from '../scripts/local-test-baseline.js';
+import { hash as bcryptHash } from 'bcryptjs';
+import { TYPE_CONTRACT_V3, type CellText, type StateRows } from '../scripts/local-test-fingerprint.js';
+import { TRANSFORMATION_CATEGORIES, TRANSFORMATION_CONTRACT_SHA256, TRANSFORMATION_RULE_IDS, TransformationViolation, verifyTransformation } from '../scripts/local-test-baseline.js';
+import { CANONICAL_DEMO_SEED, resolveSeedPassword } from '../prisma/seed.js';
 import { TEST_COMPANY_BOOTSTRAP } from '../scripts/test-company-bootstrap.js';
 import { permissions as legacyPermissions, rolePermissions as legacyGrants } from '../prisma/seed.js';
 import { verifyBackfill } from '../src/modules/organization/organization.service.js';
@@ -471,5 +475,204 @@ describe('P/Q/R runtime factory', () => {
       expect(() => createLocalTestBaselineRuntime({ ...deps, [key]: undefined } as never), key).toThrow();
     }
     expect(() => createLocalTestBaselineRuntime({ ...deps, canonical: { ...CANONICAL, migrations: [] } })).toThrow();
+  });
+});
+
+
+// ===== R4 transformation contract (AC-120, AC-126..135) =====
+describe('R4 transformation verifier (seed #2: P → Q, in memory)', () => {
+  type Rows = Map<string, CellText[][]>;
+  const TCANARY = 'CANARY_PASSWORD_HASH_DO_NOT_LEAK';
+  const columnsOf = (relation: string) => TYPE_CONTRACT_V3.filter((c) => c.relation === relation);
+  const ix = (relation: string, name: string) => columnsOf(relation).findIndex((c) => c.name === name);
+  const defaultCell = (c: (typeof TYPE_CONTRACT_V3)[number], relation: string): CellText => {
+    if (!c.notNull) return null;
+    switch (c.type) {
+      case 'text': return `${relation}-${c.name}`;
+      case 'int4': case 'int8': return '1';
+      case 'bool': return 'true';
+      case 'tstz': return '1760000000000000';
+      case 'enum': return c.enumType === 'LocationType' ? 'RETAIL_BRANCH' : c.enumType === 'ScopeKind' ? 'COMPANY' : null;
+      case 'jsonb': return null;
+    }
+  };
+  const mk = (relation: string, over: Record<string, CellText>): CellText[] => {
+    const cols = columnsOf(relation);
+    for (const k of Object.keys(over)) if (!cols.some((c) => c.name === k)) throw new Error(`test fixture: ${relation}.${k}`);
+    return cols.map((c) => (Object.hasOwn(over, c.name) ? (over[c.name] as CellText) : defaultCell(c, relation)));
+  };
+  const SEED_TS = String(Date.parse(CANONICAL_DEMO_SEED.userTimestamp) * 1000);
+  // legacy Demo V2 roles keep their descriptor ids; only OWNER/WAREHOUSE come from the production catalog (R3 transformation contract)
+  const roleId = (code: string) => CANONICAL_DEMO_SEED.roles.find((r) => r.code === code)?.id ?? ((CANONICAL_ROLE_IDS as Record<string, string>)[code] as string);
+  const uuid4 = (n: number) => `aaaaaaaa-aaaa-4aaa-8aaa-${String(n).padStart(12, '0')}`;
+  let defaultHash = ''; let otherHash = ''; let freshHash = '';
+  const world = async () => {
+    defaultHash ||= await bcryptHash(resolveSeedPassword(), 4);
+    otherHash ||= await bcryptHash('not-the-default', 4);
+    freshHash ||= await bcryptHash(resolveSeedPassword(), 4); // a different salt: the seed rewrites the hash with a new one
+    const P: Rows = new Map(PROTECTED_REL.map((r) => [r, [] as CellText[][]]));
+    const put = (rel: string, over: Record<string, CellText>) => (P.get(rel) as CellText[][]).push(mk(rel, over));
+    put('Company', { id: 'company-1', name: 'Company', cuit: '20-1', address: 'a' });
+    for (const b of CANONICAL_DEMO_SEED.branches) put('Branch', { id: b.id, name: b.name, code: b.code, address: b.address, pointOfSaleNumber: String(b.pointOfSaleNumber) });
+    for (const code of ['CEN', 'DEP']) {
+      const b = CANONICAL_DEMO_SEED.branches.find((x) => x.code === code);
+      if (b) put('Location', { id: b.id, companyId: 'company-1', name: b.name, code: b.code, type: 'RETAIL_BRANCH', address: b.address, pointOfSaleNumber: String(b.pointOfSaleNumber) });
+    }
+    for (const r of CANONICAL_DEMO_SEED.roles) put('Role', { id: r.id, code: r.code, name: r.name });
+    for (const code of ['OWNER', 'WAREHOUSE']) put('Role', { id: roleId(code), code, name: code });
+    put('RolePermission', { roleId: roleId('OWNER'), permissionId: 'perm-1' });
+    put('RolePermission', { roleId: roleId('ADMIN'), permissionId: 'perm-1' });
+    for (const u of CANONICAL_DEMO_SEED.users) put('User', { id: u.id, name: u.name, email: u.email, passwordHash: defaultHash, createdAt: SEED_TS, updatedAt: SEED_TS });
+    put('User', { id: CANONICAL_DEMO_SEED.owner.id, name: CANONICAL_DEMO_SEED.owner.name, email: CANONICAL_DEMO_SEED.owner.email, passwordHash: otherHash, createdAt: '1760000000000000', updatedAt: '1760000000000001' });
+    put('User', { id: 'zzz-stray', name: 'stray', email: 'stray@example.invalid', passwordHash: otherHash });
+    const admin = CANONICAL_DEMO_SEED.users.find((u) => u.name === 'admin') as { id: string };
+    put('UserRoleScope', { id: 'scope-owner', userId: CANONICAL_DEMO_SEED.owner.id, roleId: roleId('OWNER'), scopeKind: 'COMPANY', locationId: null });
+    put('UserRoleScope', { id: 'scope-admin', userId: admin.id, roleId: roleId('ADMIN'), scopeKind: 'COMPANY', locationId: null });
+    put('ProductVariant', { id: 'variant-1', productId: 'product-1', sku: 'S', barcode: 'B', price: '5', costPrice: '3', wholesalePrice: null });
+    put('_prisma_migrations', { id: 'm1', checksum: 'c', migration_name: 'n', started_at: '1', applied_steps_count: '1' });
+    // Q = what seed #2 produces: fresh bcrypt hashes for the four seed users and the three LOCATION scopes
+    const Q: Rows = new Map([...P].map(([k, rows]) => [k, rows.map((r) => [...r])]));
+    const users = Q.get('User') as CellText[][];
+    for (const row of users) if (CANONICAL_DEMO_SEED.users.some((u) => u.email === row[ix('User', 'email')])) row[ix('User', 'passwordHash')] = freshHash;
+    const scopes = Q.get('UserRoleScope') as CellText[][];
+    let n = 0;
+    for (const a of CANONICAL_DEMO_SEED.assignments.filter((x) => x.scopeKind === 'LOCATION')) {
+      const user = CANONICAL_DEMO_SEED.users.find((u) => u.email === a.email) as { id: string };
+      const branch = CANONICAL_DEMO_SEED.branches.find((b) => b.code === a.branchCode) as { id: string };
+      scopes.push(mk('UserRoleScope', { id: uuid4(++n), userId: user.id, roleId: roleId(a.roleCode), scopeKind: 'LOCATION', locationId: branch.id }));
+    }
+    return { P, Q };
+  };
+  const PROTECTED_REL = [...new Set(TYPE_CONTRACT_V3.map((c) => c.relation))];
+  const ok = (w: { P: Rows; Q: Rows }) => verifyTransformation(w.P as StateRows, w.Q as StateRows);
+  const rule = async (w: { P: Rows; Q: Rows }) => {
+    try { await ok(w); } catch (e) { expect(e).toBeInstanceOf(TransformationViolation); return (e as TransformationViolation).rule; }
+    return 'ACCEPTED';
+  };
+  // real bcrypt hashes at cost 4 keep this fast; the verifier's default comparator is the production seedPasswordState
+  it('the synthetic world is a valid transformation (control for every attack below)', async () => { expect(await rule(await world())).toBe('ACCEPTED'); });
+
+  it('AC-126 any changed column of the OWNER row fails', async () => {
+    for (const col of columnsOf('User').map((c) => c.name)) {
+      const w = await world(); const rows = w.Q.get('User') as CellText[][];
+      const row = rows.find((r) => r[ix('User', 'email')] === CANONICAL_DEMO_SEED.owner.email) as CellText[];
+      row[ix('User', col)] = `${row[ix('User', col)]}x`;
+      expect(await rule(w), col).toBe('USER_OWNER');
+    }
+    const absent = await world(); (absent.P.get('User') as CellText[][]).splice(0, 5, ...(absent.P.get('User') as CellText[][]).filter((r) => r[ix('User', 'email')] !== CANONICAL_DEMO_SEED.owner.email).slice(0, 5));
+    expect(await rule(absent)).not.toBe('ACCEPTED');
+  });
+  it('AC-128/129 wholesalePrice reset to NULL or changed fails; equal non-NULL and equal NULL both pass (NULL is fixture provenance, never a rule)', async () => {
+    const w = await world();
+    (w.P.get('ProductVariant') as CellText[][])[0]![ix('ProductVariant', 'wholesalePrice')] = '2500';
+    (w.Q.get('ProductVariant') as CellText[][])[0]![ix('ProductVariant', 'wholesalePrice')] = '2500';
+    expect(await rule(w)).toBe('ACCEPTED');
+    (w.Q.get('ProductVariant') as CellText[][])[0]![ix('ProductVariant', 'wholesalePrice')] = null;
+    expect(await rule(w)).toBe('RELATION_CHANGED');
+    (w.Q.get('ProductVariant') as CellText[][])[0]![ix('ProductVariant', 'wholesalePrice')] = '2600';
+    expect(await rule(w)).toBe('RELATION_CHANGED');
+    const nul = await world(); expect(await rule(nul)).toBe('ACCEPTED');
+    (nul.Q.get('ProductVariant') as CellText[][])[0]![ix('ProductVariant', 'wholesalePrice')] = '1';
+    expect(await rule(nul)).toBe('RELATION_CHANGED');
+  });
+  it('AC-130 AuditLog is preserved: an equal row (incl. jsonb) passes, a changed jsonb fails', async () => {
+    const w = await world();
+    const row = mk('AuditLog', { id: 'a1', userId: 'u', action: 'x', entityType: 'e', entityId: 'i', before: '{"a": 1}', after: null, timestamp: '1' });
+    (w.P.get('AuditLog') as CellText[][]).push(row); (w.Q.get('AuditLog') as CellText[][]).push([...row]);
+    expect(await rule(w)).toBe('ACCEPTED');
+    (w.Q.get('AuditLog') as CellText[][])[0]![ix('AuditLog', 'before')] = '{"a": 2}';
+    expect(await rule(w)).toBe('RELATION_CHANGED');
+  });
+  it('AC-131 any of the 8 _prisma_migrations columns changed fails', async () => {
+    for (const col of columnsOf('_prisma_migrations').map((c) => c.name)) {
+      const w = await world(); const r = (w.Q.get('_prisma_migrations') as CellText[][])[0] as CellText[];
+      r[ix('_prisma_migrations', col)] = r[ix('_prisma_migrations', col)] === null ? '1' : `${r[ix('_prisma_migrations', col)]}x`;
+      expect(await rule(w), col).toBe('RELATION_CHANGED');
+    }
+  });
+  it('AC-132 RolePermission is a semantic set: missing or extra rows fail, another order passes', async () => {
+    const w = await world(); (w.Q.get('RolePermission') as CellText[][]).reverse();
+    expect(await rule(w)).toBe('ACCEPTED');
+    (w.Q.get('RolePermission') as CellText[][]).pop();
+    expect(await rule(w)).toBe('ROLE_PERMISSION_SET');
+    const extra = await world(); (extra.Q.get('RolePermission') as CellText[][]).push(mk('RolePermission', { roleId: roleId('CASHIER'), permissionId: 'perm-9' }));
+    expect(await rule(extra)).toBe('ROLE_PERMISSION_SET');
+  });
+  it('AC-133 UserRoleScope: a P row deleted or re-id\'d, wrong created count or tuple, duplicates, non-uuid or reused ids all fail', async () => {
+    const scopes = (w: { Q: Rows }) => w.Q.get('UserRoleScope') as CellText[][];
+    const cases: Record<string, [string, (w: { P: Rows; Q: Rows }) => void]> = {
+      pRowDeleted: ['USER_ROLE_SCOPE_PRESERVED', (w) => { scopes(w).splice(0, 1); }],
+      pRowReIded: ['USER_ROLE_SCOPE_PRESERVED', (w) => { (scopes(w)[0] as CellText[])[ix('UserRoleScope', 'id')] = 'scope-owner-2'; }],
+      pRowContentChanged: ['USER_ROLE_SCOPE_PRESERVED', (w) => { (scopes(w)[0] as CellText[])[ix('UserRoleScope', 'roleId')] = roleId('ADMIN'); }],
+      createdMissing: ['USER_ROLE_SCOPE_CREATED', (w) => { scopes(w).pop(); }],
+      createdExtra: ['USER_ROLE_SCOPE_CREATED', (w) => { scopes(w).push(mk('UserRoleScope', { id: uuid4(99), userId: CANONICAL_DEMO_SEED.owner.id, roleId: roleId('OWNER'), scopeKind: 'COMPANY', locationId: null })); }],
+      wrongTuple: ['USER_ROLE_SCOPE_CREATED', (w) => { (scopes(w).at(-1) as CellText[])[ix('UserRoleScope', 'roleId')] = roleId('OWNER'); }],
+      duplicate: ['USER_ROLE_SCOPE_CREATED', (w) => { const last = scopes(w).at(-1) as CellText[]; scopes(w).push([uuid4(98), ...last.slice(1)]); }],
+      nonUuid: ['USER_ROLE_SCOPE_CREATED', (w) => { (scopes(w).at(-1) as CellText[])[ix('UserRoleScope', 'id')] = 'not-a-uuid'; }],
+      uuidNotV4: ['USER_ROLE_SCOPE_CREATED', (w) => { (scopes(w).at(-1) as CellText[])[ix('UserRoleScope', 'id')] = 'aaaaaaaa-aaaa-1aaa-8aaa-000000000000'; }],
+      reusedPId: ['USER_ROLE_SCOPE_SET', (w) => { (scopes(w).at(-1) as CellText[])[ix('UserRoleScope', 'id')] = 'scope-admin'; }],
+      createdIdsEqual: ['USER_ROLE_SCOPE_SET', (w) => { (scopes(w).at(-1) as CellText[])[ix('UserRoleScope', 'id')] = (scopes(w).at(-2) as CellText[])[ix('UserRoleScope', 'id')] as CellText; }],
+    };
+    for (const [name, [expectedRule, mutate]] of Object.entries(cases)) { const w = await world(); mutate(w); expect(await rule(w), name).toBe(expectedRule); }
+  });
+  it('AC-134 seed users: a bcrypt hash verifying the default password passes with every other column equal; any other change fails', async () => {
+    const seedEmail = CANONICAL_DEMO_SEED.users[0]!.email;
+    const attempt = async (mutate: (row: CellText[]) => void, email = seedEmail) => {
+      const w = await world(); const row = (w.Q.get('User') as CellText[][]).find((r) => r[ix('User', 'email')] === email) as CellText[]; mutate(row); return rule(w);
+    };
+    expect(await attempt(() => undefined)).toBe('ACCEPTED');
+    expect(await attempt((r) => { r[ix('User', 'passwordHash')] = 'plain-text'; })).toBe('USER_PASSWORD');
+    expect(await attempt((r) => { r[ix('User', 'passwordHash')] = otherHash; })).toBe('USER_PASSWORD');
+    expect(await attempt((r) => { r[ix('User', 'name')] = 'renamed'; })).toBe('USER_SEED');
+    expect(await attempt((r) => { r[ix('User', 'isActive')] = 'false'; })).toBe('USER_SEED');
+    expect(await attempt((r) => { r[ix('User', 'updatedAt')] = '1760000000000000'; })).toBe('USER_TIMESTAMP');
+    expect(await attempt((r) => { r[ix('User', 'createdAt')] = '1760000000000000'; })).toBe('USER_TIMESTAMP');
+    // U15 (real-DB finding): the seed users' instant shifted by the Buenos Aires offset (+3h) is a violation, never silently accepted
+    expect(await attempt((r) => { r[ix('User', 'createdAt')] = '1767236400000000'; r[ix('User', 'updatedAt')] = '1767236400000000'; })).toBe('USER_TIMESTAMP');
+    expect(await attempt((r) => { r[ix('User', 'name')] = 'changed'; }, 'stray@example.invalid')).toBe('USER_OTHER');
+  });
+  it('a user created by the seed (present in Q, absent in P) fails; so does a user deleted by it', async () => {
+    const created = await world(); (created.Q.get('User') as CellText[][]).push(mk('User', { id: 'zzzz-new', name: 'n', email: 'new@example.invalid', passwordHash: otherHash }));
+    expect(await rule(created)).toBe('USER_OTHER');
+    const deleted = await world(); (deleted.Q.get('User') as CellText[][]).pop();
+    expect(await rule(deleted)).toBe('USER_OTHER');
+  });
+  it('AC-120 only the bcrypt hashes changed, the required scope rows absent: the verifier fails (before any guard or witness)', async () => {
+    const w = await world();
+    (w.Q.get('UserRoleScope') as CellText[][]).splice(2);
+    expect(await rule(w)).toBe('USER_ROLE_SCOPE_CREATED');
+    const noChange = await world(); noChange.Q = new Map([...noChange.P].map(([k, rows]) => [k, rows.map((r) => [...r])]));
+    expect(await rule(noChange)).not.toBe('ACCEPTED'); // a no-op seed is also not the reviewed transformation (scope rows not created)
+  });
+  it('every other relation must equal its pre-image exactly (canonical or preserved), and every relation must be present', async () => {
+    for (const rel of ['Branch', 'Role', 'Company', 'Location']) {
+      const w = await world(); const r = (w.Q.get(rel) as CellText[][])[0] as CellText[]; r[1] = `${r[1]}x`;
+      expect(await rule(w), rel).toBe('RELATION_CHANGED');
+    }
+    const missing = await world(); missing.Q.delete('Brand');
+    expect(await rule(missing)).toBe('RELATION_SET');
+    const extraRelation = await world(); extraRelation.Q.set('Intruder', []);
+    expect(await rule(extraRelation)).toBe('RELATION_SET');
+    const extraRow = await world(); (extraRow.Q.get('Category') as CellText[][]).push(mk('Category', { id: 'c1', name: 'n' }));
+    expect(await rule(extraRow)).toBe('RELATION_CHANGED');
+  });
+  it('AC-125 a violation carries only a fixed rule id: no value, no canary, no cause', async () => {
+    const w = await world(); const row = (w.Q.get('User') as CellText[][])[0] as CellText[]; row[ix('User', 'name')] = TCANARY; row[ix('User', 'email')] = 'canary@example.invalid';
+    const error = await ok(w).then(() => null, (e: unknown) => e as TransformationViolation);
+    expect(error).toBeInstanceOf(TransformationViolation);
+    expect(TRANSFORMATION_RULE_IDS).toContain((error as TransformationViolation).rule);
+    expect(JSON.stringify([error?.message, error?.stack, Object.getOwnPropertyNames(error as object)])).not.toContain(TCANARY);
+    expect((error as { cause?: unknown }).cause).toBeUndefined();
+  });
+  it('AC-135 every one of the 155 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(155);
+    const categories = new Set(['PRESERVED_FROM_BACKUP', 'CANONICAL_VALUE', 'RECREATED_SEMANTIC_SET', 'ROW_CLASS_RULES', 'PRESERVED_AND_CREATED']);
+    for (const c of TYPE_CONTRACT_V3) expect(categories.has(TRANSFORMATION_CATEGORIES[`${c.relation}.${c.name}`] as string), `${c.relation}.${c.name}`).toBe(true);
+    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(155);
+    expect(TRANSFORMATION_CATEGORIES['ProductVariant.wholesalePrice']).toBe('PRESERVED_FROM_BACKUP');
+    expect(TRANSFORMATION_CATEGORIES['User.passwordHash']).toBe('ROW_CLASS_RULES');
+    expect(TRANSFORMATION_CATEGORIES['RolePermission.roleId']).toBe('RECREATED_SEMANTIC_SET');
+    expect(TRANSFORMATION_CATEGORIES['UserRoleScope.id']).toBe('PRESERVED_AND_CREATED');
+    expect(TRANSFORMATION_CONTRACT_SHA256).toMatch(/^[0-9a-f]{64}$/);
   });
 });
