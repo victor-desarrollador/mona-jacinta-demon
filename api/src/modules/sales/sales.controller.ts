@@ -4,12 +4,22 @@ import { sendJson } from '../../shared/json-safe.js';
 import { AppError } from '../../shared/errors.js';
 import { createSalesService } from './sales.service.js';
 import { createPendingCorrectionService } from './pending-correction.service.js';
+import { createWholesaleCodeVerifier, type WholesaleCodeVerifier } from './wholesale-authorization.service.js';
+import type { ActivateWholesaleInput } from './dto/sale.dto.js';
+import { env } from '../../config/env.js';
 import { logger } from '../../shared/logger.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 import { REALTIME_EVENTS } from '../../realtime/socket.js';
 
-export function createSalesController(database: PrismaClient, realtime?: RealtimeEmitter) {
-  const service = createSalesService(database, realtime ? { realtime } : {});
+export function createSalesController(
+  database: PrismaClient,
+  realtime?: RealtimeEmitter,
+  options: { wholesaleVerifier?: WholesaleCodeVerifier } = {},
+) {
+  const service = createSalesService(database, {
+    ...(realtime ? { realtime } : {}),
+    wholesaleVerifier: options.wholesaleVerifier ?? createWholesaleCodeVerifier(env.WHOLESALE_AUTH_CODE_HASH),
+  });
   const correction = createPendingCorrectionService(database);
   const userId = (req: Parameters<RequestHandler>[0]) => req.auth!.userId;
   return {
@@ -52,6 +62,14 @@ export function createSalesController(database: PrismaClient, realtime?: Realtim
     }) as RequestHandler,
     removeItem: (async (req, res) => {
       sendJson(res, await service.removeItem(req, userId(req), String(req.params.saleId), String(req.params.itemId)));
+    }) as RequestHandler,
+    // Block 1: the response is the sale (prices, mode); the code is never echoed.
+    activateWholesale: (async (req, res) => {
+      const { code } = req.body as ActivateWholesaleInput;
+      sendJson(res, await service.activateWholesale(req, userId(req), String(req.params.saleId), code));
+    }) as RequestHandler,
+    confirmWholesale: (async (req, res) => {
+      sendJson(res, await service.confirmWholesale(req, userId(req), String(req.params.saleId)));
     }) as RequestHandler,
     sendToCashier: (async (req, res) => {
       const sale = await service.sendToCashier(String(req.params.saleId), userId(req), req.auth!.effectiveLocationIds);

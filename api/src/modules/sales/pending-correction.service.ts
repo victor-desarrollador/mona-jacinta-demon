@@ -1,13 +1,17 @@
-import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
+import { Prisma, type PriceType, type PrismaClient } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 import { evaluateCurrentHoldCoverage } from './hold-coverage.js';
+import { unitPriceFor } from './wholesale-authorization.service.js';
 import type { CorrectPendingSaleInput } from './dto/pending-correction.dto.js';
 
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
-type LockedSale = { id: string; branchId: string; status: string; total: bigint };
+type LockedSale = {
+  id: string; branchId: string; status: string; total: bigint;
+  pricingMode: PriceType; wholesaleConfirmedAt: Date | null; paymentStartedAt: Date | null;
+};
 type LockedHold = { id: string; variantId: string; branchId: string; quantity: bigint; expiresAt: Date };
 type LockedInventory = { id: string; variantId: string; physical: bigint; reserved: bigint };
 type ItemSnapshot = {
@@ -65,7 +69,8 @@ export function createPendingCorrectionService(database: PrismaClient) {
   async function correctPendingSale(req: RequestLike, saleId: string, input: CorrectPendingSaleInput) {
     return inTransaction(async (tx) => {
       const [sale] = await tx.$queryRaw<LockedSale[]>`
-        SELECT id, "branchId", status, total FROM "Sale" WHERE id = ${saleId} FOR UPDATE
+        SELECT id, "branchId", status, total, "pricingMode", "wholesaleConfirmedAt", "paymentStartedAt"
+        FROM "Sale" WHERE id = ${saleId} FOR UPDATE
       `;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
       // Live authority, paired with the sale's own persisted location.
@@ -73,8 +78,10 @@ export function createPendingCorrectionService(database: PrismaClient) {
       if (sale.status !== 'PENDING_PAYMENT') {
         throw conflict('INVALID_SALE_STATE', 'Solo se puede corregir una venta pendiente de pago.');
       }
-      // Payment-row existence, never the payment sum (Policy A).
-      if (await tx.salePayment.count({ where: { saleId } }) > 0) {
+      // Payment-row existence, never the payment sum (Policy A). Block 1: the
+      // durable paymentStartedAt fact also counts, so deleting or moving the
+      // payment rows can never reopen a sale that already accepted money.
+      if (sale.paymentStartedAt !== null || await tx.salePayment.count({ where: { saleId } }) > 0) {
         throw conflict('PAYMENT_ALREADY_ACCEPTED', 'La venta tiene pagos registrados: no puede corregirse.');
       }
 
@@ -121,11 +128,15 @@ export function createPendingCorrectionService(database: PrismaClient) {
       const newVariants = newVariantIds.length === 0 ? [] : await tx.productVariant.findMany({
         where: { id: { in: newVariantIds }, isActive: true, product: { isActive: true } },
         select: {
-          id: true, productId: true, sku: true, price: true, color: true, size: true,
+          id: true, productId: true, sku: true, price: true, wholesalePrice: true, color: true, size: true,
           product: { select: { name: true } },
         },
       });
       if (newVariants.length !== newVariantIds.length) throw new AppError(404, 'NOT_FOUND', 'No se encontró la variante activa.');
+      // Block 1: a new line takes the catalog price of the sale's own mode,
+      // resolved before any write (a WHOLESALE sale cannot gain a line that
+      // has no wholesale price). Existing lines keep their snapshot.
+      const newUnitPrices = new Map(newVariants.map((variant) => [variant.id, unitPriceFor(sale.pricingMode, variant)]));
 
       const inventories = await tx.$queryRaw<LockedInventory[]>`
         SELECT id, "variantId", physical, reserved
@@ -179,11 +190,12 @@ export function createPendingCorrectionService(database: PrismaClient) {
           await tx.saleItem.update({ where: { id: item.id }, data: { quantity: after, subtotal: after * item.unitPrice } });
         } else {
           const variant = newVariants.find(({ id }) => id === variantId)!;
+          const unitPrice = newUnitPrices.get(variantId)!;
           await tx.saleItem.create({
             data: {
               saleId, variantId, productId: variant.productId, productName: variant.product.name,
               variantName: variantName(variant), sku: variant.sku,
-              quantity: after, unitPrice: variant.price, subtotal: after * variant.price,
+              quantity: after, unitPrice, subtotal: after * unitPrice,
             },
           });
         }
@@ -201,12 +213,24 @@ export function createPendingCorrectionService(database: PrismaClient) {
       if (!verified.ok) throw invalidReservation();
 
       const subtotal = resultItems.reduce((sum, item) => sum + item.subtotal, 0n);
-      await tx.sale.update({ where: { id: saleId }, data: { subtotal, discountTotal: 0n, total: subtotal } });
+      // Block 1: a cashier confirmation covers the exact content confirmed.
+      // A corrected WHOLESALE sale must be confirmed again before payment.
+      const clearsConfirmation = sale.pricingMode === 'WHOLESALE' && sale.wholesaleConfirmedAt !== null;
+      await tx.sale.update({
+        where: { id: saleId },
+        data: {
+          subtotal, discountTotal: 0n, total: subtotal,
+          ...(clearsConfirmation ? { wholesaleConfirmedAt: null, wholesaleConfirmedById: null } : {}),
+        },
+      });
       const afterItems = resultItems.map(snapshotOf);
       await createAuditLog(tx, {
         userId: req.auth!.userId, branchId: sale.branchId, action: 'SALE_CORRECTED', entityType: 'Sale', entityId: saleId,
         before: { status: sale.status, total: sale.total, items: beforeItems },
-        after: { status: sale.status, total: subtotal, items: afterItems, reservationChanges: deltas, expiresAt },
+        after: {
+          status: sale.status, total: subtotal, items: afterItems, reservationChanges: deltas, expiresAt,
+          ...(clearsConfirmation ? { wholesaleConfirmationCleared: true } : {}),
+        },
       });
       return {
         saleId, branchId: sale.branchId, status: sale.status, subtotal, total: subtotal, items: afterItems,

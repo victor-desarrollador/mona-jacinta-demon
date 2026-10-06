@@ -36,6 +36,10 @@ type Variant = {
 
 type SaleStatus = "DRAFT" | "PENDING_PAYMENT" | "PAID" | "COMPLETED" | "CANCELLED";
 
+// Block 1: the server decides and stores the price mode; the client only
+// renders it. LIST is the ordinary price; WHOLESALE is sale-scoped.
+type PricingMode = "LIST" | "WHOLESALE";
+
 type SaleItem = {
   id: string;
   variantId: string;
@@ -55,6 +59,7 @@ type Sale = {
   subtotal: string;
   discountTotal: string;
   total: string;
+  pricingMode?: PricingMode;
   branch?: { id: string; name: string; code: string };
   seller?: { id: string; name: string; email: string };
   items: SaleItem[];
@@ -81,6 +86,10 @@ type PendingSale = {
   paymentCount?: number;
   canCorrect?: boolean;
   canCancel?: boolean;
+  // Block 1: stored wholesale state; confirmWholesale stays authoritative.
+  pricingMode?: PricingMode;
+  wholesaleConfirmed?: boolean;
+  canConfirmWholesale?: boolean;
 };
 
 type CancellationReason = "WRONG_ITEM" | "WRONG_QUANTITY" | "CUSTOMER_CHANGED_MIND" | "DUPLICATE_SALE" | "OTHER";
@@ -497,6 +506,10 @@ function SellerWorkspace({
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
+  // Block 1: the wholesale code lives only in this input until submitted;
+  // it is cleared on submit, success or failure, and never stored.
+  const [wholesaleOpen, setWholesaleOpen] = useState(false);
+  const [wholesaleCode, setWholesaleCode] = useState("");
 
   useEffect(() => {
     if (!token || !branchId) return;
@@ -570,6 +583,7 @@ function SellerWorkspace({
       });
       setSale(draft);
       setSentSale(null);
+      closeWholesale();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo abrir la venta.");
     } finally {
@@ -618,6 +632,32 @@ function SellerWorkspace({
     }
   }
 
+  function closeWholesale() {
+    setWholesaleOpen(false);
+    setWholesaleCode("");
+  }
+
+  async function activateWholesale() {
+    const code = wholesaleCode;
+    setWholesaleCode("");
+    if (!token || !sale || !code.trim()) return;
+    setActionLoading(true);
+    setError("");
+
+    try {
+      const nextSale = await apiRequest<Sale>(`/sales/${sale.id}/wholesale`, token, {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      });
+      setSale(nextSale);
+      closeWholesale();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo activar la venta mayorista.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
   async function sendToCashier() {
     if (!token || !sale || sale.items.length === 0) return;
     setActionLoading(true);
@@ -641,6 +681,7 @@ function SellerWorkspace({
     setSale(null);
     setSentSale(null);
     setError("");
+    closeWholesale();
   }
 
   return (
@@ -770,6 +811,38 @@ function SellerWorkspace({
           </div>
         ) : (
           <>
+            {sale.pricingMode === "WHOLESALE" ? (
+              <p className="state-pill">Venta mayorista activa</p>
+            ) : wholesaleOpen ? (
+              <form
+                className="correction-panel"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  activateWholesale();
+                }}
+              >
+                <label>
+                  Código mayorista
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={wholesaleCode}
+                    onChange={(event) => setWholesaleCode(event.target.value)}
+                    disabled={actionLoading}
+                  />
+                </label>
+                <button type="submit" className="secondary-button" disabled={actionLoading || !wholesaleCode.trim()}>
+                  Activar mayorista
+                </button>
+                <button type="button" className="secondary-button" onClick={closeWholesale} disabled={actionLoading}>
+                  Cancelar
+                </button>
+              </form>
+            ) : (
+              <button className="secondary-button" onClick={() => setWholesaleOpen(true)} disabled={actionLoading}>
+                Mayorista
+              </button>
+            )}
             <SaleItemsList
               items={sale.items}
               actionLoading={actionLoading}
@@ -1096,6 +1169,24 @@ function CashierWorkspace({
     }
   }
 
+  // Block 1: the server records the confirmation (own location, never the
+  // sale's seller); the queue is refetched for the authoritative state.
+  async function confirmWholesale() {
+    if (!token || !selectedSale) return;
+    setActionLoading(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiRequest(`/sales/${selectedSale.saleId}/wholesale/confirm`, token, { method: "POST" });
+      await refreshQueue();
+      setNotice("Venta mayorista confirmada.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo confirmar la venta mayorista.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
   async function submitCancellation() {
     if (!token || !selectedSale || !cancelReason) return;
     const note = cancelNote.trim();
@@ -1205,6 +1296,7 @@ function CashierWorkspace({
                 <span>
                   <strong>{sale.saleNumber ?? shortId(sale.saleId)}</strong>
                   <small>{sale.sellerName || "Vendedor no informado"}</small>
+                  {sale.pricingMode === "WHOLESALE" ? <small>Mayorista</small> : null}
                 </span>
                 <span>
                   <strong>{formatMoney(sale.total)}</strong>
@@ -1235,6 +1327,26 @@ function CashierWorkspace({
                 {statusLabel(selectedStatus)}
               </span>
             </div>
+
+            {selectedSale?.pricingMode === "WHOLESALE" ? (
+              <div className="sale-actions">
+                <span className="state-pill">Mayorista</span>
+                {selectedSale.wholesaleConfirmed ? (
+                  <span className="paid-pill">Mayorista confirmada</span>
+                ) : (
+                  <>
+                    <p className="cart-note">Caja debe confirmar la venta mayorista antes de cobrarla.</p>
+                    {selectedSale.canConfirmWholesale ? (
+                      <button className="secondary-button" onClick={confirmWholesale} disabled={actionLoading || paymentLoading}>
+                        Confirmar venta mayorista
+                      </button>
+                    ) : (
+                      <p className="cart-note">No podés confirmar esta venta mayorista: debe hacerlo otro cajero de la sucursal.</p>
+                    )}
+                  </>
+                )}
+              </div>
+            ) : null}
 
             <div className="remaining-card">
               <span>Saldo pendiente</span>
@@ -1530,7 +1642,9 @@ function CashierWorkspace({
               <span>-&gt;</span>
             </button>
 
-            {paymentBlocked && selectedSale?.holdState === "EXPIRED" ? (
+            {paymentBlocked && selectedSale?.pricingMode === "WHOLESALE" && !selectedSale.wholesaleConfirmed ? (
+              <p className="cart-note">Confirmá la venta mayorista para habilitar el cobro.</p>
+            ) : paymentBlocked && selectedSale?.holdState === "EXPIRED" ? (
               <p className="cart-note">La reserva técnica venció: la venta no admite un primer pago.</p>
             ) : paymentBlocked && selectedSale?.holdState === "COVERAGE_INVALID" ? (
               <p className="cart-note">Las reservas de la venta no son válidas: no admite pagos.</p>

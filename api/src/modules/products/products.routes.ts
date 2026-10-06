@@ -46,6 +46,15 @@ export function createVariantsRouter(database: PrismaClient): Router {
     validate(createVariantSchema),
     controller.createVariant,
   );
+  // Block 1: current list + wholesale price for price management only. The
+  // ordinary GET /variants and /products reads (INVENTORY_VIEW, held by
+  // SELLER/CASHIER/WAREHOUSE) never select wholesalePrice.
+  router.get(
+    '/:id/pricing',
+    requirePermission(PRODUCTION_PERMISSIONS.PRICE_MANAGE),
+    validate(variantIdSchema, 'params'),
+    controller.getVariantPricing,
+  );
   router.patch(
     '/:id/price',
     requirePermission(PRODUCTION_PERMISSIONS.PRICE_MANAGE),

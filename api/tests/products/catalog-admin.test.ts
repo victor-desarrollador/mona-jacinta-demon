@@ -197,7 +197,9 @@ describe('admin catalogue API (D3)', () => {
     it('changes only the sell price for ADMIN COMPANY and audits before/after', async () => {
       const response = await patch(adminToken, variantId, { price: '4990000' });
       expect(response.status).toBe(200);
-      expect(response.body.variant).toMatchObject({ id: variantId, price: '4990000', costPrice: '2500000' });
+      // Block 1 (M6): price management returns only the pricing projection —
+      // never costPrice; the stored cost itself is untouched (below).
+      expect(response.body.variant).toEqual({ id: variantId, sku: expect.any(String), price: '4990000', wholesalePrice: null });
       const persisted = await prisma.productVariant.findUniqueOrThrow({ where: { id: variantId } });
       expect(persisted.price).toBe(4990000n);
       expect(persisted.costPrice).toBe(2500000n);

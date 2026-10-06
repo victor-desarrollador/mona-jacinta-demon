@@ -20,6 +20,9 @@ export function createProductsController(database: PrismaClient = defaultPrisma)
     createVariant: (async (req, res) => {
       sendJson(res.status(201), { variant: await catalog.createVariant(req.auth!.userId, req.body) });
     }) as RequestHandler,
+    getVariantPricing: (async (req, res) => {
+      sendJson(res, { pricing: await catalog.getVariantPricing(String(req.params.id)) });
+    }) as RequestHandler,
     updateVariantPrice: (async (req, res) => {
       sendJson(res, {
         variant: await catalog.updateVariantPrice(req.auth!.userId, String(req.params.id), req.body),

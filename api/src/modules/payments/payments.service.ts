@@ -1,13 +1,17 @@
-import type { PrismaClient, SalePayment } from '../../generated/prisma/client.js';
+import type { PriceType, PrismaClient, SalePayment } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 import type { RegisterPaymentInput } from './dto/payment.dto.js';
 import { evaluateCurrentHoldCoverage } from '../sales/hold-coverage.js';
+import { assertPricingFinalizable } from '../sales/wholesale-authorization.service.js';
 
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
-type LockedSale = { id: string; branchId: string; status: string; total: bigint };
+type LockedSale = {
+  id: string; branchId: string; status: string; total: bigint;
+  pricingMode: PriceType; wholesaleConfirmedAt: Date | null; wholesaleConfirmedById: string | null;
+};
 
 const transient = (error: unknown) => {
   const candidate = error as { code?: string; meta?: { code?: string } };
@@ -64,7 +68,8 @@ export function createPaymentsService(database: PrismaClient) {
   async function attempt(req: RequestLike, userId: string, saleId: string, input: RegisterPaymentInput) {
     return database.$transaction(async (tx) => {
       const [sale] = await tx.$queryRaw<LockedSale[]>`
-        SELECT id, "branchId", status, total FROM "Sale" WHERE id = ${saleId} FOR UPDATE
+        SELECT id, "branchId", status, total, "pricingMode", "wholesaleConfirmedAt", "wholesaleConfirmedById"
+        FROM "Sale" WHERE id = ${saleId} FOR UPDATE
       `;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
       assertCurrentBranch(req, sale.branchId);
@@ -87,6 +92,9 @@ export function createPaymentsService(database: PrismaClient) {
       // them. The clock is read here, once per decision, never from input.
       // Detection only: nothing is released from the payment path.
       const payments = await tx.salePayment.findMany({ where: { saleId }, select: { amount: true } });
+      // Block 1: a WHOLESALE sale takes no payment (not even a partial one)
+      // until a cashier confirmed it.
+      assertPricingFinalizable(sale);
       const items = await tx.saleItem.findMany({ where: { saleId }, select: { variantId: true, quantity: true } });
       const activeHolds = await tx.stockReservation.findMany({
         where: { saleId, status: 'ACTIVE' },
@@ -117,6 +125,9 @@ export function createPaymentsService(database: PrismaClient) {
         receivedAmount: input.receivedAmount, changeAmount, cashSessionId,
         idempotencyKey: input.idempotencyKey,
       } });
+      // Block 1: Sale.paymentStartedAt (durable payment history) is
+      // maintained by the database from this SalePayment row, in this same
+      // transaction (see the Block 1 migration); the service never writes it.
       if (cashSessionId) {
         await tx.cashMovement.create({ data: {
           sessionId: cashSessionId, type: 'SALE_INCOME', amount: payment.amount,

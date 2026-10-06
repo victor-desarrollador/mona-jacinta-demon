@@ -13,7 +13,7 @@ import type { CreateVariantInput, UpdateVariantPriceInput } from './dto/variant.
 // concurrent duplicate that slips past the pre-check still fails on the
 // database unique index and maps to 409 via errorHandler (P2002).
 
-type CatalogDatabase = Pick<PrismaClient, 'category' | 'brand' | '$transaction'>;
+type CatalogDatabase = Pick<PrismaClient, 'category' | 'brand' | 'productVariant' | '$transaction'>;
 
 const productSelect = {
   id: true, name: true, slug: true, categoryId: true, brandId: true, isActive: true,
@@ -21,8 +21,13 @@ const productSelect = {
 
 const variantSelect = {
   id: true, productId: true, sku: true, barcode: true, color: true, size: true,
-  price: true, costPrice: true, isActive: true,
+  price: true, wholesalePrice: true, costPrice: true, isActive: true,
 } as const;
+
+// Block 1: the ONE response shape of price management (GET /variants/:id/
+// pricing and PATCH /variants/:id/price): exactly what the price editor
+// needs. Least privilege: no costPrice, no other variant/product columns.
+const pricingSelect = { id: true, sku: true, price: true, wholesalePrice: true } as const;
 
 function conflict(code: string, message: string) {
   return new AppError(409, code, message);
@@ -75,24 +80,46 @@ export function createCatalogAdminService(database: CatalogDatabase) {
     });
   }
 
+  // Block 1: management read of the current prices (list + wholesale) for
+  // the admin price editor. Routed behind PRICE_MANAGE (COMPANY-required),
+  // never through the seller/warehouse catalog reads, which keep omitting
+  // wholesalePrice. Returns prices only: no cost, no other columns.
+  async function getVariantPricing(variantId: string) {
+    const variant = await database.productVariant.findUnique({
+      where: { id: variantId }, select: pricingSelect,
+    });
+    if (!variant) throw new AppError(404, 'NOT_FOUND', 'No se encontró la variante.');
+    return variant;
+  }
+
   async function updateVariantPrice(userId: string, variantId: string, input: UpdateVariantPriceInput) {
     return database.$transaction(async (tx) => {
       // Row lock so the audited `before` is exactly the price this update
       // replaced, even under concurrent price changes.
-      const [current] = await tx.$queryRaw<Array<{ price: bigint }>>`
-        SELECT price FROM "ProductVariant" WHERE id = ${variantId} FOR UPDATE
+      const [current] = await tx.$queryRaw<Array<{ price: bigint; wholesalePrice: bigint | null }>>`
+        SELECT price, "wholesalePrice" FROM "ProductVariant" WHERE id = ${variantId} FOR UPDATE
       `;
       if (!current) throw new AppError(404, 'NOT_FOUND', 'No se encontró la variante.');
+      // Block 1: the RESULTING pair must keep wholesale <= list, whichever
+      // side this request changes (mirrors the DB CHECK constraint).
+      const price = input.price ?? current.price;
+      const wholesalePrice = input.wholesalePrice === undefined ? current.wholesalePrice : input.wholesalePrice;
+      if (wholesalePrice !== null && wholesalePrice > price) {
+        throw conflict('WHOLESALE_PRICE_ABOVE_LIST', 'El precio mayorista no puede superar el precio de lista.');
+      }
       const variant = await tx.productVariant.update({
-        where: { id: variantId }, data: { price: input.price }, select: variantSelect,
+        where: { id: variantId }, data: { price, wholesalePrice }, select: pricingSelect,
       });
+      // Audit exactly the fields this request changed.
+      const changed = (['price', 'wholesalePrice'] as const).filter((field) => input[field] !== undefined);
       await createAuditLog(tx, {
         userId, branchId: null, action: 'PRODUCT_VARIANT_PRICE_CHANGED', entityType: 'ProductVariant', entityId: variantId,
-        before: { price: current.price }, after: { price: variant.price },
+        before: Object.fromEntries(changed.map((field) => [field, current[field]])),
+        after: Object.fromEntries(changed.map((field) => [field, variant[field]])),
       });
       return variant;
     });
   }
 
-  return { listCategories, listBrands, createProduct, createVariant, updateVariantPrice };
+  return { listCategories, listBrands, createProduct, createVariant, getVariantPricing, updateVariantPrice };
 }

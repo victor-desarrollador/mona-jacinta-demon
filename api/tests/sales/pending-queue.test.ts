@@ -222,6 +222,8 @@ describe('cashier pending-sales queue', () => {
       holdState: 'COVERAGE_INVALID', canAcceptPayment: false,
       // Pilot P0.2-C: informational eligibility for the calling cashier.
       paymentCount: 0, canCorrect: false, canCancel: true,
+      // Block 1: an ordinary sale is LIST and needs no wholesale confirmation.
+      pricingMode: 'LIST', wholesaleConfirmed: false, canConfirmWholesale: false,
     }]);
   });
 

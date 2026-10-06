@@ -154,6 +154,13 @@ export type CatalogProduct = {
   variants: CatalogVariant[];
 };
 
+// Block 1: management-only price read (GET /variants/:id/pricing,
+// PRICE_MANAGE). wholesalePrice null = the variant has no wholesale price.
+export type VariantPricing = { id: string; sku: string; price: string; wholesalePrice: string | null };
+
+// Only the fields being changed are sent; wholesalePrice null clears it.
+export type UpdateVariantPriceBody = { price?: string; wholesalePrice?: string | null };
+
 export type CreateProductBody = { name: string; slug: string; categoryId: string; brandId: string };
 
 export type CreateVariantBody = {
@@ -203,6 +210,8 @@ const allowedCatalogue: Array<[string, RegExp]> = [
   ['GET', /^\/brands$/],
   ['POST', /^\/products$/],
   ['POST', /^\/variants$/],
+  // Block 1: management-only price read (PRICE_MANAGE server side).
+  ['GET', new RegExp(`^/variants/${UUID}/pricing$`)],
   ['PATCH', new RegExp(`^/variants/${UUID}/price$`)],
   ['POST', /^\/inventory\/initial-stock$/],
 ];
@@ -309,9 +318,11 @@ export const api = {
     ),
   createVariant: (token: string, body: CreateVariantBody, onUnauthorized: () => void) =>
     send<{ variant: CatalogVariant & { costPrice: string } }>('POST', '/variants', token, body, onUnauthorized),
-  updateVariantPrice: (token: string, variantId: string, price: string, onUnauthorized: () => void) =>
-    send<{ variant: CatalogVariant & { costPrice: string } }>(
-      'PATCH', `/variants/${variantId}/price`, token, { price }, onUnauthorized,
+  variantPricing: (token: string, variantId: string, onUnauthorized: () => void) =>
+    request<{ pricing: VariantPricing }>(`/variants/${variantId}/pricing`, { token, onUnauthorized }),
+  updateVariantPrice: (token: string, variantId: string, body: UpdateVariantPriceBody, onUnauthorized: () => void) =>
+    send<{ variant: VariantPricing }>(
+      'PATCH', `/variants/${variantId}/price`, token, body, onUnauthorized,
     ),
   loadInitialStock: (token: string, body: InitialStockBody, onUnauthorized: () => void) =>
     send<InitialStockResult>('POST', '/inventory/initial-stock', token, body, onUnauthorized),

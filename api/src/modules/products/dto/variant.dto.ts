@@ -28,13 +28,27 @@ export const createVariantSchema = z
     color: z.string().trim().min(1).max(60).optional(),
     size: z.string().trim().min(1).max(30).optional(),
     price: positiveCents,
+    // Block 1: optional; omitted means the variant has no wholesale price.
+    wholesalePrice: positiveCents.optional(),
     costPrice: nonNegativeCents,
   })
-  .strict();
+  .strict()
+  .refine((input) => input.wholesalePrice === undefined || input.wholesalePrice <= input.price, {
+    path: ['wholesalePrice'],
+    message: 'El precio mayorista no puede superar el precio de lista.',
+  });
 
 export type CreateVariantInput = z.infer<typeof createVariantSchema>;
 
-// D3: changes the sell price only — costPrice is not accepted (strict).
-export const updateVariantPriceSchema = z.object({ price: positiveCents }).strict();
+// D3: changes sell prices only — costPrice is not accepted (strict).
+// Block 1: list price and/or wholesale price; wholesalePrice null clears it.
+// The wholesale <= list rule is checked by the service against the locked
+// row, since either side may be omitted here.
+export const updateVariantPriceSchema = z
+  .object({ price: positiveCents.optional(), wholesalePrice: positiveCents.nullable().optional() })
+  .strict()
+  .refine((input) => input.price !== undefined || input.wholesalePrice !== undefined, {
+    message: 'Debe indicar al menos un precio.',
+  });
 
 export type UpdateVariantPriceInput = z.infer<typeof updateVariantPriceSchema>;

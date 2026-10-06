@@ -99,6 +99,29 @@ export function hasPermissionAtLocation(ctx: Ctx, permission: string, locationId
   return ctx.assignments.some((assignment) => assignmentQualifies(assignment, permission, locationId));
 }
 
+// Block 1 (2026-10-02): a business-ACTOR check, layered ON TOP of the normal
+// permission check, never a substitute for it. Some actions must be done by
+// a person acting in one specific Production role at one location (wholesale
+// confirmation is a CASHIER act), so company-wide authority is deliberately
+// NOT enough: there is no OWNER shortcut here and a COMPANY-scoped
+// assignment never qualifies. The role, the LOCATION scope and the
+// permission must all come from the SAME persisted assignment
+// (UserRoleScope, rebuilt per request — a revoked scope stops qualifying on
+// the next request; UserBranchRole and client-sent role text never reach
+// `assignments`).
+export function actsAsRoleAtLocation(
+  ctx: Ctx,
+  roleCode: Express.ProductionAssignment['roleCode'],
+  permission: string,
+  locationId: string,
+): boolean {
+  if (!locationId) return false;
+  return ctx.assignments.some((assignment) => assignment.roleCode === roleCode
+    && assignment.scopeKind === 'LOCATION'
+    && assignment.locationId === locationId
+    && assignment.permissions.includes(permission));
+}
+
 // Coarse membership only — "is this location within ANY assignment, in ANY
 // capacity" — no permission attached, and therefore not subject to the
 // COMPANY-required rule at all (there is no permission to check it

@@ -14,6 +14,8 @@ export const logger = pino({
       'TEST_DATABASE_URL',
       'JWT_SECRET',
       'DEMO_SEED_PASSWORD',
+      'WHOLESALE_AUTH_CODE_HASH',
+      'wholesaleCode',
     ],
     censor: '[REDACTED]',
   },

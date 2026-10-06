@@ -38,6 +38,18 @@ enum PaymentMethod {
   QR
 }
 
+// Block 1: Sale.pricingMode, the single authoritative price-mode fact for
+// every line of the sale (SaleItem.unitPrice is the immutable snapshot taken
+// from the matching catalog column). LIST is the ordinary retail price
+// (ProductVariant.price); WHOLESALE (ProductVariant.wholesalePrice) is
+// enabled per sale by a server-validated code and confirmed by a cashier.
+// There is deliberately no CASH value: a cash-price mode is not offered
+// (AGENTS.md, 2026-10-02 supersession).
+enum PriceType {
+  LIST
+  WHOLESALE
+}
+
 enum CashSessionStatus {
   OPEN
   CLOSED
@@ -113,7 +125,8 @@ model User {
 
   branchRoles        UserBranchRole[]
   roleScopes         UserRoleScope[]
-  sales              Sale[]
+  sales              Sale[]           @relation("SaleSeller")
+  wholesaleConfirmed Sale[]           @relation("SaleWholesaleConfirmedBy")
   stockMovements     StockMovement[]
   openedCashSessions CashSession[]    @relation("CashSessionOpenedBy")
   closedCashSessions CashSession[]    @relation("CashSessionClosedBy")
@@ -273,7 +286,12 @@ model ProductVariant {
   barcode   String  @unique
   color     String?
   size      String?
+  // List (ordinary retail) price, centavos.
   price     BigInt
+  // Block 1: optional wholesale price, centavos. NULL means "no wholesale
+  // price": a WHOLESALE sale cannot carry this variant (fails closed).
+  // DB CHECK: NULL or 0 < wholesalePrice <= price.
+  wholesalePrice BigInt?
   costPrice BigInt
   isActive  Boolean @default(true)
   product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
@@ -351,7 +369,27 @@ model Sale {
   createdAt     DateTime   @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime   @updatedAt @db.Timestamptz(3)
   branch        Branch     @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  seller        User       @relation(fields: [sellerId], references: [id], onDelete: Restrict)
+  seller        User       @relation("SaleSeller", fields: [sellerId], references: [id], onDelete: Restrict)
+
+  // Block 1: sale-scoped wholesale state. Only the sale's own seller can
+  // activate WHOLESALE (a server-validated code; the code itself is never
+  // stored), so the authorizing actor is sellerId. A cashier at the sale's
+  // location must confirm before the sale accepts a payment or completes.
+  // DB CHECKs: LIST rows carry none of these; a WHOLESALE sale was
+  // authorized and can never be PAID or COMPLETED without a confirmation.
+  pricingMode            PriceType @default(LIST)
+  wholesaleAuthorizedAt  DateTime? @db.Timestamptz(3)
+  wholesaleConfirmedById String?
+  wholesaleConfirmedAt   DateTime? @db.Timestamptz(3)
+  wholesaleConfirmedBy   User?     @relation("SaleWholesaleConfirmedBy", fields: [wholesaleConfirmedById], references: [id], onDelete: Restrict)
+  // Block 1: durable payment history — the earliest persisted
+  // SalePayment.paidAt this sale has ever had. Maintained ONLY by DB
+  // triggers on SalePayment, in the same transaction as the payment change;
+  // it may move earlier, never later or back to NULL, and cannot be set
+  // without real payment evidence. Deleting, moving or truncating payment
+  // rows never erases it; while the sale has payment history, pricingMode
+  // and the wholesale columns above are frozen by a DB trigger.
+  paymentStartedAt       DateTime? @db.Timestamptz(3)
 
   items             SaleItem[]
   payments          SalePayment[]

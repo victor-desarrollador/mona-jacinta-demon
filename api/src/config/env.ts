@@ -75,6 +75,12 @@ const envSchema = z.object({
   RESERVATION_SWEEPER_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   RESERVATION_SWEEP_INTERVAL_MS: z.coerce.number().int().min(1000).default(60000),
   RESERVATION_SWEEP_BATCH_SIZE: z.coerce.number().int().min(1).max(EXPIRED_HOLD_RELEASE_BATCH_LIMIT).default(100),
+  // Block 1: bcrypt hash (cost >= 10) of the wholesale authorization code —
+  // never the code itself. Unset or empty: wholesale sales are unavailable.
+  WHOLESALE_AUTH_CODE_HASH: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.string().regex(/^\$2[aby]\$(1[0-9]|2[0-9]|3[01])\$[./A-Za-z0-9]{53}$/).optional(),
+  ),
 }).transform(({ PORT, API_PORT, ...rest }, ctx) => {
   if (rest.NODE_ENV === 'test' && rest.TEST_DATABASE_URL === undefined) {
     ctx.addIssue({ code: 'custom', path: ['TEST_DATABASE_URL'], message: 'Required for tests' });
