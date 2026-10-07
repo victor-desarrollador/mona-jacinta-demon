@@ -29,7 +29,7 @@ import {
 } from './local-test-prepare.mjs';
 import { API_DIR, verifyMigrationPayload } from './pilot-migrate.mjs';
 import { runTool } from './local-test-safe-error.mjs';
-import { buildWitness, preWitnessSha256 } from './local-test-witness.mjs';
+import { buildWitness, preWitnessSha256, resolveBackupGeneration } from './local-test-witness.mjs';
 
 // LOCAL_TEST backup at the prepare checkpoint (Block 1, V2.3; V2.3.2 checkpoint binding).
 //
@@ -464,7 +464,10 @@ async function verifyRun(runDir, deps, fail) {
   });
   const tocText = toc.length ? `${toc.join('\n')}\n` : '';
   if (listed.ok && listed.stderrBytes > 0) return fail('verify', 'pg_restore --list wrote to stderr (refused; bytes not shown)');
-  const tocCheck = listed.ok ? checkToc(tocText) : { ok: false, reason: listed.detail };
+  // The manifest's migration set must be exactly a recognised schema generation; its relation set is that generation's, never the archive's.
+  const generation = resolveBackupGeneration(manifest.migrations);
+  if (!generation) return fail('verify', 'manifest migration set is not a recognised approved schema generation');
+  const tocCheck = listed.ok ? checkToc(tocText, generation.relations) : { ok: false, reason: listed.detail };
   if (!tocCheck.ok) return fail('verify', tocCheck.reason);
   if (sha256(tocText) !== manifest.list?.sha256 || tocCheck.multisetSha256 !== manifest.tocMultisetSha256) return fail('verify', 'archive TOC does not match the manifest');
   deps.log(`${PREFIX} VERIFY OK run=${path.basename(runDir)} dump_sha256=${archive.sha256} toc_tables=${tocCheck.tables}`);

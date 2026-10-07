@@ -156,15 +156,15 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(new Set(variants).size).toBe(variants.length);
   });
 
-  it('AC-150 TYPE_CONTRACT_V3 is the 155-column / 25-relation / 2-jsonb / 9-enum contract and equals an independent derivation from schema.prisma', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(155);
-    expect(PROTECTED_RELATIONS).toHaveLength(25);
+  it('AC-150 TYPE_CONTRACT_V3 is the 172-column / 26-relation / 2-jsonb / 10-enum contract and equals an independent derivation from schema.prisma', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(172);
+    expect(PROTECTED_RELATIONS).toHaveLength(26);
     expect(TYPE_CONTRACT_V3.filter((c) => c.type === 'jsonb')).toHaveLength(2);
-    expect(ENUM_TYPES).toHaveLength(9);
+    expect(ENUM_TYPES).toHaveLength(10);
     expect(PROTECTED_FUNCTION_NAMES).toHaveLength(3);
     const counts: Record<string, number> = {};
     for (const c of TYPE_CONTRACT_V3) counts[c.type] = (counts[c.type] ?? 0) + 1;
-    expect(counts).toEqual({ text: 99, int4: 3, int8: 19, bool: 5, tstz: 18, enum: 9, jsonb: 2 });
+    expect(counts).toEqual({ text: 102, int4: 9, int8: 21, bool: 5, tstz: 21, enum: 12, jsonb: 2 });
     // relations sorted by raw bytes, attnums contiguous from 1, exactly one PK column set per relation
     expect([...PROTECTED_RELATIONS].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))).toEqual([...PROTECTED_RELATIONS]);
     for (const r of PROTECTED_RELATIONS) {
@@ -195,7 +195,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
         checked += 1;
       }
     }
-    expect(checked).toBe(155 - 8); // every contract column except the 8 Prisma-internal _prisma_migrations columns is a schema.prisma field
+    expect(checked).toBe(172 - 8); // every contract column except the 8 Prisma-internal _prisma_migrations columns is a schema.prisma field
   });
 
   it('AC-150b the migrations the contract was derived from are pinned: a new/changed migration must update the contract and its review', () => {
@@ -204,9 +204,10 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(names).toEqual([
       '20260907015311_init', '20260912182432_add_company_location', '20260912191702_add_user_role_scope',
       '20260922210000_d3_initial_stock_and_global_audit', '20261002120000_block1_pricing_wholesale',
+      '20261006120000_pilot_pricing_v2',
     ]);
     const joined = names.map((n) => `${n}:${sha(readFileSync(path.join(dir, n, 'migration.sql')))}`).join('\n');
-    expect(sha(joined)).toBe('3ab010c66c122dec3b7ee356f7f258c2e20304f747a26515cef6b1f872a178c8');
+    expect(sha(joined)).toBe('854c37caef36944848b211824a6d5bfc9027d09c0e75904bc60527c37d2f9552');
   });
 
   it('AC-136 SQL NULL, empty string and JSON null encode distinctly and boundary bytes cannot shift framing', () => {
@@ -316,7 +317,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(() => new DigestSink('MID' as never)).toThrow();
   });
 
-  it('AC-144 mutating any single one of the 155 columns changes both digests', () => {
+  it('AC-144 mutating any single one of the 172 columns changes both digests', () => {
     const base = run(buildState());
     let n = 0;
     for (const col of TYPE_CONTRACT_V3) {
@@ -325,7 +326,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
       expect(mutated.POST, `${col.relation}.${col.name} POST`).not.toBe(base.POST);
       n += 1;
     }
-    expect(n).toBe(155);
+    expect(n).toBe(172);
   });
 
   it('AC-145 every header field changes both digests; a wrong search_path or encoding is refused', () => {
@@ -556,7 +557,7 @@ describe('SQL readers (G08 qualification, G05, G20, G42, G53)', () => {
     }
   });
 
-  it('AC-151 the out-of-contract relation check names exactly the 25 protected relations and every kind of relation object', () => {
+  it('AC-151 the out-of-contract relation check names exactly the 26 protected relations and every kind of relation object', () => {
     const sql = FINGERPRINT_SQL.extraRelations as string;
     for (const relation of PROTECTED_RELATIONS) expect(sql).toContain(`'${relation}'`);
     expect(sql).toMatch(/relkind IN \('r', 'p', 'v', 'm', 'f', 'S', 'c'\)/);
@@ -581,7 +582,7 @@ describe('SQL readers (G08 qualification, G05, G20, G42, G53)', () => {
     expect(post.end()).toBe(oDigest('POST', oStream(state)));
     expect(result.serverVersionNum).toBe('170004');
     expect(result.markerId).toBe(header0.markerId);
-    expect(result.rows?.size).toBe(25);
+    expect(result.rows?.size).toBe(26);
     expect(result.schemaDigest).toBe(oSchemaDigest(state));
     expect(result.rows?.get('User')).toEqual(state.relations.find((r) => r.facts.relation === 'User')?.rows);
     const none = await readStateOnTransaction(asTx(fakeReaderTx(state)), [new DigestSink('PRE')], false);

@@ -621,11 +621,11 @@ describe('executables: start guard, no restore, no path from the outcome tools t
 });
 
 describe('mirrored constants cannot drift (drift guard)', () => {
-  it('PROTECTED_RELATION_NAMES (witness.mjs) equals PROTECTED_RELATIONS (fingerprint.ts), same order, 25 entries', async () => {
+  it('PROTECTED_RELATION_NAMES (witness.mjs) equals PROTECTED_RELATIONS (fingerprint.ts), same order, 26 entries', async () => {
     const mod = (await import(pathToFileURL(path.join(DB_SCRIPTS, 'local-test-witness.mjs')).href)) as { PROTECTED_RELATION_NAMES: readonly string[] };
     const { PROTECTED_RELATIONS } = await import('../scripts/local-test-fingerprint.js');
     expect([...mod.PROTECTED_RELATION_NAMES]).toEqual([...PROTECTED_RELATIONS]);
-    expect(PROTECTED_RELATIONS).toHaveLength(25);
+    expect(PROTECTED_RELATIONS).toHaveLength(26);
   });
 });
 

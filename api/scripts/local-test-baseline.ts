@@ -103,6 +103,8 @@ export type VariantRow = {
   barcode: string;
   color: string | null;
   size: string | null;
+  // Pilot Pricing V2: retail CASH base (nullable in the DB until backfilled).
+  cashPrice: bigint | null;
   price: bigint;
   costPrice: bigint;
   isActive: boolean;
@@ -506,7 +508,7 @@ export class TransformationViolation extends Error {
 }
 
 const PRESERVED_RELATIONS = new Set([
-  'Company', 'Location', 'UserBranchRole', 'AuditLog', 'Sale', 'SaleItem', 'SalePayment', 'CashSession', 'CashMovement', 'StockMovement', 'StockReservation', '_prisma_migrations',
+  'Company', 'CompanyPricingConfig', 'Location', 'UserBranchRole', 'AuditLog', 'Sale', 'SaleItem', 'SalePayment', 'CashSession', 'CashMovement', 'StockMovement', 'StockReservation', '_prisma_migrations',
 ]);
 const categoryOf = (relation: string, column: string) => {
   if (relation === 'ProductVariant' && column === 'wholesalePrice') return 'PRESERVED_FROM_BACKUP';
@@ -885,7 +887,7 @@ to_regclass('public._prisma_migrations') IS NOT NULL AS "_prisma_migrations"`,
       orderBy: { id: 'asc' },
     }),
     variants: await tx.productVariant.findMany({
-      select: { id: true, productId: true, sku: true, barcode: true, color: true, size: true, price: true, costPrice: true, isActive: true },
+      select: { id: true, productId: true, sku: true, barcode: true, color: true, size: true, cashPrice: true, price: true, costPrice: true, isActive: true },
       orderBy: { id: 'asc' },
     }),
     inventory: await tx.inventory.findMany({

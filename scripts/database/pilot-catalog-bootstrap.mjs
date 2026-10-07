@@ -75,7 +75,7 @@ const deepFreeze = (value) => {
 let barcodeSeq = 0;
 const variant = (sku, color, size, price, costPrice, pcen, pdep) => {
   barcodeSeq += 1;
-  return { sku: `PILOT-${sku}`, barcode: `PILOT-BC-${String(barcodeSeq).padStart(4, '0')}`, color, size, price, costPrice, stock: { PCEN: pcen, PDEP: pdep } };
+  return { sku: `PILOT-${sku}`, barcode: `PILOT-BC-${String(barcodeSeq).padStart(4, '0')}`, color, size, cashPrice: price, price, costPrice, stock: { PCEN: pcen, PDEP: pdep } };
 };
 export const CATALOG = deepFreeze({
   categories: ['Remeras PILOT', 'Pantalones PILOT', 'Abrigos PILOT'],
@@ -145,10 +145,10 @@ export function validateCatalog(catalog, canonical, locations = LOCATION_TYPES) 
     if (!Array.isArray(p.variants) || p.variants.length === 0) return fail(`${p.slug}: needs at least one variant`);
     for (const v of p.variants) {
       count += 1;
-      if (!exactKeys(v, ['sku', 'barcode', 'color', 'size', 'price', 'costPrice', 'stock'])) return fail(`${p.slug}: each variant must be exactly {sku, barcode, color, size, price, costPrice, stock}`);
+      if (!exactKeys(v, ['sku', 'barcode', 'color', 'size', 'cashPrice', 'price', 'costPrice', 'stock'])) return fail(`${p.slug}: each variant must be exactly {sku, barcode, color, size, cashPrice, price, costPrice, stock}`);
       if (typeof v.sku !== 'string' || !v.sku.startsWith('PILOT-')) return fail('variant SKUs must start with PILOT-');
       if (typeof v.barcode !== 'string' || !v.barcode.startsWith('PILOT-')) return fail(`${v.sku}: barcode must start with PILOT-`);
-      if (typeof v.price !== 'string' || typeof v.costPrice !== 'string') return fail(`${v.sku}: money must be integer-centavo strings`);
+      if (typeof v.cashPrice !== 'string' || typeof v.price !== 'string' || typeof v.costPrice !== 'string') return fail(`${v.sku}: money must be integer-centavo strings`);
       // Present strings only: an undefined value would serialize into the plan like null.
       if (typeof v.color !== 'string' || typeof v.size !== 'string') return fail(`${v.sku}: color and size must be strings`);
       const { stock, ...input } = v;
@@ -225,7 +225,7 @@ export function canonicalPlan({ markerId, projectRef, catalog, locations = LOCAT
     ['categories', ...catalog.categories],
     ['brands', ...catalog.brands],
     ['products', ...catalog.products.map((p) => ['product', p.name, p.slug, p.category, p.brand,
-      ...p.variants.map((v) => ['variant', v.sku, v.barcode, v.color, v.size, v.price, v.costPrice,
+      ...p.variants.map((v) => ['variant', v.sku, v.barcode, v.color, v.size, v.cashPrice, v.price, v.costPrice,
         ['stock', ...locations.map(([code]) => [code, v.stock[code]])]])])],
     ['audit', 'PRODUCT_CREATED and PRODUCT_VARIANT_CREATED via the canonical catalog-admin service (branchId null)'],
     ['ledger', 'per variant and location: canonical initial-stock service (physical increment, INITIAL_STOCK movement, INVENTORY_INITIAL_STOCK_LOADED audit)'],
@@ -328,7 +328,8 @@ function exactCatalogConflicts(s, catalog, { locationIds, locations, ownerId }, 
   }
   for (const { product, variant: v } of variants) {
     const row = one(s.variants, (x) => x.sku === v.sku);
-    if (!row || row.barcode !== v.barcode || row.color !== v.color || row.size !== v.size || row.price !== BigInt(v.price)
+    if (!row || row.barcode !== v.barcode || row.color !== v.color || row.size !== v.size
+      || row.cashPrice !== BigInt(v.cashPrice) || row.price !== BigInt(v.price)
       || row.costPrice !== BigInt(v.costPrice) || row.isActive !== true || row.productId !== productIds.get(product.slug)) {
       conflict(`variant ${v.sku} is missing or differs`);
       continue;
@@ -411,7 +412,7 @@ async function readSnapshot(tx, ownerRoleId, owner) {
     brands: await tx.brand.findMany({ select: { id: true, name: true } }),
     products: await tx.product.findMany({ select: { id: true, name: true, slug: true, description: true, categoryId: true, brandId: true, isActive: true } }),
     variants: await tx.productVariant.findMany({
-      select: { id: true, productId: true, sku: true, barcode: true, color: true, size: true, price: true, costPrice: true, isActive: true },
+      select: { id: true, productId: true, sku: true, barcode: true, color: true, size: true, cashPrice: true, price: true, costPrice: true, isActive: true },
     }),
     inventory: await tx.inventory.findMany({ select: { id: true, variantId: true, branchId: true, physical: true, reserved: true } }),
     movements: await tx.stockMovement.findMany({
@@ -611,10 +612,10 @@ export async function main(argv, deps = defaultDeps) {
       '  all merchandise is synthetic PILOT data, not real Mona Jacinta inventory; money in ARS centavos',
       `  categories: ${catalog.categories.join(', ')}`,
       `  brands: ${catalog.brands.join(', ')}`,
-      `  products (${catalog.products.length}) and variants (${variants.length}): sku  barcode  color/size  price/cost (centavos)  stock ${retail}/${warehouse}`,
+      `  products (${catalog.products.length}) and variants (${variants.length}): sku  barcode  color/size  cash/list/cost (centavos)  stock ${retail}/${warehouse}`,
       ...catalog.products.flatMap((p) => [
         `    "${p.name}"  ${p.slug}  [${p.category} / ${p.brand}]`,
-        ...p.variants.map((v) => `      ${v.sku}  ${v.barcode}  ${v.color}/${v.size}  ${v.price}/${v.costPrice}  ${v.stock[retail]}/${v.stock[warehouse]}`),
+        ...p.variants.map((v) => `      ${v.sku}  ${v.barcode}  ${v.color}/${v.size}  ${v.cashPrice}/${v.price}/${v.costPrice}  ${v.stock[retail]}/${v.stock[warehouse]}`),
       ]),
       '  writes: Category/Brand create; Product/ProductVariant via the canonical catalog-admin service (+ audit);',
       '    stock via the canonical initial-stock service (Inventory increment + INITIAL_STOCK movement + audit)',

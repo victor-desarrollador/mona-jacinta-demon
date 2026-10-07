@@ -22,6 +22,7 @@ import { API_DIR, APPROVED_MIGRATION_PAYLOAD, resolvePrismaCli, verifyMigrationP
 import {
   PRE_FORMAT,
   PROTECTED_RELATION_NAMES,
+  isKnownBackupRelationSet,
   authorizationStorePath,
   bindPost,
   buildConsumedMarker,
@@ -497,7 +498,7 @@ export function inspectBackupArchive(file, uid) {
 // a blank line, one of the fixed header comment forms, or an entry whose type is in the allow-list; anything else is
 // refused. Entries are counted in a Map BEFORE any comparison (a Set would hide a duplicate TABLE or TABLE DATA line).
 // Required: exactly one dbname == mona_local_test, exactly one declared `TOC Entries: N` equal to the parsed entry count,
-// no marker schema, TABLE and TABLE DATA each exactly once per relation, and exactly the 25 protected relations in
+// no marker schema, TABLE and TABLE DATA each exactly once per relation, and exactly the 26 protected relations in
 // schema `public`. The result carries a TOC MULTISET digest (sorted `type\tschema\tname` lines, duplicates kept) that the
 // manifest binds. Reasons are fixed strings: nothing from the archive is echoed.
 const TOC_HEADER_FORMS = [
@@ -507,7 +508,10 @@ const TOC_HEADER_FORMS = [
 const TOC_ENTRY = /^(\d+); (\d+) (\d+) (TABLE DATA|TABLE|SCHEMA|COMMENT|TYPE|FUNCTION|CONSTRAINT|FK CONSTRAINT|INDEX|TRIGGER) (\S+) (.+) (\S+)$/;
 const TOC_HEADER_ONLY_KINDS = Object.freeze(['ENCODING', 'STDSTRINGS', 'SEARCHPATH', 'DATABASE']);
 const TOC_PUBLIC_ONLY = new Set(['TABLE DATA', 'TABLE', 'TYPE', 'FUNCTION', 'CONSTRAINT', 'FK CONSTRAINT', 'INDEX', 'TRIGGER']);
-export function checkToc(text) {
+// `relations` defaults to the CURRENT protected set; only a set equal to a recognised backup generation's relations is accepted
+// (never one derived from the archive or supplied ad hoc).
+export function checkToc(text, relations = PROTECTED_RELATION_NAMES) {
+  if (!isKnownBackupRelationSet(relations)) return { ok: false, reason: 'relation contract is not a recognised backup generation' };
   if (typeof text !== 'string' || text.trim() === '') return { ok: false, reason: 'pg_restore --list printed nothing' };
   const refuse = (reason) => ({ ok: false, reason });
   if (text.includes(GUARD_SCHEMA)) return refuse(`archive contains the ${GUARD_SCHEMA} schema`);
@@ -546,7 +550,7 @@ export function checkToc(text) {
   if ([...data.values()].some((n) => n !== 1)) return refuse('archive lists TABLE DATA more than once');
   for (const name of tables.keys()) if (!data.has(name)) return refuse('archive lists a table without its TABLE DATA entry');
   for (const name of data.keys()) if (!tables.has(name)) return refuse('archive lists TABLE DATA without its table');
-  if (tables.size !== PROTECTED_RELATION_NAMES.length || PROTECTED_RELATION_NAMES.some((n) => !tables.has(n))) return refuse('archive tables differ from the protected relations');
+  if (tables.size !== relations.length || relations.some((n) => !tables.has(n))) return refuse('archive tables differ from the protected relations');
   const multiset = entries.map((e) => `${e.type}\t${e.schema}\t${e.name}`).sort().join('\n');
   return { ok: true, entries: entries.length, tables: tables.size, multisetSha256: createHash('sha256').update(`${multiset}\n`).digest('hex') };
 }

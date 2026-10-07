@@ -22,13 +22,46 @@ export const AUTH_FORMAT = 'mona-local-test-resume-authorization/v1';
 export const AUTH_ACTION = 'resume-seed-2';
 export const AUTH_MAX_TTL_MS = 2 * 60 * 60 * 1000;
 export const WITNESS_MAX_BYTES = 4096;
-// The 25 protected relations (raw-byte order), mirrored from api/scripts/local-test-fingerprint.ts PROTECTED_RELATIONS; a vitest
+// The 26 protected relations (raw-byte order), mirrored from api/scripts/local-test-fingerprint.ts PROTECTED_RELATIONS; a vitest
 // test (local-test-fingerprint.test.ts) pins the two lists against each other so they cannot drift.
 export const PROTECTED_RELATION_NAMES = Object.freeze([
-  'AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'Inventory', 'Location', 'Permission', 'Product',
+  'AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'CompanyPricingConfig', 'Inventory', 'Location', 'Permission', 'Product',
   'ProductVariant', 'Role', 'RolePermission', 'Sale', 'SaleItem', 'SaleNumberCounter', 'SalePayment', 'StockMovement', 'StockReservation', 'User',
   'UserBranchRole', 'UserRoleScope', '_prisma_migrations',
 ]);
+
+// Historical backup verification contract: an EXPLICIT, versioned list of the schema generations whose backups
+// `local-test-backup.mjs --verify` still recognises. A generation is the exact ordered (name, sha256) migration set a manifest
+// binds, paired with the exact protected relation set that schema archived. Nothing here is derived from an archive, a
+// manifest or the migrations directory; an unlisted migration set (unknown, future, partial, reordered, altered) has no
+// generation and is refused. G6 is the current contract; adding a migration requires a new reviewed generation here (a test
+// pins G6 to the OWNER-approved migration payload). Backup creation and the resume always use the current contract only.
+const pairs = (list) => Object.freeze(list.map((pair) => Object.freeze([...pair])));
+const RELATIONS_G5 = Object.freeze(PROTECTED_RELATION_NAMES.filter((name) => name !== 'CompanyPricingConfig'));
+const MIGRATIONS_G5 = pairs([
+  ['20260907015311_init', 'a584edab13a2ae540d694578ffa3b5a622decff04e238a5cf16d3040d295e4cb'],
+  ['20260912182432_add_company_location', '19c345aa92c79a0a613dc03ea01dcf10e91b5a75fd6f3535076d8d71b6f740af'],
+  ['20260912191702_add_user_role_scope', '2b415411eddc1212bf60419ce49022cea38d1fc2d12cb08938ad7c953caf7f3a'],
+  ['20260922210000_d3_initial_stock_and_global_audit', '62b3b169e06a48dc2e2a3f81cee11e02a809b2733db2453c5b9eef91c15f77cf'],
+  ['20261002120000_block1_pricing_wholesale', '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173'],
+]);
+export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([
+  Object.freeze({ id: 'G1-5', migrations: MIGRATIONS_G5, relations: RELATIONS_G5 }),
+  Object.freeze({
+    id: 'G1-6',
+    migrations: pairs([...MIGRATIONS_G5, ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12']]),
+    relations: PROTECTED_RELATION_NAMES,
+  }),
+]);
+const sameList = (a, b) => Array.isArray(a) && a.length === b.length && a.every((x, i) => x === b[i]);
+// The generation whose migration set EXACTLY equals `migrations` ([name, sha256] pairs, order included), or null.
+export function resolveBackupGeneration(migrations) {
+  if (!Array.isArray(migrations)) return null;
+  return BACKUP_SCHEMA_GENERATIONS.find((g) => g.migrations.length === migrations.length
+    && g.migrations.every((pair, i) => Array.isArray(migrations[i]) && sameList(migrations[i], pair))) ?? null;
+}
+// True only for a relation list that equals, in content and order, the relations of a recognised generation.
+export const isKnownBackupRelationSet = (relations) => BACKUP_SCHEMA_GENERATIONS.some((g) => sameList(relations, g.relations));
 export const WITNESS_DEADLINE_MS = 5000;
 
 const u32 = (n) => {

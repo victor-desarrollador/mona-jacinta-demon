@@ -242,7 +242,7 @@ describe('commit gate (C10)', () => {
   });
 });
 
-const LOCKED_TABLES = 25;
+const LOCKED_TABLES = 26;
 describe('withProtectedResumeTransaction (T0–T16)', () => {
   it('AC-063/122 happy path: the steps run in the reviewed order and COMMIT is the last event, issued once', async () => {
     const hx = harness(); const events = hx.events;
@@ -254,7 +254,7 @@ describe('withProtectedResumeTransaction (T0–T16)', () => {
     expect(hx.calls()).toBe(1);
   });
 
-  it('AC-107/112 the owner statements: search_path first, then the timeouts and synchronous_commit, then the marker and 25 table locks, before any step', async () => {
+  it('AC-107/112 the owner statements: search_path first, then the timeouts and synchronous_commit, then the marker and 26 table locks, before any step', async () => {
     const hx = harness(); const events = hx.events;
     await run(hx, events);
     const sql = sqlOf(events);

@@ -28,8 +28,8 @@ const API = '/synthetic/repo/api';
 const sha = (label) => createHash('sha256').update(label).digest('hex');
 const LEAKS = [SECRET, URL_TEXT];
 const ARCHIVE = Buffer.from('PGDMP synthetic custom archive bytes\n');
-const R4_RELATIONS = ['AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'Inventory', 'Location', 'Permission', 'Product', 'ProductVariant', 'Role', 'RolePermission', 'Sale', 'SaleItem', 'SaleNumberCounter', 'SalePayment', 'StockMovement', 'StockReservation', 'User', 'UserBranchRole', 'UserRoleScope', '_prisma_migrations'];
-// A TOC in the shape pg_restore --list prints, for the 25 protected relations plus a few allow-listed object kinds (R4 strict contract).
+const R4_RELATIONS = ['AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'CompanyPricingConfig', 'Inventory', 'Location', 'Permission', 'Product', 'ProductVariant', 'Role', 'RolePermission', 'Sale', 'SaleItem', 'SaleNumberCounter', 'SalePayment', 'StockMovement', 'StockReservation', 'User', 'UserBranchRole', 'UserRoleScope', '_prisma_migrations'];
+// A TOC in the shape pg_restore --list prints, for the 26 protected relations plus a few allow-listed object kinds (R4 strict contract).
 function r4Toc({ tables = R4_RELATIONS, data = tables, extra = [], dbname = 'mona_local_test', declared } = {}) {
   const entries = [
     '6; 2615 2200 SCHEMA - public pg_database_owner',
@@ -50,9 +50,18 @@ function r4Toc({ tables = R4_RELATIONS, data = tables, extra = [], dbname = 'mon
 }
 const TOC = r4Toc();
 
+const G5_PAIRS = [
+  ['20260907015311_init', 'a584edab13a2ae540d694578ffa3b5a622decff04e238a5cf16d3040d295e4cb'],
+  ['20260912182432_add_company_location', '19c345aa92c79a0a613dc03ea01dcf10e91b5a75fd6f3535076d8d71b6f740af'],
+  ['20260912191702_add_user_role_scope', '2b415411eddc1212bf60419ce49022cea38d1fc2d12cb08938ad7c953caf7f3a'],
+  ['20260922210000_d3_initial_stock_and_global_audit', '62b3b169e06a48dc2e2a3f81cee11e02a809b2733db2453c5b9eef91c15f77cf'],
+  ['20261002120000_block1_pricing_wholesale', '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173'],
+];
+const G6_PAIRS = [...G5_PAIRS, ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12']];
+const G6_MIGRATIONS = G6_PAIRS.map(([name, sha256]) => ({ name, sha256 }));
 // V2.3.2: a backup binds the current prepare checkpoint, read from <home>/.local/state/...;
 // runs get a real owner-only home holding one current checkpoint for the default payload.
-const DEFAULT_PAYLOAD = Object.freeze({ ok: true, migrations: [{ name: '20260907015311_init', sha256: sha('m1') }], lock: { provider: 'postgresql', sha256: sha('lock') } });
+const DEFAULT_PAYLOAD = Object.freeze({ ok: true, migrations: G6_MIGRATIONS, lock: { provider: 'postgresql', sha256: sha('lock') } });
 const STORE_POLICY = Object.freeze({ uid: process.getuid(), repoRoot: '/synthetic/repo', forbiddenRoots: ['/synthetic/tmp'] });
 function checkpointedHome({ marker = MARKER, payload = DEFAULT_PAYLOAD, record = true } = {}) {
   const home = mkdtempSync(path.join(os.tmpdir(), 'mona-v232-backup-home-'));
@@ -363,13 +372,13 @@ test('K23/K39/K40/K41 success: exact argv, password only in the child env, verif
   assert.equal(manifest.dump.sha256, sha(ARCHIVE));
   assert.equal(manifest.dump.bytes, ARCHIVE.length);
   assert.equal(manifest.list.sha256, sha(TOC));
-  assert.equal(manifest.list.tables, 25); // R4: exactly the 25 protected relations
+  assert.equal(manifest.list.tables, 26); // R4: exactly the 26 protected relations
   assert.equal(manifest.manifestSha256, backup.manifestSelfHash(manifest));
   assert.equal(manifestText, `${JSON.stringify(manifest, null, 2)}\n`);
   assertNoLeak(manifestText);
   const ok = r.text.split('\n').filter((l) => l.startsWith('[db:local-test-backup] LOCAL_TEST_BACKUP_OK'));
   assert.equal(ok.length, 1);
-  assert.match(ok[0], new RegExp(`^\\[db:local-test-backup\\] LOCAL_TEST_BACKUP_OK run=${dir} dump_sha256=${sha(ARCHIVE)} bytes=${ARCHIVE.length} toc_tables=25 state=POST_BACKFILL checkpoint=cp-\\d{8}T\\d{6}Z-[0-9a-f]{32}$`));
+  assert.match(ok[0], new RegExp(`^\\[db:local-test-backup\\] LOCAL_TEST_BACKUP_OK run=${dir} dump_sha256=${sha(ARCHIVE)} bytes=${ARCHIVE.length} toc_tables=26 state=POST_BACKFILL checkpoint=cp-\\d{8}T\\d{6}Z-[0-9a-f]{32}$`));
   assert.equal(r.counts.SEED_MUST_NEVER_RUN, undefined);
   assert.equal(r.counts.BACKFILL_MUST_NEVER_RUN, undefined);
   assertNoLeak(r.text);
@@ -469,7 +478,7 @@ test('K44/K45/K46 --verify re-checks a finalized set without any database or env
   const ok = await run([`--verify=${runDir}`], { env: {} });
   assert.equal(ok.code, 0, ok.text);
   assert.ok(!ok.order.includes('loadRuntime'));
-  assert.match(ok.text, /^\[db:local-test-backup\] VERIFY OK run=local-test-20261003T120000Z-a1b2c3d4 dump_sha256=[0-9a-f]{64} toc_tables=25$/m);
+  assert.match(ok.text, /^\[db:local-test-backup\] VERIFY OK run=local-test-20261003T120000Z-a1b2c3d4 dump_sha256=[0-9a-f]{64} toc_tables=26$/m);
   const manifestFile = path.join(runDir, 'local-test.dump.manifest.json');
   const original = readFileSync(manifestFile, 'utf8');
   writeFileSync(manifestFile, original.replace('"POST_BACKFILL"', '"EXACT_BASELINE"'));
@@ -484,7 +493,7 @@ test('K44/K45/K46 --verify re-checks a finalized set without any database or env
 });
 
 // --- V231. the manifest is the resume evidence local-test-prepare.mjs verifies ----------------------
-const PAYLOAD = { ok: true, migrations: [{ name: '20260907015311_init', sha256: sha('m1') }], lock: { provider: 'postgresql', sha256: sha('lock') } };
+const PAYLOAD = DEFAULT_PAYLOAD;
 
 test('V231-B1 the manifest (v4 since R4) binds the verified migration payload (names + sha256) and the lock', async () => {
   const { root } = scratchRoot();
@@ -492,7 +501,7 @@ test('V231-B1 the manifest (v4 since R4) binds the verified migration payload (n
   assert.equal(r.code, 0, r.text);
   const manifest = JSON.parse(readFileSync(path.join(root, runDirs(root)[0], 'local-test.dump.manifest.json'), 'utf8'));
   assert.equal(manifest.format, 'mona-local-test-backup/v4');
-  assert.deepEqual(manifest.migrations, [['20260907015311_init', sha('m1')]]);
+  assert.deepEqual(manifest.migrations, G6_PAIRS);
   assert.deepEqual(manifest.lock, { provider: 'postgresql', sha256: sha('lock') });
   assert.equal(manifest.manifestSha256, backup.manifestSelfHash(manifest));
 });
@@ -687,4 +696,133 @@ test('R4 an exporter that refuses (state not POST_BACKFILL, or the catalog chang
     assert.ok(r.order.includes('close'));
     assertNoLeak(r.text);
   }
+});
+
+// --- HG. historical backup verification: explicit versioned schema generations ------------------------------------
+// Generation 1-5 (migrations through block1) archived 25 protected relations; generation 1-6 (Pricing V2) adds
+// CompanyPricingConfig. --verify must recognise exactly these two, each against its own exact relation set.
+const G5_RELATIONS = R4_RELATIONS.filter((n) => n !== 'CompanyPricingConfig');
+const HG_ENTRY = /^\d+; \d+ \d+ (TABLE DATA|TABLE|SCHEMA|COMMENT|TYPE|FUNCTION|CONSTRAINT|FK CONSTRAINT|INDEX|TRIGGER) (\S+) (.+) \S+$/;
+const HG_PAYLOAD = (pairs) => ({ ok: true, migrations: pairs.map(([name, sha256]) => ({ name, sha256 })), lock: { provider: 'postgresql', sha256: sha('lock') } });
+const HG_HOME = checkpointedHome({ payload: HG_PAYLOAD(G6_PAIRS) });
+
+// A finalized run (made by the real tool under the CURRENT contract) whose manifest is re-bound, independently of the code
+// under test, to `pairs` and to the TOC listing `toc`: canonical, re-self-hashed, so only the version contract can refuse it.
+async function hgRun({ pairs = G6_PAIRS, toc = TOC, mutate } = {}) {
+  const { root } = scratchRoot();
+  const made = await execute(root, { payload: HG_PAYLOAD(G6_PAIRS), home: HG_HOME });
+  assert.equal(made.code, 0, made.text);
+  const runDir = path.join(root, runDirs(root)[0]);
+  const file = path.join(runDir, 'local-test.dump.manifest.json');
+  const manifest = JSON.parse(readFileSync(file, 'utf8'));
+  const entries = toc.split('\n').map((l) => HG_ENTRY.exec(l)).filter(Boolean).map((m) => `${m[1]}\t${m[2]}\t${m[3]}`);
+  manifest.migrations = pairs;
+  manifest.list = { sha256: createHash('sha256').update(toc).digest('hex'), entries: entries.length, tables: entries.filter((e) => e.startsWith('TABLE\t')).length };
+  manifest.tocMultisetSha256 = createHash('sha256').update(`${[...entries].sort().join('\n')}\n`).digest('hex');
+  if (mutate) mutate(manifest, runDir);
+  manifest.manifestSha256 = backup.manifestSelfHash(manifest);
+  writeFileSync(file, `${JSON.stringify(manifest, null, 2)}\n`);
+  return runDir;
+}
+const hgVerify = (runDir, toc) => run([`--verify=${runDir}`], { env: {}, spawn: { pg_restore: { toc } } });
+const G5_TOC = r4Toc({ tables: G5_RELATIONS });
+
+test('HG01 ALLOW: an exact approved migration-5 archive verifies against the 25-relation generation', async () => {
+  const r = await hgVerify(await hgRun({ pairs: G5_PAIRS, toc: G5_TOC }), G5_TOC);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /VERIFY OK .* toc_tables=25/);
+  assert.ok(!r.order.includes('loadRuntime'));
+});
+
+test('HG02 ALLOW: an exact approved migration-6 archive verifies against the 26-relation generation', async () => {
+  const r = await hgVerify(await hgRun({}), TOC);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /toc_tables=26/);
+});
+
+test('HG03/HG04/HG05/HG06/HG07/HG17 DENY: unknown, future, missing, reordered, wrong-digest and changed-payload migration sets', async () => {
+  const swapped = [G6_PAIRS[1], G6_PAIRS[0], ...G6_PAIRS.slice(2)];
+  const wrongDigest = G6_PAIRS.map(([n, s], i) => (i === 4 ? [n, sha('tampered block1')] : [n, s]));
+  const wrongPricing = G6_PAIRS.map(([n, s], i) => (i === 5 ? [n, sha('tampered v2')] : [n, s]));
+  const cases = {
+    unknownSynthetic: [['20260907015311_init', sha('m1')]],
+    futureSeventh: [...G6_PAIRS, ['20261201000000_future', sha('future')]],
+    missingKnown: G6_PAIRS.filter((_, i) => i !== 2),
+    onlyFirstFour: G6_PAIRS.slice(0, 4),
+    reordered: swapped,
+    wrongDigestBlock1: wrongDigest,
+    changedPricingPayload: wrongPricing,
+    empty: [],
+  };
+  for (const [label, pairs] of Object.entries(cases)) {
+    for (const [toc, name] of [[TOC, 'g6toc'], [G5_TOC, 'g5toc']]) {
+      const r = await hgVerify(await hgRun({ pairs, toc }), toc);
+      assert.equal(r.code, 1, `${label}/${name} must be denied`);
+    }
+  }
+});
+
+test('HG08/HG09/HG10/HG11/HG14 DENY: relation sets that are not exactly the manifest generation', async () => {
+  const dropOne = (names, n) => names.filter((x) => x !== n);
+  const cases = [
+    ['g5 missing relation', G5_PAIRS, r4Toc({ tables: dropOne(G5_RELATIONS, 'Sale') })],
+    ['g5 extra relation', G5_PAIRS, r4Toc({ tables: [...G5_RELATIONS, 'ExtraTable'] })],
+    ['g5 with CompanyPricingConfig', G5_PAIRS, TOC],
+    ['g6 missing CompanyPricingConfig', G6_PAIRS, G5_TOC],
+    ['g6 extra relation', G6_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'ExtraTable'] })],
+    ['g5 duplicate relation', G5_PAIRS, r4Toc({ tables: [...G5_RELATIONS, 'Sale'] })],
+    ['g6 duplicate relation', G6_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'CompanyPricingConfig'] })],
+  ];
+  for (const [label, pairs, toc] of cases) {
+    const r = await hgVerify(await hgRun({ pairs, toc }), toc);
+    assert.equal(r.code, 1, `${label} must be denied`);
+  }
+});
+
+test('HG12/HG13/HG16 DENY: TOC mutation, manifest self-hash mutation and a non-regular archive', async () => {
+  const dir = await hgRun({ pairs: G5_PAIRS, toc: G5_TOC });
+  assert.equal((await hgVerify(dir, G5_TOC.replace('TABLE DATA public Sale ', 'TABLE DATA public Sale  '))).code, 1);
+  assert.equal((await hgVerify(dir, r4Toc({ tables: G5_RELATIONS, extra: ['5001; 1259 40001 INDEX public Sale ix mona_local_test'] }))).code, 1);
+  const file = path.join(dir, 'local-test.dump.manifest.json');
+  const manifest = JSON.parse(readFileSync(file, 'utf8'));
+  writeFileSync(file, `${JSON.stringify({ ...manifest, manifestSha256: sha('forged') }, null, 2)}\n`);
+  assert.equal((await hgVerify(dir, G5_TOC)).code, 1);
+  const linked = await hgRun({ pairs: G5_PAIRS, toc: G5_TOC, mutate: (_, d) => { rmSync(path.join(d, 'local-test.dump')); symlinkSync('/etc/hostname', path.join(d, 'local-test.dump')); } });
+  assert.equal((await hgVerify(linked, G5_TOC)).code, 1);
+});
+
+test('HG15 DENY: the expected relation set is never derived from the archive', () => {
+  // A caller (or archive) cannot supply its own expectation: the archive's own 25 names, or any other list, are refused.
+  assert.equal(prepare.checkToc(G5_TOC).ok, false);
+  assert.equal(prepare.checkToc(G5_TOC, G5_RELATIONS).ok, true);
+  assert.equal(prepare.checkToc(G5_TOC, [...G5_RELATIONS, 'ExtraTable']).ok, false);
+  assert.equal(prepare.checkToc(r4Toc({ tables: ['Sale'] }), ['Sale']).ok, false);
+  assert.equal(prepare.checkToc(TOC, G5_RELATIONS).ok, false);
+});
+
+test('HG18 SCOPE: backup creation and the resume contract still require the current 26 relations', async () => {
+  const { root } = scratchRoot();
+  const made = await execute(root, { payload: HG_PAYLOAD(G6_PAIRS), home: HG_HOME, spawn: { pg_restore: { toc: G5_TOC } } });
+  assert.equal(made.code, 1);
+  assert.equal(runDirs(root).length, 0);
+  assert.equal(prepare.checkToc(TOC).ok, true);
+});
+
+test('HG19 the current generation is pinned to the OWNER-approved payload; a new migration needs a new reviewed generation', async () => {
+  const witness = await import('./local-test-witness.mjs');
+  const { APPROVED_MIGRATION_PAYLOAD } = await import('./pilot-migrate.mjs');
+  const [g5, g6] = witness.BACKUP_SCHEMA_GENERATIONS;
+  assert.deepEqual(witness.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id), ['G1-5', 'G1-6']);
+  assert.deepEqual(g6.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
+  assert.deepEqual(g5.migrations, g6.migrations.slice(0, 5));
+  assert.deepEqual(g5.migrations, G5_PAIRS);
+  assert.deepEqual([...g6.relations], [...witness.PROTECTED_RELATION_NAMES]);
+  assert.deepEqual([...g5.relations], G5_RELATIONS);
+  assert.equal(g5.relations.length, 25);
+  assert.equal(g6.relations.length, 26);
+  assert.ok(Object.isFrozen(witness.BACKUP_SCHEMA_GENERATIONS) && Object.isFrozen(g5) && Object.isFrozen(g5.migrations) && Object.isFrozen(g5.relations));
+  assert.equal(witness.resolveBackupGeneration(g5.migrations)?.id, 'G1-5');
+  assert.equal(witness.resolveBackupGeneration(g6.migrations)?.id, 'G1-6');
+  assert.equal(witness.resolveBackupGeneration(undefined), null);
+  assert.equal(witness.resolveBackupGeneration('G1-6'), null);
 });

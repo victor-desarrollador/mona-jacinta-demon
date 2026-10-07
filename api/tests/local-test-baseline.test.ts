@@ -83,6 +83,7 @@ function canonicalFixture(): LocalTestCanonicalBaseline {
       barcode: `DEMO-${sku}`,
       color,
       size,
+      cashPrice: price,
       price,
       costPrice,
       isActive: true,
@@ -279,6 +280,7 @@ const UNSAFE: Array<[string, Stage, (f: LocalTestBaselineFacts) => void]> = [
   ['N4 one extra Product', 'POST_SEED1', (f) => { f.seeded.products.push({ ...f.seeded.products[0]!, id: id(999), slug: 'extra' }); }],
   ['N5 one missing Variant', 'POST_SEED1', (f) => { f.seeded.variants.pop(); }],
   ['N6 a Variant price changed', 'EXACT_BASELINE', (f) => { f.seeded.variants[0]!.price = 1n; }],
+  ['N6b a Variant cashPrice changed', 'EXACT_BASELINE', (f) => { f.seeded.variants[0]!.cashPrice = 1n; }],
   ['N7 canonical email with a different user id', 'POST_SEED1', (f) => { f.seeded.users[1]!.id = id(777); }],
   ['N8 canonical user id with a different email', 'POST_SEED1', (f) => { f.seeded.users[1]!.email = 'someone@demo.local'; }],
   ['N9 a canonical user whose password is not the LOCAL_TEST default', 'EXACT_BASELINE', (f) => { f.seeded.users[0]!.password = 'other'; }],
@@ -528,7 +530,7 @@ describe('R4 transformation verifier (seed #2: P → Q, in memory)', () => {
     const admin = CANONICAL_DEMO_SEED.users.find((u) => u.name === 'admin') as { id: string };
     put('UserRoleScope', { id: 'scope-owner', userId: CANONICAL_DEMO_SEED.owner.id, roleId: roleId('OWNER'), scopeKind: 'COMPANY', locationId: null });
     put('UserRoleScope', { id: 'scope-admin', userId: admin.id, roleId: roleId('ADMIN'), scopeKind: 'COMPANY', locationId: null });
-    put('ProductVariant', { id: 'variant-1', productId: 'product-1', sku: 'S', barcode: 'B', price: '5', costPrice: '3', wholesalePrice: null });
+    put('ProductVariant', { id: 'variant-1', productId: 'product-1', sku: 'S', barcode: 'B', cashPrice: '5', price: '5', costPrice: '3', wholesalePrice: null });
     put('_prisma_migrations', { id: 'm1', checksum: 'c', migration_name: 'n', started_at: '1', applied_steps_count: '1' });
     // Q = what seed #2 produces: fresh bcrypt hashes for the four seed users and the three LOCATION scopes
     const Q: Rows = new Map([...P].map(([k, rows]) => [k, rows.map((r) => [...r])]));
@@ -664,12 +666,15 @@ describe('R4 transformation verifier (seed #2: P → Q, in memory)', () => {
     expect(JSON.stringify([error?.message, error?.stack, Object.getOwnPropertyNames(error as object)])).not.toContain(TCANARY);
     expect((error as { cause?: unknown }).cause).toBeUndefined();
   });
-  it('AC-135 every one of the 155 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(155);
+  it('AC-135 every one of the 172 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(172);
     const categories = new Set(['PRESERVED_FROM_BACKUP', 'CANONICAL_VALUE', 'RECREATED_SEMANTIC_SET', 'ROW_CLASS_RULES', 'PRESERVED_AND_CREATED']);
     for (const c of TYPE_CONTRACT_V3) expect(categories.has(TRANSFORMATION_CATEGORIES[`${c.relation}.${c.name}`] as string), `${c.relation}.${c.name}`).toBe(true);
-    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(155);
+    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(172);
     expect(TRANSFORMATION_CATEGORIES['ProductVariant.wholesalePrice']).toBe('PRESERVED_FROM_BACKUP');
+    // Pilot Pricing V2: the seed writes the retail cash base; owner-managed pricing config is preserved.
+    expect(TRANSFORMATION_CATEGORIES['ProductVariant.cashPrice']).toBe('CANONICAL_VALUE');
+    expect(TRANSFORMATION_CATEGORIES['CompanyPricingConfig.qrAdjustmentBps']).toBe('PRESERVED_FROM_BACKUP');
     expect(TRANSFORMATION_CATEGORIES['User.passwordHash']).toBe('ROW_CLASS_RULES');
     expect(TRANSFORMATION_CATEGORIES['RolePermission.roleId']).toBe('RECREATED_SEMANTIC_SET');
     expect(TRANSFORMATION_CATEGORIES['UserRoleScope.id']).toBe('PRESERVED_AND_CREATED');

@@ -595,6 +595,23 @@ const flipByte = (file) => {
 };
 const outside = (label) => mkdtempSync(path.join(TMP, `outside-${label}-`));
 
+// PRE-REGISTERED Pricing V2 pin cases (2026-10-06), expected BEFORE execution.
+// Class DENY = verifyMigrationPayload() must return ok:false with the named layer;
+// ALLOW = ok:true; NOT_APPLICABLE = cannot be expressed on the filesystem.
+//   V0  exact reviewed Pricing V2 bytes (3282 B) in the sixth slot          -> ALLOW
+//   V1  one-byte SQL mutation, same size, same filename (wrong hash)        -> DENY (SHA-256 layer)
+//   V2  one byte appended (hash metadata right, wrong byte count)           -> DENY (size layer)
+//   V3  Pricing V2 directory removed                                        -> DENY (exact tree)
+//   V4  Pricing V2 renamed to a timestamp before Block 1 (order change)     -> DENY (exact tree)
+//   V5  future unapproved migration directory added                         -> DENY (exact tree)
+//   V6  Pricing V2 migration.sql replaced by a symlink to identical bytes   -> DENY (not a regular file)
+//   V7  Pricing V2 directory replaced by a symlink to an identical copy     -> DENY (not a real directory)
+//   V8  Pricing V2 substituted with Block 1 bytes                           -> DENY (size layer)
+//   V9  older authorized migration (Block 1) changed by one byte            -> DENY (SHA-256 layer)
+//   V10 extra file inside the Pricing V2 directory                          -> DENY (one regular file)
+//   V11 duplicate manifest entry                                            -> NOT_APPLICABLE on disk; asserted on the frozen manifest
+//   V12 dynamically generated manifest (digests derived from disk/readdir)  -> DENY (static source guard)
+//   V13 the Pricing V2 pin carries exactly the reviewed size + SHA-256      -> ALLOW (literal equality)
 test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographic) order', () => {
   assert.deepEqual(NAMES, [
     '20260907015311_init',
@@ -602,8 +619,10 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
     '20260912191702_add_user_role_scope',
     '20260922210000_d3_initial_stock_and_global_audit',
     '20261002120000_block1_pricing_wholesale',
+    '20261006120000_pilot_pricing_v2',
   ]);
   assert.deepEqual([...NAMES].sort(), NAMES);
+  assert.equal(new Set(NAMES).size, NAMES.length, 'V11 no duplicate manifest entry');
   for (const m of APPROVED_MIGRATION_PAYLOAD.migrations) assert.match(m.sha256, /^[0-9a-f]{64}$/);
   assert.match(APPROVED_MIGRATION_PAYLOAD.lock.sha256, /^[0-9a-f]{64}$/);
   assert.equal(APPROVED_MIGRATION_PAYLOAD.lock.provider, 'postgresql');
@@ -622,7 +641,7 @@ test('H1/P1: dry-run validates the payload and prints the names, digests and PAS
   assert.equal(r.code, 0, r.text);
   assert.equal(r.created.length, 0);
   assert.equal(r.spawned.length, 0);
-  assert.match(r.text, /migration payload: PASS — exactly 5 OWNER-approved migrations, SHA-256 approval binding active/);
+  assert.match(r.text, new RegExp(`migration payload: PASS — exactly ${NAMES.length} OWNER-approved migrations, SHA-256 approval binding active`));
   for (const m of APPROVED_MIGRATION_PAYLOAD.migrations) assert.ok(r.text.includes(`${m.name}  sha256 ${m.sha256}`), m.name);
   assert.match(r.text, new RegExp(`migration_lock\\.toml: PASS \\(provider "postgresql", sha256 ${APPROVED_MIGRATION_PAYLOAD.lock.sha256}\\)`));
   assertNoLeak(r.text);
@@ -688,6 +707,30 @@ const PAYLOAD_MUTATIONS = {
     mkdirSync(sqlOf(api, 0));
   },
   'P26 oversize migration.sql': (api) => writeFileSync(sqlOf(api, 3), Buffer.alloc(4 * 1024 * 1024, 0x41)),
+  'V1 Pricing V2 one-byte mutation': (api) => flipByte(sqlOf(api, 5)),
+  'V2 Pricing V2 appended byte': (api) => appendFileSync(sqlOf(api, 5), '\n'),
+  'V3 Pricing V2 missing': (api) => rmSync(path.join(migDir(api), NAMES[5]), { recursive: true }),
+  'V4 Pricing V2 renamed before Block 1': (api) =>
+    renameSync(path.join(migDir(api), NAMES[5]), path.join(migDir(api), '20261001000000_pilot_pricing_v2')),
+  'V5 future unapproved migration': (api) => {
+    mkdirSync(path.join(migDir(api), '20261007000000_future'));
+    writeFileSync(path.join(migDir(api), '20261007000000_future', 'migration.sql'), 'SELECT 1;\n');
+  },
+  'V6 Pricing V2 migration.sql symlink to identical bytes': (api) => {
+    const copy = path.join(outside('v2sql'), 'migration.sql');
+    cpSync(sqlOf(api, 5), copy);
+    rmSync(sqlOf(api, 5));
+    symlinkSync(copy, sqlOf(api, 5));
+  },
+  'V7 Pricing V2 directory symlink to identical copy': (api) => {
+    const copy = path.join(outside('v2dir'), NAMES[5]);
+    cpSync(path.join(migDir(api), NAMES[5]), copy, { recursive: true });
+    rmSync(path.join(migDir(api), NAMES[5]), { recursive: true });
+    symlinkSync(copy, path.join(migDir(api), NAMES[5]));
+  },
+  'V8 Pricing V2 substituted with Block 1 bytes': (api) => cpSync(sqlOf(api, 4), sqlOf(api, 5)),
+  'V9 Block 1 migration changed by one byte': (api) => flipByte(sqlOf(api, 4)),
+  'V10 extra file inside Pricing V2 directory': (api) => writeFileSync(path.join(migDir(api), NAMES[5], 'down.sql'), 'DROP TABLE x;\n'),
 };
 
 test('H1: every payload deviation fails verification (class: exact tree + fd-pinned digests)', () => {
@@ -725,7 +768,28 @@ const EXPECTED_REASON = {
   'P24 api/prisma is a symlink to an identical tree': /^prisma must be a real directory, not a symlink/,
   'P25 migration.sql is a directory': /20260907015311_init must contain exactly one regular migration\.sql/,
   'P26 oversize migration.sql': /d3_initial_stock_and_global_audit\/migration\.sql size differs/,
+  'V1 Pricing V2 one-byte mutation': /pilot_pricing_v2\/migration\.sql does not match its approved SHA-256/,
+  'V2 Pricing V2 appended byte': /pilot_pricing_v2\/migration\.sql size differs/,
+  'V3 Pricing V2 missing': /does not hold exactly the OWNER-approved migrations/,
+  'V4 Pricing V2 renamed before Block 1': /does not hold exactly the OWNER-approved migrations/,
+  'V5 future unapproved migration': /does not hold exactly the OWNER-approved migrations/,
+  'V6 Pricing V2 migration.sql symlink to identical bytes': /pilot_pricing_v2 must contain exactly one regular migration\.sql/,
+  'V7 Pricing V2 directory symlink to identical copy': /pilot_pricing_v2 is not a real directory/,
+  'V8 Pricing V2 substituted with Block 1 bytes': /pilot_pricing_v2\/migration\.sql size differs/,
+  'V9 Block 1 migration changed by one byte': /block1_pricing_wholesale\/migration\.sql does not match its approved SHA-256/,
+  'V10 extra file inside Pricing V2 directory': /pilot_pricing_v2 must contain exactly one regular migration\.sql/,
 };
+
+test('V13/V12: the Pricing V2 pin is the exact reviewed metadata and the manifest stays a literal (never derived from disk)', () => {
+  const v2 = APPROVED_MIGRATION_PAYLOAD.migrations[5];
+  assert.deepEqual({ ...v2 }, { name: '20261006120000_pilot_pricing_v2', bytes: 3282, sha256: 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12' });
+  const source = readFileSync(new URL('./pilot-migrate.mjs', import.meta.url), 'utf8');
+  const block = source.slice(source.indexOf('export const APPROVED_MIGRATION_PAYLOAD'), source.indexOf('const LOCK_FILE'));
+  assert.ok(block.length > 200);
+  assert.doesNotMatch(block, /readdir|readFile|createHash|\bglob(Sync)?\b|\bfs\.|process\.|import\(|require\(|\.map\(|\.filter\(/);
+  const entries = block.match(/Object\.freeze\(\{ name: '\d{14}_[a-z0-9_]+', bytes: \d+, sha256: '[0-9a-f]{64}' \}\)/g) ?? [];
+  assert.equal(entries.length, APPROVED_MIGRATION_PAYLOAD.migrations.length);
+});
 
 test('H1/P17b: a lock with the approved size and a different provider fails the provider check', () => {
   const api = fakeApi();
