@@ -64,8 +64,9 @@ describe('PENDING_PAYMENT to PAID transition', () => {
     status: 'DRAFT' | 'PENDING_PAYMENT' | 'PAID' | 'COMPLETED' | 'CANCELLED' = 'PENDING_PAYMENT',
     options: { held?: boolean; expiresAt?: Date } = {},
   ) {
+    // Pricing V2: new sales default to CASH; this fixture pays by several methods, so it declares LIST (no method constraint).
     const sale = await db.sale.create({
-      data: { sellerId, branchId, status, subtotal: total, total },
+      data: { sellerId, branchId, status, priceMode: 'LIST', subtotal: total, total },
     });
     if (status === 'PENDING_PAYMENT' && options.held !== false) {
       await addItem(sale.id);

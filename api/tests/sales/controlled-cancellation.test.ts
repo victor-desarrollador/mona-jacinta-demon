@@ -59,7 +59,7 @@ describe('POST /api/v1/sales/:saleId/cancel (Pilot P0.2-B)', () => {
     const saleBranch = options.branch ?? branchId;
     const total = quantity * remera.price;
     const created = await db.sale.create({
-      data: { sellerId: options.seller ?? sellerId, branchId: saleBranch, status, subtotal: total, total },
+      data: { sellerId: options.seller ?? sellerId, branchId: saleBranch, status, priceMode: 'LIST', subtotal: total, total },
     });
     await db.saleItem.create({
       data: {

@@ -223,7 +223,8 @@ describe('cashier pending-sales queue', () => {
       // Pilot P0.2-C: informational eligibility for the calling cashier.
       paymentCount: 0, canCorrect: false, canCancel: true,
       // Block 1: an ordinary sale is LIST and needs no wholesale confirmation.
-      pricingMode: 'LIST', wholesaleConfirmed: false, canConfirmWholesale: false,
+      // Pilot Pricing V2: one customer price mode per sale (new sales default to CASH).
+      pricingMode: 'LIST', priceMode: 'CASH', wholesaleConfirmed: false, canConfirmWholesale: false,
     }]);
   });
 
@@ -240,6 +241,8 @@ describe('cashier pending-sales queue', () => {
       id: item.id, productId, variantId, productName: 'Historical product',
       variantName: 'Historical color / size', sku: 'HISTORICAL-SKU',
       quantity: '2', unitPrice: '4500000', subtotal: '9000000',
+      // Pre-V2 style row written without a pricing snapshot: explanation fields stay null.
+      priceBaseType: null, priceMode: null, baseUnitPrice: null, priceAdjustmentBps: null,
     }]);
   });
 

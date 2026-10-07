@@ -37,8 +37,9 @@ describe('split payments', () => {
   afterAll(async () => { await db?.$disconnect(); }, 120000);
 
   async function createSale(total = 16500000n, status: 'DRAFT' | 'PENDING_PAYMENT' | 'PAID' | 'COMPLETED' | 'CANCELLED' = 'PENDING_PAYMENT') {
+    // Pricing V2: new sales default to CASH; this fixture pays by several methods, so it declares LIST (no method constraint).
     const sale = await db.sale.create({ data: {
-      sellerId, branchId, status, subtotal: total, total,
+      sellerId, branchId, status, priceMode: 'LIST', subtotal: total, total,
     } });
     if (status === 'PENDING_PAYMENT') await hold(sale.id, branchId);
     return sale;
@@ -135,7 +136,8 @@ describe('split payments', () => {
     const multiToken = await getAuthToken(multi);
     const saleAtA = await createSale(1n);
     expect((await pay(saleAtA.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, multiToken)).status).toBe(403);
-    const saleAtB = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', subtotal: 1n, total: 1n } });
+    // Explicit LIST (like createSale above): this test proves location authorization, not price-mode compatibility.
+    const saleAtB = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', priceMode: 'LIST', subtotal: 1n, total: 1n } });
     await hold(saleAtB.id, otherBranch.id);
     expect((await pay(saleAtB.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, multiToken)).status).toBe(201);
   });
@@ -156,7 +158,8 @@ describe('split payments', () => {
     // access to a location UserRoleScope has actually authorized.
     const otherBranch = await db.branch.findFirstOrThrow({ where: { id: { not: branchId } } });
     await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranch.id } });
-    const sale = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', subtotal: 1n, total: 1n } });
+    // Explicit LIST (like createSale above): this test proves location authorization, not price-mode compatibility.
+    const sale = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', priceMode: 'LIST', subtotal: 1n, total: 1n } });
     await hold(sale.id, otherBranch.id);
     const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
     expect(response.status).toBe(201);

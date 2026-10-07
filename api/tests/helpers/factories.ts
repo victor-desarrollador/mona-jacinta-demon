@@ -142,6 +142,7 @@ export async function createVariant(prisma: PrismaClient, productId: string) {
       productId,
       sku,
       barcode: unique('BARCODE'),
+      cashPrice: 100n,
       price: 100n,
       costPrice: 50n,
     },

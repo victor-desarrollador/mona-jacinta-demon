@@ -24,7 +24,7 @@ type Tables = Record<string, Row[]>;
 type Args = Record<string, unknown>;
 
 const MODELS = [
-  'location', 'branch', 'user', 'product', 'productVariant', 'inventory', 'sale', 'saleItem',
+  'company', 'companyPricingConfig', 'location', 'branch', 'user', 'product', 'productVariant', 'inventory', 'sale', 'saleItem',
   'salePayment', 'stockReservation', 'stockMovement', 'saleNumberCounter', 'auditLog',
   'cashRegister', 'cashSession', 'cashMovement',
 ] as const;
@@ -55,11 +55,20 @@ const RELATIONS: Partial<Record<Model, Record<string, Relation>>> = {
 const DEFAULTS: Partial<Record<Model, () => Row>> = {
   sale: () => ({
     saleNumber: null, status: 'DRAFT', subtotal: 0n, discountTotal: 0n, total: 0n,
-    pricingMode: 'LIST', wholesaleAuthorizedAt: null, wholesaleConfirmedById: null, wholesaleConfirmedAt: null,
+    pricingMode: 'LIST', priceMode: 'LIST', wholesaleAuthorizedAt: null, wholesaleConfirmedById: null, wholesaleConfirmedAt: null,
     paymentStartedAt: null,
     createdAt: new Date(), updatedAt: new Date(),
   }),
   productVariant: () => ({ wholesalePrice: null, isActive: true, color: null, size: null }),
+  companyPricingConfig: () => ({
+    listAdjustmentBps: 0,
+    creditCardAdjustmentBps: 0,
+    debitCardAdjustmentBps: 0,
+    bankTransferAdjustmentBps: 0,
+    qrAdjustmentBps: 0,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
   salePayment: () => ({ receivedAmount: null, changeAmount: null, cashSessionId: null, paidAt: new Date() }),
   auditLog: () => ({ before: null, after: null, timestamp: new Date() }),
 };
@@ -208,6 +217,16 @@ export function createInMemorySalesDb() {
         applyData(row, args.data as Row);
         if (model === 'salePayment') recordPaymentHistory(row.saleId); // AFTER (target)
         return project(model, row, args);
+      },
+      upsert: async (args: Args) => {
+        const row = rows(model).find((candidate) => matches(model, candidate, args.where));
+        if (row) {
+          applyData(row, args.update as Row);
+          return project(model, row, args);
+        }
+        const created: Row = { id: randomUUID(), ...(DEFAULTS[model]?.() ?? {}), ...(args.create as Row) };
+        rows(model).push(created);
+        return project(model, created, args);
       },
       updateMany: async (args: Args) => {
         const targets = rows(model).filter((candidate) => matches(model, candidate, args.where));

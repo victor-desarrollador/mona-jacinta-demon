@@ -153,8 +153,10 @@ describe('critical operation audit', () => {
   it('rolls back completion audit and stock when the final sale write fails', async () => {
     const sale = await draft();
     await createSalesService(db).sendToCashier(sale.id, sellerId, [branchId]);
+    const register = await db.cashRegister.findFirstOrThrow({ where: { branchId } });
+    await createCashService(db).openSession(register.id, req(cashierId).auth!, 0n);
     await createPaymentsService(db).registerPayment(req(cashierId), cashierId, sale.id, {
-      method: 'TRANSFER', amount: 4500000n, receivedAmount: null, idempotencyKey: randomUUID(),
+      method: 'CASH', amount: 4500000n, receivedAmount: 4500000n, idempotencyKey: randomUUID(),
     });
     const stock = await db.inventory.findMany({ where: { branchId }, orderBy: { id: 'asc' } });
     const failingDb = db.$extends({ query: { sale: { update({ args, query }) {

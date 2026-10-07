@@ -131,7 +131,7 @@ describe('admin catalogue API (D3)', () => {
   describe('POST /api/v1/variants', () => {
     const body = () => ({
       productId, sku: 'REM-ROJ-L', barcode: 'DEMO-REM-ROJ-L', color: 'Rojo', size: 'L',
-      price: '9007199254740993', costPrice: '2500000',
+      cashPrice: '9007199254740993', price: '9007199254740993', costPrice: '2500000',
     });
 
     it('creates a variant for ADMIN COMPANY with exact BigInt cents and audits it globally', async () => {
@@ -140,9 +140,10 @@ describe('admin catalogue API (D3)', () => {
       // Beyond Number.MAX_SAFE_INTEGER: proves no floating-point conversion.
       expect(response.body.variant).toMatchObject({
         productId, sku: 'REM-ROJ-L', barcode: 'DEMO-REM-ROJ-L', color: 'Rojo', size: 'L',
-        price: '9007199254740993', costPrice: '2500000', isActive: true,
+        cashPrice: '9007199254740993', price: '9007199254740993', costPrice: '2500000', isActive: true,
       });
       const persisted = await prisma.productVariant.findUniqueOrThrow({ where: { sku: 'REM-ROJ-L' } });
+      expect(persisted.cashPrice).toBe(9007199254740993n);
       expect(persisted.price).toBe(9007199254740993n);
       expect(persisted.costPrice).toBe(2500000n);
       const audit = await prisma.auditLog.findFirstOrThrow({ where: { entityType: 'ProductVariant', entityId: persisted.id } });
@@ -178,6 +179,9 @@ describe('admin catalogue API (D3)', () => {
         { ...body(), price: '-1' },
         { ...body(), price: '0' },
         { ...body(), price: 4500000 },
+        { ...body(), cashPrice: '0' },
+        { ...body(), cashPrice: undefined },
+        { ...body(), wholesalePrice: '9007199254740994' },
         { ...body(), costPrice: '1e3' },
       ]) {
         expect((await request(app).post('/api/v1/variants').set(auth(adminToken)).send(invalid)).status).toBe(400);
@@ -199,7 +203,7 @@ describe('admin catalogue API (D3)', () => {
       expect(response.status).toBe(200);
       // Block 1 (M6): price management returns only the pricing projection —
       // never costPrice; the stored cost itself is untouched (below).
-      expect(response.body.variant).toEqual({ id: variantId, sku: expect.any(String), price: '4990000', wholesalePrice: null });
+      expect(response.body.variant).toEqual({ id: variantId, sku: expect.any(String), cashPrice: '4500000', price: '4990000', wholesalePrice: null });
       const persisted = await prisma.productVariant.findUniqueOrThrow({ where: { id: variantId } });
       expect(persisted.price).toBe(4990000n);
       expect(persisted.costPrice).toBe(2500000n);

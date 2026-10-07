@@ -65,7 +65,7 @@ describe('POST /api/v1/sales/:saleId/correct (Pilot P0.2-A)', () => {
     const total = lines.reduce((sum, line) => sum + line.quantity * line.variant.price, 0n);
     const sale = await db.sale.create({
       data: {
-        sellerId, branchId: saleBranch, status: options.status ?? 'PENDING_PAYMENT', subtotal: total, total,
+        sellerId, branchId: saleBranch, status: options.status ?? 'PENDING_PAYMENT', priceMode: 'LIST', subtotal: total, total,
         saleNumber: `T-${randomUUID().slice(0, 8)}`,
       },
     });

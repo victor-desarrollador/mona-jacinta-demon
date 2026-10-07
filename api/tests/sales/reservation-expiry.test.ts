@@ -84,7 +84,7 @@ describe('authoritative expired technical-hold release (Pilot P0.1-B1)', () => {
       data: {
         ...(options.id ? { id: options.id } : {}),
         sellerId, branchId, status: options.status ?? 'PENDING_PAYMENT', saleNumber: `T-EXP-${saleCounter}`,
-        subtotal: total, total,
+        priceMode: 'LIST', subtotal: total, total,
         items: { create: lines.map((line) => ({
           variantId: line.variant.id, productId: line.variant.productId, productName: 'Snapshot product',
           variantName: 'Snapshot variant', sku: line.variant.sku, quantity: line.quantity,

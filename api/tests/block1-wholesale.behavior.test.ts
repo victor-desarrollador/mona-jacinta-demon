@@ -115,6 +115,7 @@ function requestFor(userId: string, assignments: Express.ProductionAssignment[])
 
 function setup(options: { codeHash?: string | null } = {}) {
   const db = createInMemorySalesDb();
+  db.insert('company', { name: 'Mona Jacinta', cuit: '00000000000', address: 'Demo', isActive: true, createdAt: new Date() });
   const L1 = db.insert('location', { isActive: true }).id as string;
   const L2 = db.insert('location', { isActive: true }).id as string;
   db.insert('branch', { id: L1, code: 'S1', name: 'Sucursal 1' });
@@ -128,12 +129,14 @@ function setup(options: { codeHash?: string | null } = {}) {
   };
   const product = db.insert('product', { name: 'Remera', isActive: true }).id as string;
   const variant = (sku: string, price: bigint, wholesalePrice: bigint | null) =>
-    db.insert('productVariant', { productId: product, sku, barcode: sku, price, wholesalePrice, costPrice: 1000n, color: 'Negro', size: sku }).id as string;
+    db.insert('productVariant', { productId: product, sku, barcode: sku, cashPrice: price, price, wholesalePrice, costPrice: 1000n, color: 'Negro', size: sku }).id as string;
   const V1 = variant('V1', 10000n, 7000n);
   const V2 = variant('V2', 5000n, null);
   const V3 = variant('V3', 8000n, 6000n);
   for (const branchId of [L1, L2]) {
     for (const variantId of [V1, V2, V3]) db.insert('inventory', { branchId, variantId, physical: 100n, reserved: 0n });
+    const registerId = db.insert('cashRegister', { branchId, name: `Caja ${branchId}` }).id as string;
+    db.insert('cashSession', { registerId, openedById: ids.cashier, startingCash: 0n, status: 'OPEN' });
   }
   const reqs = {
     seller: requestFor(ids.seller, [assignment('SELLER', L1)]),
@@ -154,6 +157,11 @@ function setup(options: { codeHash?: string | null } = {}) {
   async function draft(sellerKey: 'seller' | 'seller2' | 'sellerCashier' = 'seller', items: Array<[string, bigint]> = [[V1, 2n]]) {
     const created = await sales.createDraftSale(reqs[sellerKey], ids[sellerKey], L1);
     for (const [variantId, quantity] of items) await sales.addItem(reqs[sellerKey], ids[sellerKey], created.id, { variantId, quantity });
+    // Pilot Pricing V2: new sales default to CASH (single payment method). These
+    // Block 1 suites exercise wholesale and payment-history rules with MIXED
+    // payment methods, which only an explicit LIST price mode allows; the CASH
+    // default itself is covered in tests/pricing/.
+    await sales.updatePriceMode(reqs[sellerKey], ids[sellerKey], created.id, 'LIST');
     return created.id;
   }
   async function send(saleId: string, sellerKey: 'seller' | 'seller2' | 'sellerCashier' = 'seller') {
@@ -162,7 +170,7 @@ function setup(options: { codeHash?: string | null } = {}) {
   async function pay(saleId: string, req: Request = reqs.cashier, userId = ids.cashier) {
     const sale = db.table('sale').find((row) => row.id === saleId)!;
     return payments.registerPayment(req, userId, saleId, {
-      method: 'TRANSFER', amount: sale.total as bigint, receivedAmount: null, idempotencyKey: randomUUID(),
+      method: 'CASH', amount: sale.total as bigint, receivedAmount: sale.total as bigint, idempotencyKey: randomUUID(),
     });
   }
   const sale = (saleId: string) => db.table('sale').find((row) => row.id === saleId)!;
@@ -287,7 +295,7 @@ describe('Block 1 — wholesale activation (seller, sale-scoped)', () => {
     // pricing + confirmation state), SaleItem, AuditLog, payments, holds,
     // movements and the rest — all 16 tables of the in-memory store.
     const tables = t.db.allTables();
-    expect(Object.keys(tables).length).toBe(16);
+    expect(Object.keys(tables).length).toBe(18);
     expect(t.sale(saleId)).toMatchObject({ status: 'COMPLETED', pricingMode: 'WHOLESALE', wholesaleConfirmedById: t.ids.cashier });
     expect(t.audits('SALE_WHOLESALE_AUTHORIZED')).toHaveLength(1);
     expect(t.audits('SALE_WHOLESALE_CONFIRMED')).toHaveLength(2);
@@ -574,7 +582,7 @@ describe('Block 1 — catalog wholesale price management', () => {
     expect(updateVariantPriceSchema.safeParse({ wholesalePrice: '0' }).success).toBe(false);
     expect(updateVariantPriceSchema.safeParse({ wholesalePrice: '-1' }).success).toBe(false);
     expect(updateVariantPriceSchema.safeParse({ wholesalePrice: '1.5' }).success).toBe(false);
-    const base = { productId: randomUUID(), sku: 'N1', barcode: 'N1', price: '1000', costPrice: '1' };
+    const base = { productId: randomUUID(), sku: 'N1', barcode: 'N1', cashPrice: '1000', price: '1000', costPrice: '1' };
     expect(createVariantSchema.safeParse({ ...base, wholesalePrice: '1001' }).success).toBe(false);
     expect(createVariantSchema.safeParse({ ...base, wholesalePrice: '1000' }).success).toBe(true);
     expect(createVariantSchema.safeParse(base).success).toBe(true);
@@ -791,7 +799,7 @@ describe('Block 1 fix round — wholesale price confidentiality (N26)', () => {
   // in-memory store), so it proves what the catalog reads actually expose.
   function selectingDb() {
     const selects: unknown[] = [];
-    const variant = { id: randomUUID(), productId: randomUUID(), sku: 'V1', barcode: 'B1', color: null, size: null, price: 10000n, wholesalePrice: 7000n, costPrice: 1n, isActive: true };
+    const variant = { id: randomUUID(), productId: randomUUID(), sku: 'V1', barcode: 'B1', color: null, size: null, cashPrice: 9000n, price: 10000n, wholesalePrice: 7000n, costPrice: 1n, isActive: true };
     const product = { id: variant.productId, name: 'Remera', slug: 'remera', description: null, isActive: true, category: { id: 'c', name: 'C' }, brand: { id: 'b', name: 'B' } };
     const project = (row: Record<string, unknown>, select: Record<string, unknown>): Record<string, unknown> =>
       Object.fromEntries(Object.entries(select).filter(([, on]) => on).map(([key, on]) => {
@@ -823,6 +831,8 @@ describe('Block 1 fix round — wholesale price confidentiality (N26)', () => {
     expect(serialize(selects)).not.toContain('wholesalePrice');
     expect(serialize(results)).not.toContain('wholesalePrice');
     expect(serialize(results)).toContain('"price":"10000"');
+    // Pilot Pricing V2: the retail CASH base is exposed; the wholesale CASH base never is.
+    expect(serialize(results)).toContain('"cashPrice":"9000"');
   });
 });
 
@@ -863,14 +873,14 @@ describe('Block 1 fix round — management pricing read (N27-N31, N33)', () => {
     for (const who of ['adminCompany', 'owner']) {
       const response = await api.get(`/variants/${t.V1}/pricing`).set('x-test-user', who);
       expect(response.status, who).toBe(200);
-      expect(response.body.pricing).toMatchObject({ id: t.V1, sku: 'V1', price: '10000', wholesalePrice: '7000' });
+      expect(response.body.pricing).toMatchObject({ id: t.V1, sku: 'V1', cashPrice: '10000', price: '10000', wholesalePrice: '7000' });
     }
-    expect(lookups).toHaveBeenCalledWith({ where: { id: t.V1 }, select: { id: true, sku: true, price: true, wholesalePrice: true } });
+    expect(lookups).toHaveBeenCalledWith({ where: { id: t.V1 }, select: { id: true, sku: true, cashPrice: true, price: true, wholesalePrice: true } });
     // D13 + S32: exact GET shape (the harness now honors `select` exactly).
     const exact = await api.get(`/variants/${t.V1}/pricing`).set('x-test-user', 'adminCompany');
-    expect(exact.body).toEqual({ pricing: { id: t.V1, sku: 'V1', price: '10000', wholesalePrice: '7000' } });
+    expect(exact.body).toEqual({ pricing: { id: t.V1, sku: 'V1', cashPrice: '10000', price: '10000', wholesalePrice: '7000' } });
     const none = await api.get(`/variants/${t.V2}/pricing`).set('x-test-user', 'adminCompany');
-    expect(none.body.pricing).toMatchObject({ price: '5000', wholesalePrice: null });
+    expect(none.body.pricing).toMatchObject({ cashPrice: '5000', price: '5000', wholesalePrice: null });
     expect((await api.get(`/variants/${randomUUID()}/pricing`).set('x-test-user', 'adminCompany')).status).toBe(404);
   });
 
@@ -881,15 +891,15 @@ describe('Block 1 fix round — management pricing read (N27-N31, N33)', () => {
     expect(lowered.status).toBe(409);
     expect(lowered.body.error.code).toBe('WHOLESALE_PRICE_ABOVE_LIST');
     const read = await api.get(`/variants/${t.V1}/pricing`).set('x-test-user', 'adminCompany');
-    expect(read.body.pricing).toMatchObject({ price: '10000', wholesalePrice: '7000' });
+    expect(read.body.pricing).toMatchObject({ cashPrice: '10000', price: '10000', wholesalePrice: '7000' });
     const equal = await api.patch(`/variants/${t.V1}/price`).set('x-test-user', 'adminCompany').send({ wholesalePrice: '10000' });
     expect(equal.status).toBe(200);
     const both = await api.patch(`/variants/${t.V1}/price`).set('x-test-user', 'adminCompany').send({ price: '6000', wholesalePrice: '5000' });
     expect(both.status).toBe(200);
     // D12 + S31: exact PATCH shape — the pricing projection only, no costPrice.
-    expect(both.body).toEqual({ variant: { id: t.V1, sku: 'V1', price: '6000', wholesalePrice: '5000' } });
+    expect(both.body).toEqual({ variant: { id: t.V1, sku: 'V1', cashPrice: '10000', price: '6000', wholesalePrice: '5000' } });
     expect(both.text).not.toContain('costPrice');
-    expect(equal.body).toEqual({ variant: { id: t.V1, sku: 'V1', price: '10000', wholesalePrice: '10000' } });
+    expect(equal.body).toEqual({ variant: { id: t.V1, sku: 'V1', cashPrice: '10000', price: '10000', wholesalePrice: '10000' } });
     expect((await api.patch(`/variants/${t.V1}/price`).set('x-test-user', 'seller').send({ wholesalePrice: '1' })).status).toBe(403);
   });
 });
@@ -1239,7 +1249,7 @@ describe('Block 1 trigger STRUCTURE (static; payment-history final design, T01-T
     expect(migration).not.toMatch(/"paymentStartedAt" TIMESTAMPTZ\(3\) (NOT NULL|DEFAULT)/);
     expect(migration).toContain('ADD CONSTRAINT "chk_sale_wholesale_confirmed_when_paid" CHECK (');
     const dirs = readdirSync(new URL('../prisma/migrations/', import.meta.url)).filter((name) => name.startsWith('2026100'));
-    expect(dirs).toEqual(['20261002120000_block1_pricing_wholesale']);
+    expect(dirs).toEqual(['20261002120000_block1_pricing_wholesale', '20261006120000_pilot_pricing_v2']);
     const outside = migration.replace(/--.*$/gm, '').replace(/\$\$[\s\S]*?\$\$/g, '');
     expect(outside).not.toMatch(/^\s*(INSERT|UPDATE|DELETE|TRUNCATE|DROP|MERGE)\b/gm);
   });
