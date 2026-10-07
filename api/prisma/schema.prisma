@@ -50,6 +50,15 @@ enum PriceType {
   WHOLESALE
 }
 
+enum CustomerPriceMode {
+  CASH
+  LIST
+  CREDIT_CARD
+  DEBIT_CARD
+  BANK_TRANSFER
+  QR
+}
+
 enum CashSessionStatus {
   OPEN
   CLOSED
@@ -90,6 +99,20 @@ model Company {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
 
   locations Location[]
+  pricingConfig CompanyPricingConfig?
+}
+
+model CompanyPricingConfig {
+  id                        String   @id @default(uuid())
+  companyId                 String   @unique
+  listAdjustmentBps         Int      @default(0)
+  creditCardAdjustmentBps   Int      @default(0)
+  debitCardAdjustmentBps    Int      @default(0)
+  bankTransferAdjustmentBps Int      @default(0)
+  qrAdjustmentBps           Int      @default(0)
+  createdAt                 DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt                 DateTime @updatedAt @db.Timestamptz(3)
+  company                   Company  @relation(fields: [companyId], references: [id], onDelete: Restrict)
 }
 
 // Unified location (retail branch or central warehouse); backfilled from
@@ -286,11 +309,15 @@ model ProductVariant {
   barcode   String  @unique
   color     String?
   size      String?
-  // List (ordinary retail) price, centavos.
+  // Transitional legacy LIST price, centavos. 2026-10-06 supersession:
+  // target retail base is cashPrice; price remains LIST during migration.
   price     BigInt
+  // Pilot Pricing V2: explicit retail CASH base. NULL means existing data
+  // has not been backfilled/verified yet; runtime pricing fails closed.
+  cashPrice BigInt?
   // Block 1: optional wholesale price, centavos. NULL means "no wholesale
-  // price": a WHOLESALE sale cannot carry this variant (fails closed).
-  // DB CHECK: NULL or 0 < wholesalePrice <= price.
+  // price": a WHOLESALE sale cannot carry this variant (fails closed). From
+  // 2026-10-06 onward this is the wholesale CASH base.
   wholesalePrice BigInt?
   costPrice BigInt
   isActive  Boolean @default(true)
@@ -378,6 +405,11 @@ model Sale {
   // DB CHECKs: LIST rows carry none of these; a WHOLESALE sale was
   // authorized and can never be PAID or COMPLETED without a confirmation.
   pricingMode            PriceType @default(LIST)
+  // Pilot Pricing V2: one customer-facing price mode per sale. It is fixed
+  // before payment collection and distinct from pricingMode's retail/
+  // wholesale base-tier fact above. New sales default to CASH; rows that
+  // existed before the migration were backfilled LIST (they were priced at list).
+  priceMode              CustomerPriceMode @default(CASH)
   wholesaleAuthorizedAt  DateTime? @db.Timestamptz(3)
   wholesaleConfirmedById String?
   wholesaleConfirmedAt   DateTime? @db.Timestamptz(3)
@@ -411,6 +443,15 @@ model SaleItem {
   variantName String
   sku         String
   quantity    BigInt
+  // Pilot Pricing V2 immutable explanation snapshot. unitPrice remains the
+  // authoritative final money snapshot; these fields explain how it was
+  // derived and remain nullable for pre-migration rows.
+  priceBaseType           PriceType?
+  priceMode               CustomerPriceMode?
+  baseUnitPrice           BigInt?
+  priceAdjustmentBps      Int?
+  pricingConfigId         String?
+  pricingConfigUpdatedAt  DateTime? @db.Timestamptz(3)
   unitPrice   BigInt
   subtotal    BigInt
   sale        Sale           @relation(fields: [saleId], references: [id], onDelete: Restrict)

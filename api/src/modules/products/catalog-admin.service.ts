@@ -21,13 +21,13 @@ const productSelect = {
 
 const variantSelect = {
   id: true, productId: true, sku: true, barcode: true, color: true, size: true,
-  price: true, wholesalePrice: true, costPrice: true, isActive: true,
+  cashPrice: true, price: true, wholesalePrice: true, costPrice: true, isActive: true,
 } as const;
 
 // Block 1: the ONE response shape of price management (GET /variants/:id/
 // pricing and PATCH /variants/:id/price): exactly what the price editor
 // needs. Least privilege: no costPrice, no other variant/product columns.
-const pricingSelect = { id: true, sku: true, price: true, wholesalePrice: true } as const;
+const pricingSelect = { id: true, sku: true, cashPrice: true, price: true, wholesalePrice: true } as const;
 
 function conflict(code: string, message: string) {
   return new AppError(409, code, message);
@@ -96,22 +96,29 @@ export function createCatalogAdminService(database: CatalogDatabase) {
     return database.$transaction(async (tx) => {
       // Row lock so the audited `before` is exactly the price this update
       // replaced, even under concurrent price changes.
-      const [current] = await tx.$queryRaw<Array<{ price: bigint; wholesalePrice: bigint | null }>>`
-        SELECT price, "wholesalePrice" FROM "ProductVariant" WHERE id = ${variantId} FOR UPDATE
+      const [current] = await tx.$queryRaw<Array<{ cashPrice: bigint | null; price: bigint; wholesalePrice: bigint | null }>>`
+        SELECT "cashPrice", price, "wholesalePrice" FROM "ProductVariant" WHERE id = ${variantId} FOR UPDATE
       `;
       if (!current) throw new AppError(404, 'NOT_FOUND', 'No se encontró la variante.');
       // Block 1: the RESULTING pair must keep wholesale <= list, whichever
       // side this request changes (mirrors the DB CHECK constraint).
       const price = input.price ?? current.price;
+      const cashPrice = input.cashPrice ?? current.cashPrice;
       const wholesalePrice = input.wholesalePrice === undefined ? current.wholesalePrice : input.wholesalePrice;
       if (wholesalePrice !== null && wholesalePrice > price) {
         throw conflict('WHOLESALE_PRICE_ABOVE_LIST', 'El precio mayorista no puede superar el precio de lista.');
       }
+      // Pilot Pricing V2: wholesalePrice is the wholesale CASH base, so it may
+      // never exceed the retail CASH base once that base exists (mirrors the
+      // DB CHECK; a NULL cashPrice is not yet backfilled and cannot be compared).
+      if (wholesalePrice !== null && cashPrice !== null && wholesalePrice > cashPrice) {
+        throw conflict('WHOLESALE_PRICE_ABOVE_CASH', 'El precio mayorista no puede superar el precio efectivo minorista.');
+      }
       const variant = await tx.productVariant.update({
-        where: { id: variantId }, data: { price, wholesalePrice }, select: pricingSelect,
+        where: { id: variantId }, data: { cashPrice, price, wholesalePrice }, select: pricingSelect,
       });
       // Audit exactly the fields this request changed.
-      const changed = (['price', 'wholesalePrice'] as const).filter((field) => input[field] !== undefined);
+      const changed = (['cashPrice', 'price', 'wholesalePrice'] as const).filter((field) => input[field] !== undefined);
       await createAuditLog(tx, {
         userId, branchId: null, action: 'PRODUCT_VARIANT_PRICE_CHANGED', entityType: 'ProductVariant', entityId: variantId,
         before: Object.fromEntries(changed.map((field) => [field, current[field]])),

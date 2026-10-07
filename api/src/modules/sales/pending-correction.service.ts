@@ -6,11 +6,13 @@ import { createAuditLog } from '../../shared/audit.js';
 import { evaluateCurrentHoldCoverage } from './hold-coverage.js';
 import { unitPriceFor } from './wholesale-authorization.service.js';
 import type { CorrectPendingSaleInput } from './dto/pending-correction.dto.js';
+import { type PriceCalculation, type PriceMode } from '../pricing/pricing.js';
+import { createPricingService } from '../pricing/pricing.service.js';
 
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
 type LockedSale = {
   id: string; branchId: string; status: string; total: bigint;
-  pricingMode: PriceType; wholesaleConfirmedAt: Date | null; paymentStartedAt: Date | null;
+  pricingMode: PriceType; priceMode: PriceMode; wholesaleConfirmedAt: Date | null; paymentStartedAt: Date | null;
 };
 type LockedHold = { id: string; variantId: string; branchId: string; quantity: bigint; expiresAt: Date };
 type LockedInventory = { id: string; variantId: string; physical: bigint; reserved: bigint };
@@ -42,6 +44,18 @@ function snapshotOf(item: ItemSnapshot) {
   };
 }
 
+function priceSnapshotData(price: PriceCalculation) {
+  return {
+    priceBaseType: price.baseTier,
+    priceMode: price.priceMode,
+    baseUnitPrice: price.baseUnitPrice,
+    priceAdjustmentBps: price.adjustmentBps,
+    pricingConfigId: price.pricingConfigId,
+    pricingConfigUpdatedAt: price.pricingConfigUpdatedAt,
+    unitPrice: price.unitPrice,
+  };
+}
+
 // Pilot P0.2-A: cashier correction of a PENDING_PAYMENT sale before its
 // first payment. One Serializable transaction, lock order Sale ->
 // StockReservation (ACTIVE, id ASC) -> Inventory (id ASC) — the same prefix
@@ -55,6 +69,7 @@ function snapshotOf(item: ItemSnapshot) {
 // expiresAt is preserved on every resulting hold, so a correction can never
 // give the customer a fresh TTL window.
 export function createPendingCorrectionService(database: PrismaClient) {
+  const pricing = createPricingService(database);
   async function inTransaction<T>(operation: (tx: Prisma.TransactionClient) => Promise<T>) {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
@@ -69,7 +84,7 @@ export function createPendingCorrectionService(database: PrismaClient) {
   async function correctPendingSale(req: RequestLike, saleId: string, input: CorrectPendingSaleInput) {
     return inTransaction(async (tx) => {
       const [sale] = await tx.$queryRaw<LockedSale[]>`
-        SELECT id, "branchId", status, total, "pricingMode", "wholesaleConfirmedAt", "paymentStartedAt"
+        SELECT id, "branchId", status, total, "pricingMode", "priceMode", "wholesaleConfirmedAt", "paymentStartedAt"
         FROM "Sale" WHERE id = ${saleId} FOR UPDATE
       `;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
@@ -128,7 +143,7 @@ export function createPendingCorrectionService(database: PrismaClient) {
       const newVariants = newVariantIds.length === 0 ? [] : await tx.productVariant.findMany({
         where: { id: { in: newVariantIds }, isActive: true, product: { isActive: true } },
         select: {
-          id: true, productId: true, sku: true, price: true, wholesalePrice: true, color: true, size: true,
+          id: true, productId: true, sku: true, cashPrice: true, wholesalePrice: true, color: true, size: true,
           product: { select: { name: true } },
         },
       });
@@ -136,7 +151,8 @@ export function createPendingCorrectionService(database: PrismaClient) {
       // Block 1: a new line takes the catalog price of the sale's own mode,
       // resolved before any write (a WHOLESALE sale cannot gain a line that
       // has no wholesale price). Existing lines keep their snapshot.
-      const newUnitPrices = new Map(newVariants.map((variant) => [variant.id, unitPriceFor(sale.pricingMode, variant)]));
+      const config = await pricing.getSnapshot();
+      const newUnitPrices = new Map(newVariants.map((variant) => [variant.id, unitPriceFor(sale.pricingMode, variant, sale.priceMode, config)]));
 
       const inventories = await tx.$queryRaw<LockedInventory[]>`
         SELECT id, "variantId", physical, reserved
@@ -190,12 +206,12 @@ export function createPendingCorrectionService(database: PrismaClient) {
           await tx.saleItem.update({ where: { id: item.id }, data: { quantity: after, subtotal: after * item.unitPrice } });
         } else {
           const variant = newVariants.find(({ id }) => id === variantId)!;
-          const unitPrice = newUnitPrices.get(variantId)!;
+          const calculated = newUnitPrices.get(variantId)!;
           await tx.saleItem.create({
             data: {
               saleId, variantId, productId: variant.productId, productName: variant.product.name,
               variantName: variantName(variant), sku: variant.sku,
-              quantity: after, unitPrice, subtotal: after * unitPrice,
+              quantity: after, ...priceSnapshotData(calculated), subtotal: after * calculated.unitPrice,
             },
           });
         }

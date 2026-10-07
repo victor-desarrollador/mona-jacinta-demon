@@ -6,11 +6,12 @@ import { createAuditLog } from '../../shared/audit.js';
 import type { RegisterPaymentInput } from './dto/payment.dto.js';
 import { evaluateCurrentHoldCoverage } from '../sales/hold-coverage.js';
 import { assertPricingFinalizable } from '../sales/wholesale-authorization.service.js';
+import { assertPaymentCompatible, type PriceMode } from '../pricing/pricing.js';
 
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
 type LockedSale = {
   id: string; branchId: string; status: string; total: bigint;
-  pricingMode: PriceType; wholesaleConfirmedAt: Date | null; wholesaleConfirmedById: string | null;
+  pricingMode: PriceType; priceMode: PriceMode; wholesaleConfirmedAt: Date | null; wholesaleConfirmedById: string | null;
 };
 
 const transient = (error: unknown) => {
@@ -68,7 +69,7 @@ export function createPaymentsService(database: PrismaClient) {
   async function attempt(req: RequestLike, userId: string, saleId: string, input: RegisterPaymentInput) {
     return database.$transaction(async (tx) => {
       const [sale] = await tx.$queryRaw<LockedSale[]>`
-        SELECT id, "branchId", status, total, "pricingMode", "wholesaleConfirmedAt", "wholesaleConfirmedById"
+        SELECT id, "branchId", status, total, "pricingMode", "priceMode", "wholesaleConfirmedAt", "wholesaleConfirmedById"
         FROM "Sale" WHERE id = ${saleId} FOR UPDATE
       `;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
@@ -95,6 +96,7 @@ export function createPaymentsService(database: PrismaClient) {
       // Block 1: a WHOLESALE sale takes no payment (not even a partial one)
       // until a cashier confirmed it.
       assertPricingFinalizable(sale);
+      assertPaymentCompatible(sale.priceMode, input.method);
       const items = await tx.saleItem.findMany({ where: { saleId }, select: { variantId: true, quantity: true } });
       const activeHolds = await tx.stockReservation.findMany({
         where: { saleId, status: 'ACTIVE' },

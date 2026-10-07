@@ -7,6 +7,7 @@ import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { createSalesController } from './sales.controller.js';
 import { createCancellationRouter } from './cancellation.routes.js';
 import { activateWholesaleDto, createDraftSaleDto, saleIdDto } from './dto/sale.dto.js';
+import { updateSalePriceModeDto } from '../pricing/pricing.dto.js';
 import type { WholesaleCodeVerifier } from './wholesale-authorization.service.js';
 import { AppError } from '../../shared/errors.js';
 import { addSaleItemDto, saleItemParamsDto, updateSaleItemDto } from './dto/sale-item.dto.js';
@@ -53,6 +54,7 @@ export function createSalesRouter(
   router.post('/', validate(createDraftSaleDto), createPermission, controller.create);
   router.get('/:saleId', validate(saleIdDto, 'params'), viewPermission, controller.get);
   router.post('/:saleId/items', validate(saleIdDto, 'params'), validate(addSaleItemDto), createPermission, controller.addItem);
+  router.patch('/:saleId/price-mode', validate(saleIdDto, 'params'), validate(updateSalePriceModeDto), createPermission, controller.updatePriceMode);
   router.patch('/:saleId/items/:itemId', validate(saleItemParamsDto, 'params'), validate(updateSaleItemDto), createPermission, controller.updateItem);
   router.delete('/:saleId/items/:itemId', validate(saleItemParamsDto, 'params'), createPermission, controller.removeItem);
   // Block 1: SELLER enables wholesale on its own DRAFT sale (the service

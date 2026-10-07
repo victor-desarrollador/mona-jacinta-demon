@@ -1,6 +1,7 @@
 import type { PriceType } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
 import { verifyPassword } from '../auth/password.js';
+import { calculateUnitPrice, type PriceMode, type PricingConfigSnapshot } from '../pricing/pricing.js';
 
 // Block 1: sale-scoped wholesale pricing rules, kept free of database access
 // so sales, pending-correction and payments share exactly one definition.
@@ -64,13 +65,23 @@ export function createWholesaleCodeVerifier(codeHash: string | undefined): Whole
 // catalog row by the server, never from the client.
 export function unitPriceFor(
   mode: PriceType,
-  variant: { id: string; price: bigint; wholesalePrice: bigint | null },
-): bigint {
-  if (mode === 'LIST') return variant.price;
-  if (variant.wholesalePrice === null) {
+  variant: { id: string; cashPrice: bigint | null; wholesalePrice: bigint | null },
+  priceMode: PriceMode,
+  config: PricingConfigSnapshot,
+) {
+  const base = mode === 'LIST' ? variant.cashPrice : variant.wholesalePrice;
+  if (mode === 'LIST' && base === null) {
+    throw new AppError(409, 'CASH_PRICE_MISSING', 'La variante no tiene precio base efectivo.', { variantId: variant.id });
+  }
+  if (mode === 'WHOLESALE' && variant.wholesalePrice === null) {
     throw new AppError(409, 'WHOLESALE_PRICE_MISSING', 'La variante no tiene precio mayorista.', { variantId: variant.id });
   }
-  return variant.wholesalePrice;
+  return calculateUnitPrice({
+    baseTier: mode,
+    priceMode,
+    baseUnitPrice: base!,
+    config,
+  });
 }
 
 // Payment and completion gate, evaluated under the Sale row lock. Same rule

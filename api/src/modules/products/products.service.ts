@@ -21,6 +21,7 @@ const publicVariantSelect = {
   barcode: true,
   color: true,
   size: true,
+  cashPrice: true,
   price: true,
   isActive: true,
 } as const;

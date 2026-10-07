@@ -22,6 +22,7 @@ import { createInventoryRouter } from './modules/inventory/inventory.routes.js';
 import { createCashRouter } from './modules/cash/cash.routes.js';
 import { createSalesRouter } from './modules/sales/sales.routes.js';
 import { createPaymentsRouter } from './modules/payments/payments.routes.js';
+import { createPricingRouter } from './modules/pricing/pricing.routes.js';
 import { createReservationAdminRouter } from './modules/sales/cancellation.routes.js';
 import { createAuditRouter } from './modules/audit/audit.routes.js';
 import { createBackofficeRouter } from './modules/backoffice/backoffice.routes.js';
@@ -57,6 +58,7 @@ export function createApp(database: PrismaClient = defaultPrisma, realtime: Real
   app.use('/api/v1/variants', createVariantsRouter(database));
   app.use('/api/v1/categories', createCategoriesRouter(database));
   app.use('/api/v1/brands', createBrandsRouter(database));
+  app.use('/api/v1/pricing', createPricingRouter(database));
   app.use('/api/v1/inventory', createInventoryRouter(database));
   app.use('/api/v1/sales', createSalesRouter(database, realtime));
   app.use('/api/v1/sales', createPaymentsRouter(database, realtime));

@@ -19,6 +19,8 @@ import {
 } from './wholesale-authorization.service.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 import { REALTIME_EVENTS } from '../../realtime/socket.js';
+import { type PriceCalculation, type PriceMode } from '../pricing/pricing.js';
+import { createPricingService } from '../pricing/pricing.service.js';
 
 type SaleDatabase = PrismaClient;
 
@@ -29,7 +31,7 @@ const saleInclude = {
       variant: {
         select: {
           id: true, sku: true, barcode: true, color: true, size: true,
-          price: true, isActive: true,
+          price: true, cashPrice: true, isActive: true,
           product: { select: { id: true, name: true, slug: true, isActive: true } },
         },
       },
@@ -102,12 +104,24 @@ async function recalculateTotals(tx: Prisma.TransactionClient, saleId: string) {
 // so it serializes with a wholesale activation and can never snapshot a
 // price from the other catalog column.
 async function lockDraft(tx: Prisma.TransactionClient, saleId: string) {
-  const [sale] = await tx.$queryRaw<Array<{ id: string; status: string; pricingMode: PriceType; total: bigint }>>`
-    SELECT id, status, "pricingMode", total FROM "Sale" WHERE id = ${saleId} FOR UPDATE
+  const [sale] = await tx.$queryRaw<Array<{ id: string; status: string; pricingMode: PriceType; priceMode: PriceMode; total: bigint }>>`
+    SELECT id, status, "pricingMode", "priceMode", total FROM "Sale" WHERE id = ${saleId} FOR UPDATE
   `;
   if (!sale) throw notFound('No se encontró la venta.');
   ensureDraft(sale);
   return sale;
+}
+
+function priceSnapshotData(price: PriceCalculation) {
+  return {
+    priceBaseType: price.baseTier,
+    priceMode: price.priceMode,
+    baseUnitPrice: price.baseUnitPrice,
+    priceAdjustmentBps: price.adjustmentBps,
+    pricingConfigId: price.pricingConfigId,
+    pricingConfigUpdatedAt: price.pricingConfigUpdatedAt,
+    unitPrice: price.unitPrice,
+  };
 }
 
 export function createSalesService(
@@ -116,6 +130,7 @@ export function createSalesService(
   options: { realtime?: RealtimeEmitter; wholesaleVerifier?: WholesaleCodeVerifier } = {},
 ) {
   const wholesaleVerifier = options.wholesaleVerifier ?? createWholesaleCodeVerifier(undefined);
+  const pricing = createPricingService(database);
   const inventory = createInventoryService(database);
   const cancellation = createCancellationService(database);
   // Pilot P0.1-B2: targeted expiry reconciliation before send-to-cashier.
@@ -165,7 +180,9 @@ export function createSalesService(
     assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.SALE_CREATE, branchId);
     return database.$transaction(async (tx) => {
       const sale = await tx.sale.create({
-        data: { sellerId: userId, branchId, status: 'DRAFT', subtotal: 0n, discountTotal: 0n, total: 0n },
+        // Owner 2026-10-06: an unselected price mode is CASH, set here so the
+        // default never rests on a database default.
+        data: { sellerId: userId, branchId, status: 'DRAFT', priceMode: 'CASH', subtotal: 0n, discountTotal: 0n, total: 0n },
         include: saleInclude,
       });
       await createAuditLog(tx, {
@@ -193,7 +210,7 @@ export function createSalesService(
     const variant = await database.productVariant.findUnique({
       where: { id: input.variantId },
       select: {
-        id: true, productId: true, sku: true, price: true, wholesalePrice: true, color: true, size: true, isActive: true,
+        id: true, productId: true, sku: true, price: true, cashPrice: true, wholesalePrice: true, color: true, size: true, isActive: true,
         product: { select: { id: true, name: true, isActive: true } },
       },
     });
@@ -210,12 +227,13 @@ export function createSalesService(
         await tx.saleItem.update({ where: { id: current.id }, data: { quantity: nextQuantity, subtotal: nextQuantity * current.unitPrice } });
       } else {
         // Server-chosen catalog price for the sale's mode; never client input.
-        const unitPrice = unitPriceFor(locked.pricingMode, variant);
+        const config = await pricing.getSnapshot();
+        const calculated = unitPriceFor(locked.pricingMode, variant, locked.priceMode, config);
         await tx.saleItem.create({
           data: {
             saleId, variantId: variant.id, productId: variant.productId,
             productName: variant.product.name, variantName: variantName(variant), sku: variant.sku,
-            quantity: input.quantity, unitPrice, subtotal: input.quantity * unitPrice,
+            quantity: input.quantity, ...priceSnapshotData(calculated), subtotal: input.quantity * calculated.unitPrice,
           },
         });
       }
@@ -275,14 +293,15 @@ export function createSalesService(
       if (locked.pricingMode === 'WHOLESALE') return tx.sale.findUniqueOrThrow({ where: { id: saleId }, include: saleInclude });
       const items = await tx.saleItem.findMany({
         where: { saleId }, orderBy: { id: 'asc' },
-        include: { variant: { select: { id: true, price: true, wholesalePrice: true } } },
+        include: { variant: { select: { id: true, cashPrice: true, wholesalePrice: true } } },
       });
+      const config = await pricing.getSnapshot();
       // Price every line before writing any of them.
-      const repriced = items.map((item) => ({ item, unitPrice: unitPriceFor('WHOLESALE', item.variant) }));
-      for (const { item, unitPrice } of repriced) {
+      const repriced = items.map((item) => ({ item, price: unitPriceFor('WHOLESALE', item.variant, locked.priceMode, config) }));
+      for (const { item, price } of repriced) {
         await tx.saleItem.update({
           where: { id: item.id },
-          data: { unitPrice, subtotal: item.quantity * unitPrice },
+          data: { ...priceSnapshotData(price), subtotal: item.quantity * price.unitPrice },
         });
       }
       await tx.sale.update({ where: { id: saleId }, data: { pricingMode: 'WHOLESALE', wholesaleAuthorizedAt: new Date() } });
@@ -292,8 +311,45 @@ export function createSalesService(
         before: { pricingMode: 'LIST', total: locked.total, items: items.map(({ variantId, unitPrice }) => ({ variantId, unitPrice })) },
         after: {
           pricingMode: 'WHOLESALE', total: updated.total,
-          items: repriced.map(({ item, unitPrice }) => ({ variantId: item.variantId, unitPrice })),
+          items: repriced.map(({ item, price }) => ({ variantId: item.variantId, unitPrice: price.unitPrice })),
         },
+      });
+      return updated;
+    });
+  }
+
+  async function updatePriceMode(
+    req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, saleId: string, priceMode: PriceMode,
+  ) {
+    const sale = await authorizeSale(req, userId, saleId);
+    ensureDraft(sale);
+    return database.$transaction(async (tx) => {
+      const locked = await lockDraft(tx, saleId);
+      if (locked.priceMode === priceMode) return tx.sale.findUniqueOrThrow({ where: { id: saleId }, include: saleInclude });
+      const items = await tx.saleItem.findMany({
+        where: { saleId }, orderBy: { id: 'asc' },
+        include: { variant: { select: { id: true, cashPrice: true, wholesalePrice: true } } },
+      });
+      const config = await pricing.getSnapshot();
+      const repriced = items.map((item) => ({ item, price: unitPriceFor(locked.pricingMode, item.variant, priceMode, config) }));
+      for (const { item, price } of repriced) {
+        await tx.saleItem.update({
+          where: { id: item.id },
+          data: { ...priceSnapshotData(price), subtotal: item.quantity * price.unitPrice },
+        });
+      }
+      await tx.sale.update({
+        where: { id: saleId },
+        data: {
+          priceMode,
+          ...(locked.pricingMode === 'WHOLESALE' ? { wholesaleConfirmedAt: null, wholesaleConfirmedById: null } : {}),
+        },
+      });
+      const updated = await recalculateTotals(tx, saleId);
+      await createAuditLog(tx, {
+        userId, branchId: sale.branchId, action: 'SALE_PRICE_MODE_CHANGED', entityType: 'Sale', entityId: saleId,
+        before: { priceMode: locked.priceMode, total: locked.total },
+        after: { priceMode, total: updated.total },
       });
       return updated;
     });
@@ -384,7 +440,7 @@ export function createSalesService(
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: {
         id: true, saleNumber: true, subtotal: true, total: true, status: true, branchId: true,
-        sellerId: true, pricingMode: true, wholesaleConfirmedAt: true,
+        sellerId: true, pricingMode: true, priceMode: true, wholesaleConfirmedAt: true,
         seller: { select: { name: true } },
         // Historical item snapshots only; never join the current catalog.
         items: {
@@ -393,6 +449,7 @@ export function createSalesService(
             id: true, productId: true, variantId: true,
             productName: true, variantName: true, sku: true,
             quantity: true, unitPrice: true, subtotal: true,
+            priceBaseType: true, priceMode: true, baseUnitPrice: true, priceAdjustmentBps: true,
           },
         },
         payments: { select: { amount: true } },
@@ -424,6 +481,7 @@ export function createSalesService(
         canAcceptPayment: canAcceptPayment(holdState) && pricingReady,
         paymentCount: sale.payments.length,
         pricingMode: sale.pricingMode,
+        priceMode: sale.priceMode,
         wholesaleConfirmed,
         canConfirmWholesale: sale.pricingMode === 'WHOLESALE' && !wholesaleConfirmed && sale.status === 'PENDING_PAYMENT'
           && Boolean(auth && auth.userId !== sale.sellerId
@@ -449,10 +507,11 @@ export function createSalesService(
       status: string;
       total: bigint;
       pricingMode: PriceType;
+      priceMode: PriceMode;
       wholesaleConfirmedAt: Date | null;
       wholesaleConfirmedById: string | null;
     }>>`
-      SELECT id, "branchId", status, total, "pricingMode", "wholesaleConfirmedAt", "wholesaleConfirmedById"
+      SELECT id, "branchId", status, total, "pricingMode", "priceMode", "wholesaleConfirmedAt", "wholesaleConfirmedById"
       FROM "Sale"
       WHERE id = ${saleId}
       FOR UPDATE
@@ -581,7 +640,7 @@ export function createSalesService(
   }
 
   return {
-    createDraftSale, addItem, updateItem, removeItem, activateWholesale, confirmWholesale,
+    createDraftSale, addItem, updateItem, removeItem, activateWholesale, confirmWholesale, updatePriceMode,
     getDraft, listDrafts, sendToCashier, listPendingSales, completeSale,
   };
 }

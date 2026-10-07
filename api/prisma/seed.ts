@@ -157,6 +157,7 @@ export type DemoSeedCanonical = {
     readonly size: string;
     readonly sku: string;
     readonly barcode: string;
+    readonly cashPrice: bigint;
     readonly price: bigint;
     readonly costPrice: bigint;
     readonly isActive: boolean;
@@ -206,6 +207,7 @@ const demoCatalog = products.map((product, i) => {
     size,
     sku,
     barcode: `DEMO-${sku}`,
+    cashPrice: product.price,
     price: product.price,
     costPrice: product.costPrice,
     isActive: true,

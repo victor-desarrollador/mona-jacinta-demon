@@ -57,6 +57,9 @@ export function createSalesController(
     addItem: (async (req, res) => {
       sendJson(res, await service.addItem(req, userId(req), String(req.params.saleId), req.body));
     }) as RequestHandler,
+    updatePriceMode: (async (req, res) => {
+      sendJson(res, await service.updatePriceMode(req, userId(req), String(req.params.saleId), req.body.priceMode));
+    }) as RequestHandler,
     updateItem: (async (req, res) => {
       sendJson(res, await service.updateItem(req, userId(req), String(req.params.saleId), String(req.params.itemId), req.body));
     }) as RequestHandler,
