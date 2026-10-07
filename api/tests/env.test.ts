@@ -197,4 +197,27 @@ describe('environment validation', () => {
       );
     });
   });
+
+  describe('global limiter client IP source', () => {
+    it('defaults to the socket peer address', () => {
+      expect(parseEnv(input).CLIENT_IP_SOURCE).toBe('socket');
+    });
+
+    it.each(['socket', 'x-real-ip'])('accepts exactly %j', (CLIENT_IP_SOURCE) => {
+      expect(parseEnv({ ...input, CLIENT_IP_SOURCE }).CLIENT_IP_SOURCE).toBe(CLIENT_IP_SOURCE);
+    });
+
+    it.each(['', 'true', '1', 'railway', 'x-forwarded-for', 'X-REAL-IP', 'Socket', ' socket', 'x-real-ip ', 'hostile-marker-value'])(
+      'rejects %j without echoing it',
+      (CLIENT_IP_SOURCE) => {
+        let message = '';
+        try {
+          parseEnv({ ...input, CLIENT_IP_SOURCE });
+        } catch (error) {
+          message = error instanceof Error ? error.message : '';
+        }
+        expect(message).toBe('Invalid API environment variables: CLIENT_IP_SOURCE');
+      },
+    );
+  });
 });

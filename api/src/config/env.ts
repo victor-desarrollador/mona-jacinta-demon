@@ -75,6 +75,10 @@ const envSchema = z.object({
   RESERVATION_SWEEPER_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
   RESERVATION_SWEEP_INTERVAL_MS: z.coerce.number().int().min(1000).default(60000),
   RESERVATION_SWEEP_BATCH_SIZE: z.coerce.number().int().min(1).max(EXPIRED_HOLD_RELEASE_BATCH_LIMIT).default(100),
+  // Pre-pilot fix 2B: client key of the global limiter. 'socket' (default) is
+  // the TCP peer; 'x-real-ip' is an explicit opt-in only for a trusted edge
+  // that overwrites X-Real-IP (Railway). X-Forwarded-For is never trusted.
+  CLIENT_IP_SOURCE: z.enum(['socket', 'x-real-ip']).default('socket'),
   // Block 1: bcrypt hash (cost >= 10) of the wholesale authorization code —
   // never the code itself. Unset or empty: wholesale sales are unavailable.
   WHOLESALE_AUTH_CODE_HASH: z.preprocess(
