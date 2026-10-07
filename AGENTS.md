@@ -287,6 +287,78 @@ here, dated, with its exact scope. Anything not listed stays in force.
   inconsistently (`listPrice`/`cost` in `05`/`06`, `price`/`costPrice` in
   `04` and the schema); this supersession does not rename anything.
 
+**2026-10-06 — Pilot Pricing V2: CASH base + company price modes**
+(explicit owner business decision; target pricing supersession for the Monday
+pilot).
+
+- **Supersedes the 2026-10-02 retail LIST-base target for new pricing.**
+  `ProductVariant.price` remains the legacy LIST representation during
+  migration, but the canonical retail base going forward is CASH. The
+  migration rule is ADD → BACKFILL → VERIFY → SWITCH → DEPRECATE → REMOVE:
+  do not destructively reinterpret existing real data in place.
+- **Replacement model:** `ProductVariant.cashPrice` is the explicit retail
+  CASH base. `ProductVariant.wholesalePrice` is the WHOLESALE CASH base.
+  Wholesale activation still chooses the sale's wholesale base tier; the
+  selected customer-facing price mode is then applied on top.
+- **PILOT price modes:** CASH, LIST, CREDIT_CARD, DEBIT_CARD, BANK_TRANSFER
+  and QR. CASH is 0%; LIST/CREDIT_CARD/DEBIT_CARD/BANK_TRANSFER/QR use
+  company-global configurable non-negative integer basis-point adjustments
+  (bounded to 0..10000 for the pilot), rounded half-up to integer centavos.
+  QR is its own mode and is not mapped to card pricing.
+- **PILOT sale lifecycle:** one price mode per sale. The total is fixed before
+  payment collection; existing multiple `SalePayment` rows settle that fixed
+  total and do not imply proportional mixed pricing. Payments that conflict
+  with the selected mode fail closed except explicit LIST mode, which is a
+  standalone configured customer-facing list price.
+  OWNER ratification 2026-10-06: LIST is an independent configured customer
+  price; a LIST sale may be settled with any supported payment method, the
+  method never reprices it, and LIST is exempt from the 1:1 price-mode/payment-
+  method mapping. This is not mixed proportional pricing; the total stays fixed.
+- **Final product deferred requirement:** mixed payment methods with
+  proportional price adjustment are REQUIRED later (for example, 50% CASH at
+  0% plus 50% CREDIT_CARD at +20%), but are out of scope for this pilot slice.
+  Current architecture must preserve a path for that future lifecycle,
+  allocation, refunds/cancellations, reporting, audit and cashier UI work.
+- **Implementation decisions (2026-10-06):** a new draft Sale defaults to
+  `priceMode = CASH` (OWNER decision 2026-10-06: an unselected choice must not
+  silently add the LIST adjustment; LIST stays a valid, explicitly selected
+  mode). The server sets it in `createDraftSale` and the DB default is CASH;
+  sales that existed before the migration were backfilled LIST because they
+  were priced at list. The mode
+  is selectable only while the Sale is DRAFT, by its own seller; after
+  send-to-cashier or any payment it is immutable. Changing mode reprices all
+  lines atomically from the current bases and company config and snapshots
+  base, tier, mode, adjustment bps and config provenance on every `SaleItem`
+  (`unitPrice` stays the authoritative money snapshot). Existing variants have
+  `cashPrice = NULL` until an owner/admin backfills it; selling such a variant
+  fails closed (`CASH_PRICE_MISSING`). `wholesalePrice` may never exceed
+  `cashPrice` when both exist. Payment methods map CASH, TRANSFER, CARD_DEBIT,
+  CARD_CREDIT and QR to CASH, BANK_TRANSFER, DEBIT_CARD, CREDIT_CARD and QR;
+  a conflicting method is refused; LIST accepts any method. The migration was
+  applied (2026-10-06) only to the disposable LOCAL_TEST database through the
+  repository prepare/resume lifecycle and validated there; it is NOT applied to
+  DEV, TEST, DEMO or PILOT. On 2026-10-06 the OWNER authorized pinning exactly the
+  reviewed `20261006120000_pilot_pricing_v2/migration.sql` (3282 bytes) in the
+  fixed `APPROVED_MIGRATION_PAYLOAD` of `scripts/database/pilot-migrate.mjs`
+  (shared by `local-test-prepare`); the pin is a literal, never derived from
+  disk, and does not authorize executing it against any database.
+- **UI semantics (2026-10-06):** `cashPrice` is the only commercial base the
+  UIs present and edit. LIST is DERIVED (`cashPrice` + the company LIST
+  adjustment, half-up to the centavo) and the admin shows it read-only, only
+  where the PRICE_MANAGE-gated pricing config is readable; no API field carries
+  a derived LIST price today, so the seller client computes none. Legacy
+  `ProductVariant.price` is shown only as "legacy/transitional" to price
+  managers (and stays a required API input, defaulted to the CASH base when the
+  admin leaves it empty); it is never a display or sellability fallback. A
+  variant with `cashPrice = NULL` is shown as "no configurado" and cannot be
+  added in the seller UI (the server rejects it with `CASH_PRICE_MISSING`).
+  The server stays the only price authority.
+- **NOT superseded:** frozen `docs/production-v1/*` files themselves;
+  backend-authoritative pricing; immutable sale item money snapshots;
+  PRICE_MANAGE / COMPANY-scope authorization; wholesale seller activation,
+  cashier confirmation and raw-code confidentiality; global pricing only for
+  the pilot; audit and location-scope requirements.
+
 **Living Blueprint**: `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` is
 the persistent implementation/status/failure/lessons ledger. Read it before
 substantial work; update it after implementation, review, checkpoint, and
