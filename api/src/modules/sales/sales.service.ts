@@ -264,6 +264,9 @@ export function createSalesService(
     ensureDraft(sale);
     if (!sale.items.some(({ id }) => id === itemId)) throw notFound('No se encontró el artículo de la venta.');
     return database.$transaction(async (tx) => {
+      await lockDraft(tx, saleId);
+      const current = await tx.saleItem.findUnique({ where: { id: itemId } });
+      if (!current || current.saleId !== saleId) throw notFound('No se encontró el artículo de la venta.');
       await tx.saleItem.delete({ where: { id: itemId } });
       return recalculateTotals(tx, saleId);
     });
