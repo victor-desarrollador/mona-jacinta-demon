@@ -14,8 +14,9 @@ type Props = {
 };
 
 // POST /api/v1/variants (PRODUCT_VARIANT_MANAGE, COMPANY-required server
-// side). Required: productId, sku, barcode, price (> 0), costPrice (>= 0);
-// color/size optional. Money leaves this form as integer-cent strings.
+// side). Required: productId, sku, barcode, cash base/list price (> 0),
+// costPrice (>= 0); color/size optional. Money leaves this form as
+// integer-cent strings.
 export function CreateVariantForm({ products, productId, onProductChange, onCreated }: Props) {
   const { token, logout } = useAuth();
   const id = useId();
@@ -23,6 +24,7 @@ export function CreateVariantForm({ products, productId, onProductChange, onCrea
   const [barcode, setBarcode] = useState('');
   const [color, setColor] = useState('');
   const [size, setSize] = useState('');
+  const [cashPrice, setCashPrice] = useState('');
   const [price, setPrice] = useState('');
   const [costPrice, setCostPrice] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -35,8 +37,12 @@ export function CreateVariantForm({ products, productId, onProductChange, onCrea
     if (!sku.trim() || !barcode.trim()) {
       return setFeedback({ kind: 'error', message: 'SKU y código de barras son obligatorios.' });
     }
-    const priceCents = pesosToCents(price, { allowZero: false });
-    if (!priceCents.ok) return setFeedback({ kind: 'error', message: `Precio de venta: ${priceCents.error}` });
+    const cashCents = pesosToCents(cashPrice, { allowZero: false });
+    if (!cashCents.ok) return setFeedback({ kind: 'error', message: `Precio efectivo: ${cashCents.error}` });
+    // Pricing V2: the LIST price is derived (CASH base + company adjustment), never typed. `price` is the legacy/transitional
+    // field the API still requires; left empty it defaults to the CASH base so no separate list price is implied.
+    const priceCents = price.trim() ? pesosToCents(price, { allowZero: false }) : cashCents;
+    if (!priceCents.ok) return setFeedback({ kind: 'error', message: `Precio legacy: ${priceCents.error}` });
     const costCents = pesosToCents(costPrice, { allowZero: true });
     if (!costCents.ok) return setFeedback({ kind: 'error', message: `Costo: ${costCents.error}` });
 
@@ -51,6 +57,7 @@ export function CreateVariantForm({ products, productId, onProductChange, onCrea
           barcode: barcode.trim(),
           ...(color.trim() ? { color: color.trim() } : {}),
           ...(size.trim() ? { size: size.trim() } : {}),
+          cashPrice: cashCents.value,
           price: priceCents.value,
           costPrice: costCents.value,
         },
@@ -58,12 +65,13 @@ export function CreateVariantForm({ products, productId, onProductChange, onCrea
       );
       setFeedback({
         kind: 'success',
-        message: `Variante ${variant.sku} creada a ${formatARS(variant.price)}. Cargá su stock inicial en Inventario.`,
+        message: `Variante ${variant.sku} creada con base efectivo ${variant.cashPrice === null ? 'sin configurar' : formatARS(variant.cashPrice)}. Cargá su stock inicial en Inventario.`,
       });
       setSku('');
       setBarcode('');
       setColor('');
       setSize('');
+      setCashPrice('');
       setPrice('');
       setCostPrice('');
       onCreated();
@@ -120,17 +128,30 @@ export function CreateVariantForm({ products, productId, onProductChange, onCrea
       </div>
       <div className="form-row">
         <label htmlFor={`${id}-price`}>
-          Precio de venta (ARS)
+          Precio efectivo base (ARS)
           <input
             id={`${id}-price`}
-            value={price}
+            value={cashPrice}
             inputMode="decimal"
             required
             aria-describedby={`${id}-money-hint`}
-            onChange={(event) => setPrice(event.target.value)}
+            onChange={(event) => setCashPrice(event.target.value)}
             placeholder="45000,00"
           />
         </label>
+        <label htmlFor={`${id}-list-price`}>
+          Precio legacy transitorio (ARS, opcional — no es el precio lista)
+          <input
+            id={`${id}-list-price`}
+            value={price}
+            inputMode="decimal"
+            aria-describedby={`${id}-money-hint`}
+            onChange={(event) => setPrice(event.target.value)}
+            placeholder="Vacío = igual al efectivo"
+          />
+        </label>
+      </div>
+      <div className="form-row">
         <label htmlFor={`${id}-cost`}>
           Costo (ARS)
           <input

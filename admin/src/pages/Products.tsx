@@ -5,10 +5,12 @@ import { CreateProductForm } from '../components/CreateProductForm';
 import { CreateVariantForm } from '../components/CreateVariantForm';
 import { type Feedback, FormFeedback } from '../components/FormFeedback';
 import { PriceEditor } from '../components/PriceEditor';
+import { PricingConfigEditor } from '../components/PricingConfigEditor';
 import { useAuth } from '../hooks/useAuth';
 import { ApiError, api, type CatalogProduct, type CatalogRef } from '../lib/api';
 import { canCreateProducts, canCreateVariants, canLoadInitialStock, canManagePrices } from '../lib/auth';
 import { errorMessage } from '../lib/errors';
+import { derivedListCents } from '../lib/pricing';
 import { formatARS, formatVariant } from '../lib/utils';
 
 const LIMIT = 20;
@@ -37,6 +39,28 @@ export function Products() {
   const [brands, setBrands] = useState<CatalogRef[]>([]);
   const [referenceError, setReferenceError] = useState('');
   const [variantProductId, setVariantProductId] = useState('');
+  // Company LIST adjustment (bps) for the read-only derived-LIST column; readable only with PRICE_MANAGE.
+  const [listBps, setListBps] = useState<number | null>(null);
+  const [configKey, setConfigKey] = useState(0);
+
+  useEffect(() => {
+    if (!token || !mayEditPrice) {
+      setListBps(null);
+      return;
+    }
+    let active = true;
+    api
+      .pricingConfig(token, logout)
+      .then(({ config }) => {
+        if (active) setListBps(config.adjustmentsBps.LIST);
+      })
+      .catch(() => {
+        if (active) setListBps(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [token, logout, mayEditPrice, configKey]);
 
   const params = useMemo(() => {
     const query = new URLSearchParams({ limit: LIMIT.toString(), page: page.toString() });
@@ -111,8 +135,9 @@ export function Products() {
         <p className="muted">Vista de solo lectura: tu sesión no tiene permisos para modificar el catálogo.</p>
       ) : null}
 
-      {mayCreateProduct || mayCreateVariant ? (
+      {mayCreateProduct || mayCreateVariant || mayEditPrice ? (
         <div className="form-panels">
+          {mayEditPrice ? <PricingConfigEditor onSaved={() => setConfigKey((key) => key + 1)} /> : null}
           {mayCreateProduct ? (
             <CreateProductForm
               categories={categories}
@@ -166,7 +191,9 @@ export function Products() {
                 <th>Variante</th>
                 <th>SKU</th>
                 <th>Código de barras</th>
-                <th>Precio de venta</th>
+                <th>Base efectivo</th>
+                <th>Lista derivada</th>
+                {mayEditPrice ? <th>Legacy (transitorio)</th> : null}
                 {mayEditPrice ? <th><span className="sr-only">Acciones</span></th> : null}
               </tr>
             </thead>
@@ -174,7 +201,7 @@ export function Products() {
               {items.map((product) => (
                 <Fragment key={product.id}>
                   <tr className="group-row">
-                    <th scope="rowgroup" colSpan={mayEditPrice ? 5 : 4}>
+                    <th scope="rowgroup" colSpan={mayEditPrice ? 7 : 5}>
                       <span>{product.name}</span>
                       <small>
                         {product.brand.name} · {product.category.name} · {product.variants.length}{' '}
@@ -196,7 +223,7 @@ export function Products() {
                   </tr>
                   {product.variants.length === 0 ? (
                     <tr>
-                      <td colSpan={mayEditPrice ? 5 : 4} className="muted">Sin variantes activas.</td>
+                      <td colSpan={mayEditPrice ? 7 : 5} className="muted">Sin variantes activas.</td>
                     </tr>
                   ) : (
                     product.variants.map((variant) => (
@@ -204,11 +231,25 @@ export function Products() {
                         <td>{formatVariant(variant.color, variant.size)}</td>
                         <td>{variant.sku}</td>
                         <td>{variant.barcode}</td>
-                        <td>{formatARS(variant.price)}</td>
+                        <td>
+                          {variant.cashPrice === null ? (
+                            <span className="muted">Sin precio efectivo</span>
+                          ) : (
+                            formatARS(variant.cashPrice)
+                          )}
+                        </td>
+                        <td>
+                          {(() => {
+                            const list = derivedListCents(variant.cashPrice, listBps);
+                            return list === null ? <span className="muted">—</span> : formatARS(list);
+                          })()}
+                        </td>
+                        {mayEditPrice ? <td className="muted">{formatARS(variant.price)}</td> : null}
                         {mayEditPrice ? (
                           <td>
                             <PriceEditor
                               variant={variant}
+                              listBps={listBps}
                               onSaved={(message) => {
                                 setFlash({ kind: 'success', message });
                                 reload();

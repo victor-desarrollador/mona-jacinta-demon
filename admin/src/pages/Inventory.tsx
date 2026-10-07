@@ -109,7 +109,7 @@ export function Inventory() {
                 <th>Producto</th>
                 <th>Variante</th>
                 <th>SKU</th>
-                <th>Precio</th>
+                <th>Precio legacy (transitorio)</th>
                 <th>Fisico</th>
                 <th>Reservado</th>
                 <th>Disponible</th>

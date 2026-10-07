@@ -66,6 +66,7 @@ export type SaleItem = {
     barcode: string;
     color: string | null;
     size: string | null;
+    cashPrice: string | null;
     price: string;
     productId: string;
   };
@@ -132,6 +133,12 @@ export type BackofficeUser = {
 };
 
 export type CatalogRef = { id: string; name: string };
+export type PriceMode = 'CASH' | 'LIST' | 'CREDIT_CARD' | 'DEBIT_CARD' | 'BANK_TRANSFER' | 'QR';
+export type PricingConfig = {
+  id: string | null;
+  updatedAt: string | null;
+  adjustmentsBps: Record<PriceMode, number>;
+};
 
 export type CatalogVariant = {
   id: string;
@@ -141,6 +148,7 @@ export type CatalogVariant = {
   color: string | null;
   size: string | null;
   price: string;
+  cashPrice: string | null;
   isActive: boolean;
 };
 
@@ -156,10 +164,10 @@ export type CatalogProduct = {
 
 // Block 1: management-only price read (GET /variants/:id/pricing,
 // PRICE_MANAGE). wholesalePrice null = the variant has no wholesale price.
-export type VariantPricing = { id: string; sku: string; price: string; wholesalePrice: string | null };
+export type VariantPricing = { id: string; sku: string; cashPrice: string | null; price: string; wholesalePrice: string | null };
 
 // Only the fields being changed are sent; wholesalePrice null clears it.
-export type UpdateVariantPriceBody = { price?: string; wholesalePrice?: string | null };
+export type UpdateVariantPriceBody = { cashPrice?: string; price?: string; wholesalePrice?: string | null };
 
 export type CreateProductBody = { name: string; slug: string; categoryId: string; brandId: string };
 
@@ -170,6 +178,7 @@ export type CreateVariantBody = {
   color?: string;
   size?: string;
   // Integer cents as strings (BigInt-safe API contract).
+  cashPrice: string;
   price: string;
   costPrice: string;
 };
@@ -213,6 +222,8 @@ const allowedCatalogue: Array<[string, RegExp]> = [
   // Block 1: management-only price read (PRICE_MANAGE server side).
   ['GET', new RegExp(`^/variants/${UUID}/pricing$`)],
   ['PATCH', new RegExp(`^/variants/${UUID}/price$`)],
+  ['GET', /^\/pricing\/config$/],
+  ['PATCH', /^\/pricing\/config$/],
   ['POST', /^\/inventory\/initial-stock$/],
 ];
 
@@ -324,6 +335,10 @@ export const api = {
     send<{ variant: VariantPricing }>(
       'PATCH', `/variants/${variantId}/price`, token, body, onUnauthorized,
     ),
+  pricingConfig: (token: string, onUnauthorized: () => void) =>
+    request<{ config: PricingConfig }>('/pricing/config', { token, onUnauthorized }),
+  updatePricingConfig: (token: string, body: Partial<Record<Exclude<PriceMode, 'CASH'>, number>>, onUnauthorized: () => void) =>
+    send<{ config: PricingConfig }>('PATCH', '/pricing/config', token, body, onUnauthorized),
   loadInitialStock: (token: string, body: InitialStockBody, onUnauthorized: () => void) =>
     send<InitialStockResult>('POST', '/inventory/initial-stock', token, body, onUnauthorized),
 };

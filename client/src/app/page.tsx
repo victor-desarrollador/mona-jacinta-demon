@@ -3,6 +3,7 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { catalogCashPrice } from "./catalog-price";
 
 type User = {
   id: string;
@@ -28,6 +29,7 @@ type Variant = {
   barcode: string | null;
   color: string | null;
   size: string | null;
+  cashPrice: string | null;
   price: string;
   isActive: boolean;
   product: { id: string; name: string; slug: string };
@@ -39,6 +41,7 @@ type SaleStatus = "DRAFT" | "PENDING_PAYMENT" | "PAID" | "COMPLETED" | "CANCELLE
 // Block 1: the server decides and stores the price mode; the client only
 // renders it. LIST is the ordinary price; WHOLESALE is sale-scoped.
 type PricingMode = "LIST" | "WHOLESALE";
+type PriceMode = "CASH" | "LIST" | "CREDIT_CARD" | "DEBIT_CARD" | "BANK_TRANSFER" | "QR";
 
 type SaleItem = {
   id: string;
@@ -60,6 +63,7 @@ type Sale = {
   discountTotal: string;
   total: string;
   pricingMode?: PricingMode;
+  priceMode?: PriceMode;
   branch?: { id: string; name: string; code: string };
   seller?: { id: string; name: string; email: string };
   items: SaleItem[];
@@ -88,6 +92,7 @@ type PendingSale = {
   canCancel?: boolean;
   // Block 1: stored wholesale state; confirmWholesale stays authoritative.
   pricingMode?: PricingMode;
+  priceMode?: PriceMode;
   wholesaleConfirmed?: boolean;
   canConfirmWholesale?: boolean;
 };
@@ -206,6 +211,29 @@ function paymentMethodLabel(method: PaymentMethod) {
     QR: "QR",
   };
   return labels[method];
+}
+
+// Display-only mirror of the server's payment/price-mode compatibility (the
+// API stays authoritative and rejects a conflicting method). LIST has no
+// single method twin, so it constrains nothing.
+const PRICE_MODE_METHOD: Partial<Record<PriceMode, PaymentMethod>> = {
+  CASH: "CASH",
+  BANK_TRANSFER: "TRANSFER",
+  DEBIT_CARD: "CARD_DEBIT",
+  CREDIT_CARD: "CARD_CREDIT",
+  QR: "QR",
+};
+
+function priceModeLabel(mode: PriceMode | undefined) {
+  const labels: Record<PriceMode, string> = {
+    CASH: "Efectivo",
+    LIST: "Lista",
+    CREDIT_CARD: "Tarjeta crédito",
+    DEBIT_CARD: "Tarjeta débito",
+    BANK_TRANSFER: "Transferencia",
+    QR: "QR",
+  };
+  return mode ? labels[mode] : "Efectivo";
 }
 
 function roleLabel(role: string) {
@@ -592,6 +620,8 @@ function SellerWorkspace({
   }
 
   async function addVariant(variant: Variant) {
+    // A variant without a CASH base is not sellable (the server answers CASH_PRICE_MISSING): never offer it.
+    if (!catalogCashPrice(variant).configured) return;
     if (!token || !sale || stockForBranch(variant) <= lineQuantityInSale(variant.id)) return;
     setActionLoading(true);
     setError("");
@@ -653,6 +683,24 @@ function SellerWorkspace({
       closeWholesale();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo activar la venta mayorista.");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function updatePriceMode(priceMode: PriceMode) {
+    if (!token || !sale || sale.priceMode === priceMode) return;
+    setActionLoading(true);
+    setError("");
+
+    try {
+      const nextSale = await apiRequest<Sale>(`/sales/${sale.id}/price-mode`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ priceMode }),
+      });
+      setSale(nextSale);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "No se pudo cambiar el modo de precio.");
     } finally {
       setActionLoading(false);
     }
@@ -749,7 +797,7 @@ function SellerWorkspace({
                 Venta en borrador <strong>{shortId(sale.id)}</strong>
               </span>
               <span>{saleItemCount} artículos</span>
-              {demoReady ? <span className="demo-pill">Demo ARS 165.000 lista</span> : null}
+              {demoReady ? <span className="demo-pill">Demo ARS 165.000</span> : null}
             </div>
 
             <div className="product-grid">
@@ -761,7 +809,8 @@ function SellerWorkspace({
                 variants.map((variant) => {
                   const stock = stockForBranch(variant);
                   const inCart = lineQuantityInSale(variant.id);
-                  const canAdd = stock > inCart;
+                  const price = catalogCashPrice(variant);
+                  const canAdd = price.configured && stock > inCart;
 
                   return (
                     <article className="product-card" key={variant.id}>
@@ -772,7 +821,13 @@ function SellerWorkspace({
                         <small>{variant.sku}</small>
                       </div>
                       <div className="product-bottom">
-                        <strong>{formatMoney(variant.price)}</strong>
+                        {price.configured ? (
+                          <strong title="Precio efectivo (base). El importe de la venta lo define el servidor según el modo de precio.">
+                            {formatMoney(price.cents)}
+                          </strong>
+                        ) : (
+                          <strong className="price-missing">Sin precio configurado</strong>
+                        )}
                         <span className={stock > ZERO ? "stock" : "stock out"}>
                           {stock > ZERO ? `${stock.toString()} disponibles` : "Sin stock"}
                         </span>
@@ -783,7 +838,7 @@ function SellerWorkspace({
                         onClick={() => addVariant(variant)}
                         disabled={actionLoading || !canAdd}
                       >
-                        Agregar
+                        {price.configured ? "Agregar" : "No disponible"}
                       </button>
                     </article>
                   );
@@ -843,6 +898,21 @@ function SellerWorkspace({
                 Mayorista
               </button>
             )}
+            <label className="search-box">
+              Modo de precio
+              <select
+                value={sale.priceMode ?? "CASH"}
+                disabled={actionLoading}
+                onChange={(event) => updatePriceMode(event.target.value as PriceMode)}
+              >
+                <option value="CASH">Efectivo</option>
+                <option value="LIST">Lista</option>
+                <option value="CREDIT_CARD">Tarjeta crédito</option>
+                <option value="DEBIT_CARD">Tarjeta débito</option>
+                <option value="BANK_TRANSFER">Transferencia</option>
+                <option value="QR">QR</option>
+              </select>
+            </label>
             <SaleItemsList
               items={sale.items}
               actionLoading={actionLoading}
@@ -916,9 +986,15 @@ function CashierWorkspace({
       total: completedSale.total,
       paidAmount: completedSale.total,
       remainingBalance: "0",
+      priceMode: completedSale.priceMode,
     };
   }, [completedSale, selectedSaleId]);
   const displaySale = selectedSale ?? completedSnapshot;
+  const fixedPriceMode = displaySale?.priceMode;
+  const requiredMethod = fixedPriceMode ? PRICE_MODE_METHOD[fixedPriceMode] : undefined;
+  useEffect(() => {
+    if (requiredMethod) setPaymentMethod(requiredMethod);
+  }, [requiredMethod, selectedSaleId]);
 
   // Pilot P0.2-C: paid and remaining amounts are the server's queue values,
   // read-only. The client never recomputes them from its payment list.
@@ -1542,6 +1618,7 @@ function CashierWorkspace({
         ) : (
           <>
             <div className="payment-summary">
+              {fixedPriceMode ? <p className="state-pill">Modo precio: {priceModeLabel(fixedPriceMode)}</p> : null}
               <div>
                 <span>Total</span>
                 <strong>{formatMoney(displaySale.total)}</strong>
@@ -1563,11 +1640,11 @@ function CashierWorkspace({
                 onChange={(event) => setPaymentMethod(event.target.value as PaymentMethod)}
                 disabled={paymentLoading || isPaid}
               >
-                <option value="CASH">Efectivo</option>
-                <option value="TRANSFER">Transferencia</option>
-                <option value="CARD_DEBIT">Tarjeta de débito</option>
-                <option value="CARD_CREDIT">Tarjeta de crédito</option>
-                <option value="QR">QR</option>
+                <option value="CASH" disabled={requiredMethod !== undefined && requiredMethod !== "CASH"}>Efectivo</option>
+                <option value="TRANSFER" disabled={requiredMethod !== undefined && requiredMethod !== "TRANSFER"}>Transferencia</option>
+                <option value="CARD_DEBIT" disabled={requiredMethod !== undefined && requiredMethod !== "CARD_DEBIT"}>Tarjeta de débito</option>
+                <option value="CARD_CREDIT" disabled={requiredMethod !== undefined && requiredMethod !== "CARD_CREDIT"}>Tarjeta de crédito</option>
+                <option value="QR" disabled={requiredMethod !== undefined && requiredMethod !== "QR"}>QR</option>
               </select>
             </label>
 

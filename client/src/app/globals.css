@@ -468,6 +468,11 @@ select:focus {
   color: var(--danger);
 }
 
+.price-missing {
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .in-cart {
   margin: 0 0 10px;
   color: #725115;
