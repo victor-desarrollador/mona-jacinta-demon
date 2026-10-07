@@ -162,28 +162,27 @@ over the Demo V2 commerce core. See §5 for the separation.
 
 | Field | Value |
 | --- | --- |
-| Last verified | 2026-10-06 (UTC), Pilot Pricing V2 commit closeout, read from git in this worktree. Pricing V2 is committed locally and NOT pushed. Only the disposable LOCAL_TEST database was contacted (validation); DEV, TEST, DEMO and PILOT were not. |
-| Branch | `feat/production-v1-pricing-wholesale-t4` (feature branch for pricing/wholesale work) |
-| Validated implementation baseline | `18b07310190674291e1e2202708679e72f05778c`: `feat(auth): scope product and inventory reads by permission`. Pilot Pricing V2 is committed locally on top of this baseline (5 commits, not pushed): `9da09ab` feat(pricing), `3b623e9` feat(db) LOCAL_TEST/PILOT tooling sync and historical-backup verifier, `441147a` test(pricing), `a731f2f` feat(ui), `b43d071` docs(pricing). |
-| HEAD (full) | Last Pricing V2 content commit: `b43d071ea109cdbfbb779947d22937b019404246` (the Blueprint pointer-fix commit sits on top of it; read `git rev-parse HEAD` for the exact tip). `origin/feat/production-v1-pricing-wholesale-t4` is still `18b07310190674291e1e2202708679e72f05778c`. |
-| HEAD (short) | `b43d071` (Pricing V2 content) |
-| Commit chain since the P0.2 record | `a04478c` (P0.2 Blueprint record) → **A1** `8a95f0d` → **A2** `41ee882` → **A3** `0d7ac5d` → **C** `3868e5a` → **D** `113c57a` → `13fee1e` (`docs: reconcile Production V1 validated checkpoint`) → `4b04411` (`chore(dev): add static analysis and harden database tooling`) → `9e97aa9` (`chore(ci): pin runtime and add hermetic checks`) → **Boundary A** `bbc24c6` (`chore(test): add local PostgreSQL test target`). See §3. |
+| Last verified | 2026-10-07 (UTC), after direct remote verification and normal push of `feat/production-v1`. Only git remotes were contacted; no database was contacted. |
+| Branch | `feat/production-v1` |
+| Integrated implementation baseline | `9a3243f912d8b0f929767978e97454d229acedda`: `docs(blueprint): update section 2 pointer for committed Pricing V2`. This is the current Production V1 integration head before this documentation reconciliation commit. |
+| HEAD (full) | `9a3243f912d8b0f929767978e97454d229acedda` before this documentation reconciliation commit. |
+| HEAD (short) | `9a3243f` |
+| Commit chain since the P0.2 record | `a04478c` (P0.2 Blueprint record) → **A1** `8a95f0d` → **A2** `41ee882` → **A3** `0d7ac5d` → **C** `3868e5a` → **D** `113c57a` → `13fee1e` → `4b04411` → `9e97aa9` → `bbc24c6` → `f3e5779` → `c8f61c5` → `ce0a6d5` → `4632b89` → `18b0731` → `9da09ab` → `3b623e9` → `441147a` → `a731f2f` → `b43d071` → `9a3243f`. See §3. |
 | Origin branch | `origin/feat/production-v1` |
-| Origin HEAD | `13fee1e30aa25000304d0288a5cf1732ea3aa24d`, from the local remote-tracking ref (not fetched during this record). P0.2, A1–D and `13fee1e` are ancestors of it; `4b04411` and `9e97aa9` are not. |
-| Local tracking snapshot at closure baseline (pre-final-checkpoint HEAD = f3e57790ef6da54e39f454b31e56612aa57e2010): raw left/right = 0 4; behind = 0; ahead = 4 (f3e5779, bbc24c6, 9e97aa9, 4b04411). Local remote-tracking ref `13fee1e` was not fetched; remote-server state UNVERIFIED_NO_FETCH. Re-verify with git. | `git rev-list --left-right --count origin/feat/production-v1...HEAD` = `0 4` at baseline (behind = 0; ahead = 4). Not a permanent current-state claim. |
-| Current phase | Monday PILOT pricing preparation: cash-base retail/wholesale + company-global price modes. |
-| Last completed engineering block | Phase 1D.3.4 closed and pushed at `18b07310190674291e1e2202708679e72f05778c` on `feat/production-v1-pricing-wholesale-t4`. |
-| Current engineering block | **Pilot Pricing V2 implementation (committed locally, not pushed; LOCAL_TEST-validated):** additive schema/migration, server-side pricing calculator/config, sale price-mode lifecycle, payment compatibility, admin/client minimal UI, synthetic seed/PILOT tooling compatibility and living documentation. |
-| P0.2 status | Implemented and checkpointed at `e3ce087` (record `a04478c`); OpenCode + Codex final 0/0/0/0; covered by the owner full suite at `113c57a`. Both commits are ancestors of `origin/feat/production-v1` (local ref). A formal P0.2 closeout record is not in this Blueprint. |
+| Origin HEAD | `9a3243f912d8b0f929767978e97454d229acedda`, direct-verified after the normal fast-forward push. `origin/feat/production-v1-pricing-wholesale-t4` points to the same commit. |
+| Current phase | Production V1 now contains the Pricing V2/T4 line. Next work is pre-PILOT code fixes and verification, then a normal Production V1 → pilot merge under separate authorization. |
+| Last completed engineering block | Pricing V2/T4 was fast-forward integrated into Production V1 and pushed. |
+| Current engineering block | **Documentation reconciliation after Pricing V2 integration:** no production/source/test changes. |
+| P0.2 status | Implemented, checkpointed and pushed as an ancestor of current `feat/production-v1`; OpenCode + Codex final 0/0/0/0; covered by the owner full suite at `113c57a`. |
 | P0.1-C status | **IMPLEMENTED · FOCUSED TESTS GREEN (9/9 files, 211/211) · STATIC GATES GREEN · OPENCODE REVIEWED (LOW resolved) · CODEX APPROVED (final 0/0/0/0) · CHECKPOINTED** at `421b58453b7de667cb3ad6a3467a051a14dd61f7` · OWNER FULL SUITE GREEN (aggregate) · PUSHED. Evidence: §16 P0.1-C. |
 | Current P0.1 aggregate status | **CLOSED AND PUSHED** — technical/block closeout complete and remote synchronization complete. A (`8e9699a`), B1 (`ab728be`), B2 (`e7b6cc7`) and C (`421b584`) are committed, pushed and audited (A/B1/B2 per owner; C in §22: OpenCode complete, Codex final 0/0/0/0). Final technical gate passed: OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Focused P0.1-C evidence stays 9/9 files, 211/211. Remote synchronization: done (see Push status). |
 | Working tree exceptions | `opencode.json` and `.claude/settings.json` are local-only excluded paths for this task; they were not inspected, diffed, staged or edited. |
-| Full-suite status | NOT RUN in Pilot Pricing V2 (owner-only, DB-backed). DB-free evidence after the 2026-10-06 focused correction (offline namespace, scratch no-setup vitest config, synthetic `.invalid` env): 8 files / 465 tests passed (Pricing V2 calculator + behavior 40, Block 1 wholesale 78, LOCAL_TEST fingerprint/baseline, protected-capability static/runtime, SQL capture); API `tsc` (both configs), `eslint --max-warnings 0` and `git diff --check` PASS. Node script tests PASS: pilot-migrate 39/39, local-test-prepare 182/182, local-test-backup 34/34 and the other database tool suites. The earlier 22 pin failures were all caused by the new migration and are fixed by pinning exactly the reviewed migration (3282 B, sha256 `d948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12`) in `APPROVED_MIGRATION_PAYLOAD`. `tests/test-cleanup.test.ts` fails identically at clean HEAD `18b0731` (r4-real-db/fixture.ts, protected-capability-runtime.test.ts): PREEXISTING, not touched. Admin/client typecheck, lint, build and tests NOT RUN: toolchains absent (empty `node_modules`). All DB-backed API tests NOT RUN; DB-backed fixtures were edited statically only. New sales default to CASH (OWNER 2026-10-06). |
+| Verification status | Pricing V2 owner validation on disposable LOCAL_TEST: focused real-DB suite **439/439 PASS**, return to `EXACT_BASELINE`; no DEV, TEST, DEMO or PILOT DB contact. DB-free evidence after the 2026-10-06 focused correction: 8 files / 465 tests passed; API `tsc` (both configs), `eslint --max-warnings 0` and `git diff --check` PASS. Node script tests PASS: pilot-migrate 39/39, local-test-prepare 182/182, local-test-backup 34/34 and the other database tool suites. Admin lint plus `tsc -b && vite build` passed; client lint, Vitest 5 files / 44 tests, and `next build` passed. No browser/E2E validation is claimed. Owner full suite was **not run** for Pricing V2. |
 | Pre-suite TEST backup (`113c57a` gate) | `test_manual_20260928T130605Z.dump`: 66797 bytes, SHA-256 `d84708690f8be67d14e000f5dea89f18c8f4ffc62122781a87fd7a1ec8d40934`, set id `8852ffc9-e5a2-42cb-888e-e9aa2b316d19`, 25 tables. The owner verified the manifest (artifact, SHA, set id, `environment=test`, `purpose=manual`) and `pg_restore --list`. During this reconciliation the local size and SHA-256 were re-checked read-only and matched. The backup was **not** restored. |
 | Full-suite ownership | **REPOSITORY OWNER ONLY** (§12). Agents never run it on their own initiative; the Task 4 hosted TEST run executed only under the owner's explicit Approval 11. |
-| Push status | No push performed for Pilot Pricing V2. The branch is 5 Pricing V2 commits (plus this pointer fix) ahead of `origin/feat/production-v1-pricing-wholesale-t4` (`18b0731`). |
-| Push gate | Owner's explicit approval. |
-| Exact next action | Owner decision to push the Pricing V2 commits; then the repository/documentation reconciliation; PILOT migration and customer-data import each only under separate explicit owner authorization (the LOCAL_TEST real-DB validation is done). |
+| Push status | Pricing V2/T4 is pushed to `origin/feat/production-v1` at `9a3243f`; the temporary T4 branch also points to `9a3243f`. |
+| Preservation status | The old dirty worktree was preserved externally at `~/.local/share/mona-jacinta/preservation/old-worktree-20261007`; it is not the source of truth. |
+| Exact next action | Pre-PILOT code fixes, then Production V1 verification. PILOT merge, PILOT DB migration and customer-data import each require separate explicit authorization. |
 ---
 
 ## 3. Git Checkpoint Ledger
@@ -230,10 +229,17 @@ repository proves. `pushed` means the commit is an ancestor of
 | A3 — TEST-H2 / H2.1 | `0d7ac5d179fe8b48a146339b935152ba53df69d9` | test(db): harden TEST cleanup lifecycle | Teardown can no longer replace a setup failure or leak a TEST handle; AST cleanup scanner | Same audit; owner full suite at `113c57a` | **pushed** (ancestor of `13fee1e`, local ref) | 21 files under `api/tests/`. See §16 |
 | C — PILOT database bootstrap | `3868e5a4b97c7404dd0e65a89b10d7be8a160934` | feat(db): add safe PILOT database bootstrap tooling | OWNER-only PILOT marker, guarded migrate, additive bootstrap (tooling only) | Same audit; owner full suite at `113c57a` | **pushed** (ancestor of `13fee1e`, local ref) | 6 new files in `scripts/database/`. No live PILOT execution recorded. See §16 |
 | D — PILOT catalog bootstrap | `113c57adf865268cf2df4add41d8090f5511ed2b` | feat(db): add PILOT catalog bootstrap tooling | OWNER-only additive synthetic PILOT catalog (tooling only) | Same audit; **owner full suite PASS at this commit (59/59, 1082/1082; wrapper exit NOT OBSERVED)** | **pushed** (ancestor of `13fee1e`, local ref); validated implementation baseline | 2 new files in `scripts/database/`. No live PILOT execution recorded. See §16 |
-| Validated checkpoint record | `13fee1e30aa25000304d0288a5cf1732ea3aa24d` | docs: reconcile Production V1 validated checkpoint | Records A1–D, the independent audit and the owner full suite (documentation only: `AGENTS.md` + this Blueprint) | Final read-only OpenCode audit: not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **pushed (= origin HEAD, local ref)** | On top of `113c57a` |
-| Dev tooling | `4b0441152d7b5c060f7b6822a861b7403bbd5167` | chore(dev): add static analysis and harden database tooling | Static analysis and database-tooling hardening | Not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **local only** (`chore/dev-tooling-1`) | On top of `13fee1e` |
-| CI runtime pin | `9e97aa995569c80361b749fd09de5ae2c40f3290` | chore(ci): pin runtime and add hermetic checks | Pinned CI runtime and hermetic checks | Not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **local only** (`chore/dev-tooling-1`) | On top of `4b04411`. Task 4 (LOCAL_TEST) was uncommitted on top of it at this record (§16) |
-| Boundary A — Task 4 LOCAL_TEST target | `bbc24c68f3fe624be66e25b9086b352a13854874` | chore(test): add local PostgreSQL test target | 33 files: LOCAL_TEST Prisma config, marker and prepare tools, baseline/runtime modules, shared TEST Company descriptor, test harness and tests, marker proof, CI `local-postgres` job; `api/package.json`/`package-lock.json` (`@prisma/config`) | Not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **local only** (`chore/dev-tooling-1`) | On top of `9e97aa9`. Boundary B policy/docs staged for independent review |
+| Validated checkpoint record | `13fee1e30aa25000304d0288a5cf1732ea3aa24d` | docs: reconcile Production V1 validated checkpoint | Records A1–D, the independent audit and the owner full suite (documentation only: `AGENTS.md` + this Blueprint) | Final read-only OpenCode audit: not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **pushed** | On top of `113c57a` |
+| Dev tooling | `4b0441152d7b5c060f7b6822a861b7403bbd5167` | chore(dev): add static analysis and harden database tooling | Static analysis and database-tooling hardening | Not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **pushed** | On top of `13fee1e` |
+| CI runtime pin | `9e97aa995569c80361b749fd09de5ae2c40f3290` | chore(ci): pin runtime and add hermetic checks | Pinned CI runtime and hermetic checks | Not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **pushed** | On top of `4b04411` |
+| Boundary A — Task 4 LOCAL_TEST target | `bbc24c68f3fe624be66e25b9086b352a13854874` | chore(test): add local PostgreSQL test target | LOCAL_TEST Prisma config, marker/prepare tools, baseline/runtime modules, shared TEST Company descriptor, test harness/tests, marker proof, CI `local-postgres`, `@prisma/config` declaration | Owner LOCAL_TEST gate and hosted TEST gate recorded in §16 Task 4 | **pushed** | On top of `9e97aa9` |
+| Boundary B — Task 4 policy/docs | `f3e57790ef6da54e39f454b31e56612aa57e2010` | docs: reconcile local test policy and Task 4 status | LOCAL_TEST policy and docs reconciliation | Task 4 audit record preserved in §16 | **pushed** | On top of `bbc24c6` |
+| Task 4 persistent checkpoint | `c8f61c5d8f4eb92edbc106c32e261d3afa13d2c1` | docs: record Task 4 final persistent checkpoint | Final Task 4 persistent documentation checkpoint | — | **pushed** | On top of `f3e5779` |
+| Block 1 wholesale | `ce0a6d5...` | feat(block1): add sale-scoped wholesale pricing | Sale-scoped wholesale authorization and cashier confirmation | Covered by later Pricing V2 validation; no live PILOT execution | **pushed** | On top of `c8f61c5` |
+| R4 LOCAL_TEST proof | `4632b89...` | test(db): add R4 LOCAL_TEST safety proof tooling | LOCAL_TEST safety proof tooling | — | **pushed** | On top of `ce0a6d5` |
+| Authorization read-scope hardening | `18b07310190674291e1e2202708679e72f05778c` | feat(auth): scope product and inventory reads by permission | Product/inventory read authorization hardening | Baseline for Pricing V2 work | **pushed** | On top of `4632b89` |
+| Pricing V2 implementation | `9da09ab` → `b43d071` | feat/pricing/db/test/ui/docs Pricing V2 | CASH base, company price modes, LOCAL_TEST/PILOT tooling sync, tests, UI, docs | LOCAL_TEST focused DB suite 439/439 PASS; frontend gates recorded in §2/§16 | **pushed** | On top of `18b0731` |
+| Pricing V2 pointer fix / integration head | `9a3243f912d8b0f929767978e97454d229acedda` | docs(blueprint): update section 2 pointer for committed Pricing V2 | Documentation pointer fix; pre-reconciliation Production V1 head | T4 fast-forward integrated and pushed to `origin/feat/production-v1` | **pushed (= origin/feat/production-v1 before this docs commit)** | On top of `b43d071` |
 
 ---
 
@@ -406,8 +412,8 @@ From `07-inventory-ledger.md` §3 and §5:
 
 `[CURRENT IMPLEMENTATION]` (`sales.service.ts`, `reservation.service.ts`,
 `payments.service.ts`, `cancellation.service.ts`, `pending-correction.service.ts`)
-— includes the uncommitted P0.2 working tree (correction and controlled
-cancellation rows below).
+— includes P0.2 correction and controlled cancellation, now pushed as ancestors
+of the current Production V1 head.
 
 | State / transition | Who (permission) | Stock / hold effect | Payment requirement | Audit | Known Pilot limitation |
 | --- | --- | --- | --- | --- | --- |
@@ -648,7 +654,7 @@ and release discovery both use it.
 
 ### 10.3 P0.2 — cashier correction / cancellation / payment UX (decision source: the owner's P0.2 brief, 2026-09-24; Pilot doc P0.2 section)
 
-**Implemented in the current P0.2 working tree (uncommitted; see §16 P0.2):**
+**Implemented and pushed in P0.2 (see §16 P0.2):**
 
 - Pending-sale correction (`POST /sales/:saleId/correct`), permission
   `SALE_CORRECT_PENDING`: zero payment rows, exact unexpired coverage,
@@ -757,7 +763,7 @@ backup is still 2026-09-12. D3's migration
   855 tests at `59e629f` (P0.1 aggregate); 8461.73s (~2h21m) for 59 files /
   1082 tests at `113c57a` (validated checkpoint). It is slow because it runs against
   hosted TEST (~100 ms/round-trip, `fileParallelism: false`). Slow is not hung.
-  Task 4 (uncommitted, on `9e97aa9`): hosted TEST 65/65 files, 1652/1652 tests,
+  Task 4 (now pushed): hosted TEST 65/65 files, 1652/1652 tests,
   exit 0, 8458.58s (Approval 11).
 - **LOCAL_TEST (Task 4):** the same suite can run against the disposable loopback
   LOCAL_TEST database, only when `MONA_TEST_DATABASE_TARGET=local` is set explicitly
@@ -821,10 +827,10 @@ and push come after P0.1-C, never between slices.
 | Pre-send reconciliation | YES | YES | n/a (Pilot) | P0.1-B2 | — | — |
 | Background sweeper | YES (opt-in, default OFF) | PARTIAL — needs system actor + explicit enable | Not required by the frozen design | `reservation-sweeper.ts`, `server.ts` | Starvation; not enabled anywhere verified | P0.5 / DEBT-003 |
 | Payments (split, idempotent) | YES (P0.1-C, `421b584`) | YES (audited; P0.1 owner full suite green) | + transfer/installment metadata | `payments.service.ts`, `hold-coverage.ts` | Stale-correction guards are P0.2 | 6C |
-| Cashier queue | YES (P0.1-C, `421b584`; P0.2-C eligibility flags uncommitted) | YES (audited; P0.1 owner full suite green) | — | `listPendingSales`, `hold-coverage.ts` | Released/expired rows stay until cancelled | P0.2 |
+| Cashier queue | YES (P0.1-C, `421b584`; P0.2-C eligibility flags pushed) | YES (audited; P0.1 owner full suite green) | — | `listPendingSales`, `hold-coverage.ts` | Released/expired rows stay until cancelled | P0.2 |
 | Completion | YES (P0.1-C, `421b584`) | YES (audited; P0.1 owner full suite green) | + pricing finalization | `completeSaleInTransaction` | — | 6D |
-| Cancellation | YES (P0.2-B, uncommitted) | Pending review | — | `cancelSale`, `cancel-sale.dto.ts` | Partially paid sales stay manual (Policy A; no refund model) | Refund/reversal design (later) |
-| Cashier correction | YES (P0.2-A, uncommitted) | Pending review | — | `pending-correction.service.ts` | Client UI in P0.2-C; add-variant only via API if the UI stays minimal | P0.2 |
+| Cancellation | YES (P0.2-B, pushed) | Reviewed in P0.2 closeout | — | `cancelSale`, `cancel-sale.dto.ts` | Partially paid sales stay manual (Policy A; no refund model) | Refund/reversal design (later) |
+| Cashier correction | YES (P0.2-A, pushed) | Reviewed in P0.2 closeout | — | `pending-correction.service.ts` | Client UI in P0.2-C; add-variant only via API if the UI stays minimal | P0.2 |
 | Audit | YES | YES | Same | `shared/audit.ts`, `AuditLog` | — | — |
 | Realtime | YES (advisory) | YES | + persisted notifications | `realtime/socket.ts` | Scope snapshot | 9B/9C |
 | Cash session | YES (Demo V2 level) | PARTIAL | + deposit/withdrawal/adjustment types | `cash.service.ts` | Movement types | 6E |
@@ -848,7 +854,7 @@ and push come after P0.1-C, never between slices.
 | `api/src/modules/sales/reservation-sweeper.ts` | Opt-in scheduler | Inert when disabled; no overlap; `stop` awaits in-flight run; no global state | B2 (new) |
 | `api/src/modules/sales/hold-coverage.ts` | Pure current-coverage evaluator + cashier hold state | No DB, no global clock; explicit expiry policy; coverage defects before expiry; ACTIVE rows only | P0.1-C (new, `421b584`) |
 | `api/src/modules/sales/sales.service.ts` | Draft/cart, queue, completion; wires pre-send + notifications | Emit only after commit; emit failure isolated; completion consumes exactly the locked ACTIVE rows; queue read-only and PENDING_PAYMENT + PAID | B2 (wiring); P0.1-C (completion, queue) |
-| `api/src/modules/sales/pending-correction.service.ts` | Pending-sale correction (P0.2-A) | Sale-first lock; zero payment rows; exact unexpired coverage before and after; exact `reserved` delta; original `expiresAt`; no `StockMovement`; audit before/after | P0.2-A (new, uncommitted) |
+| `api/src/modules/sales/pending-correction.service.ts` | Pending-sale correction (P0.2-A) | Sale-first lock; zero payment rows; exact unexpired coverage before and after; exact `reserved` delta; original `expiresAt`; no `StockMovement`; audit before/after | P0.2-A (pushed) |
 | `api/src/modules/sales/sales.controller.ts` | Sales HTTP | Queue accepts no client filters | B2 (options passthrough) |
 | `api/src/modules/audit/system-actor.service.ts` | System actor classify/bootstrap/resolve | Inactive, scope-less; fail closed; never repair | B1 (new) |
 | `api/scripts/bootstrap-system-actor.ts` | Operator CLI | Explicit `--target`, `--dry-run`/`--execute`; never prints the secret | B1 (new) |
@@ -970,8 +976,8 @@ and push come after P0.1-C, never between slices.
 | Codex initial review | Independent adversarial read-only review: **BLOCKER 0 / HIGH 0 / MEDIUM 0 / LOW 2**, verdict **`PILOT P0.2 CODEX CHANGES REQUIRED`**. **LOW #1:** stale CASH tender after a same-sale correction — the payment-entry reset depended on `selectedSaleId`, which a correction does not change, so `cashReceived` kept the old balance (e.g. 10000) while the amount became the new one (5000); the server could record `receivedAmount`/`changeAmount` that were false (net cash still correct). **LOW #2:** stale Blueprint §8 (cancel = `SALE_CREATE`, no `sellerId` check, payment-sum semantics) and §10.3 (P0.2 shown as later work). |
 | Codex corrections (applied) | **#1:** new client regression in `client/src/app/cashier-p02.test.tsx` ("resets the CASH tender to the new server balance after a same-sale correction") — RED against the previous code (amount 5000, `Recibido` still 10000), GREEN after the fix. Fix in `client/src/app/page.tsx`: `refreshQueue` returns the refreshed rows; a shared `resetPaymentEntry(balance)` (amount, CASH received, retry intent, split toggle) is used by the selection effect and, after a committed correction, with the refreshed server row's `remainingBalance`. No API change. Client: 3/3 files, **28/28** (`cashier-p02` 18, `cashier-queue` 4, `page` 6); client lint, `tsc --noEmit`, `build`, `git diff --check`: PASS. The API aggregate (19/19, 393/393) is unchanged — no API source changed. **#2:** §8 and §10.3 rewritten to the current P0.2 semantics. **Narrow recheck: COMPLETE — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW; final verdict `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`.** |
 | Final audited state | P0.2-A, P0.2-B, P0.2-C implemented. OpenCode complete (0/0/0/6 LOW, non-blocking). Codex complete: initial 0/0/0/2 LOW (`PILOT P0.2 CODEX CHANGES REQUIRED`) → both corrections applied → narrow recheck **0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW**, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`. Evidence retained: API aggregate focused 19/19 files, 393/393 tests, 0 failed, 0 skipped, `VITEST_EXIT=0`; client 3/3 files, 27/27 before the Codex fix and **28/28** after it (new same-sale CASH-tender regression). Static gates GREEN. FULL SUITE: OWNER ONLY — NOT RUN. |
-| Commit / push | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` (28 files: runtime, tests, `docs/api/endpoints.md`, Pilot doc; Blueprint and `opencode.json` excluded) + Blueprint record `a04478c930a69cee6c0c3b174de7636a711b622d` / **local only, NOT pushed** |
-| Owner full-suite coverage (added 2026-09-28) | The owner full suite at `113c57a` (a descendant of `e3ce087`) passed 59/59 files and 1082/1082 tests; the wrapper exit was not observed (see §16 "Validated checkpoint"). P0.2's final closeout and push are still pending. |
+| Commit / push | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` (28 files: runtime, tests, `docs/api/endpoints.md`, Pilot doc; Blueprint and `opencode.json` excluded) + Blueprint record `a04478c930a69cee6c0c3b174de7636a711b622d`; initially local-only, now pushed as ancestors of current `feat/production-v1` |
+| Owner full-suite coverage (added 2026-09-28) | The owner full suite at `113c57a` (a descendant of `e3ce087`) passed 59/59 files and 1082/1082 tests; the wrapper exit was not observed (see §16 "Validated checkpoint"). P0.2's final closeout and push are no longer pending. |
 
 ### A1 — TEST backup / restore / marker tooling
 
@@ -1031,20 +1037,20 @@ and push come after P0.1-C, never between slices.
 | Owner full suite (OWNER, not an agent) | **Vitest full-suite result: PASS: 59/59 files, 1082/1082 tests**, duration 8461.73s. The final Vitest summary had zero failed files and zero failed tests. |
 | Wrapper exit code | **`FULL_SUITE_EXIT`: NOT OBSERVED.** The terminal closed after the final Vitest summary, before the surrounding shell wrapper printed it. No exit code is recorded, and none may be assumed. |
 | Post-recovery state (owner) | No vitest or npm-test process remained. Branch `feat/production-v1`, HEAD `113c57a`, and no working-tree change outside `opencode.json`. |
-| Not claimed | Live PILOT execution; a live restore; a wrapper exit of 0; TEST-H3; any push |
-| Commit / push | A1–D + this documentation commit / **local only, NOT pushed** |
+| Not claimed | Live PILOT execution; a live restore; a wrapper exit of 0; TEST-H3 |
+| Commit / push | A1–D + documentation records are now ancestors of current pushed `feat/production-v1` |
 
-### Task 4 — LOCAL_TEST disposable test target (uncommitted; recorded 2026-10-01)
+### Task 4 — LOCAL_TEST disposable test target (pushed; recorded 2026-10-01)
 
 | Field | Value |
 | --- | --- |
 | Goal | Let the destructive API integration suite run against a disposable, marker-proven local PostgreSQL (LOCAL_TEST) — locally and in CI — without weakening hosted TEST or DEV isolation |
-| Base | `9e97aa9` (uncommitted working tree) |
+| Base | `9e97aa9` |
 | Files | Boundary A (implementation, 33): 17 modified tracked files (CI workflow, `prisma/seed.ts`, `scripts/demo-database.ts`, test harness and tests, `docs/development/migrations.md`), 14 new files (LOCAL_TEST Prisma config, marker and prepare tools, baseline/runtime modules, shared TEST Company descriptor, tests) and `api/package.json` + `api/package-lock.json` (direct devDependency `@prisma/config` 7.10.0). Boundary B (policy/docs, 6): `AGENTS.md`, `CLAUDE.md`, `.claude/claude-security-guidance.md`, `docs/development/database.md`, `docs/testing/strategy.md`, this Blueprint |
 | Behavior added | Selector `MONA_TEST_DATABASE_TARGET`: absent or `test` → hosted TEST (default); exactly `local` → LOCAL_TEST; anything else fails closed. LOCAL_TEST accepts only `LOCAL_TEST_DATABASE_URL` = `postgres[ql]://mona_local_test:<password>@127.0.0.1:5432/mona_local_test` and is proven read-only by `mona_local_test_guard.database_identity` (= `LOCAL_TEST_DATABASE_MARKER_ID`) on PostgreSQL 17+, with `PGOPTIONS` refused. No fallback between LOCAL_TEST, TEST and DEV. Marker installed only by `scripts/database/local-test-marker.mjs`; baseline prepared only by `scripts/database/local-test-prepare.mjs` (plan digest, refuses unknown/unsafe states, verify-only on `EXACT_BASELINE`). CI job `local-postgres` runs the suite on an ephemeral `postgres:17` without repository secrets. The canonical demo seed is now a frozen descriptor (`CANONICAL_DEMO_SEED`) with unchanged values |
 | Gates | LOCAL_TEST owner gate 65/65 files, 1652/1652 tests, exit 0. Hosted TEST owner suite (Approval 11) 65/65 files, 1652/1652 tests, exit 0, 8458.58s. Static gates after the hosted suite PASS |
 | Procedural deviation | Approval 11 pre-suite Section 9 (independent post-restore proof) and Section 10 (three fresh connection cycles) were **NOT RUN**; classified `DOCUMENTED_PROCEDURAL_DEVIATION`. They are not recorded as passed |
-| Status | **CLOSURE CHECKPOINT IN PROGRESS (substantive Task 4 COMPLETE; persistent doc record being finalized at this documentation commit).** Boundary A (`bbc24c6`) and Boundary B (`f3e5779`) both committed locally (verified at HEAD before this checkpoint). Substantive work: complete (LOCAL_TEST 65/65, hosted TEST 65/65, Section 9/10 NOT RUN / DOCUMENTED_PROCEDURAL_DEVIATION preserved, DEBT-028 OPEN, LOW / deferred: CI PostgreSQL image (`.github/workflows/ci.yml` `postgres:17`) floating tag (no digest pin) — not resolved, no new blockers. Only remaining step: this persistent documentation checkpoint (no new implementation commit; push NOT performed; remote UNVERIFIED_NO_FETCH). |
+| Status | **COMPLETE AND PUSHED.** Boundary A (`bbc24c6`), Boundary B (`f3e5779`) and final Task 4 persistent checkpoint (`c8f61c5`) are ancestors of current `feat/production-v1`. Substantive work: complete (LOCAL_TEST 65/65, hosted TEST 65/65, Section 9/10 NOT RUN / DOCUMENTED_PROCEDURAL_DEVIATION preserved, DEBT-028 OPEN, LOW / deferred: CI PostgreSQL image (`.github/workflows/ci.yml` `postgres:17`) floating tag (no digest pin) — not resolved, no new blockers). |
 
 ### Older blocks (summary; strong evidence only)
 
@@ -1218,7 +1224,7 @@ it is marked unverified. The defect and its fix are still verified.
 - **Root cause:** the Demo V2 cancel path was switched to Production permissions (1D.3.1) without lifecycle-specific authority; P0.1 hardened reservations but not who may cancel.
 - **Fix:** status-dependent authority under the Sale lock (seller-own DRAFT; `SALE_CANCEL_PENDING` for pending), payment-row existence, structured reason in the audit.
 - **Regression tests:** `controlled-cancellation` (DRAFT ownership, SELLER/WAREHOUSE refusals, revocation, reasons, payment protection, races).
-- **Prevention:** RULE-018 · **Status:** FIXED (uncommitted, pending review).
+- **Prevention:** RULE-018 · **Status:** FIXED (`e3ce087`; pushed).
 
 ### Review-history candidates not registered as failures
 
@@ -1263,7 +1269,7 @@ F-012 when P0.1-C reproduced it in a RED test.
 | ID | Item | Why deferred | Risk | Target phase | Pilot blocker? | Status |
 | --- | --- | --- | --- | --- | --- | --- |
 | DEBT-001 | P0.1-C payment/completion hold rules (§10.2) | — | — | P0.1-C | Was YES | **CLOSED** — `421b584`, audited (OpenCode + Codex 0/0/0/0), P0.1 owner full suite green (55/55, 855/855) |
-| DEBT-002 | Cashier pending correction / pending cancel / permissions / UX | — | — | P0.2 | — | **IMPLEMENTED in P0.2** (`e3ce087`, audited; covered by the OWNER full suite at `113c57a`, 59/59, 1082/1082; P0.2 closeout/push pending) — partially paid sales remain manual by design (Policy A) |
+| DEBT-002 | Cashier pending correction / pending cancel / permissions / UX | — | — | P0.2 | — | **IMPLEMENTED and pushed in P0.2** (`e3ce087`, audited; covered by the OWNER full suite at `113c57a`, 59/59, 1082/1082) — partially paid sales remain manual by design (Policy A) |
 | DEBT-003 | Sweeper batch starvation (id-ordered; permanently corrupt low-id Sales) | Pilot doc defers it | Healthy expired holds wait for pre-send or manual release | P0.5 | No | OPEN |
 | DEBT-004 | Log aggregation / rate limiting of repeated failure logs | Not in P0.1 scope | Log noise every tick | [UNVERIFIED — NEEDS CONFIRMATION] | No | OPEN |
 | DEBT-005 | Broader observability (metrics, alerting) | Not scoped | Silent degradation | 10C [UNVERIFIED — NEEDS CONFIRMATION] | [UNVERIFIED] | OPEN |
@@ -1299,12 +1305,12 @@ F-012 when P0.1-C reproduced it in a RED test.
 | --- | --- | --- | --- | --- |
 | ~~Payment accepted on an expired-but-unreleased hold~~ | — | — | **CLOSED in P0.1-C (`421b584`; F-010)**; owner full suite green | — |
 | ~~Paid sale disappears from the cashier queue~~ | — | — | **CLOSED in P0.1-C (`421b584`; F-012)**; owner full suite green | — |
-| Released/expired sale lingers in PENDING_PAYMENT | Expiry release or expired zero-payment hold | Queue clutter; shown as `EXPIRED`, not chargeable | Cashier cancellation with a reason (P0.2-B, uncommitted) | Cashier UX (P0.2-C) |
+| Released/expired sale lingers in PENDING_PAYMENT | Expiry release or expired zero-payment hold | Queue clutter; shown as `EXPIRED`, not chargeable | Cashier cancellation with a reason (P0.2-B, pushed) | Later UX polish if needed |
 | Abandoned partial payment | Customer leaves after a partial payment | Hold stays protected indefinitely (Policy A); stock stays reserved | Visible as `PAYMENT_PROTECTED`; manual handling | P0.2 |
 | PAID sale with corrupt coverage | Manual data damage | Cannot complete (`INVALID_RESERVATION`); shown as `COVERAGE_INVALID` | Fail closed; audit trail | Manual/P0.2 |
 | ~~Uncommitted P0.1-C work~~ | — | — | **CLOSED** (`421b584`) | — |
 | ~~Unpushed local P0.1 checkpoints~~ | — | — | **CLOSED**: normal push `6aa8143..7b6fce8`, verified `0 0` | — |
-| Unpushed local commits (P0.2 `e3ce087`/`a04478c`, A1–D, documentation record); OpenCode P0.2 L-1…L-5 deferred | Local work only (`0 8` vs the local remote-tracking ref after the documentation commit) | Loss of local-only work; test gaps (L-1…L-3) could hide a future regression; coarse-gate misuse (L-4) | OpenCode + Codex approved P0.2; OpenCode `APPROVED FOR OWNER FULL SUITE` for A1–D; owner full suite PASS at `113c57a` (59/59, 1082/1082; wrapper exit not observed) | Final read-only OpenCode audit of the documentation record → owner decides P0.2 closeout and push; L-1…L-5 accepted debt (DEBT-023) |
+| ~~Unpushed local commits through Pricing V2/T4~~ | — | — | **CLOSED**: normal fast-forward push to `origin/feat/production-v1` at `9a3243f`; old dirty worktree durably preserved outside the repository | — |
 | Sweeper enabled without a system actor | Env flag set before bootstrap | No releases; error logs each tick (fail closed, process stays up) | Fail-closed resolution | Bootstrap before enabling (§21) |
 | Wrong-target DB mutation | Operator error with multiple local env files | Data loss on DEV/DEMO | Identity proofs, dry-run/execute, `.claude/hooks`; TEST marker (A1/A2); PILOT marker + private URL file + plan digest (C/D) | Keep explicit approval discipline; PILOT tooling OWNER-only |
 
@@ -1326,11 +1332,10 @@ F-012 when P0.1-C reproduced it in a RED test.
   `--execute`, from `api/` **before** enabling the sweeper. Without it, the
   pre-send step and sweeper fail closed (no cleanup writes). Bootstrap state per
   environment: [UNVERIFIED — NEEDS CONFIRMATION].
-- **Push/deploy status:** P0.1 (A/B1/B2/C + Blueprint records) is pushed:
-  origin advanced `6aa8143..7b6fce8` after the owner full suite was green.
-  P0.2, A1–D and the 2026-09-28 documentation record are **local only, not
-  pushed**. The local remote-tracking ref is still `289c545`. Nothing is
-  deployed by this work.
+- **Push/deploy status:** Production V1 is pushed to
+  `origin/feat/production-v1` at `9a3243f` before this documentation
+  reconciliation commit. This includes P0.2, A1–D, Task 4, Block 1 wholesale,
+  R4 LOCAL_TEST proof tooling and Pricing V2. Nothing is deployed by this work.
 - **PILOT:** C/D add OWNER-only tooling only. No live PILOT marker install,
   migrate, bootstrap or catalog bootstrap is recorded in the repository, and
   none is claimed.
@@ -1358,9 +1363,9 @@ F-012 when P0.1-C reproduced it in a RED test.
 | P0.1 aggregate | OWNER full suite (manual; not an agent) | **GREEN** — 55/55 files, 855/855 tests, 0 failed (start 15:07:14 local, 7777.98s) | None; known non-failing `pg` DeprecationWarning (DEBT-009) | — | `59e629f` |
 | A1 → A2 → A3 → C → D | OpenCode (independent, read-only; before the owner gate) | **`APPROVED FOR OWNER FULL SUITE`**: 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW. Reported gates: `node --test` hermetic 300/300; hermetic Vitest `test-db-guard` + `test-cleanup` 157/157; TypeScript clean; ESLint clean | None | — (TEST-H3 confirmed deferred: DEBT-025) | `113c57a` |
 | Validated checkpoint (includes P0.2) | OWNER full suite (manual; not an agent), after a TEST read-only preflight and a fresh TEST backup | **Vitest PASS**: 59/59 files, 1082/1082 tests, 8461.73s; zero failed files and zero failed tests in the final summary. **Wrapper `FULL_SUITE_EXIT`: NOT OBSERVED** (terminal closed after the final Vitest summary) | None | — | `113c57a` |
-| Task 4 (uncommitted) | LOCAL_TEST owner gate | **PASS** — 65/65 files, 1652/1652 tests, exit 0 | — | — | uncommitted on `9e97aa9` |
-| Task 4 (uncommitted) | Hosted TEST owner suite under the owner's Approval 11 | **PASS** — 65/65 files, 1652/1652 tests, exit 0, 8458.58s; static gates after the suite PASS | Procedural deviation: pre-suite Section 9 and Section 10 **NOT RUN** | Classified `DOCUMENTED_PROCEDURAL_DEVIATION`; not reconstructed or recorded as passed | uncommitted on `9e97aa9` |
-| Task 4 (uncommitted) | Claude Code exact staging-scope audit (read-only) | 31/31 paths exact-set match; 30/30 adversarial cases matched; verdict ready for staging approval | F1 undeclared `@prisma/config` (LOW); F2 stale TEST-only policy text (MEDIUM) | F1: direct devDependency declared; F2: Boundary B documentation reconciliation | uncommitted on `9e97aa9` |
+| Task 4 | LOCAL_TEST owner gate | **PASS** — 65/65 files, 1652/1652 tests, exit 0 | — | — | `bbc24c6` / `f3e5779` / `c8f61c5` |
+| Task 4 | Hosted TEST owner suite under the owner's Approval 11 | **PASS** — 65/65 files, 1652/1652 tests, exit 0, 8458.58s; static gates after the suite PASS | Procedural deviation: pre-suite Section 9 and Section 10 **NOT RUN** | Classified `DOCUMENTED_PROCEDURAL_DEVIATION`; not reconstructed or recorded as passed | `bbc24c6` / `f3e5779` / `c8f61c5` |
+| Task 4 | Claude Code exact staging-scope audit (read-only) | 31/31 paths exact-set match; 30/30 adversarial cases matched; verdict ready for staging approval | F1 undeclared `@prisma/config` (LOW); F2 stale TEST-only policy text (MEDIUM) | F1: direct devDependency declared; F2: Boundary B documentation reconciliation | `bbc24c6` / `f3e5779` / `c8f61c5` |
 
 The owner states that P0.1-A, P0.1-B1 and P0.1-B2 were each independently
 audited (OpenCode and Codex) before their local checkpoints. The verdict
@@ -1381,16 +1386,17 @@ blocks must record reviewer verdicts here at review time.
 | 5 | Local P0.1-C checkpoint | Exact-file commit | 4 | **DONE** (`421b584` + Blueprint record commit) | P0.1 aggregate (A + B1 + B2 + C) complete and audited |
 | 6 | **OWNER ONLY:** final P0.1 full-suite gate | Full suite over the whole P0.1 aggregate | 5 | **DONE — GREEN** (owner, manual): 55/55 files, 855/855 tests, 0 failed, 7777.98s; no separate `VITEST_EXIT` line captured | Owner records a green result here |
 | 7 | Push approved local P0.1 work | Push only if step 6 is green | 6 | **DONE** — normal push `6aa8143..7b6fce8`, verified `0 0` | origin = local HEAD; remote verified; Blueprint updated |
-| 8 | Later Pilot safety gates | **P0.2 — cashier correction / cancellation / payment UX: IN PROGRESS (implemented, aggregate focused GREEN, uncommitted — §16 P0.2). OpenCode DONE (0/0/0/6 LOW); Codex DONE (narrow 0/0/0/0). **Local checkpoint DONE (`e3ce087` + Blueprint record).** OWNER full suite: covered at `113c57a` (row 9). Final closeout → push: pending (row 12)**; P0.3/P0.4 (no repository source) [UNVERIFIED — NEEDS CONFIRMATION]; P0.5 (includes sweeper starvation hardening, per Pilot doc) | 7 | PLANNED | Per verified project decisions; acceptance criteria not yet defined |
-| 9 | TEST/PILOT safety tooling A1 → A2 → A3 → C → D | TEST backup/restore/marker, TEST-H1, TEST-H2/H2.1, PILOT bootstrap and catalog tooling | 8 (P0.2 checkpoint) | **DONE (local)**: independent audit `APPROVED FOR OWNER FULL SUITE`; owner full suite PASS at `113c57a` (59/59, 1082/1082; wrapper exit NOT OBSERVED) | Validated; not pushed |
-| 10 | Documentation reconciliation of the validated checkpoint | `AGENTS.md` + this Blueprint | 9 | **DONE (local)**: this documentation commit | Final read-only OpenCode audit |
-| 11 | **Final read-only OpenCode audit** of the documentation record | Independent check that the living docs match git | 10 | NEXT | Audit verdict recorded |
-| 12 | Owner decision: P0.2 closeout and push of `e3ce087`…HEAD | Remote synchronization | 11 | PENDING (owner only) | Normal push; remote verified; Blueprint updated |
+| 8 | Later Pilot safety gates | **P0.2 — cashier correction / cancellation / payment UX: DONE and pushed.** OpenCode DONE (0/0/0/6 LOW); Codex DONE (narrow 0/0/0/0). OWNER full suite covered it at `113c57a` (row 9); P0.3/P0.4 (no repository source) [UNVERIFIED — NEEDS CONFIRMATION]; P0.5 (includes sweeper starvation hardening, per Pilot doc) | 7 | DONE | Remaining P0.2 LOW items are accepted debt (DEBT-023) |
+| 9 | TEST/PILOT safety tooling A1 → A2 → A3 → C → D | TEST backup/restore/marker, TEST-H1, TEST-H2/H2.1, PILOT bootstrap and catalog tooling | 8 (P0.2 checkpoint) | **DONE and pushed**: independent audit `APPROVED FOR OWNER FULL SUITE`; owner full suite PASS at `113c57a` (59/59, 1082/1082; wrapper exit NOT OBSERVED) | Validated; no live PILOT execution |
+| 10 | Documentation reconciliation of the validated checkpoint | `AGENTS.md` + this Blueprint | 9 | **DONE and pushed** | Final read-only OpenCode audit not separately recorded |
+| 11 | Task 4 LOCAL_TEST target | Disposable LOCAL_TEST and CI `local-postgres` | 10 | **DONE and pushed** (`bbc24c6`, `f3e5779`, `c8f61c5`) | AC-211 restore proof remains NOT RUN / deferred |
+| 12 | Pricing V2 / T4 | CASH base + price modes | 11 | **DONE and pushed** (`9a3243f`) | LOCAL_TEST 439/439; frontend gates passed; no PILOT migration |
 | 13 | TEST-H3 | Deferred TEST-hardening follow-up (DEBT-025) | — | DEFERRED | Scope defined by the owner |
-| 14 | **Task 4 — LOCAL_TEST** | Disposable marker-proven local test target; CI `local-postgres` | — | **SUBSTANTIVE TASK 4 COMPLETE (pre-checkpoint baseline: Boundary A `bbc24c6` and Boundary B `f3e5779` committed locally; verified at HEAD before this documentation checkpoint).** LOCAL_TEST owner gate PASS (65/65, 1652/1652, exit 0); hosted TEST owner suite PASS (Approval 11, documented procedural deviation Section 9/10 NOT RUN); static gates PASS; final persistent checkpoint in progress (this documentation change only; no new commit invented). | Gates recorded (§16 Task 4) |
-| 15 | Task 4 two-boundary staging review | Exact staging of A (33) and B (6) | 14 | NEXT | Owner-approved exact stage lists |
-| 16 | Task 4 independent review and commits A, B | Review, then the two commits | 15 | PENDING | Both commits created; Blueprint updated |
-| 17 | Owner decision: push of `4b04411`…Task 4 | Remote synchronization | 16 | PENDING (owner only) | Normal push; remote verified; Blueprint updated |
+| 14 | Pre-PILOT code fixes | `removeItem`, rate-limit / `trust proxy` | 12 | NEXT | Requires separate implementation authorization |
+| 15 | Production V1 verification | Focused verification after pre-PILOT fixes | 14 | PENDING | Scope to be set by owner |
+| 16 | Repository cleanup | Branch/worktree cleanup after reachability proof | 15 | DEFERRED | No deletion authorized yet |
+| 17 | Production V1 → pilot merge | Normal merge to `pilot` | 16 | PENDING (owner only) | Separate authorization; no DB migration implied |
+| 18 | PILOT DB migration/import/smoke | PILOT migration, controlled real data import, smoke/client validation | 17 | PENDING (owner only) | Separate DB authorization required |
 
 ---
 
@@ -1442,3 +1448,4 @@ Append-only.
 | 2026-09-28 | Validated checkpoint documentation reconciliation | `113c57adf865268cf2df4add41d8090f5511ed2b` | §2, §3, §4, §11, §12, §15, §16, §19, §20, §21, §22, §23, §25 | Records the A1 → A2 → A3 → C → D chain (order and boundaries verified with git), the independent OpenCode `APPROVED FOR OWNER FULL SUITE` (0/0/0/0), the fresh TEST backup (local size and SHA-256 re-checked, not restored) and the OWNER full suite at `113c57a`: Vitest PASS 59/59 files, 1082/1082 tests, 8461.73s; wrapper `FULL_SUITE_EXIT` NOT OBSERVED. Corrected §11 rules 2–3 (the test harness is DEV-free since A2). DEBT-009 partial; DEBT-016 closed; DEBT-025 (TEST-H3 deferred), DEBT-026 (stale `CLAUDE.md` debt list), DEBT-027 (ProductImage optional, Phase 2D; frozen `05` Storage tension). Documentation only; no database, no tests and no push. `docs/production-v1/*` untouched. |
 | 2026-10-01 | Task 4 (LOCAL_TEST) pre-staging record (uncommitted) | `9e97aa995569c80361b749fd09de5ae2c40f3290` | §2, §3, §11, §12, §16, §19, §22, §23, §25 | Recorded Task 4 (uncommitted): LOCAL_TEST environment row (§11); LOCAL_TEST owner gate 65/65, 1652/1652, exit 0; hosted TEST owner suite under Approval 11 65/65, 1652/1652, exit 0, 8458.58s; static gates PASS; Section 9/10 NOT RUN (`DOCUMENTED_PROCEDURAL_DEVIATION`). Reconciled §2/§3 with git (local remote-tracking ref, not fetched): everything up to `13fee1e` is in `origin/feat/production-v1`; `4b04411` and `9e97aa9` are local only on `chore/dev-tooling-1`; their review records are not in this Blueprint. DEBT-028. Task 4 NOT complete. No database, no full suite and no push during this record. `docs/production-v1/*` untouched. |
 | 2026-10-06 | Pilot Pricing V2 implementation (uncommitted) | `18b07310190674291e1e2202708679e72f05778c` | §2, §25 | Owner pricing supersession and uncommitted implementation: explicit retail `cashPrice`, wholesale cash base, company-global `CompanyPricingConfig` (bps 0..10000), one `Sale.priceMode` per sale, `SaleItem` immutable pricing snapshot, payment/price-mode compatibility (LIST has no method twin and accepts any method), wholesale cash base <= retail cash base (app + DB CHECK). New migration `20261006120000_pilot_pricing_v2` (additive; applied 2026-10-06 only to the disposable LOCAL_TEST database via prepare/resume and validated there; NOT applied to DEV, TEST, DEMO or PILOT). LOCAL_TEST fingerprint/baseline/witness contracts re-synced to the new schema (172 columns, 26 relations, 10 enums); the pilot-migrate / local-test-prepare OWNER-approved fixed migration pin contract was explicitly extended to also pin the reviewed `20261006120000_pilot_pricing_v2/migration.sql` (literal pin, no DB execution authorized). LOCAL_TEST validation: focused real-DB suite 439/439 PASS, return to EXACT_BASELINE; no push. Frontend semantics reconciled: admin edits the CASH base, previews derived LIST read-only (legacy `price` labeled transitional, never the active LIST), seller client shows no legacy fallback for `cashPrice = NULL`; validated with `npm ci` from the existing lockfiles (manifests/lockfiles unchanged): admin lint + `tsc -b && vite build` pass (no test script), client lint, vitest (5 files, 44 tests incl. `catalog-price.test.ts`) and `next build` pass. Final mixed proportional payments remain a REQUIRED later feature. Customer-data import and PILOT integration still pending. `docs/production-v1/*` untouched. |
+| 2026-10-07 | Production V1 Pricing V2 integration and documentation reconciliation | `9a3243f912d8b0f929767978e97454d229acedda` before this documentation commit | §2, §3, §16, §19, §20, §23, §25 | The old dirty worktree was durably preserved outside the repository; `feat/production-v1` was fast-forwarded and normally pushed to `9a3243f`, matching the temporary T4 branch. This documentation-only commit reconciles AGENTS, the Blueprint and working status. No source/test/migration changes; no DB contact; no PILOT merge, PILOT migration or customer-data import. AC-211 restore proof remains NOT RUN/deferred. |

@@ -412,41 +412,39 @@ These remain valid regardless of phase:
 
 ## Checkpoint
 
-**Validated implementation baseline:**
-`113c57adf865268cf2df4add41d8090f5511ed2b` on `feat/production-v1`
-("feat(db): add PILOT catalog bootstrap tooling"). It is **local only and not
-pushed**. The local remote-tracking ref `origin/feat/production-v1` is still
-`289c545` (P0.1 remote closeout).
+**Current integrated baseline:**
+`9a3243f912d8b0f929767978e97454d229acedda` on `feat/production-v1`
+("docs(blueprint): update section 2 pointer for committed Pricing V2"). It is
+pushed to `origin/feat/production-v1`. The temporary
+`feat/production-v1-pricing-wholesale-t4` branch points to the same commit and
+has already been fast-forward integrated into Production V1.
 
-Commit chain on top of the P0.2 local checkpoint (`e3ce087` + record
-`a04478c`), in order:
+This baseline includes P0.2, TEST/PILOT safety tooling A1→D, Task 4
+LOCAL_TEST tooling, Block 1 sale-scoped wholesale, R4 LOCAL_TEST safety proof
+tooling, authorization read-scope hardening, and Pilot Pricing V2.
 
-| Step | Commit | Subject |
-| --- | --- | --- |
-| A1 | `8a95f0d1d8b749cb523c703b3a7f30e14d5f6dad` | feat(db): add safe TEST backup and restore tooling |
-| A2 | `41ee88231d309610816d6d01a467158226bcf0ac` | test(db): enforce TEST runtime identity guard (TEST-H1) |
-| A3 | `0d7ac5d179fe8b48a146339b935152ba53df69d9` | test(db): harden TEST cleanup lifecycle (TEST-H2 / H2.1) |
-| C | `3868e5a4b97c7404dd0e65a89b10d7be8a160934` | feat(db): add safe PILOT database bootstrap tooling |
-| D | `113c57adf865268cf2df4add41d8090f5511ed2b` | feat(db): add PILOT catalog bootstrap tooling |
-
-C and D add tooling only. No live PILOT execution is part of C or D, and no
-live restore was run as part of this chain.
-
-- **Independent audit (OpenCode, read-only, before the owner gate):**
-  `APPROVED FOR OWNER FULL SUITE` with 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW.
-- **Owner full suite (run by the OWNER, not an agent) at `113c57a`:** Vitest
-  full-suite result is **PASS**: 59/59 files, 1082/1082 tests, duration
-  8461.73s, zero failed files and zero failed tests in the final Vitest
-  summary. The wrapper's `FULL_SUITE_EXIT` was **not observed**: the terminal
-  closed after the final Vitest summary, before the wrapper printed it. No
-  exit code is recorded. It was preceded by a fresh TEST backup,
-  `test_manual_20260928T130605Z.dump` (SHA-256
-  `d84708690f8be67d14e000f5dea89f18c8f4ffc62122781a87fd7a1ec8d40934`).
-- **Remaining debt:** TEST-H3 is deferred and not implemented. P0.2 closeout
-  and the push are still pending the owner's decision.
+- **Pricing V2 status:** committed and pushed on Production V1. It adds the
+  CASH retail base, WHOLESALE cash base, company-global price modes, sale
+  price-mode lifecycle, server-side pricing authority, minimal admin/client UI,
+  and PILOT/LOCAL_TEST tooling compatibility. The frozen `docs/production-v1/*`
+  files remain historical; the dated supersessions above are the current rule.
+- **LOCAL_TEST validation:** Pricing V2 was validated on the disposable
+  LOCAL_TEST database with a focused real-DB suite: **439/439 PASS**, return to
+  `EXACT_BASELINE`. The Pricing V2 migration was applied there only; it has not
+  been applied to DEV, TEST, DEMO or PILOT.
+- **Frontend validation:** admin lint plus `tsc -b && vite build` passed;
+  client lint, Vitest **5 files / 44 tests**, and `next build` passed. No
+  browser/E2E validation is claimed.
+- **Not yet done:** PILOT has not received Production V1, the live PILOT
+  database has not been migrated, real customer data has not been imported, and
+  AC-211 restore proof remains **NOT RUN / deferred**. Mixed proportional
+  payment pricing remains a required later feature, not implemented.
+- **Preservation:** the old dirty worktree was preserved to durable external
+  storage under `~/.local/share/mona-jacinta/preservation/old-worktree-20261007`;
+  that artifact is not the source of truth.
 
 Full evidence and ledgers are in
-`docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` (§2, §3, §16, §22).
+`docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` (§2, §3, §16, §22, §25).
 
 Do not use this section as a phase diary — update it in place at each
 checkpoint rather than appending history. Full history lives in `git log`.
