@@ -924,7 +924,234 @@ function commandTokens(api: string, args: ts.NodeArray<ts.Expression>): string[]
   return tokens;
 }
 
-function prismaCliLaunches({ path, text }: Source): string[] {
+// D4B CASE 1: a dynamic child_process import may be accepted only when the
+// file structurally proves that, BEFORE any use, it replaced that exact module
+// with a complete hermetic vi.mock sentinel: the vi.mock is a top-level
+// statement naming the module exactly, its factory returns an object literal
+// supplying every API the file accesses through the dynamic import, and each
+// supplied sentinel is a process-free function expression (no identifier
+// inside it resolves back to a child_process import). Anything less fails
+// closed — text in comments or strings proves nothing.
+function sentinelMockObject(sourceFile: ts.SourceFile, moduleName: string): ts.ObjectLiteralExpression | undefined {
+  for (const raw of sourceFile.statements) {
+    // `vi.mock(...)` at the top level is an ExpressionStatement wrapping the
+    // call — unwrap it before checking the call shape.
+    const statement = ts.isExpressionStatement(raw) ? raw.expression : raw;
+    if (!ts.isCallExpression(statement)) continue;
+    if (!ts.isPropertyAccessExpression(statement.expression) || !isIdent(statement.expression.expression, 'vi')) continue;
+    if (statement.expression.name.text !== 'mock') continue;
+    const target = statement.arguments[0];
+    const factory = statement.arguments[1];
+    if (!target || !ts.isStringLiteralLike(target) || target.text !== moduleName || !factory || !isFn(factory)) continue;
+    // `() => ({ ... })` wraps the object literal in a ParenthesizedExpression.
+    const body = unwrap(factory.body as ts.Expression);
+    if (ts.isObjectLiteralExpression(body)) return body;
+    if (ts.isBlock(factory.body)) {
+      for (const inner of factory.body.statements) {
+        if (ts.isReturnStatement(inner) && inner.expression && ts.isObjectLiteralExpression(inner.expression)) return inner.expression;
+      }
+    }
+  }
+  return undefined;
+}
+
+const mockProvides = (object: ts.ObjectLiteralExpression): Map<string, ts.Expression> => {
+  const map = new Map<string, ts.Expression>();
+  for (const property of object.properties) {
+    if (!ts.isPropertyAssignment(property)) continue;
+    const name = property.name;
+    if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) map.set(name.text, property.initializer);
+  }
+  return map;
+};
+
+const sentinelIsProcessFree = (fn: ts.Node): boolean => {
+  // R21/R22: a sentinel may delegate to local helpers; inertness must be
+  // proven at every hop. A delegation chain that reaches a child_process
+  // import anywhere fails closed; a bodyless (overload-style) declaration
+  // cannot be proven and also fails closed.
+  const visited = new Set<ts.Node>();
+  const provablyInert = (node: ts.Node): boolean => {
+    if (visited.has(node)) return true;
+    visited.add(node);
+    let ok = true;
+    each(node, (inner) => {
+      if (!ok) return;
+      if (ts.isCallExpression(inner) && ts.isIdentifier(inner.expression)) {
+        const callee = resolve(inner.expression);
+        if (callee && ts.isImportSpecifier(callee) && CHILD_PROCESS_MODULES.has(moduleOf(callee) ?? '')) {
+          ok = false;
+          return;
+        }
+        if (callee && ts.isFunctionDeclaration(callee)) {
+          ok = !!callee.body && provablyInert(callee.body);
+          return;
+        }
+        if (callee && ts.isVariableDeclaration(callee) && callee.initializer && isFn(callee.initializer)) {
+          ok = provablyInert(callee.initializer.body);
+          return;
+        }
+        return;
+      }
+      if (ts.isIdentifier(inner)) {
+        const decl = resolve(inner);
+        if (decl && ts.isImportSpecifier(decl) && CHILD_PROCESS_MODULES.has(moduleOf(decl) ?? '')) ok = false;
+      }
+    });
+    return ok;
+  };
+  return provablyInert(fn);
+};
+
+// The child_process API names this file accesses through dynamic imports of
+// the module: `m.spawn` property accesses and destructured bindings.
+function dynamicallyImportedApis(sourceFile: ts.SourceFile): Set<string> {
+  const apis = new Set<string>();
+  const dynamicImport = (node: ts.VariableDeclaration): boolean => {
+    if (!node.initializer) return false;
+    // `const m = await import('...')` wraps the call in an AwaitExpression.
+    let init = ts.isAwaitExpression(node.initializer) ? node.initializer.expression : node.initializer;
+    init = unwrap(init);
+    if (!ts.isCallExpression(init) || init.expression.kind !== ts.SyntaxKind.ImportKeyword) return false;
+    const target = init.arguments[0];
+    return !!target && ts.isStringLiteralLike(target) && CHILD_PROCESS_MODULES.has(target.text);
+  };
+  each(sourceFile, (node) => {
+    if (!ts.isVariableDeclaration(node) || !dynamicImport(node)) return;
+    if (ts.isIdentifier(node.name)) {
+      // Several dynamic imports may reuse the same local name: only property
+      // accesses that resolve to THIS child_process declaration count.
+      for (const ref of references(sourceFile, node.name.text)) {
+        if (resolve(ref) !== node) continue;
+        if (ts.isPropertyAccessExpression(ref.parent) && ref.parent.expression === ref) apis.add(ref.parent.name.text);
+      }
+    } else {
+      for (const element of node.name.elements) {
+        if (!ts.isOmittedExpression(element) && ts.isIdentifier(element.name)) apis.add(element.name.text);
+      }
+    }
+  });
+  return apis;
+}
+
+// D4B CASE 2: finite, derived-from-source safe PostgreSQL tooling. Absolute-
+// path pg_dump/pg_restore only — prisma, npx, node, shells and any relative or
+// computed executable are outside the set.
+const SAFE_PG_TOOL = /^\/usr\/lib\/postgresql\/\d+\/bin\/(pg_dump|pg_restore)$/;
+
+// Resolves a relative import specifier from `fromPath` to a scanned source
+// path ('.js' normalized to '.ts'), or undefined when it cannot be proven.
+function resolveImportedPath(fromPath: string, specifier: string): string | undefined {
+  if (!specifier.startsWith('.')) return undefined;
+  const out: string[] = [];
+  for (const segment of `${fromPath.slice(0, fromPath.lastIndexOf('/'))}/${specifier}`.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      if (out.length === 0) return undefined;
+      out.pop();
+      continue;
+    }
+    out.push(segment);
+  }
+  let resolved = out.join('/');
+  if (resolved.endsWith('.js')) resolved = `${resolved.slice(0, -3)}.ts`;
+  return resolved;
+}
+
+const parsedSource = (source: Source): ts.SourceFile =>
+  ts.createSourceFile(source.path, source.text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+
+// Statically resolves an expression to a string literal: directly, through a
+// file-level const, or through a named import of a file-level const in
+// another scanned source. Undefined whenever it cannot be proven.
+function staticString(sourceFile: ts.SourceFile, path: string, expression: ts.Expression | undefined, pool: Source[]): string | undefined {
+  const node = expression ? unwrap(expression) : undefined;
+  if (!node) return undefined;
+  if (ts.isStringLiteralLike(node)) return node.text;
+  if (!ts.isIdentifier(node)) return undefined;
+  const decl = resolve(node);
+  if (!decl) return undefined;
+  if (ts.isVariableDeclaration(decl) && decl.initializer) {
+    const init = unwrap(decl.initializer);
+    if (ts.isStringLiteralLike(init)) return init.text;
+  }
+  if (ts.isImportSpecifier(decl)) {
+    const importedPath = resolveImportedPath(path, moduleOf(decl) ?? '');
+    if (!importedPath) return undefined;
+    const imported = pool.find((candidate) => candidate.path === importedPath);
+    if (!imported) return undefined;
+    const name = (decl.propertyName ?? decl.name).text;
+    const importedFile = importedPath === path ? sourceFile : parsedSource(imported);
+    for (const statement of importedFile.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!isIdent(declaration.name, name) || !declaration.initializer) continue;
+        const init = unwrap(declaration.initializer);
+        if (ts.isStringLiteralLike(init)) return init.text;
+      }
+    }
+  }
+  return undefined;
+}
+
+// D4B CASE 2: a child_process call with a non-literal command may be the R4
+// finite PostgreSQL tooling wrapper: a top-level function that forwards one
+// of its own parameters as the executable, whose EVERY suite-wide call site
+// statically resolves to a safe finite tool (pg_restore sites additionally
+// require the list-only '--list' literal inside their argv array). Zero call
+// sites, or any unprovable site, stays fail-closed.
+function finiteToolWrapper(call: ts.CallExpression, api: string, sourceFile: ts.SourceFile, path: string, suite: Source[]): boolean {
+  if (SHELL_APIS.has(api)) return false;
+  let wrapper: ts.FunctionDeclaration | undefined;
+  for (let n: ts.Node | undefined = call.parent; n; n = n.parent) {
+    if (n.parent === sourceFile && ts.isFunctionDeclaration(n)) {
+      wrapper = n;
+      break;
+    }
+  }
+  if (!wrapper?.name) return false;
+  const rawExecutable = call.arguments[0] ? unwrap(call.arguments[0]) : undefined;
+  if (!rawExecutable || !ts.isIdentifier(rawExecutable)) return false;
+  const parameter = resolve(rawExecutable);
+  if (!parameter || !ts.isParameter(parameter) || parameter.parent !== wrapper) return false;
+  const pool = suite.length > 0 ? suite : [{ path, text: sourceFile.text }];
+  let sites = 0;
+  let proven = true;
+  for (const other of pool) {
+    const otherFile = other.path === path ? sourceFile : parsedSource(other);
+    each(otherFile, (node) => {
+      if (!proven || !ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) return;
+      const decl = resolve(node.expression);
+      const callsWrapper =
+        (other.path === path && decl === wrapper) ||
+        (decl !== undefined &&
+          ts.isImportSpecifier(decl) &&
+          (decl.propertyName ?? decl.name).text === wrapper.name!.text &&
+          resolveImportedPath(other.path, moduleOf(decl) ?? '') === path);
+      if (!callsWrapper) return;
+      sites += 1;
+      const tool = staticString(otherFile, other.path, node.arguments[0], pool);
+      if (!tool || !SAFE_PG_TOOL.test(tool)) {
+        proven = false;
+        return;
+      }
+      if (tool.endsWith('/pg_restore')) {
+        const rawArgv = node.arguments[1] ? unwrap(node.arguments[1]) : undefined;
+        const argvList = rawArgv && ts.isArrayLiteralExpression(rawArgv) ? rawArgv : undefined;
+        const listOnly =
+          !!argvList &&
+          argvList.elements.some((element) => {
+            const value = ts.isSpreadElement(element) ? undefined : unwrap(element);
+            return !!value && ts.isStringLiteralLike(value) && value.text === '--list';
+          });
+        if (!listOnly) proven = false;
+      }
+    });
+  }
+  return proven && sites > 0;
+}
+
+function prismaCliLaunches({ path, text }: Source, suite: Source[] = []): string[] {
   // Every static or dynamic child_process load names the module literally.
   if (!text.includes('child_process')) return [];
   const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -942,7 +1169,10 @@ function prismaCliLaunches({ path, text }: Source): string[] {
 
   const classify = (call: ts.CallExpression, api: string) => {
     const tokens = commandTokens(api, call.arguments);
-    if (!tokens) return at(call, `${api} with a non-literal command/argv (cannot prove it is not the Prisma CLI)`);
+    if (!tokens) {
+      if (finiteToolWrapper(call, api, source, path, suite)) return; // D4B: proven finite pg tooling
+      return at(call, `${api} with a non-literal command/argv (cannot prove it is not the Prisma CLI)`);
+    }
     const entry = tokens.findIndex(isPrismaEntry);
     if (entry === -1) return;
     const rest = tokens.slice(entry + 1);
@@ -958,7 +1188,25 @@ function prismaCliLaunches({ path, text }: Source): string[] {
       ts.isStringLiteralLike(node.arguments[0]) &&
       CHILD_PROCESS_MODULES.has(node.arguments[0].text)
     ) {
-      return at(node, 'child_process loaded dynamically (import it statically so its commands can be checked)');
+      const moduleName = node.arguments[0].text;
+      const mockObject = sentinelMockObject(source, moduleName);
+      if (!mockObject) {
+        return at(node, `child_process loaded dynamically without a complete hermetic vi.mock('${moduleName}') sentinel`);
+      }
+      const apis = dynamicallyImportedApis(source);
+      const provides = mockProvides(mockObject);
+      const missing = [...apis].filter((api) => !provides.has(api));
+      if (missing.length > 0) {
+        return at(node, `child_process loaded dynamically; the hermetic mock does not supply ${missing.join(', ')}`);
+      }
+      const unsafe = [...apis].filter((api) => provides.has(api)).filter((api) => {
+        const sentinel = provides.get(api) as ts.Expression;
+        return !isFn(sentinel) || !sentinelIsProcessFree(sentinel);
+      });
+      if (unsafe.length > 0) {
+        return at(node, `child_process loaded dynamically; the sentinel for ${unsafe.join(', ')} is not a process-free function`);
+      }
+      return; // D4B: complete hermetic sentinel proven — the capability is replaced before any use
     }
     if (!ts.isIdentifier(node) || !bound.has(node.text) || isMemberName(node) || isDeclarationName(node) || inType(node)) return;
     const decl = resolve(node);
@@ -1026,7 +1274,186 @@ describe('suite tests never invoke the Prisma migration CLI', () => {
   it('no suite code launches a Prisma migration/schema command', () => {
     const sources = testSources();
     expect(sources.length).toBeGreaterThan(40);
-    expect(sources.flatMap(prismaCliLaunches)).toEqual([]);
+    expect(sources.flatMap((source) => prismaCliLaunches(source, sources))).toEqual([]);
+  });
+
+  // D4B: the hermetic child_process sentinel class (dynamic imports).
+  it('S12 accepts a dynamic import under a complete top-level hermetic sentinel vi.mock', () => {
+    const mock =
+      `vi.mock('node:child_process', () => ({ spawn: () => trip('spawn'), exec: () => trip('exec'), execFile: () => trip('execFile'), default: {} }));\n` +
+      `const trip = (what: string) => { throw new Error(what); };\n`;
+    const use = `export async function probe() { const m = await import('node:child_process'); return (m.spawn as unknown as () => unknown)(); }\n`;
+    expect(fixtureLaunches(mock + use)).toEqual([]);
+    // S31: prisma-looking argv under a complete sentinel is inert — the
+    // sentinel replaces the capability, so nothing can launch.
+    const evilArgs = `export async function probe() { const m = await import('node:child_process'); return (m.execFile as unknown as (...a: unknown[]) => unknown)('npx', ['prisma', 'migrate', 'deploy']); }\n`;
+    expect(fixtureLaunches(mock + evilArgs)).toEqual([]);
+  });
+
+  it('S10/S11/S26/S27/S29 reject dynamic imports the sentinel cannot structurally prove', () => {
+    const use = `export async function probe() { const m = await import('node:child_process'); return (m.spawn as unknown as () => unknown)(); }\n`;
+    // S10: no mock at all.
+    expect(fixtureLaunches(use)).toHaveLength(1);
+    // S11/M05/M10: used API not supplied by the mock.
+    expect(fixtureLaunches(`vi.mock('node:child_process', () => ({ exec: () => trip('exec') }));\n` + use)).toHaveLength(1);
+    // S26/M06: vi.mock text only inside a comment proves nothing.
+    expect(fixtureLaunches(`// vi.mock('node:child_process', () => ({ spawn: () => trip('spawn') }))\n` + use)).toHaveLength(1);
+    // S27: supplied value is not a process-free function expression.
+    expect(fixtureLaunches(`vi.mock('node:child_process', () => ({ spawn: 1 }));\n` + use)).toHaveLength(1);
+    // S29: mock of a different module name than the dynamically imported one.
+    expect(fixtureLaunches(`vi.mock('child_process', () => ({ spawn: () => trip('spawn') }));\n` + use)).toHaveLength(1);
+    // S28: sentinel value references a child_process import.
+    expect(
+      fixtureLaunches(
+        `import { spawn as realSpawn } from 'node:child_process';\n` +
+          `vi.mock('node:child_process', () => ({ spawn: realSpawn }));\n` +
+          use,
+      ).length,
+    ).toBeGreaterThan(0);
+  });
+
+  // D4B: the finite PostgreSQL tool wrapper class (non-literal executables).
+  const wrapperSource: Source = {
+    path: 'tests/wrap.ts',
+    text:
+      `import { spawn } from 'node:child_process';\n` +
+      `export function runTool(bin: string, args: readonly string[], env: NodeJS.ProcessEnv) {\n` +
+      `  return new Promise((resolve) => { const child = spawn(bin, [...args], { env }); child.on('close', (code) => resolve(code)); });\n` +
+      `}\n`,
+  };
+  const toolsSource: Source = {
+    path: 'tests/tools.ts',
+    text:
+      `export const PG_DUMP = '/usr/lib/postgresql/17/bin/pg_dump';\n` +
+      `export const PG_RESTORE = '/usr/lib/postgresql/17/bin/pg_restore';\n`,
+  };
+  const wrapperSuite = (callerText: string, extra: Source[] = []): Source[] => [
+    wrapperSource,
+    toolsSource,
+    { path: 'tests/caller.test.ts', text: callerText },
+    ...extra,
+  ];
+  const wrapperLaunches = (suite: Source[]) => prismaCliLaunches(wrapperSource, suite);
+  const importLine = `import { runTool } from './wrap.js';\nimport { PG_DUMP, PG_RESTORE } from './tools.js';\n`;
+
+  it('S14/S15/S18 accept the finite pg wrapper when every call site proves a safe executable and list-only restore', () => {
+    // S14: every site resolves to the pg_dump literal.
+    expect(
+      wrapperLaunches(wrapperSuite(`import { runTool } from './wrap.js';\nimport { PG_DUMP } from './tools.js';\nawait runTool(PG_DUMP, ['--schema=public'], {});\nawait runTool(PG_DUMP, ['--schema=public'], {});\n`)),
+    ).toEqual([]);
+    // S15/S18: pg_restore sites carry the '--list' literal among (possibly spread) argv elements.
+    expect(
+      wrapperLaunches(
+        wrapperSuite(
+          `import { runTool } from './wrap.js';\nimport { PG_DUMP, PG_RESTORE } from './tools.js';\n` +
+            `const connArgs = ['--host=x'] as const;\n` +
+            `await runTool(PG_DUMP, ['--format=custom', ...connArgs], {});\n` +
+            `await runTool(PG_RESTORE, [...connArgs, '--list', 'archive'], {});\n`,
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('S13/S16/S17/S30 and non-list restore reject the wrapper whenever the executable domain cannot be proven', () => {
+    // S13/S17: zero call sites (suite without any caller) stays fail-closed.
+    expect(wrapperLaunches([wrapperSource, toolsSource])).toHaveLength(1);
+    // S16: a call site resolving to a prisma executable.
+    expect(
+      wrapperLaunches(wrapperSuite(`${importLine}const PRISMA = './node_modules/.bin/prisma';\nawait runTool(PRISMA, ['migrate', 'deploy'], {});\n`)),
+    ).toHaveLength(1);
+    // S30: a call site whose executable cannot be statically resolved.
+    expect(
+      wrapperLaunches(wrapperSuite(`${importLine}const computed = ['pg_dump'].join('');\nawait runTool(computed, ['--list'], {});\n`)),
+    ).toHaveLength(1);
+    // pg_restore without the list-only literal.
+    expect(
+      wrapperLaunches(wrapperSuite(`${importLine}await runTool(PG_RESTORE, ['--clean', 'archive'], {});\n`)),
+    ).toHaveLength(1);
+    // A safe-looking but non-finite executable outside the derived set.
+    expect(
+      wrapperLaunches(wrapperSuite(`${importLine}const LOCAL = '/usr/local/bin/tool';\nawait runTool(LOCAL, ['--list'], {});\n`)),
+    ).toHaveLength(1);
+  });
+
+  // D4C independent adversarial review: "what other ordinary way can someone
+  // launch the same command?" (R01–R25, preregistered before execution).
+  it('R01–R03, R19, R20 reject alias chains, namespace destructuring, require, assembled and template shell commands', () => {
+    expect(fixtureLaunches(`import { spawn as s1 } from 'node:child_process';\nconst s2 = s1;\n`)).toHaveLength(1); // R01
+    expect(fixtureLaunches(`import * as cp from 'node:child_process';\nconst { spawn } = cp;\n`)).toHaveLength(1); // R02
+    expect(fixtureLaunches(`const cp = require('node:child_process');\n`)).toHaveLength(1); // R03
+    expect(fixtureLaunches(`${NAMED}const CMD = 'npx prisma';\nexecSync(CMD + ' migrate deploy');\n`)).toHaveLength(1); // R19
+    expect(fixtureLaunches(`${NAMED}execSync(\`npx prisma migrate deploy\`);\n`)).toHaveLength(1); // R20
+  });
+
+  it('R04 a computed module string is invisible to the scanner (documented pre-existing boundary)', () => {
+    const computed = `const mod = 'node:child' + '_process';\nexport async function x() { const m = await import(mod); return (m.exec as unknown as () => unknown)(); }\n`;
+    expect(fixtureLaunches(computed)).toEqual([]); // R04: no literal module name anywhere
+  });
+
+  it('R05/R07–R11/R14 reject unprovable executable domains at wrapper call sites', () => {
+    // R05: an outer wrapper forwarding its own parameter to the spawn wrapper
+    // leaves the inner executable unprovable.
+    const outerFile: Source = {
+      path: 'tests/outer.ts',
+      text: `import { runTool } from './wrap.js';\nexport function outerTool(bin: string, args: readonly string[], env: NodeJS.ProcessEnv) { return runTool(bin, args, env); }\n`,
+    };
+    expect(
+      wrapperLaunches(
+        [wrapperSource, toolsSource, outerFile, { path: 'tests/caller.test.ts', text: `import { outerTool } from './outer.js';\nimport { PG_DUMP } from './tools.js';\nawait outerTool(PG_DUMP, ['--schema=public'], {});\n` }],
+      ),
+    ).toHaveLength(1);
+    const flag = 'const flag = true;\n';
+    expect(wrapperLaunches(wrapperSuite(`${importLine}${flag}await runTool(flag ? PG_DUMP : PG_RESTORE, ['--schema=public'], {});\n`))).toHaveLength(1); // R07
+    expect(wrapperLaunches(wrapperSuite(`${importLine}const tools2 = [PG_DUMP];\nawait runTool(tools2[0], ['--schema=public'], {});\n`))).toHaveLength(1); // R08
+    const middleFile: Source = { path: 'tests/middle.ts', text: `export { PG_DUMP } from './tools.js';\n` };
+    expect(
+      wrapperLaunches(
+        [wrapperSource, toolsSource, middleFile, { path: 'tests/caller.test.ts', text: `import { runTool } from './wrap.js';\nimport { PG_DUMP } from './middle.js';\nawait runTool(PG_DUMP, ['--schema=public'], {});\n` }],
+      ),
+    ).toHaveLength(1); // R09: re-export chains are beyond the one-hop proof
+    expect(wrapperLaunches(wrapperSuite(`${importLine}let tool = PG_DUMP;\ntool = PG_RESTORE;\nawait runTool(tool, ['--list'], {});\n`))).toHaveLength(1); // R10
+    expect(wrapperLaunches(wrapperSuite(`${importLine}const LIST = '--list';\nawait runTool(PG_RESTORE, [LIST, 'archive'], {});\n`))).toHaveLength(1); // R11
+    expect(wrapperLaunches(wrapperSuite(`import { runTool } from './wrap.js';\nawait runTool('./node_modules/.bin/prisma', ['migrate', 'deploy'], {});\n`))).toHaveLength(1); // R14
+  });
+
+  it('R06/R12/R13 accept the proven-safe classes: import alias, list-mode restore, dynamic pg_dump args', () => {
+    expect(wrapperLaunches(wrapperSuite(`import { runTool as rt } from './wrap.js';\nimport { PG_DUMP } from './tools.js';\nawait rt(PG_DUMP, ['--schema=public'], {});\n`))).toEqual([]); // R06
+    expect(wrapperLaunches(wrapperSuite(`${importLine}await runTool(PG_RESTORE, ['--list', '--clean', 'archive'], {});\n`))).toEqual([]); // R12: --list is list-only mode; data flags are inert there
+    expect(wrapperLaunches(wrapperSuite(`${importLine}const file = ['out'].join('');\nawait runTool(PG_DUMP, ['--file=' + file, '--schema=public'], {});\n`))).toEqual([]); // R13
+  });
+
+  it('R15–R18 reject every normalized Prisma launcher shape', () => {
+    expect(fixtureLaunches(`${NAMED}spawnSync('npx', ['prisma', '--schema', 'x', 'migrate', 'deploy']);\n`)).toHaveLength(1); // R15
+    expect(fixtureLaunches(`${NAMED}execFileSync(process.execPath, ['./node_modules/prisma/build/index.js', 'migrate', 'status']);\n`)).toHaveLength(1); // R16
+    expect(fixtureLaunches(`${NAMED}execSync('npx --yes prisma migrate deploy');\n`)).toHaveLength(1); // R17
+    expect(fixtureLaunches(`${NAMED}exec('pnpm exec prisma db push');\n`)).toHaveLength(1); // R18
+  });
+
+  it('R21 accepts a sentinel delegating to a proven-inert local helper', () => {
+    const mock = `vi.mock('node:child_process', () => ({ spawn: () => relay('spawn'), default: {} }));\nconst relay = (what: string) => { throw new Error(what); };\n`;
+    const use = `export async function probe() { const m = await import('node:child_process'); return (m.spawn as unknown as () => unknown)(); }\n`;
+    expect(fixtureLaunches(mock + use)).toEqual([]);
+  });
+
+  it('R22 rejects a sentinel whose delegation chain reaches a child_process import', () => {
+    const mock =
+      `import { spawn as realSpawn } from 'node:child_process';\n` +
+      `const relay = () => realSpawn('x');\n` +
+      `vi.mock('node:child_process', () => ({ spawn: () => relay('x'), default: {} }));\n`;
+    const use = `export async function probe() { const m = await import('node:child_process'); return (m.spawn as unknown as () => unknown)(); }\n`;
+    expect(fixtureLaunches(mock + use)).toHaveLength(1);
+  });
+
+  it('R23/R24 reject default-only and mixed incomplete sentinel mocks', () => {
+    const use = `export async function probe() { const m = await import('node:child_process'); return (m.spawn as unknown as () => unknown)(); }\n`;
+    expect(fixtureLaunches(`vi.mock('node:child_process', () => ({ default: {} }));\n` + use)).toHaveLength(1); // R23
+    expect(fixtureLaunches(`vi.mock('node:child_process', () => ({ exec: () => trip('exec'), default: {} }));\n` + use)).toHaveLength(1); // R24
+  });
+
+  it('R25 accepts a local function shadowing the imported spawn', () => {
+    expect(
+      fixtureLaunches(`${NAMED}export function f() { const spawn = (..._args: unknown[]) => undefined; spawn('npx', ['prisma', 'migrate', 'deploy']); }\n`),
+    ).toEqual([]); // R25
   });
 });
 

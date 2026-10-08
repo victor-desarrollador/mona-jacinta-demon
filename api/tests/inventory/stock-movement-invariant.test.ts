@@ -263,7 +263,10 @@ describe('StockMovement represents physical inventory changes only', () => {
     const admin = await db.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' } });
     const adminToken = await getAuthToken(admin);
     const fresh = await db.productVariant.create({
-      data: { productId: remeraProductId, sku: 'D3-LEDGER', barcode: 'D3-LEDGER', price: 1n, costPrice: 1n },
+      // D4B: Pricing V2 — a positive CASH sale requires the canonical CASH base
+      // (unitPriceFor's LIST tier reads cashPrice; NULL fails closed with
+      // CASH_PRICE_MISSING), so the D3-LEDGER fixture provides it.
+      data: { productId: remeraProductId, sku: 'D3-LEDGER', barcode: 'D3-LEDGER', price: 1n, cashPrice: 1n, costPrice: 1n },
     });
 
     const loaded = await request(app)
