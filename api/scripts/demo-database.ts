@@ -622,6 +622,13 @@ function readTestTarget(): TestTarget {
   return { url, markerId };
 }
 
+// D5D: hosted Supabase pooler cold-connects have repeatedly exceeded 10s
+// under vitest startup load (D5B2 phase=connect elapsedMs=10004, D5C same
+// class), killing suites/restore marker proofs before any test ran. The
+// hosted automated TEST connection budget is 30s. LOCAL_TEST (loopback) and
+// restore.mjs (separate path) keep their own 10s budgets.
+const HOSTED_TEST_CONNECTION_TIMEOUT_MS = 30_000;
+
 export function testPoolConfig(url: string, max: number): PoolConfig {
   return {
     connectionString: url,
@@ -633,7 +640,7 @@ export function testPoolConfig(url: string, max: number): PoolConfig {
       rejectUnauthorized: true,
     },
     max,
-    connectionTimeoutMillis: 10000,
+    connectionTimeoutMillis: HOSTED_TEST_CONNECTION_TIMEOUT_MS,
     idleTimeoutMillis: 0,
   };
 }

@@ -130,11 +130,14 @@ describe('pool attribution gating and configuration', () => {
     ]);
     expect(config.max).toBe(5);
     expect(config.idleTimeoutMillis).toBe(0);
-    expect(config.connectionTimeoutMillis).toBe(10000);
+    // D5D: hosted TEST connection budget is 30s (pooler cold-connect hardening;
+    // D5B2 phase=connect elapsedMs=10004). LOCAL_TEST stays 10s (loopback).
+    expect(config.connectionTimeoutMillis).toBe(30000);
     expect((config as { application_name?: string }).application_name).toBeUndefined();
 
     const local = localTestPoolConfig('postgresql://mona_local_test:x@127.0.0.1:5432/mona_local_test', 3);
     expect(local.ssl).toBe(false);
+    expect(local.connectionTimeoutMillis).toBe(10000);
     expect((local as { application_name?: string }).application_name).toBeUndefined();
   });
 
@@ -522,7 +525,7 @@ describe('buildTestPrismaAdapter external-pool lifecycle', () => {
     expect(pool).not.toBeNull();
     expect(pool!.options.max).toBe(5);
     expect(pool!.options.idleTimeoutMillis).toBe(0);
-    expect(pool!.options.connectionTimeoutMillis).toBe(10000);
+    expect(pool!.options.connectionTimeoutMillis).toBe(30000);
     expect(sidecarOf(root, 'd4a3b-max', 221).map((e) => e.event)).toContain('pool-open');
   });
 });
