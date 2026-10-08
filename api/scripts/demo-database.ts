@@ -4,6 +4,7 @@ import { parse } from 'dotenv';
 import { Pool, type ClientConfig, type PoolClient, type PoolConfig } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/generated/prisma/client.js';
+import { attachPoolAttribution } from '../tests/helpers/pool-attribution.js';
 import {
   LOCAL_TEST_LIVE_FACTS_SQL,
   LOCAL_TEST_MARKER_FACTS_SQL,
@@ -17,6 +18,14 @@ export type AutomatedTestTarget = 'test' | 'local';
 
 export const LOCAL_TEST_URL_VAR = 'LOCAL_TEST_DATABASE_URL';
 export const LOCAL_TEST_MARKER_VAR = 'LOCAL_TEST_DATABASE_MARKER_ID';
+export const TEST_SESSION_DIAGNOSTICS_VAR = 'MONA_TEST_SESSION_DIAGNOSTICS';
+export const TEST_SESSION_DIAGNOSTIC_RUN_ID_VAR = 'MONA_TEST_SESSION_DIAGNOSTIC_RUN_ID';
+
+export type TestSessionDiagnosticResourceClass = 'prisma' | 'seed';
+export type TestSessionDiagnosticOwner = {
+  resourceClass: TestSessionDiagnosticResourceClass;
+  owner: string;
+};
 
 export type LocalTestTarget = {
   url: string;
@@ -368,6 +377,42 @@ export function assertDistinct(
   }
 }
 
+const TEST_SESSION_UNKNOWN_OWNER = 'UNKNOWN';
+const TEST_SESSION_HELPER_FRAMES = [
+  '/api/tests/helpers/test-db.ts',
+  '/api/scripts/demo-database.ts',
+];
+
+function testFileFromStack(stack: string | undefined): string {
+  if (!stack) return TEST_SESSION_UNKNOWN_OWNER;
+  for (const rawLine of stack.split('\n')) {
+    const line = rawLine.replace(/\\/g, '/');
+    if (TEST_SESSION_HELPER_FRAMES.some((frame) => line.includes(frame))) continue;
+    // D4A3B: also match parenless vitest frames ("at /path …") and workspace
+    // paths containing spaces — [^()]* spans them inside a frame. The D4A1
+    // shape ([^()\s]*) produced UNKNOWN for live stacks in this repository.
+    const match = /(?:^|[\s(])((?:file:\/\/)?[^()]*\/api\/tests\/[^():]+\.test\.ts)(?::\d+)?(?::\d+)?/.exec(line);
+    const full = match?.[1]?.replace(/^file:\/\//, '');
+    const marker = '/api/tests/';
+    const index = full?.indexOf(marker) ?? -1;
+    if (full && index !== -1) return full.slice(index + marker.length);
+  }
+  return TEST_SESSION_UNKNOWN_OWNER;
+}
+
+export function captureTestSessionDiagnosticOwner(
+  resourceClass: TestSessionDiagnosticResourceClass,
+  stack: string | undefined = new Error().stack,
+): TestSessionDiagnosticOwner {
+  return { resourceClass, owner: testFileFromStack(stack) };
+}
+
+// D4A3B: the D4A1 application_name transport is REMOVED. D4A2 proved it not
+// observable through the current hosted TEST connection path (1053 observer
+// polls, zero matches, worker env and the local pg chain verified). The owner
+// captured here now feeds the pool/PID sidecar attribution implemented in
+// tests/helpers/pool-attribution.ts, which never depends on application_name.
+
 export type SeedDatabase = {
   prisma: PrismaClient;
   pool: Pool;
@@ -389,19 +434,21 @@ export type SeedDatabaseTarget =
 export async function openSeedDatabase(
   target: SeedDatabaseTarget,
   source: NodeJS.ProcessEnv = process.env,
+  diagnosticOwner: TestSessionDiagnosticOwner = captureTestSessionDiagnosticOwner('seed'),
 ): Promise<SeedDatabase> {
   switch (target) {
     case 'automated-test':
       return openSeedDatabase(
         resolveAutomatedTestTarget(source) === 'local' ? 'local-test' : 'test',
         source,
+        diagnosticOwner,
       );
     case 'test':
       if (process.env.NODE_ENV !== 'test') {
         throw new Error('Test target is available only to automated tests');
       }
       // TEST-H1: TEST is proven by its own marker only; DATABASE_URL is never read.
-      return openProvenTestDatabase();
+      return openProvenTestDatabase(diagnosticOwner);
     case 'local-test':
       return openProvenLocalTestDatabase(source);
     case 'demo':
@@ -899,8 +946,18 @@ type FailFn = (
 
 // openSeedDatabase('test'): this helper owns the pool (seed tests query it
 // directly), Prisma only borrows it; close() is idempotent and ends it once.
-async function openProvenTestDatabase(): Promise<SeedDatabase> {
+async function openProvenTestDatabase(diagnosticOwner?: TestSessionDiagnosticOwner): Promise<SeedDatabase> {
   const { pool, target, fail } = await openProvenTestPool(1);
+  // D4A3B: the retained seed pool is attributed only AFTER the marker proof has
+  // completed on it (openProvenTestPool proves and returns) and BEFORE Prisma
+  // can acquire a client from it, so the proof lifecycle is never reported as
+  // seed ownership. A pre-existing client (the proof's) is lazily probed for
+  // its backend PID at its first attributed acquire. Inert when diagnostics
+  // are off (attachPoolAttribution returns null and attaches nothing).
+  attachPoolAttribution(pool, {
+    resourceClass: 'seed',
+    owner: diagnosticOwner?.owner ?? TEST_SESSION_UNKNOWN_OWNER,
+  });
   let prisma: PrismaClient;
   try {
     prisma = new PrismaClient({ adapter: new PrismaPg(pool), log: [] });
