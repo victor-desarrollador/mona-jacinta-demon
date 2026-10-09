@@ -33,11 +33,23 @@ export type ScopeBackfillResult = {
 // write — they are counted, never guessed at or silently skipped. An
 // unknown/unclassified legacy code still fails the whole function closed,
 // exactly as before. Idempotent: converges by the natural (userId, roleId,
-// LOCATION, locationId) key via `findFirst` — UserRoleScope has no
-// Prisma-level `@@unique` (the uniqueness is two raw-SQL partial unique
-// indexes, see schema.prisma's UserRoleScope comment), so `findUnique`
-// cannot be used here. UserBranchRole itself is only ever read here, never
-// mutated.
+// LOCATION, locationId) key — D5F-C2A batches this convergence: ONE
+// `findMany` over the relevant users' scopes, exact natural-key matching in
+// memory (UserRoleScope has no Prisma-level `@@unique`; the uniqueness is
+// two raw-SQL partial unique indexes, see schema.prisma's UserRoleScope
+// comment, so `findUnique` cannot be used and the over-selected relevant
+// rows are filtered HERE, never by trusting a looser query), then at most
+// ONE `createMany` of the missing targets (with the write's returned count
+// fail-closed). UserRoleScope DB operations are therefore O(1) in the
+// eligible-row count: D5F-C proved the historical per-row findFirst+create
+// loop made ~2·N sequential hosted round trips inside one interactive
+// transaction. Timing evidence, kept distinct: historical D5B3 recorded
+// Prisma P2028 TRANSACTION elapsed ~5746/~5734 ms at N=8 under Prisma's
+// implicit 5000 ms budget; the D5F-C1B controlled comparison measured the
+// same focused cases at ~3854–5226 ms hosted TEST vs ~27.5–31.9 ms
+// LOCAL_TEST — TEST_WALL_TIME including fixture work, NOT a direct
+// transaction-elapsed measurement. UserBranchRole itself is only ever
+// read here, never mutated.
 //
 // Core sync operation, usable on an existing transaction client — no
 // `$transaction` of its own (same split as catalog.service.ts's
@@ -94,33 +106,82 @@ export async function syncUserRoleScopeFromUserBranchRole(
     );
   }
 
-  let created = 0;
-  let alreadyPresent = 0;
+  // D5F-C2A: derive every exact eligible target ONCE, in memory, keyed by
+  // the natural (userId, roleId, LOCATION, locationId) identity. Duplicate
+  // legacy rows for the same target keep their per-row multiplicity: a
+  // missing target is created once and its duplicate rows are counted as
+  // alreadyPresent, byte-identically to the historical per-row loop (where
+  // later duplicates observed the rows earlier iterations had just written
+  // inside the same transaction).
+  const targetMultiplicity = new Map<
+    string,
+    { data: { userId: string; roleId: string; scopeKind: 'LOCATION'; locationId: string }; rows: number }
+  >();
   for (const legacy of eligibleRows) {
     const disposition = dispositionByRowId.get(legacy.id)!;
     if (disposition.kind !== 'ELIGIBLE') continue; // narrows for TS; eligibleRows is already filtered
     const targetRoleId = productionRoleIdByCode.get(disposition.productionRoleCode)!;
-    const existing = await db.userRoleScope.findFirst({
-      where: {
-        userId: legacy.userId,
-        roleId: targetRoleId,
-        scopeKind: 'LOCATION',
-        locationId: legacy.branchId,
-      },
-    });
-    if (existing) {
-      alreadyPresent += 1;
+    const key = `${legacy.userId}|${targetRoleId}|LOCATION|${legacy.branchId}`;
+    const entry = targetMultiplicity.get(key);
+    if (entry) {
+      entry.rows += 1;
+    } else {
+      targetMultiplicity.set(key, {
+        data: { userId: legacy.userId, roleId: targetRoleId, scopeKind: 'LOCATION', locationId: legacy.branchId },
+        rows: 1,
+      });
+    }
+  }
+
+  // D5F-C2A: ONE batched read of the relevant existing scopes replaces the
+  // historical per-row findFirst loop (O(N) sequential round trips inside the
+  // interactive transaction — D5B3 recorded the P2028 transaction-elapsed
+  // expirations ~5746/~5734 ms at the 5000 ms default; the D5F-C1B controlled
+  // comparison measured the focused cases at ~3854–5226 ms hosted vs
+  // ~27.5–31.9 ms LOCAL_TEST test wall). The read over-selects a bounded
+  // relevant set (every scope of every eligible user, including unrelated
+  // ones); EXACT natural-key matching happens in memory below, so a COMPANY
+  // scope, a wrong location, a wrong role or a wrong user can never satisfy a
+  // LOCATION target.
+  const relevantUserIds = [...new Set(eligibleRows.map((row) => row.userId))];
+  const existingScopes = relevantUserIds.length
+    ? await db.userRoleScope.findMany({ where: { userId: { in: relevantUserIds } } })
+    : [];
+  const existingKeySet = new Set(
+    existingScopes.map((scope) => `${scope.userId}|${scope.roleId}|${scope.scopeKind}|${scope.locationId}`),
+  );
+
+  let created = 0;
+  let alreadyPresent = 0;
+  const missing: { userId: string; roleId: string; scopeKind: 'LOCATION'; locationId: string }[] = [];
+  for (const { data, rows } of targetMultiplicity.values()) {
+    if (existingKeySet.has(`${data.userId}|${data.roleId}|${data.scopeKind}|${data.locationId}`)) {
+      alreadyPresent += rows;
       continue;
     }
-    await db.userRoleScope.create({
-      data: {
-        userId: legacy.userId,
-        roleId: targetRoleId,
-        scopeKind: 'LOCATION',
-        locationId: legacy.branchId,
-      },
-    });
+    missing.push(data);
     created += 1;
+    alreadyPresent += rows - 1; // duplicate legacy rows observe the target this run creates
+  }
+
+  // At most ONE write, so the whole backfill stays O(1) UserRoleScope DB
+  // operations. No `skipDuplicates`: a concurrent unique-index conflict
+  // (the raw-SQL partial unique indexes above) must fail the whole
+  // transaction rather than silently change counters/state — a later
+  // re-run then converges through the batched read above.
+  if (missing.length > 0) {
+    const write = await db.userRoleScope.createMany({ data: missing });
+    // Review addendum fail-closed write confirmation: this maintenance
+    // operation's counters may claim `created` rows only when the write
+    // delegate confirms exactly the intended number landed. A short or long
+    // returned count is corrupt state — throw (under the standalone wrapper
+    // this rolls the whole backfill back) instead of reporting fiction.
+    if (write.count !== missing.length) {
+      throw new Error(
+        `UserRoleScope createMany inserted ${write.count} row(s) but ${missing.length} were intended; ` +
+          `refusing to report a created count the write did not confirm`,
+      );
+    }
   }
 
   return {
@@ -136,10 +197,23 @@ export async function syncUserRoleScopeFromUserBranchRole(
 // caller without an existing transaction): opens its own transaction around
 // `syncUserRoleScopeFromUserBranchRole` so backfilled rows either all land or
 // none do.
+//
+// D5F-C2A: the transaction carries the repository's established maintenance
+// budget (prisma/seed.ts's run(): `{ maxWait: 10000, timeout: 120000 }`)
+// instead of Prisma's implicit local-oriented default (maxWait 2000 /
+// timeout 5000). This is a one-shot OWNER maintenance operation over the
+// same hosted-infrastructure class as the seed, and D5F-C/D5F-C1B proved the
+// implicit 5000 ms budget is not a safe accident for maintenance
+// transactions. The budget is defense-in-depth ONLY — the batching above is
+// the structural fix; the timeout is not a substitute for it and the two
+// concerns stay conceptually separate.
 export async function backfillUserRoleScopeFromUserBranchRole(
   db: BackfillDatabase,
 ): Promise<ScopeBackfillResult> {
-  return db.$transaction((tx) => syncUserRoleScopeFromUserBranchRole(tx));
+  return db.$transaction((tx) => syncUserRoleScopeFromUserBranchRole(tx), {
+    maxWait: 10_000,
+    timeout: 120_000,
+  });
 }
 
 type VerifyDatabase = Pick<PrismaClient, 'userBranchRole' | 'role' | 'userRoleScope'>;
