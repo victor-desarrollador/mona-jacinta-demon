@@ -162,27 +162,27 @@ over the Demo V2 commerce core. See §5 for the separation.
 
 | Field | Value |
 | --- | --- |
-| Last verified | 2026-10-07 (UTC), after direct remote verification and normal push of `feat/production-v1`. Only git remotes were contacted; no database was contacted. |
+| Last verified | 2026-10-09 (UTC), block D5I-DOC1. Verified read-only against git: `HEAD` = `origin/feat/production-v1` (local remote-tracking ref; `git rev-list --left-right --count` = `0 0`; not re-fetched in this block), clean tree at verification time (before this documentation edit; the Blueprint itself is intentionally modified and uncommitted while the reconciliation is pending), nothing staged. No database and no external network were contacted by this documentation block. |
 | Branch | `feat/production-v1` |
-| Integrated implementation baseline | `9a3243f912d8b0f929767978e97454d229acedda`: `docs(blueprint): update section 2 pointer for committed Pricing V2`. This is the current Production V1 integration head before this documentation reconciliation commit. |
-| HEAD (full) | `9a3243f912d8b0f929767978e97454d229acedda` before this documentation reconciliation commit. |
-| HEAD (short) | `9a3243f` |
-| Commit chain since the P0.2 record | `a04478c` (P0.2 Blueprint record) → **A1** `8a95f0d` → **A2** `41ee882` → **A3** `0d7ac5d` → **C** `3868e5a` → **D** `113c57a` → `13fee1e` → `4b04411` → `9e97aa9` → `bbc24c6` → `f3e5779` → `c8f61c5` → `ce0a6d5` → `4632b89` → `18b0731` → `9da09ab` → `3b623e9` → `441147a` → `a731f2f` → `b43d071` → `9a3243f`. See §3. |
+| Integrated implementation baseline | `8a1158528bb629f2b32b3bbbc9aaf6fb70d90c83`: `fix(api): scope sales lists by permission assignment` (D5I-B1/B1C). This is the Production V1 head before the D5I-DOC1 documentation commit. The earlier Pricing V2/T4 integration head `9a3243f` is now historical (§3). |
+| HEAD (full) | `8a1158528bb629f2b32b3bbbc9aaf6fb70d90c83` before the D5I-DOC1 documentation commit. |
+| HEAD (short) | `8a11585` |
+| Commit chain since the P0.2 record | `a04478c` (P0.2 Blueprint record) → **A1** `8a95f0d` → **A2** `41ee882` → **A3** `0d7ac5d` → **C** `3868e5a` → **D** `113c57a` → `13fee1e` → `4b04411` → `9e97aa9` → `bbc24c6` → `f3e5779` → `c8f61c5` → `ce0a6d5` → `4632b89` → `18b0731` → `9da09ab` → `3b623e9` → `441147a` → `a731f2f` → `b43d071` → `9a3243f` → `eddea12` → `18e2643` → `28c3ba4` → `c6b182c` → `3c6dfc4` → `29e5893` → `dbccdf1` → `38bac33` → `eab79a6` → `8a11585`. See §3. |
 | Origin branch | `origin/feat/production-v1` |
-| Origin HEAD | `9a3243f912d8b0f929767978e97454d229acedda`, direct-verified after the normal fast-forward push. `origin/feat/production-v1-pricing-wholesale-t4` points to the same commit. |
-| Current phase | Production V1 now contains the Pricing V2/T4 line. Next work is pre-PILOT code fixes and verification, then a normal Production V1 → pilot merge under separate authorization. |
-| Last completed engineering block | Pricing V2/T4 was fast-forward integrated into Production V1 and pushed. |
-| Current engineering block | **Documentation reconciliation after Pricing V2 integration:** no production/source/test changes. |
+| Origin HEAD | `8a1158528bb629f2b32b3bbbc9aaf6fb70d90c83` per the local remote-tracking ref `origin/feat/production-v1` (not re-fetched in D5I-DOC1). The temporary `origin/feat/production-v1-pricing-wholesale-t4` still points at `9a3243f` and is historical. |
+| Current phase | Production V1 on `feat/production-v1` now contains Pricing V2/T4, the pre-PILOT fixes (item-removal Sale lock, login and global rate limiting) and the D5 remediation series (deterministic test runtime, scope-backfill batching, sales location-filter authorization). **Production V1 is NOT closed:** the D5H fresh full-suite gate is PAUSED, the D5I-B2 transaction hardening awaits an owner timeout decision, and nothing is merged to `pilot`. Pilot intent: a controlled pilot in ONE real store first, owner testing targeted in about 3 days from 2026-10-09 (an intent, not a commitment). |
+| Last completed engineering block | **D5I-B1/B1C** (`8a11585`): `GET /sales/pending` and `GET /sales` now take their locations from the same assignment that grants the route permission (F-015). |
+| Current engineering block | **D5I-DOC1:** documentation-only reconciliation of this Blueprint to the exact repository state (no product source, test, database or network). Read-only design/evidence blocks **D5I-B2A / B2A1** (pilot transaction hardening) are complete as PROPOSALS only; no transaction change is implemented. |
 | P0.2 status | Implemented, checkpointed and pushed as an ancestor of current `feat/production-v1`; OpenCode + Codex final 0/0/0/0; covered by the owner full suite at `113c57a`. |
 | P0.1-C status | **IMPLEMENTED · FOCUSED TESTS GREEN (9/9 files, 211/211) · STATIC GATES GREEN · OPENCODE REVIEWED (LOW resolved) · CODEX APPROVED (final 0/0/0/0) · CHECKPOINTED** at `421b58453b7de667cb3ad6a3467a051a14dd61f7` · OWNER FULL SUITE GREEN (aggregate) · PUSHED. Evidence: §16 P0.1-C. |
 | Current P0.1 aggregate status | **CLOSED AND PUSHED** — technical/block closeout complete and remote synchronization complete. A (`8e9699a`), B1 (`ab728be`), B2 (`e7b6cc7`) and C (`421b584`) are committed, pushed and audited (A/B1/B2 per owner; C in §22: OpenCode complete, Codex final 0/0/0/0). Final technical gate passed: OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Focused P0.1-C evidence stays 9/9 files, 211/211. Remote synchronization: done (see Push status). |
 | Working tree exceptions | `opencode.json` and `.claude/settings.json` are local-only excluded paths for this task; they were not inspected, diffed, staged or edited. |
-| Verification status | Pricing V2 owner validation on disposable LOCAL_TEST: focused real-DB suite **439/439 PASS**, return to `EXACT_BASELINE`; no DEV, TEST, DEMO or PILOT DB contact. DB-free evidence after the 2026-10-06 focused correction: 8 files / 465 tests passed; API `tsc` (both configs), `eslint --max-warnings 0` and `git diff --check` PASS. Node script tests PASS: pilot-migrate 39/39, local-test-prepare 182/182, local-test-backup 34/34 and the other database tool suites. Admin lint plus `tsc -b && vite build` passed; client lint, Vitest 5 files / 44 tests, and `next build` passed. No browser/E2E validation is claimed. Owner full suite was **not run** for Pricing V2. |
+| Verification status | **At `8a11585`:** the D5I-B1/B1C DB-free evidence is recorded in §16 (38 new tests plus the unchanged RBAC policy files; typecheck, lint, build and `git diff --check` exit 0). The D5I-B2A1 DB-free run covered 4 files, 124/124 tests (session-recorded evidence with no durable repository artifact; see §16/§22). **No full suite has run at this HEAD**; D5H live gates are PAUSED. The last owner full suites are historical (`113c57a`: 59/59 files, 1082/1082 tests; Task 4 at `bbc24c6`/`f3e5779`/`c8f61c5`: 65/65 files, 1652/1652 tests). *Historical, at `9a3243f`:* Pricing V2 owner validation on disposable LOCAL_TEST, focused real-DB suite **439/439 PASS**, return to `EXACT_BASELINE`; no DEV, TEST, DEMO or PILOT DB contact; frontend gates passed (admin lint + `tsc -b && vite build`; client lint, Vitest 5 files / 44 tests, `next build`); no browser/E2E validation is claimed. |
 | Pre-suite TEST backup (`113c57a` gate) | `test_manual_20260928T130605Z.dump`: 66797 bytes, SHA-256 `d84708690f8be67d14e000f5dea89f18c8f4ffc62122781a87fd7a1ec8d40934`, set id `8852ffc9-e5a2-42cb-888e-e9aa2b316d19`, 25 tables. The owner verified the manifest (artifact, SHA, set id, `environment=test`, `purpose=manual`) and `pg_restore --list`. During this reconciliation the local size and SHA-256 were re-checked read-only and matched. The backup was **not** restored. |
 | Full-suite ownership | **REPOSITORY OWNER ONLY** (§12). Agents never run it on their own initiative; the Task 4 hosted TEST run executed only under the owner's explicit Approval 11. |
-| Push status | Pricing V2/T4 is pushed to `origin/feat/production-v1` at `9a3243f`; the temporary T4 branch also points to `9a3243f`. |
+| Push status | `feat/production-v1` is at `8a11585` locally and on the remote-tracking ref (`0 0`). `HEAD` is **not** an ancestor of `origin/pilot` (verified in D5I-DOC1): the Production V1 → pilot merge has NOT happened. |
 | Preservation status | The old dirty worktree was preserved externally at `~/.local/share/mona-jacinta/preservation/old-worktree-20261007`; it is not the source of truth. |
-| Exact next action | Pre-PILOT code fixes, then Production V1 verification. PILOT merge, PILOT DB migration and customer-data import each require separate explicit authorization. |
+| Exact next action | (1) Owner reviews and commits this Blueprint reconciliation (D5I-DOC1). (2) A short development-tooling pause (planned, separate scope). (3) **D5I-B2B** minimal transaction hardening only after the owner decides the timeout: `PROPOSED_TIMEOUT_MS=30000` is **NOT approved** (`AWAITING_OWNER_TIMEOUT_DECISION`). D5H live gates stay PAUSED. PILOT merge, PILOT DB migration and the customer product/stock import each require separate explicit authorization and none has happened. See §23. |
 ---
 
 ## 3. Git Checkpoint Ledger
@@ -239,7 +239,17 @@ repository proves. `pushed` means the commit is an ancestor of
 | R4 LOCAL_TEST proof | `4632b89...` | test(db): add R4 LOCAL_TEST safety proof tooling | LOCAL_TEST safety proof tooling | — | **pushed** | On top of `ce0a6d5` |
 | Authorization read-scope hardening | `18b07310190674291e1e2202708679e72f05778c` | feat(auth): scope product and inventory reads by permission | Product/inventory read authorization hardening | Baseline for Pricing V2 work | **pushed** | On top of `4632b89` |
 | Pricing V2 implementation | `9da09ab` → `b43d071` | feat/pricing/db/test/ui/docs Pricing V2 | CASH base, company price modes, LOCAL_TEST/PILOT tooling sync, tests, UI, docs | LOCAL_TEST focused DB suite 439/439 PASS; frontend gates recorded in §2/§16 | **pushed** | On top of `18b0731` |
-| Pricing V2 pointer fix / integration head | `9a3243f912d8b0f929767978e97454d229acedda` | docs(blueprint): update section 2 pointer for committed Pricing V2 | Documentation pointer fix; pre-reconciliation Production V1 head | T4 fast-forward integrated and pushed to `origin/feat/production-v1` | **pushed (= origin/feat/production-v1 before this docs commit)** | On top of `b43d071` |
+| Pricing V2 pointer fix / integration head | `9a3243f912d8b0f929767978e97454d229acedda` | docs(blueprint): update section 2 pointer for committed Pricing V2 | Documentation pointer fix; pre-reconciliation Production V1 head | T4 fast-forward integrated and pushed to `origin/feat/production-v1` | **pushed** (superseded as head by `8a11585`) | On top of `b43d071` |
+| Docs reconciliation | `eddea12ad70a8d70571a68dcef10ea7dfe65f4c4` | docs: reconcile Production V1 after Pricing V2 integration | `AGENTS.md`, this Blueprint and `docs/working/production-v1-status-and-next-steps.md` (documentation only) | — | **pushed** | On top of `9a3243f` |
+| Pre-PILOT fix: item removal | `18e26439c0551aa66ac703535b62c4e1c853f082` | fix(sales): serialize item removal with sale transitions | `removeItem` takes the Sale row lock (`lockDraft`) before deleting (F-017); DB-free behavior test plus an opt-in LOCAL_TEST contention suite | No review record in this Blueprint; run results of the LOCAL_TEST suite are not recorded in the repository | **pushed** | 3 files; 2026-10-06 |
+| Pre-PILOT fix: login rate limit | `28c3ba4568dc51feffecea1de33f6d2648d26d93` | fix(auth): rate limit failed login attempts | In-memory limiter on `POST /auth/login`: 10 failed requests per normalized email per 15 min; per the commit message, a 22-case DB-free behavior test | No review record in this Blueprint | **pushed** | 3 files; 2026-10-07 |
+| Pre-PILOT fix: client IP source | `c6b182c6d56eda2b11a3a92b64ebaee836a656fa` | fix(api): add trusted client IP source for rate limiting | `CLIENT_IP_SOURCE` (`socket` default, or opt-in `x-real-ip`) for the global limiter; `trust proxy` stays unset | No review record in this Blueprint | **pushed** | 5 files; 2026-10-07 |
+| D5 test infrastructure | `3c6dfc4696a1659fadb0b748eef0e8d401c6dc13` | test(api): add backend pid attribution diagnostics | Test-pool attribution diagnostics (5 files) | Block label not recorded in the repository; no run record | **pushed** | 2026-10-08 |
+| D5 test infrastructure | `29e5893aafc1467c0585687adb1e49ed580d6d42` | test(api): align pricing fixture and cleanup scanner | Cleanup-scanner and fixture alignment (2 test files) | Block label not recorded; no run record | **pushed** | 2026-10-08 |
+| D5 test infrastructure | `dbccdf157eee5625c06183684c7b26bbadd035cb` | fix(api): harden hosted test connection timeout | Hosted TEST connection timeout hardening (`scripts/demo-database.ts`, one test) | Block label not recorded; no run record | **pushed** | 2026-10-08 |
+| D5F-A | `38bac33da96ab2b3aefd2d0685351ab01539f2e0` | test(api): make test env deterministic | Deterministic synthetic test runtime env (`tests/helpers/test-runtime-env.ts`, `tests/setup.ts`, `tests/test-runtime-env.test.ts`) | Files verified from git; no run record in this Blueprint | **pushed** | 2026-10-08 |
+| D5F-C2 | `eab79a6763629013c0a809f526feac2ba9d4f9c1` | fix(api): batch user role scope backfill | `syncUserRoleScopeFromUserBranchRole` made O(1) in DB operations (F-016); `tests/rbac/scope-backfill-batching.test.ts` | Files verified from git; no run record in this Blueprint | **pushed** | 2026-10-09 |
+| D5I-B1 / B1C | `8a1158528bb629f2b32b3bbbc9aaf6fb70d90c83` | fix(api): scope sales lists by permission assignment | Closes the sales location-filter authorization class (F-015) on `GET /sales/pending` and `GET /sales` | DB-free evidence in §16; independent review approved (owner-reported, §22) | **pushed (= origin/feat/production-v1 as of D5I-DOC1, local ref)** | 3 files; 2026-10-09 |
 
 ---
 
@@ -813,6 +823,9 @@ and push come after P0.1-C, never between slices.
 | Capability | Implemented | Pilot-ready | Production target | Evidence/files | Known gap | Next phase |
 | --- | --- | --- | --- | --- | --- | --- |
 | Authentication | YES | YES | Same | `auth.service.ts`, `tokens.ts` | 15-min token, no refresh | DEBT-008 |
+| Login and global rate limiting | YES (`28c3ba4`, `c6b182c`) | PARTIAL | Same | `middleware/rateLimit.ts`, `auth.routes.ts` | In-memory, per API process; `trust proxy` unset | — |
+| Sales list/queue location authorization | YES (`8a11585`) | YES (independent review approved, owner-reported) | Same | `sales.controller.ts`, `authorization-policy.ts` | — | F-015 |
+| Interactive-transaction timeouts on send/reprice | NO (proposal only) | NO | — | D5I-B2A/B2A1 design | Default 5 s Prisma timeout on per-N loops; pricing read on the outer handle inside transactions; `PROPOSED_TIMEOUT_MS=30000` NOT approved | D5I-B2B |
 | RBAC (5 roles, COMPANY/LOCATION) | YES | YES | Same | `rbac/authorization-*.ts`, Phase 1E tests | Socket snapshot; legacy UBR read | DEBT-010/011 |
 | Catalog (products) | YES | PARTIAL | Product-level barcode, category/brand | `catalog-admin.service.ts` (D3) | Barcode on variant | 2A/2B |
 | Variants | YES | PARTIAL | Enumerated color/size families | `variant.dto.ts` | Free-text color/size | 2D |
@@ -855,7 +868,7 @@ and push come after P0.1-C, never between slices.
 | `api/src/modules/sales/hold-coverage.ts` | Pure current-coverage evaluator + cashier hold state | No DB, no global clock; explicit expiry policy; coverage defects before expiry; ACTIVE rows only | P0.1-C (new, `421b584`) |
 | `api/src/modules/sales/sales.service.ts` | Draft/cart, queue, completion; wires pre-send + notifications | Emit only after commit; emit failure isolated; completion consumes exactly the locked ACTIVE rows; queue read-only and PENDING_PAYMENT + PAID | B2 (wiring); P0.1-C (completion, queue) |
 | `api/src/modules/sales/pending-correction.service.ts` | Pending-sale correction (P0.2-A) | Sale-first lock; zero payment rows; exact unexpired coverage before and after; exact `reserved` delta; original `expiresAt`; no `StockMovement`; audit before/after | P0.2-A (pushed) |
-| `api/src/modules/sales/sales.controller.ts` | Sales HTTP | Queue accepts no client filters | B2 (options passthrough) |
+| `api/src/modules/sales/sales.controller.ts` | Sales HTTP | Queue accepts no client filters; `GET /sales` and `GET /sales/pending` take locations from `authorizedLocationIds(auth, SALE_VIEW \| SALE_QUEUE_VIEW)`, never raw `effectiveLocationIds` | B2 (options passthrough); D5I-B1/B1C (`8a11585`) |
 | `api/src/modules/audit/system-actor.service.ts` | System actor classify/bootstrap/resolve | Inactive, scope-less; fail closed; never repair | B1 (new) |
 | `api/scripts/bootstrap-system-actor.ts` | Operator CLI | Explicit `--target`, `--dry-run`/`--execute`; never prints the secret | B1 (new) |
 | `api/src/modules/payments/payments.service.ts` | Payments | Sale lock; replay before new-payment checks; exact current coverage; first payment unexpired; never releases; no overpayment | Demo V2; 1D.3.2; P0.1-C |
@@ -870,6 +883,9 @@ and push come after P0.1-C, never between slices.
 | `api/src/config/env.ts` | Zod env | Sweeper opt-in, exact booleans, bounded values; errors name variables only | D3; B2 |
 | `api/src/modules/inventory/inventory.service.ts` | Availability reads and pre-checks | Read-only; expiry-aware | P0.1-A |
 | `api/src/modules/inventory/initial-stock.service.ts` | Additive initial stock | `physical += qty` only; one movement + audit | D3 |
+| `api/tests/helpers/test-runtime-env.ts` | Deterministic synthetic test runtime environment | Test-only; D5F-A (`38bac33`) |
+| `api/src/modules/rbac/scope-backfill.service.ts` | Scope backfill from legacy `UserBranchRole` | O(1) DB operations in the eligible-row count; core sync has no `$transaction` of its own | D5F-C2 (`eab79a6`) |
+| `api/src/middleware/rateLimit.ts` | Hosts the global limiter (`createRateLimiter`) and the reusable failed-attempt primitive (`createFailedAttemptLimiter`) used by login; the wholesale attempt limiter is instantiated inline in `sales.routes.ts`, not here | Failed-attempt limiters charge only failed requests; the client IP comes from `CLIENT_IP_SOURCE`; `X-Forwarded-For` is never read | `28c3ba4`, `c6b182c` |
 | `api/tests/setup.ts`, `api/tests/helpers/test-db.ts` | TEST identity proof, proven TEST clients, truncation | Fail closed; destructive only on proven TEST clients; `DATABASE_URL` never read; adapter-owned pool ended by `$disconnect()` | Phase 0; A2 (TEST-H1) |
 | `api/scripts/demo-database.ts` (`openProvenTestPool`, `verifyTestMarkerFacts`, `MARKER_FACTS_SQL`) | TEST marker verification for the test harness and `openSeedDatabase('test')` | READ ONLY transaction + `ACCESS SHARE`; canonical structure incl. no inheritance; facts SQL identical to `test-marker.mjs` (asserted by `test-db-guard.test.ts`) | A2 (TEST-H1) |
 | `api/tests/test-db-guard.test.ts`, `api/tests/test-cleanup.test.ts` | Zero-DB tests: identity guard; AST cleanup-lifecycle scanner | Allowlist, fail closed; hermetic exemption limited to `test-db-guard` | A2; A3 (TEST-H2/H2.1) |
@@ -1052,6 +1068,34 @@ and push come after P0.1-C, never between slices.
 | Procedural deviation | Approval 11 pre-suite Section 9 (independent post-restore proof) and Section 10 (three fresh connection cycles) were **NOT RUN**; classified `DOCUMENTED_PROCEDURAL_DEVIATION`. They are not recorded as passed |
 | Status | **COMPLETE AND PUSHED.** Boundary A (`bbc24c6`), Boundary B (`f3e5779`) and final Task 4 persistent checkpoint (`c8f61c5`) are ancestors of current `feat/production-v1`. Substantive work: complete (LOCAL_TEST 65/65, hosted TEST 65/65, Section 9/10 NOT RUN / DOCUMENTED_PROCEDURAL_DEVIATION preserved, DEBT-028 OPEN, LOW / deferred: CI PostgreSQL image (`.github/workflows/ci.yml` `postgres:17`) floating tag (no digest pin) — not resolved, no new blockers). |
 
+### D5 remediation series and D5I transaction design (recorded 2026-10-09)
+
+Evidence labels follow §17 (`[OWNER-REPORTED]` is defined there). Items tagged `[OWNER-REPORTED]` come from the owner's D5I-DOC1 instruction; the repository holds no artifact for them and they are not independently verified here.
+
+| Step | Commit / state | What the repository or this session proves | Not claimed |
+| --- | --- | --- | --- |
+| D5 full-suite investigation | none | `[OWNER-REPORTED]` A historical full-suite failure was investigated rather than treated as a product-wide failure. | No failing run, log or manifest is recorded in the repository. |
+| D5F-A | `38bac33` | Deterministic synthetic test runtime environment added (3 files, verified from git). | No run result recorded here. |
+| Test infrastructure | `3c6dfc4`, `29e5893`, `dbccdf1` | Pool-attribution diagnostics; cleanup-scanner and fixture alignment; hosted connection-timeout hardening (files verified from git). | Block labels and run results are not in the repository. |
+| D5F-C2 | `eab79a6` | Scope-backfill latency class fixed by batching (F-016): `findMany` then at most one `createMany`; `scope-backfill-batching.test.ts` added. | No run result recorded here. |
+| D5G | none | `[OWNER-REPORTED]` Focused inventory/auth proofs completed. A restore hit a deadlock; an automatic retry was NOT authorized; the root cause is unresolved (F-018). | The recovered D5G run is NOT recorded as a PASS. |
+| D5H-A | none (no artifact tracked) | `[OWNER-REPORTED]` A fresh full-suite execution protocol was designed. Live gates are PAUSED because source changed afterward; any earlier test manifest/hash is stale after later commits. | D5H is NOT complete. No full suite has run at `8a11585`. |
+| D5I-B1 / B1C | `8a11585` | `GET /sales/pending` and `GET /sales` use `authorizedLocationIds` (F-015). Evidence observed in this work: new DB-free files `pending-queue-authorization.test.ts` (18 tests) and `sales-list-authorization.test.ts` (20 tests); a scratch-copy mutation proof (outside the repository) showed each fix is guarded by its own file: reverting the pending filter failed 5/18 of the pending file, and reverting the list filter failed 6/20 of the list file; focused run 89/89 with the two RBAC policy files; typecheck, lint, build (synthetic `DATABASE_URL`, network namespace) and `git diff --check` exit 0. | No DB-backed test was run. The independent review approval is `[OWNER-REPORTED]` (§22). |
+| D5I-B2A / B2A1 | no commit; read-only | Transaction-risk design and DB-free evidence; see the next table. | No implementation. |
+
+#### D5I-B2A / B2A1 — pilot transaction design (read-only; proposals only)
+
+| Field | Value |
+| --- | --- |
+| Prisma defaults (installed runtime) | `maxWait` 2000 ms, `timeout` 5000 ms; `config/prisma.ts` sets no `transactionOptions`; pool `max: 5` |
+| Structural findings (source) | `reserveInTransaction` costs about 11–12 fixed round trips plus 2 per distinct variant at the 5 s default, Serializable. `activateWholesale` and `updatePriceMode` cost about 10 fixed plus 1 per line at the 5 s default. `createPricingService(database)` reads pricing through the OUTER Prisma handle inside the transaction callbacks (`addItem`, `activateWholesale`, `updatePriceMode`, `pending-correction`). `completeSale`, `cancellation`, `cash`, `payments` and `pending-correction` already use `timeout: 30000`. No sale-line cap exists (NO EXPLICIT CAP VERIFIED). |
+| DB-free evidence | 4 files (`block1-wholesale.behavior`, `pricing/pilot-pricing-v2.behavior`, `pricing/pilot-pricing-v2`, `sales/remove-item-concurrency.behavior`): 124 passed, 0 failed, 0 skipped, 0 todo, exit 0; no DB, no external network |
+| Adversarial accounting | planned 36 = executed 15 + source-only 8 + not executable DB-free 13; executed 15 = matched 15 + mismatched 0 |
+| NOT proven | Pool starvation, P2028 timing for these request paths, real PostgreSQL row-lock timing, production timeout behavior. These remain STRUCTURAL risks. (P2028 at the 5 s default is proven only for the earlier scope-backfill path, F-016.) |
+| Proposals (not approved) | Repricing: `REPRICE_C` — transaction-bound pricing read plus an explicit timeout, no batching for the pilot. Reservation: `RESERVE_C` — explicit timeout only, no batching for the pilot. |
+| Timeout | `PROPOSED_TIMEOUT_MS=30000`. Basis: repository precedent (five request-path transactions already use 30000); NOT measured. Downside: a slower send can hold the branch-wide `SaleNumberCounter` lock longer. **`AWAITING_OWNER_TIMEOUT_DECISION` — not an approved owner decision.** |
+| Status | Design/evidence complete. D5I-B2B implementation NOT started. |
+
 ### Older blocks (summary; strong evidence only)
 
 | Block | Commit(s) | Goal | Push |
@@ -1069,11 +1113,12 @@ and push come after P0.1-C, never between slices.
 
 Evidence labels: `[VERIFIED]` = supported by current source/git/tests/docs;
 `[OPERATIONAL OBSERVATION]` = supported only by development-session evidence;
-`[UNVERIFIED]` = precise provenance cannot currently be established. A defect
+`[UNVERIFIED]` = precise provenance cannot currently be established;
+`[OWNER-REPORTED]` = stated by the owner in a session instruction, with no repository artifact (an operational evidence class like `[OPERATIONAL OBSERVATION]`; it is never treated as repository-verified). A defect
 can be `[VERIFIED]` from before/after git evidence even when the reviewer who
 first reported it is unknown.
 
-Only failures verified from git, code or tests are listed. When the *detection
+Failures verified from git, code or tests are listed; the only exception is an entry explicitly labelled `[OPERATIONAL OBSERVATION]` / `[OWNER-REPORTED]` (F-018), which is not repository-verified. When the *detection
 source* (for example, which reviewer found an issue) is not in the repository,
 it is marked unverified. The defect and its fix are still verified.
 
@@ -1226,6 +1271,39 @@ it is marked unverified. The defect and its fix are still verified.
 - **Regression tests:** `controlled-cancellation` (DRAFT ownership, SELLER/WAREHOUSE refusals, revocation, reasons, payment protection, races).
 - **Prevention:** RULE-018 · **Status:** FIXED (`e3ce087`; pushed).
 
+### F-015 — Sales list and queue filtered by locations from another assignment `[VERIFIED]`
+
+- **Block:** D5I-B1/B1C · **Severity:** MEDIUM (authorization: cross-assignment composition)
+- **Evidence:** `[VERIFIED]` — before `8a11585`, `GET /sales/pending` and `GET /sales` passed raw `effectiveLocationIds` to the queries while the route gate (`SALE_QUEUE_VIEW` / `SALE_VIEW`) was global. A user with `SELLER@A` plus `WAREHOUSE@B` could therefore see own DRAFTs at B in the list although `GET /sales/:saleId` refused them (`assertPermissionAtLocation(SALE_VIEW, B)`). RED tests reproduced the leak (6 failures in the list matrix). The independent review that found the second endpoint is `[OWNER-REPORTED]` (no repository record).
+- **Root cause:** permission came from one assignment and the location filter from the union of all assignments (RULE-004).
+- **Fix:** both controllers use `authorizedLocationIds(auth, permission)`; no service signature or route permission changed.
+- **Regression tests:** `tests/sales/pending-queue-authorization.test.ts`, `tests/sales/sales-list-authorization.test.ts` (DB-free; the real router/controller/policy chain with a stub Prisma `findMany`).
+- **Prevention:** RULE-004, RULE-020 · **Status:** FIXED (`8a11585`).
+
+### F-016 — Scope backfill exceeded Prisma's 5 s interactive-transaction default `[VERIFIED]`
+
+- **Block:** D5F-C2 · **Severity:** MEDIUM (maintenance path; availability)
+- **Evidence:** `[VERIFIED]` — the source comment in `scope-backfill.service.ts` records P2028 at about 5.7 s for N=8 (D5B3) under the 5000 ms default, and 2·N sequential hosted round trips from a per-row `findFirst` + `create` loop.
+- **Root cause:** per-row sequential queries inside one interactive transaction over a variable-size set.
+- **Fix:** `findMany`, then at most one `createMany` (fail-closed on the returned count); an explicit longer timeout is defence in depth only.
+- **Regression tests:** `tests/rbac/scope-backfill-batching.test.ts`.
+- **Prevention:** RULE-021 · **Status:** FIXED (`eab79a6`). The same STRUCTURAL class is under review for request paths in D5I-B2A (§16); not proven there.
+
+### F-017 — `removeItem` did not take the Sale row lock `[VERIFIED]`
+
+- **Block:** pre-PILOT fix · **Severity:** MEDIUM (concurrency)
+- **Evidence:** `[VERIFIED]` — per the `18e2643` message and diff, `removeItem` deleted a line without `lockDraft`, so it did not queue behind send-to-cashier, `updateItem`, price-mode or wholesale changes.
+- **Fix:** `lockDraft(tx, saleId)` before the delete, then a re-read under the lock; a removal after a transition fails `SALE_NOT_DRAFT`.
+- **Regression tests:** `tests/sales/remove-item-concurrency.behavior.test.ts` (DB-free contract) and the opt-in `remove-item-concurrency.local-test.test.ts` (real PostgreSQL; its run result is not recorded in the repository).
+- **Status:** FIXED (`18e2643`).
+
+### F-018 — Restore deadlock during D5G, root cause unresolved `[OPERATIONAL OBSERVATION]`
+
+- **Block:** D5G · **Severity:** unknown
+- **Evidence:** `[OWNER-REPORTED]` — a restore encountered a deadlock; an automatic retry was not authorized; the recovered run is not recorded as a PASS. No log or artifact is in the repository.
+- **Root cause:** UNRESOLVED. No hypothesis is recorded as fact.
+- **Status:** OPEN. Tracked as a risk in §20. Current planning policy (D5I-DOC1, owner planning decision; not a frozen or historical requirement): resolve the root cause before the final full-suite gate.
+
 ### Review-history candidates not registered as failures
 
 "Interactive pre-send inherited the 100-Sale batch" and "batch starvation"
@@ -1245,7 +1323,7 @@ F-012 when P0.1-C reproduced it in a RED test.
 | RULE-001 | Final stock authority is the **locked raw** `physical − reserved >= qty` check. Effective/expiry-aware values are advisory. | Reads can be stale, and maintenance can fail | `reserveInTransaction`; test "keeps the authoritative reserve transaction on raw physical - reserved" | F-001 |
 | RULE-002 | Automatic maintenance owns its production clock. No caller-supplied `now` on automated entries. | A smuggled clock releases live holds | Signatures of `releaseExpiredHoldsAsSystem`/`reconcileBeforeSend`; clock test | F-003 |
 | RULE-003 | Automatic writers default **OFF** and need an explicit opt-in (`=== 'true'`). They start only from the server runtime, never `createApp()`. | Tests and deployments must not mutate data implicitly | `env.ts`, `server.ts`, sweeper static wiring tests | — |
-| RULE-004 | Authorization goes through the centralized policy (`hasPermission`/`hasPermissionAtLocation`) with permission and location from the **same assignment**. `effectiveLocationIds` is never authority. | Cross-assignment unions leak authority | `authorization-policy.ts`; escalation + scope tests | F-002, F-006, F-007 |
+| RULE-004 | Authorization goes through the centralized policy (`hasPermission`/`hasPermissionAtLocation`) with permission and location from the **same assignment**. `effectiveLocationIds` is never authority. | Cross-assignment unions leak authority | `authorization-policy.ts`; escalation + scope tests | F-002, F-006, F-007, F-015 |
 | RULE-005 | Maintenance isolates units and degrades conservatively. One Sale per transaction, failures logged with safe codes, and the business path continues to its authoritative check. | One bad row must not block every release, and failures must never oversell | `reconcile`, `reconcileBeforeSend` | F-004 |
 | RULE-006 | Realtime failure never changes, retries or rolls back committed DB state, **and never changes the HTTP result of a committed operation**. It is logged separately from DB failures. | PostgreSQL is the source of truth, and realtime is advisory | Per-release `try/catch` in `sales.service.ts`, the sweeper, `payments.controller.ts` | F-005, F-013 |
 | RULE-007 | Candidate discovery scope and Sale-level release scope are distinct: discovery may be narrow, but release is always the whole Sale's expired set. | Prevents half-released Sales and keeps one audit per Sale | B2 test "releases a nominated candidate Sale atomically…" | F-004 |
@@ -1261,6 +1339,8 @@ F-012 when P0.1-C reproduced it in a RED test.
 | RULE-018 | A lifecycle mutation's authority depends on the **persisted** state read under the Sale lock (DRAFT = owning seller; PENDING_PAYMENT = the dedicated pending permission), and payment protection is decided by `SalePayment` **row existence**, never the sum. A coarse route gate never replaces the per-location, same-assignment service check. | Prevents one generic permission from authorizing every lifecycle step | `cancelSale`, `correctPendingSale`, `requireAnyPermission` comment | F-014 |
 | RULE-019 | Direct database bootstrap/backfill execution requires a proven target classification; prefer the fail-closed TEST harness (focused Vitest) for implementation validation. `[OPERATIONAL OBSERVATION]` During P0.2 the safety hook blocked a composite command whose text named the catalog bootstrap script; it was not retried. | Avoids mutating an unproven (DEV/DEMO) database | `.claude/hooks`; CLAUDE.md DB rules | — |
 | RULE-012 | Privileged technical identities (the system actor) are inactive and scope-less, created only by explicit bootstrap, and fail closed when tampered. They are never repaired automatically. | Audit attribution without granting authority | `system-actor.service.ts`; system-actor tests | — |
+| RULE-020 | When a location-scope defect is found at one endpoint, sweep every use of `effectiveLocationIds` in the request path and fix the class: a list/queue filter must use `authorizedLocationIds(auth, <the route permission>)`. | A global route gate plus a union-derived filter composes permission from one assignment with locations from another | `sales.controller.ts`; the two D5I authorization test files | F-015 |
+| RULE-021 | Never loop sequential queries over a variable-size set inside a default-timeout interactive transaction: batch (`findMany` / `createMany`) or document an explicit bounded cost. An explicit timeout alone is defence in depth, not the fix. | Prisma defaults to a 5 s transaction timeout and each hosted round trip is slow | `scope-backfill.service.ts`; D5I-B2A review of the request paths (open) | F-016 |
 
 ---
 
@@ -1296,6 +1376,8 @@ F-012 when P0.1-C reproduced it in a RED test.
 | DEBT-027 | ProductImage (optional primary image, FR-IMG-001..004) is not implemented; no `ProductImage` model exists | Frozen roadmap Phase 2D. Business intent: images are **optional**, and a Product must stay valid and usable without one | None for current flows | 2D | No | OPEN (by design). **Frozen-doc tension recorded, not resolved:** frozen `05-architecture.md` names Supabase Storage for product images, while `AGENTS.md` says no Supabase Storage is used; this must be decided before 2D |
 | DEBT-028 | `docs/development/database.md` §6 still describes the pre-TEST-H1 comparative isolation check (both `DATABASE_URL` and `TEST_DATABASE_URL`, live metadata comparison); since A2 the test harness proves TEST from its marker only and never reads `DATABASE_URL` | Pre-existing; outside the Task 4 F2 scope, which only added the LOCAL_TEST exception | Readers may believe the harness still contacts DEV | Next documentation pass | No | OPEN |
 | DEBT-019 | Expiry decisions use each API instance's wall clock (payment, B1/B2, queue) | Pre-existing design (B1) | Clock skew shifts the boundary between instances; all paths still serialize on the Sale lock, so no double outcome | Deployment hardening | No | OPEN |
+| DEBT-029 | LOCATION-only scope assignments can contribute an inactive location id to `effectiveLocationIds` (no active-location lookup), while COMPANY expansion uses active locations only. Observed during D5I-B1C: a `SELLER` assignment at an inactive location appeared in the filter. | Outside the D5I authorization-class fix; deliberately not investigated deeply | Not demonstrated as a security bug: the detail check (`hasPermissionAtLocation`) also qualifies that location, so list and detail agree | `DEFERRED_SEPARATE_FOLLOWUP` | No | OPEN |
+| DEBT-030 | Full-suite live-evidence tooling/protocol (D5H) is still required before the final gate: the earlier manifest/hash is stale after later commits and live gates are paused | Source changed after the D5H-A design `[OWNER-REPORTED]` | No full-suite evidence exists for the current HEAD | D5H on the final source HEAD | Pre-merge gate | OPEN |
 
 ---
 
@@ -1311,6 +1393,11 @@ F-012 when P0.1-C reproduced it in a RED test.
 | ~~Uncommitted P0.1-C work~~ | — | — | **CLOSED** (`421b584`) | — |
 | ~~Unpushed local P0.1 checkpoints~~ | — | — | **CLOSED**: normal push `6aa8143..7b6fce8`, verified `0 0` | — |
 | ~~Unpushed local commits through Pricing V2/T4~~ | — | — | **CLOSED**: normal fast-forward push to `origin/feat/production-v1` at `9a3243f`; old dirty worktree durably preserved outside the repository | — |
+| Restore deadlock root cause unresolved (F-018) | A restore during the D5G gate `[OWNER-REPORTED]` | An unexplained deadlock could recur in the owner gates | Automatic retries were not authorized | Current planning policy (owner planning decision, D5I-DOC1; not a historical requirement): investigate before the final full-suite gate |
+| Inactive location in `effectiveLocationIds` (DEBT-029) | LOCATION-only assignment at an inactive location | Possible stale scope entry; not shown to bypass any check | Detail and list use the same policy | Separate follow-up |
+| Request-path transaction risk (STRUCTURAL, not proven) | Large carts, or several concurrent sales transactions, at the 5 s default; pricing read on the outer pool handle inside transactions | A transaction abort returns HTTP 500 with a rollback and no partial data; possible pool pressure at `max: 5` | Rollback semantics; most heavy transactions already use `timeout: 30000` | D5I-B2B after the owner timeout decision (`PROPOSED_TIMEOUT_MS=30000` NOT approved) |
+| No full-suite evidence at the current HEAD (DEBT-030) | Source changed after the last owner suites (`113c57a`, Task 4) and after the D5H-A design | A regression could be undetected by a full run | Focused DB-free evidence per block (§16) | Regenerate the D5H manifest/preflight on the final source HEAD; owner runs the gates |
+| Pilot merge and PILOT DB not done | — | The pilot store runs nothing from Production V1 yet | Separate authorization required | §23 rows 26–28 |
 | Sweeper enabled without a system actor | Env flag set before bootstrap | No releases; error logs each tick (fail closed, process stays up) | Fail-closed resolution | Bootstrap before enabling (§21) |
 | Wrong-target DB mutation | Operator error with multiple local env files | Data loss on DEV/DEMO | Identity proofs, dry-run/execute, `.claude/hooks`; TEST marker (A1/A2); PILOT marker + private URL file + plan digest (C/D) | Keep explicit approval discipline; PILOT tooling OWNER-only |
 
@@ -1332,10 +1419,11 @@ F-012 when P0.1-C reproduced it in a RED test.
   `--execute`, from `api/` **before** enabling the sweeper. Without it, the
   pre-send step and sweeper fail closed (no cleanup writes). Bootstrap state per
   environment: [UNVERIFIED — NEEDS CONFIRMATION].
-- **Push/deploy status:** Production V1 is pushed to
-  `origin/feat/production-v1` at `9a3243f` before this documentation
-  reconciliation commit. This includes P0.2, A1–D, Task 4, Block 1 wholesale,
-  R4 LOCAL_TEST proof tooling and Pricing V2. Nothing is deployed by this work.
+- **Push/deploy status:** Production V1 is at `8a11585` on
+  `origin/feat/production-v1` (local remote-tracking ref, D5I-DOC1). This
+  includes P0.2, A1–D, Task 4, Block 1 wholesale, R4 LOCAL_TEST proof tooling,
+  Pricing V2, the pre-PILOT fixes and the D5 remediation series. It is NOT
+  merged into `pilot`. Nothing is deployed by this work.
 - **PILOT:** C/D add OWNER-only tooling only. No live PILOT marker install,
   migrate, bootstrap or catalog bootstrap is recorded in the repository, and
   none is claimed.
@@ -1366,6 +1454,8 @@ F-012 when P0.1-C reproduced it in a RED test.
 | Task 4 | LOCAL_TEST owner gate | **PASS** — 65/65 files, 1652/1652 tests, exit 0 | — | — | `bbc24c6` / `f3e5779` / `c8f61c5` |
 | Task 4 | Hosted TEST owner suite under the owner's Approval 11 | **PASS** — 65/65 files, 1652/1652 tests, exit 0, 8458.58s; static gates after the suite PASS | Procedural deviation: pre-suite Section 9 and Section 10 **NOT RUN** | Classified `DOCUMENTED_PROCEDURAL_DEVIATION`; not reconstructed or recorded as passed | `bbc24c6` / `f3e5779` / `c8f61c5` |
 | Task 4 | Claude Code exact staging-scope audit (read-only) | 31/31 paths exact-set match; 30/30 adversarial cases matched; verdict ready for staging approval | F1 undeclared `@prisma/config` (LOW); F2 stale TEST-only policy text (MEDIUM) | F1: direct devDependency declared; F2: Boundary B documentation reconciliation | `bbc24c6` / `f3e5779` / `c8f61c5` |
+| D5I-B1 / B1C | Independent reviewer(s) `[OWNER-REPORTED; no repository record]` | The `GET /sales/pending` fix was approved; the review found the same defect class on `GET /sales`; after the class closure the final independent review approved | The second endpoint (F-015) | Fixed before the commit | `8a11585` |
+| D5I-B2A / B2A1 | Claude Code (read-only design and DB-free evidence) | Design complete as PROPOSALS; no independent review yet; owner timeout decision pending | None against the current code; structural risks recorded in §16/§20 | — | none (no commit) |
 
 The owner states that P0.1-A, P0.1-B1 and P0.1-B2 were each independently
 audited (OpenCode and Codex) before their local checkpoints. The verdict
@@ -1392,11 +1482,21 @@ blocks must record reviewer verdicts here at review time.
 | 11 | Task 4 LOCAL_TEST target | Disposable LOCAL_TEST and CI `local-postgres` | 10 | **DONE and pushed** (`bbc24c6`, `f3e5779`, `c8f61c5`) | AC-211 restore proof remains NOT RUN / deferred |
 | 12 | Pricing V2 / T4 | CASH base + price modes | 11 | **DONE and pushed** (`9a3243f`) | LOCAL_TEST 439/439; frontend gates passed; no PILOT migration |
 | 13 | TEST-H3 | Deferred TEST-hardening follow-up (DEBT-025) | — | DEFERRED | Scope defined by the owner |
-| 14 | Pre-PILOT code fixes | `removeItem`, rate-limit / `trust proxy` | 12 | NEXT | Requires separate implementation authorization |
-| 15 | Production V1 verification | Focused verification after pre-PILOT fixes | 14 | PENDING | Scope to be set by owner |
+| 14 | Pre-PILOT code fixes | `removeItem`, rate-limit / `trust proxy` | 12 | **DONE and pushed** (`18e2643`, `28c3ba4`, `c6b182c`) | Review/run records of these fixes are not in this Blueprint |
+| 15 | Production V1 verification | Focused verification after pre-PILOT fixes | 14 | **SUPERSEDED** by rows 19–28 (queue rebuilt in D5I-DOC1) | — |
 | 16 | Repository cleanup | Branch/worktree cleanup after reachability proof | 15 | DEFERRED | No deletion authorized yet |
-| 17 | Production V1 → pilot merge | Normal merge to `pilot` | 16 | PENDING (owner only) | Separate authorization; no DB migration implied |
-| 18 | PILOT DB migration/import/smoke | PILOT migration, controlled real data import, smoke/client validation | 17 | PENDING (owner only) | Separate DB authorization required |
+| 17 | Production V1 → pilot merge | Normal merge to `pilot` | 16 | **SUPERSEDED** by row 26 | — |
+| 18 | PILOT DB migration/import/smoke | PILOT migration, controlled real data import, smoke/client validation | 17 | **SUPERSEDED** by rows 27–28 | — |
+| 19 | Blueprint reconciliation (D5I-DOC1) | Bring this ledger to the exact repository state | — | **CURRENT** (documentation only; pending owner review and commit) | Owner commits the reconciliation |
+| 20 | Short development-tooling improvement pause | Tooling improvements before more product work | 19 | PLANNED (separate scope; not defined here) | Scope set by the owner |
+| 21 | D5I-B2B minimal transaction hardening | Transaction-bound pricing read plus explicit timeouts (proposals `REPRICE_C` / `RESERVE_C`, no batching) | 19; owner timeout decision | **PENDING OWNER TIMEOUT DECISION** (`PROPOSED_TIMEOUT_MS=30000` not approved; implementation not started) | DB-free tests first; owner approval |
+| 22 | Independent review of D5I-B2B | Read-only review of the implementation | 21 | PENDING (only if row 21 is implemented) | Findings resolved |
+| 23 | Regenerate the D5H manifest/preflight | On the NEW final source HEAD (DEBT-030) | 21–22 | PENDING (D5H live gates PAUSED) | Fresh manifest for the final HEAD |
+| 24 | Owner live TEST gates / full suite | Owner-only gates | 23 | PENDING (owner only) | Owner records the result in §22 |
+| 25 | Resolve the restore deadlock root cause (F-018) | Before the final gate (current planning policy, owner planning decision in D5I-DOC1; not a historical requirement) | — | OPEN | Root cause recorded |
+| 26 | Normal `feat/production-v1` → pilot integration | Merge to `pilot` | 24 | PENDING (owner only; not done) | Separate authorization; no DB migration implied |
+| 27 | PILOT database preparation/migration | OWNER-only tooling | 26 | PENDING (owner only; not authorized or executed) | Separate DB authorization |
+| 28 | Controlled customer product/stock import, then single-location pilot smoke and owner testing | Spreadsheet import (not executed) and smoke | 27 | PENDING (owner only; nothing done) | Separate authorization |
 
 ---
 
@@ -1449,3 +1549,4 @@ Append-only.
 | 2026-10-01 | Task 4 (LOCAL_TEST) pre-staging record (uncommitted) | `9e97aa995569c80361b749fd09de5ae2c40f3290` | §2, §3, §11, §12, §16, §19, §22, §23, §25 | Recorded Task 4 (uncommitted): LOCAL_TEST environment row (§11); LOCAL_TEST owner gate 65/65, 1652/1652, exit 0; hosted TEST owner suite under Approval 11 65/65, 1652/1652, exit 0, 8458.58s; static gates PASS; Section 9/10 NOT RUN (`DOCUMENTED_PROCEDURAL_DEVIATION`). Reconciled §2/§3 with git (local remote-tracking ref, not fetched): everything up to `13fee1e` is in `origin/feat/production-v1`; `4b04411` and `9e97aa9` are local only on `chore/dev-tooling-1`; their review records are not in this Blueprint. DEBT-028. Task 4 NOT complete. No database, no full suite and no push during this record. `docs/production-v1/*` untouched. |
 | 2026-10-06 | Pilot Pricing V2 implementation (uncommitted) | `18b07310190674291e1e2202708679e72f05778c` | §2, §25 | Owner pricing supersession and uncommitted implementation: explicit retail `cashPrice`, wholesale cash base, company-global `CompanyPricingConfig` (bps 0..10000), one `Sale.priceMode` per sale, `SaleItem` immutable pricing snapshot, payment/price-mode compatibility (LIST has no method twin and accepts any method), wholesale cash base <= retail cash base (app + DB CHECK). New migration `20261006120000_pilot_pricing_v2` (additive; applied 2026-10-06 only to the disposable LOCAL_TEST database via prepare/resume and validated there; NOT applied to DEV, TEST, DEMO or PILOT). LOCAL_TEST fingerprint/baseline/witness contracts re-synced to the new schema (172 columns, 26 relations, 10 enums); the pilot-migrate / local-test-prepare OWNER-approved fixed migration pin contract was explicitly extended to also pin the reviewed `20261006120000_pilot_pricing_v2/migration.sql` (literal pin, no DB execution authorized). LOCAL_TEST validation: focused real-DB suite 439/439 PASS, return to EXACT_BASELINE; no push. Frontend semantics reconciled: admin edits the CASH base, previews derived LIST read-only (legacy `price` labeled transitional, never the active LIST), seller client shows no legacy fallback for `cashPrice = NULL`; validated with `npm ci` from the existing lockfiles (manifests/lockfiles unchanged): admin lint + `tsc -b && vite build` pass (no test script), client lint, vitest (5 files, 44 tests incl. `catalog-price.test.ts`) and `next build` pass. Final mixed proportional payments remain a REQUIRED later feature. Customer-data import and PILOT integration still pending. `docs/production-v1/*` untouched. |
 | 2026-10-07 | Production V1 Pricing V2 integration and documentation reconciliation | `9a3243f912d8b0f929767978e97454d229acedda` before this documentation commit | §2, §3, §16, §19, §20, §23, §25 | The old dirty worktree was durably preserved outside the repository; `feat/production-v1` was fast-forwarded and normally pushed to `9a3243f`, matching the temporary T4 branch. This documentation-only commit reconciles AGENTS, the Blueprint and working status. No source/test/migration changes; no DB contact; no PILOT merge, PILOT migration or customer-data import. AC-211 restore proof remains NOT RUN/deferred. |
+| 2026-10-09 | D5I-DOC1 Blueprint reconciliation (uncommitted) | `8a1158528bb629f2b32b3bbbc9aaf6fb70d90c83` | §2, §3, §14, §15, §16, §17, §18, §19, §20, §21, §22, §23, §25 | The Blueprint was stale relative to git (it recorded `9a3243f` as the current head; the repository was ten commits ahead). Reconciled to `8a11585`: ledger rows for `eddea12`…`8a11585`; the D5 sequence (D5F-A, D5F-C2, D5G, D5H-A, D5I-B1/B1C) and the read-only D5I-B2A/B2A1 design; F-015…F-018, RULE-020/021, DEBT-029/030; the queue rebuilt (rows 19–28). Owner-reported items (D5G restore deadlock, D5H-A protocol, independent review verdicts) are labelled `[OWNER-REPORTED]` because the repository holds no artifact for them. `PROPOSED_TIMEOUT_MS=30000` is recorded as NOT approved. Documentation only; no product source or test change, no database and no network contact. D5H remains paused; no full suite has run at this HEAD. `docs/production-v1/*` untouched. |
