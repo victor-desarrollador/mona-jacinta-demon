@@ -10,6 +10,8 @@ import { env } from '../../config/env.js';
 import { logger } from '../../shared/logger.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 import { REALTIME_EVENTS } from '../../realtime/socket.js';
+import { authorizedLocationIds } from '../rbac/authorization-policy.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 
 export function createSalesController(
   database: PrismaClient,
@@ -42,14 +44,20 @@ export function createSalesController(
       if (Object.keys(req.query).length > 0) {
         throw new AppError(400, 'VALIDATION_ERROR', 'La cola no admite parámetros de consulta.');
       }
-      sendJson(res, { items: await service.listPendingSales(req.auth!.effectiveLocationIds, req.auth!) });
+      // The route gate is global, so the locations must be the ones where the
+      // SAME assignment grants SALE_QUEUE_VIEW, never the effectiveLocationIds union.
+      const locationIds = authorizedLocationIds(req.auth!, PRODUCTION_PERMISSIONS.SALE_QUEUE_VIEW);
+      sendJson(res, { items: await service.listPendingSales(locationIds, req.auth!) });
     }) as RequestHandler,
     create: (async (req, res) => {
       const sale = await service.createDraftSale(req, userId(req), req.body.branchId);
       sendJson(res.status(201), sale);
     }) as RequestHandler,
     list: (async (req, res) => {
-      sendJson(res, { items: await service.listDrafts(userId(req), req.auth!.effectiveLocationIds) });
+      // Same rule as the detail route: only locations where the SAME
+      // assignment grants SALE_VIEW, never the effectiveLocationIds union.
+      const locationIds = authorizedLocationIds(req.auth!, PRODUCTION_PERMISSIONS.SALE_VIEW);
+      sendJson(res, { items: await service.listDrafts(userId(req), locationIds) });
     }) as RequestHandler,
     get: (async (req, res) => {
       sendJson(res, await service.getDraft(req, userId(req), String(req.params.saleId)));
