@@ -227,7 +227,7 @@ export function createSalesService(
         await tx.saleItem.update({ where: { id: current.id }, data: { quantity: nextQuantity, subtotal: nextQuantity * current.unitPrice } });
       } else {
         // Server-chosen catalog price for the sale's mode; never client input.
-        const config = await pricing.getSnapshot();
+        const config = await pricing.getSnapshot(tx);
         const calculated = unitPriceFor(locked.pricingMode, variant, locked.priceMode, config);
         await tx.saleItem.create({
           data: {
@@ -238,7 +238,7 @@ export function createSalesService(
         });
       }
       return recalculateTotals(tx, saleId);
-    });
+    }, { timeout: 15000 });
   }
 
   async function updateItem(
@@ -298,7 +298,7 @@ export function createSalesService(
         where: { saleId }, orderBy: { id: 'asc' },
         include: { variant: { select: { id: true, cashPrice: true, wholesalePrice: true } } },
       });
-      const config = await pricing.getSnapshot();
+      const config = await pricing.getSnapshot(tx);
       // Price every line before writing any of them.
       const repriced = items.map((item) => ({ item, price: unitPriceFor('WHOLESALE', item.variant, locked.priceMode, config) }));
       for (const { item, price } of repriced) {
@@ -318,7 +318,7 @@ export function createSalesService(
         },
       });
       return updated;
-    });
+    }, { timeout: 15000 });
   }
 
   async function updatePriceMode(
@@ -333,7 +333,7 @@ export function createSalesService(
         where: { saleId }, orderBy: { id: 'asc' },
         include: { variant: { select: { id: true, cashPrice: true, wholesalePrice: true } } },
       });
-      const config = await pricing.getSnapshot();
+      const config = await pricing.getSnapshot(tx);
       const repriced = items.map((item) => ({ item, price: unitPriceFor(locked.pricingMode, item.variant, priceMode, config) }));
       for (const { item, price } of repriced) {
         await tx.saleItem.update({
@@ -355,7 +355,7 @@ export function createSalesService(
         after: { priceMode, total: updated.total },
       });
       return updated;
-    });
+    }, { timeout: 15000 });
   }
 
   // Block 1: a cashier at the sale's own location confirms the wholesale

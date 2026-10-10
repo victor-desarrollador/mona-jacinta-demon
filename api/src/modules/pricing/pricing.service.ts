@@ -9,6 +9,9 @@ import {
 } from './pricing.js';
 
 type PricingDatabase = Pick<PrismaClient, 'company' | 'companyPricingConfig' | '$transaction'>;
+// Read client for a snapshot: the outer client, or the TransactionClient of an
+// interactive transaction (so every read of the snapshot joins that transaction).
+type PricingReader = Pick<PrismaClient, 'company' | 'companyPricingConfig'>;
 
 const selectConfig = {
   id: true,
@@ -66,15 +69,17 @@ function validatePatch(input: PricingConfigUpdate) {
 }
 
 export function createPricingService(database: PricingDatabase) {
-  async function companyId() {
-    const company = await database.company.findFirst({ orderBy: { createdAt: 'asc' }, select: { id: true } });
+  async function companyId(reader: PricingReader = database) {
+    const company = await reader.company.findFirst({ orderBy: { createdAt: 'asc' }, select: { id: true } });
     if (!company) throw new AppError(409, 'COMPANY_NOT_CONFIGURED', 'No hay compañía configurada.');
     return company.id;
   }
 
-  async function getSnapshot(): Promise<PricingConfigSnapshot> {
-    const id = await companyId();
-    const config = await database.companyPricingConfig.findUnique({ where: { companyId: id }, select: selectConfig });
+  // Inside an interactive transaction pass its TransactionClient: both the
+  // company lookup and the config lookup then use that client, never the outer one.
+  async function getSnapshot(reader: PricingReader = database): Promise<PricingConfigSnapshot> {
+    const id = await companyId(reader);
+    const config = await reader.companyPricingConfig.findUnique({ where: { companyId: id }, select: selectConfig });
     return toSnapshot(config);
   }
 

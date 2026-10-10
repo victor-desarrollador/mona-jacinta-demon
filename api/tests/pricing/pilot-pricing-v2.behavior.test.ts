@@ -522,3 +522,55 @@ describe('Pilot Pricing V2 — migration (static)', () => {
     expect(code).toMatch(/"qrAdjustmentBps" >= 0 AND "qrAdjustmentBps" <= 10000/);
   });
 });
+
+// D5I-B2B1 — pricing.getSnapshot(tx). DB-FREE fakes: the OUTER delegates throw
+// loudly so a pass proves the supplied transaction client served BOTH reads.
+//   X01 getSnapshot() outside a transaction still uses the outer client for both reads -> EXPECTED_UNCHANGED
+//   X02 getSnapshot(tx) uses tx for company AND companyPricingConfig, outer never -> FAIL before, PASS after
+//   X03 getSnapshot(tx) without a company on tx -> 409 COMPANY_NOT_CONFIGURED, config never read -> EXPECTED_FAIL_CLOSED
+//   X04 getSnapshot(tx) with no config row on tx -> all-zero snapshot -> EXPECTED_PASS after
+//   X04b getSnapshot(tx) never opens a $transaction -> EXPECTED_PASS
+describe('D5I-B2B1 — pricing.getSnapshot transaction binding', () => {
+  const loud = (name: string) => ({
+    findFirst: async () => { throw new Error(`OUTER_${name}_USED`); },
+    findUnique: async () => { throw new Error(`OUTER_${name}_USED`); },
+  });
+  const fake = (company: { id: string } | null, config: Record<string, unknown> | null, calls: string[] = []) => ({
+    company: { findFirst: async () => { calls.push('company'); return company; } },
+    companyPricingConfig: { findUnique: async () => { calls.push('config'); return config; } },
+  });
+  const configRow = {
+    id: 'cfg', companyId: 'c', updatedAt: new Date(0), listAdjustmentBps: 1000, creditCardAdjustmentBps: 2000,
+    debitCardAdjustmentBps: 0, bankTransferAdjustmentBps: 0, qrAdjustmentBps: 0,
+  };
+
+  it('X01 without a transaction client both reads use the outer client', async () => {
+    const calls: string[] = [];
+    const outer = { ...fake({ id: 'c' }, configRow, calls), $transaction: async () => { throw new Error('NESTED'); } };
+    const snapshot = await createPricingService(outer as never).getSnapshot();
+    expect(calls).toEqual(['company', 'config']);
+    expect(snapshot.adjustmentsBps.LIST).toBe(1000);
+  });
+
+  it('X02 getSnapshot(tx) serves BOTH reads from tx and never touches the outer delegates', async () => {
+    const calls: string[] = [];
+    const outer = { company: loud('COMPANY'), companyPricingConfig: loud('CONFIG'), $transaction: async () => { throw new Error('NESTED'); } };
+    const snapshot = await createPricingService(outer as never).getSnapshot(fake({ id: 'c' }, configRow, calls) as never);
+    expect(calls).toEqual(['company', 'config']);
+    expect(snapshot).toMatchObject({ id: 'cfg', adjustmentsBps: { CASH: 0, LIST: 1000, CREDIT_CARD: 2000 } });
+  });
+
+  it('X03 getSnapshot(tx) with no company fails closed from tx and never reads the config', async () => {
+    const calls: string[] = [];
+    const outer = { company: loud('COMPANY'), companyPricingConfig: loud('CONFIG'), $transaction: async () => undefined };
+    await expectAppError(createPricingService(outer as never).getSnapshot(fake(null, configRow, calls) as never), 409, 'COMPANY_NOT_CONFIGURED');
+    expect(calls).toEqual(['company']);
+  });
+
+  it('X04 getSnapshot(tx) with no config row yields the all-zero snapshot', async () => {
+    const outer = { company: loud('COMPANY'), companyPricingConfig: loud('CONFIG'), $transaction: async () => undefined };
+    const snapshot = await createPricingService(outer as never).getSnapshot(fake({ id: 'c' }, null) as never);
+    expect(snapshot).toMatchObject({ id: null, updatedAt: null });
+    expect(Object.values(snapshot.adjustmentsBps).every((bps) => bps === 0)).toBe(true);
+  });
+});

@@ -171,7 +171,7 @@ export function createReservationService(database: ReservationDatabase, deps: Re
       try {
         return await database.$transaction(
           (tx) => reserveInTransaction(tx, saleId, userId, branchIds),
-          { isolationLevel: 'Serializable' },
+          { isolationLevel: 'Serializable', timeout: 15000 },
         );
       } catch (error) {
         if (!isTransientTransactionError(error)) throw error;

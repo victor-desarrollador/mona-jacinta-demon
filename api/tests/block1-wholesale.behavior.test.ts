@@ -1384,3 +1384,237 @@ describe('Block 1 payment history — application with the modelled DB triggers 
     await expectAppError(t.correction.correctPendingSale(t.reqs.cashier, saleId, { items: [{ variantId: t.V1, quantity: 1n }] }), 409, 'PAYMENT_ALREADY_ACCEPTED');
   });
 });
+
+// D5I-B2B1 — REPRICE_C + RESERVE_C transaction hardening (DB-FREE).
+// Owner 2026-10-10: timeout 15000 for addItem / activateWholesale /
+// updatePriceMode / sendToCashier; maxWait is NEVER set (Prisma default);
+// pending-correction keeps its pre-existing 30000.
+//
+// PRE-REGISTERED EXPECTATIONS (written before the implementation edit):
+//   X02 pricing.getSnapshot(tx) reads company AND config on tx, never outer -> FAIL before, PASS after
+//   X03 getSnapshot(tx), no company on tx -> 409 COMPANY_NOT_CONFIGURED (fail closed)   -> EXPECTED_FAIL_CLOSED
+//   X05 addItem NEW line prices via tx, no outer pricing read in the tx                -> EXPECTED_PASS after
+//   X06 addItem EXISTING line: no pricing read at all, snapshot kept, timeout 15000     -> EXPECTED_PASS after
+//   X07 activateWholesale: tx pricing, timeout 15000, no maxWait                       -> EXPECTED_PASS after
+//   X08 activation replay (already WHOLESALE): no pricing read, timeout 15000          -> EXPECTED_PASS after
+//   X09 updatePriceMode: tx pricing, timeout 15000, no maxWait                         -> EXPECTED_PASS after
+//   X10 same-mode replay: no pricing read, timeout 15000                               -> EXPECTED_PASS after
+//   X11 correction without a new variant: tx pricing, Serializable + 30000              -> EXPECTED_PASS after
+//   X12 correction with a new variant: tx pricing, Serializable + 30000, no maxWait    -> EXPECTED_PASS after
+//   X13 pricing failure before writes during wholesale activation (line without wholesale price) -> fail closed, state unchanged -> EXPECTED_FAIL_CLOSED
+//   X14 sendToCashier one variant: Serializable + 15000, no maxWait                    -> EXPECTED_PASS after
+//   X15 sendToCashier several variants: same options                                   -> EXPECTED_PASS after
+//   X16 sendToCashier serialization failure (P2034) once -> retried, 2 attempts, each 15000 -> EXPECTED_PASS after
+//   X17 P2028 is NOT retried: one attempt, error propagates                            -> EXPECTED_UNCHANGED
+//   X18 no maxWait key in any target options                                           -> EXPECTED_PASS after
+//   X19 no nested $transaction from transaction-bound pricing                          -> EXPECTED_PASS (stays)
+//   X20 completeSale/payments/cancellation/cash keep 30000 (static)                    -> SOURCE_ONLY / EXPECTED_UNCHANGED
+//   X21 real Serializable/timeout enforcement, real P2028 rollback                     -> NOT_EXECUTED_DB_REQUIRED
+describe('D5I-B2B1 — transaction-bound pricing and owner-approved timeouts', () => {
+  const PRICING = new Set<PropertyKey>(['company', 'companyPricingConfig']);
+
+  function probed() {
+    const t = setup();
+    const base = t.db.client as Record<PropertyKey, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+    const probe = {
+      depth: 0, outerReadsInTx: 0, outerReadsOutsideTx: 0, txReads: 0, nested: 0,
+      options: [] as Array<Record<string, unknown> | undefined>, failures: [] as unknown[],
+    };
+    const counting = (delegate: any, onRead: () => void) => // eslint-disable-line @typescript-eslint/no-explicit-any
+      new Proxy(delegate, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? (...args: unknown[]) => { onRead(); return value(...args); } : value;
+        },
+      });
+    const tx = new Proxy(base, {
+      get(target, prop) {
+        if (prop === '$transaction') return () => { probe.nested += 1; throw new Error('NESTED_TRANSACTION'); };
+        return PRICING.has(prop) ? counting(target[prop], () => { probe.txReads += 1; }) : target[prop];
+      },
+    });
+    const outer = new Proxy(base, {
+      get(target, prop) {
+        if (prop === '$transaction') {
+          return async (operation: (client: unknown) => Promise<unknown>, options?: Record<string, unknown>) => {
+            probe.options.push(options);
+            const failure = probe.failures.shift();
+            if (failure !== undefined) throw failure;
+            probe.depth += 1;
+            try { return await target.$transaction(() => operation(tx)); } finally { probe.depth -= 1; }
+          };
+        }
+        if (!PRICING.has(prop)) return target[prop];
+        return counting(target[prop], () => {
+          if (probe.depth > 0) { probe.outerReadsInTx += 1; throw new Error('OUTER_PRICING_READ_IN_TRANSACTION'); }
+          probe.outerReadsOutsideTx += 1;
+        });
+      },
+    });
+    const client = outer as unknown as PrismaClient;
+    const sales = createSalesService(client, { wholesaleVerifier: createWholesaleCodeVerifier(CODE_HASH) });
+    const correction = createPendingCorrectionService(client);
+    const reset = () => { probe.options.length = 0; probe.outerReadsInTx = 0; probe.txReads = 0; probe.nested = 0; };
+    const send = (saleId: string) => sales.sendToCashier(saleId, t.ids.seller, [t.L1]); // probed service
+    return { ...t, probe, sales, correction, reset, send };
+  }
+
+  const only = (options: Array<Record<string, unknown> | undefined>) => {
+    expect(options).toHaveLength(1);
+    return options[0];
+  };
+
+  it('X05 addItem on a NEW line prices through the transaction client, timeout 15000, no maxWait', async () => {
+    const t = probed();
+    const saleId = (await t.sales.createDraftSale(t.reqs.seller, t.ids.seller, t.L1)).id;
+    t.reset();
+    await t.sales.addItem(t.reqs.seller, t.ids.seller, saleId, { variantId: t.V1, quantity: 1n });
+    expect(t.probe.outerReadsInTx).toBe(0);
+    expect(t.probe.txReads).toBeGreaterThanOrEqual(2); // company + companyPricingConfig
+    expect(only(t.probe.options)).toEqual({ timeout: 15000 });
+    expect(t.probe.nested).toBe(0);
+  });
+
+  it('X06 addItem on an EXISTING line reads no pricing, keeps the snapshot, timeout 15000', async () => {
+    const t = probed();
+    const saleId = await t.draft('seller', [[t.V1, 1n]]);
+    t.reset();
+    await t.sales.addItem(t.reqs.seller, t.ids.seller, saleId, { variantId: t.V1, quantity: 1n });
+    expect(t.probe.txReads + t.probe.outerReadsInTx).toBe(0);
+    expect(t.items(saleId)[0]).toMatchObject({ quantity: 2n, unitPrice: 10000n });
+    expect(only(t.probe.options)).toEqual({ timeout: 15000 });
+  });
+
+  it('X07 activateWholesale prices through the transaction client, timeout 15000, no maxWait', async () => {
+    const t = probed();
+    const saleId = await t.draft();
+    t.reset();
+    await t.sales.activateWholesale(t.reqs.seller, t.ids.seller, saleId, CODE);
+    expect(t.probe.outerReadsInTx).toBe(0);
+    expect(t.probe.txReads).toBeGreaterThanOrEqual(2);
+    expect(only(t.probe.options)).toEqual({ timeout: 15000 });
+    expect(t.sale(saleId)).toMatchObject({ pricingMode: 'WHOLESALE' });
+  });
+
+  it('X08 activateWholesale replay (already WHOLESALE) reads no pricing, timeout 15000', async () => {
+    const t = probed();
+    const saleId = await t.draft();
+    await t.sales.activateWholesale(t.reqs.seller, t.ids.seller, saleId, CODE);
+    t.reset();
+    await t.sales.activateWholesale(t.reqs.seller, t.ids.seller, saleId, CODE);
+    expect(t.probe.txReads + t.probe.outerReadsInTx).toBe(0);
+    expect(only(t.probe.options)).toEqual({ timeout: 15000 });
+  });
+
+  it('X09 updatePriceMode prices through the transaction client, timeout 15000, no maxWait', async () => {
+    const t = probed();
+    const saleId = await t.draft();
+    t.reset();
+    await t.sales.updatePriceMode(t.reqs.seller, t.ids.seller, saleId, 'CASH');
+    expect(t.probe.outerReadsInTx).toBe(0);
+    expect(t.probe.txReads).toBeGreaterThanOrEqual(2);
+    expect(only(t.probe.options)).toEqual({ timeout: 15000 });
+    expect(t.sale(saleId)).toMatchObject({ priceMode: 'CASH' });
+  });
+
+  it('X10 updatePriceMode same-mode replay reads no pricing, timeout 15000', async () => {
+    const t = probed();
+    const saleId = await t.draft(); // draft() leaves the sale in LIST
+    t.reset();
+    await t.sales.updatePriceMode(t.reqs.seller, t.ids.seller, saleId, 'LIST');
+    expect(t.probe.txReads + t.probe.outerReadsInTx).toBe(0);
+    expect(only(t.probe.options)).toEqual({ timeout: 15000 });
+  });
+
+  it('X11 pending correction without a new variant prices through tx and keeps Serializable + 30000', async () => {
+    const t = probed();
+    const saleId = await t.draft();
+    await t.send(saleId);
+    t.reset();
+    await t.correction.correctPendingSale(t.reqs.cashier, saleId, { items: [{ variantId: t.V1, quantity: 1n }] });
+    expect(t.probe.outerReadsInTx).toBe(0);
+    expect(only(t.probe.options)).toEqual({ isolationLevel: 'Serializable', timeout: 30000 });
+  });
+
+  it('X12 pending correction with a NEW variant prices through tx and keeps Serializable + 30000, no maxWait', async () => {
+    const t = probed();
+    const saleId = await t.draft();
+    await t.send(saleId);
+    t.reset();
+    await t.correction.correctPendingSale(t.reqs.cashier, saleId, { items: [{ variantId: t.V1, quantity: 1n }, { variantId: t.V3, quantity: 1n }] });
+    expect(t.probe.outerReadsInTx).toBe(0);
+    expect(t.probe.txReads).toBeGreaterThanOrEqual(2);
+    const options = only(t.probe.options);
+    expect(options).toEqual({ isolationLevel: 'Serializable', timeout: 30000 });
+    expect(options).not.toHaveProperty('maxWait');
+    expect(t.items(saleId).find((row) => row.variantId === t.V3)).toMatchObject({ unitPrice: 8000n });
+  });
+
+  it('X13 a pricing failure before any write fails closed and leaves persisted state unchanged during wholesale activation', async () => {
+    const t = probed();
+    const saleId = await t.draft('seller', [[t.V1, 1n], [t.V2, 1n]]); // V2 has no wholesale price
+    const before = serialize(t.db.allTables());
+    t.reset();
+    await expectAppError(t.sales.activateWholesale(t.reqs.seller, t.ids.seller, saleId, CODE), 409, 'WHOLESALE_PRICE_MISSING');
+    expect(serialize(t.db.allTables())).toBe(before);
+    expect(t.probe.outerReadsInTx).toBe(0);
+    expect(t.probe.nested).toBe(0);
+  });
+
+  it('X14 sendToCashier (one variant) is Serializable with timeout 15000 and no maxWait', async () => {
+    const t = probed();
+    const saleId = await t.draft('seller', [[t.V1, 1n]]);
+    t.reset();
+    await t.send(saleId);
+    const options = only(t.probe.options);
+    expect(options).toEqual({ isolationLevel: 'Serializable', timeout: 15000 });
+    expect(options).not.toHaveProperty('maxWait');
+    expect(t.sale(saleId)).toMatchObject({ status: 'PENDING_PAYMENT' });
+  });
+
+  it('X15 sendToCashier (several variants) uses the same options', async () => {
+    const t = probed();
+    const saleId = await t.draft('seller', [[t.V1, 1n], [t.V2, 1n], [t.V3, 1n]]);
+    t.reset();
+    await t.send(saleId);
+    expect(only(t.probe.options)).toEqual({ isolationLevel: 'Serializable', timeout: 15000 });
+  });
+
+  it('X16 a transient serialization failure is retried; every attempt carries the 15000 ceiling', async () => {
+    const t = probed();
+    const saleId = await t.draft('seller', [[t.V1, 1n]]);
+    t.reset();
+    t.probe.failures.push(Object.assign(new Error('write conflict'), { code: 'P2034' }));
+    await t.send(saleId);
+    expect(t.probe.options).toEqual([
+      { isolationLevel: 'Serializable', timeout: 15000 },
+      { isolationLevel: 'Serializable', timeout: 15000 },
+    ]);
+  });
+
+  it('X17 P2028 (transaction timeout) is NOT retried and propagates after one attempt', async () => {
+    const t = probed();
+    const saleId = await t.draft('seller', [[t.V1, 1n]]);
+    t.reset();
+    const timeoutError = Object.assign(new Error('Transaction already closed'), { code: 'P2028' });
+    t.probe.failures.push(timeoutError);
+    await expect(t.send(saleId)).rejects.toBe(timeoutError);
+    expect(t.probe.options).toHaveLength(1);
+    expect(t.sale(saleId)).toMatchObject({ status: 'DRAFT', saleNumber: null });
+  });
+
+  it('X18/X20 static: no maxWait in the sales/reservation/correction services; unrelated 30000 ceilings unchanged', () => {
+    const read = (path: string) => readFileSync(new URL(`../src/modules/${path}`, import.meta.url), 'utf8');
+    for (const file of ['sales/sales.service.ts', 'sales/reservation.service.ts', 'sales/pending-correction.service.ts']) {
+      expect(read(file), file).not.toMatch(/maxWait/);
+    }
+    const retry = read('sales/reservation.service.ts');
+    expect(retry).not.toMatch(/P2028/);
+    expect(read('sales/sales.service.ts').match(/timeout: 15000/g)?.length ?? 0).toBe(3);
+    expect(read('sales/sales.service.ts').match(/timeout: 30000/g)).toHaveLength(1); // completeSale
+    expect(read('sales/pending-correction.service.ts')).toMatch(/isolationLevel: 'Serializable', timeout: 30000/);
+    expect(read('sales/cancellation.service.ts')).toMatch(/timeout: 30000/);
+    expect(read('payments/payments.service.ts')).toMatch(/timeout: 30000/);
+    expect(read('cash/cash.service.ts')).toMatch(/timeout: 30000/);
+  });
+});

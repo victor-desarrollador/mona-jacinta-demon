@@ -151,7 +151,7 @@ export function createPendingCorrectionService(database: PrismaClient) {
       // Block 1: a new line takes the catalog price of the sale's own mode,
       // resolved before any write (a WHOLESALE sale cannot gain a line that
       // has no wholesale price). Existing lines keep their snapshot.
-      const config = await pricing.getSnapshot();
+      const config = await pricing.getSnapshot(tx);
       const newUnitPrices = new Map(newVariants.map((variant) => [variant.id, unitPriceFor(sale.pricingMode, variant, sale.priceMode, config)]));
 
       const inventories = await tx.$queryRaw<LockedInventory[]>`
