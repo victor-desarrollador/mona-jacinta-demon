@@ -26,8 +26,8 @@ import {
 // cannot structurally carry; the fake's behavior is asserted through the
 // recorded calls below, not through the cast.
 //
-// Run DB-free via: npx vitest run --config vitest.nodb.remediation.config.mjs
-// tests/rbac/scope-backfill-batching.test.ts
+// Run DB-free via (repo root): node scripts/dev/safe-nodb-run.mjs
+// api/tests/rbac/scope-backfill-batching.test.ts
 
 type FakeScopeRow = {
   id: string;

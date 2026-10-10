@@ -8,7 +8,9 @@
     "db:restore": "node scripts/database/restore.mjs",
     "demo:reset": "npm --prefix api run db:reset",
     "demo:seed": "npm --prefix api run db:seed",
-    "deps:check": "dependency-cruiser --config dependency-cruiser.config.cjs api/src api/tests api/scripts client/src admin/src scripts/database"
+    "deps:check": "dependency-cruiser --config dependency-cruiser.config.cjs api/src api/tests api/scripts client/src admin/src scripts/database",
+    "tooling:nodb": "node scripts/dev/safe-nodb-run.mjs",
+    "tooling:scope-guard": "node scripts/dev/repo-scope-guard.mjs"
   },
   "devDependencies": {
     "dependency-cruiser": "^18.4.0",
