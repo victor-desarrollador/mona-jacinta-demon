@@ -256,7 +256,7 @@ export function decideInstall(state, markerId) {
 // TEST guard (api/scripts/demo-database.ts) and pilot-marker.mjs --check. Returns
 // { ok: true } or { ok: false, reason } with a fixed, secret-free reason; any other
 // database error is thrown for the caller to report by safe code only.
-const PROOF_BEGIN_SQL = 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY';
+export const PROOF_BEGIN_SQL = 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY';
 const PROOF_TIMEOUT_SQL = ["SET LOCAL lock_timeout = '5s'", "SET LOCAL statement_timeout = '15s'"];
 const PROOF_LOCK_SQL = `LOCK TABLE ${QUALIFIED} IN ACCESS SHARE MODE`;
 // LOCK on an absent marker: undefined_table / invalid_schema_name.
@@ -287,18 +287,34 @@ async function markerVerdict(client, markerId) {
   return { ok: false, reason: decision.action === 'install' ? 'TEST identity marker is not installed' : decision.reason };
 }
 
+const MARKER_ID_PROBLEM = 'pinned marker id is not a canonical version-4 UUID';
+const markerIdProblem = (markerId) => (typeof markerId !== 'string' || !UUID_V4.test(markerId) ? MARKER_ID_PROBLEM : null);
+
+// The same read-only proof, for a caller that ALREADY owns the transaction (the D5H
+// preflight reads the marker and the migration ledger in one snapshot). The caller
+// must have issued PROOF_BEGIN_SQL; this function applies the search_path pin, the
+// timeouts, the ACCESS SHARE lock and the marker verdict, and issues no BEGIN, COMMIT
+// or ROLLBACK and no write. A thrown error propagates unchanged; cleanup is the
+// caller's responsibility.
+export async function proveInstalledMarkerInTransaction(client, markerId) {
+  const problem = markerIdProblem(markerId);
+  if (problem) return { ok: false, reason: problem };
+  return markerVerdict(client, markerId);
+}
+
 // A proof is successful only if the read-only verdict passed AND its ROLLBACK is
 // confirmed: an unconfirmed ROLLBACK means the session state behind the verdict is
 // unknown, so it fails closed. The primary outcome stays authoritative: a thrown
 // proof error is re-thrown and a failed verdict is returned unchanged, whatever
 // happened to the ROLLBACK.
 export async function proveInstalledMarker(client, markerId) {
-  if (typeof markerId !== 'string' || !UUID_V4.test(markerId)) return { ok: false, reason: 'pinned marker id is not a canonical version-4 UUID' };
+  const problem = markerIdProblem(markerId);
+  if (problem) return { ok: false, reason: problem };
   await client.query(PROOF_BEGIN_SQL);
   let verdict;
   let primaryError = null;
   try {
-    verdict = await markerVerdict(client, markerId);
+    verdict = await proveInstalledMarkerInTransaction(client, markerId);
   } catch (err) {
     primaryError = { err };
   }

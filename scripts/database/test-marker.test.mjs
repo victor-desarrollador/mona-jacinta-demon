@@ -688,6 +688,70 @@ test('C13: sequential proofs are independent (a failed cleanup does not taint th
   assert.deepEqual(await proveInstalledMarker(proofClient(), MARKER), { ok: true });
 });
 
+// --- D5H-I1a: the marker proof inside a CALLER-OWNED read-only transaction -----------------
+//
+// The D5H preflight proves the marker AND reads the migration ledger in ONE snapshot, so
+// it needs the exact marker proof without a transaction of its own. The primitive is
+// looked up at run time so each behaviour below fails on its own merits (not on a
+// missing import).
+const TXN_CONTROL = /^\s*(BEGIN|START|COMMIT|END|ROLLBACK|ABORT|SAVEPOINT|RELEASE)\b/i;
+const inTransactionPrimitive = async () => (await import('./test-marker.mjs')).proveInstalledMarkerInTransaction;
+
+test('D5H-I1a: the in-transaction primitive proves the marker without issuing any transaction control', async () => {
+  const prove = await inTransactionPrimitive();
+  assert.equal(typeof prove, 'function', 'proveInstalledMarkerInTransaction must be exported');
+  const client = proofClient();
+  assert.deepEqual(await prove(client, MARKER), { ok: true });
+  assert.deepEqual(client.sql.filter((text) => TXN_CONTROL.test(text)), [], 'the caller owns BEGIN/COMMIT/ROLLBACK');
+  assert.ok(client.sql.some((text) => text.startsWith('SET LOCAL search_path')), 'search_path is still pinned');
+  assert.ok(client.sql.some((text) => text.startsWith('SET LOCAL lock_timeout')), 'timeouts are still applied');
+  assert.ok(client.sql.some((text) => text.startsWith('LOCK TABLE') && text.endsWith('IN ACCESS SHARE MODE')), 'the ACCESS SHARE lock is still taken');
+  assert.ok(client.sql.some((text) => text.startsWith('SELECT environment')), 'the marker row is still read');
+});
+
+test('D5H-I1a: the in-transaction primitive returns a failed verdict unchanged and still issues no ROLLBACK', async () => {
+  const prove = await inTransactionPrimitive();
+  assert.equal(typeof prove, 'function', 'proveInstalledMarkerInTransaction must be exported');
+  const client = proofClient({ rows: [{ environment: 'test', marker_id: OTHER, has_installed_at: true }] });
+  assert.deepEqual(await prove(client, MARKER), { ok: false, reason: 'a different marker id is already installed' });
+  assert.deepEqual(client.sql.filter((text) => TXN_CONTROL.test(text)), []);
+  const absent = proofClient({ lockError: Object.assign(new Error('x'), { code: '42P01' }) });
+  assert.deepEqual(await prove(absent, MARKER), { ok: false, reason: 'TEST identity marker is not installed' });
+  assert.deepEqual(absent.sql.filter((text) => TXN_CONTROL.test(text)), []);
+});
+
+test('D5H-I1a: a thrown proof error propagates unchanged from the in-transaction primitive (the caller decides cleanup)', async () => {
+  const prove = await inTransactionPrimitive();
+  assert.equal(typeof prove, 'function', 'proveInstalledMarkerInTransaction must be exported');
+  const primary = Object.assign(new Error(`permission denied ${PROOF_SECRET_URL}`), { code: '42501' });
+  const client = proofClient({ lockError: primary });
+  await assert.rejects(prove(client, MARKER), (err) => err === primary);
+  assert.deepEqual(client.sql.filter((text) => TXN_CONTROL.test(text)), []);
+});
+
+test('D5H-I1a: a non-canonical marker id is refused before any query by the in-transaction primitive', async () => {
+  const prove = await inTransactionPrimitive();
+  assert.equal(typeof prove, 'function', 'proveInstalledMarkerInTransaction must be exported');
+  for (const bad of [undefined, null, '', MARKER.toUpperCase(), 'not-a-uuid', 42]) {
+    const client = proofClient();
+    assert.deepEqual(await prove(client, bad), { ok: false, reason: 'pinned marker id is not a canonical version-4 UUID' });
+    assert.deepEqual(client.sql, []);
+  }
+});
+
+test('D5H-I1a: proveInstalledMarker is exactly BEGIN + the in-transaction proof + ROLLBACK (external behaviour preserved)', async () => {
+  const prove = await inTransactionPrimitive();
+  assert.equal(typeof prove, 'function', 'proveInstalledMarkerInTransaction must be exported');
+  const inner = proofClient();
+  await prove(inner, MARKER);
+  const owned = proofClient();
+  assert.deepEqual(await proveInstalledMarker(owned, MARKER), { ok: true });
+  assert.deepEqual(owned.sql, ['BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY', ...inner.sql, 'ROLLBACK']);
+  const invalid = proofClient();
+  assert.deepEqual(await proveInstalledMarker(invalid, 'not-a-uuid'), { ok: false, reason: 'pinned marker id is not a canonical version-4 UUID' });
+  assert.deepEqual(invalid.sql, [], 'a malformed id still returns before BEGIN');
+});
+
 // --- installer cleanup: a cleanup failure never replaces an established outcome ---------
 //
 // `cleanupClient` wraps fakeClient with NON-async query/end, so 'throw' is a genuine
