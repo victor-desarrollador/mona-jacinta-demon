@@ -1,7 +1,20 @@
 // TEST-H1: zero-database tests for the TEST identity guard. `pg` and the
 // `.env.development` read are replaced with in-memory fakes, so nothing here can
 // open a socket: every "database" below is a scripted answer keyed by URL.
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// D5H-I1b.1: the D5H gate decision is pinned for the life of the PROCESS (it survives
+// vi.resetModules), so a case about a specific start-up state runs in a child Vitest
+// process started in exactly that state (see the D5H-I1b block at the end). A child gets
+// this variable; a worker that itself STARTED gated cannot host the non-gate cases and
+// hands them to one child instead.
+const CHILD_SUBJECT_VAR = 'MONA_D5H_GUARD_CHILD_SUBJECT';
+const CHILD_SUBJECT = process.env[CHILD_SUBJECT_VAR];
+const STARTED_GATED =
+  CHILD_SUBJECT === undefined && process.env.MONA_D5H_PINNED_TEST_TARGET !== undefined;
+const LAUNCH_TAG = '[launch]';
 
 type Facts = Record<string, unknown> | null;
 type FakeDb = {
@@ -49,6 +62,9 @@ const state = vi.hoisted(() => ({
   onEnd: null as null | (() => void),
   // Task 4: target URL behind each globalSetup cleanup call.
   cleanups: [] as string[],
+  // D5H-I1b: observed reads of the ignored repository file and dotenv loads.
+  envReads: 0,
+  dotenvCalls: 0,
 }));
 
 // Task 4: globalSetup's cleanup is observed, never executed (it would run real
@@ -68,6 +84,7 @@ vi.mock('node:fs', async (importOriginal) => {
   const real = await importOriginal<FsModule>();
   const readFileSync = ((path: unknown, options?: unknown) => {
     if (String(path).endsWith('.env.development')) {
+      state.envReads += 1;
       return options ? state.envText : Buffer.from(state.envText);
     }
     return (real.readFileSync as (p: unknown, o?: unknown) => unknown)(path, options);
@@ -127,6 +144,7 @@ vi.mock('@prisma/adapter-pg', async (importOriginal) => {
 vi.mock('dotenv', async (importOriginal) => {
   const real = await importOriginal<DotenvModule>();
   const config = (() => {
+    state.dotenvCalls += 1;
     Object.assign(process.env, real.parse(state.envText));
     return { parsed: {} };
   }) as unknown as typeof real.config;
@@ -321,13 +339,23 @@ const AMBIENT_TARGET_KEYS = [
   'MONA_TEST_DATABASE_TARGET',
   'LOCAL_TEST_DATABASE_URL',
   'LOCAL_TEST_DATABASE_MARKER_ID',
+  // D5H-I1b: the pinned gate channel is a target-selection control too.
+  'MONA_D5H_PINNED_TEST_TARGET',
 ] as const;
 let ambientTarget: Record<string, string | undefined> = {};
 
-beforeEach(() => {
+beforeEach((context) => {
   ambientTarget = Object.fromEntries(AMBIENT_TARGET_KEYS.map((k) => [k, process.env[k]]));
-  for (const key of AMBIENT_TARGET_KEYS) delete process.env[key];
+  if (STARTED_GATED && !context.task.name.includes(LAUNCH_TAG)) context.skip();
+  // A child keeps the pinned variable it was started with: that start-up state is the
+  // subject of its cases (the cases themselves delete or mutate it where relevant).
+  for (const key of AMBIENT_TARGET_KEYS) {
+    if (CHILD_SUBJECT !== undefined && key === 'MONA_D5H_PINNED_TEST_TARGET') continue;
+    delete process.env[key];
+  }
   vi.resetModules();
+  state.envReads = 0;
+  state.dotenvCalls = 0;
   state.databases.clear();
   state.pools.length = 0;
   state.adapterArgs.length = 0;
@@ -569,6 +597,191 @@ describe('failures are sanitized', () => {
     for (const pool of pools()) expect(pool.ended).toBe(1);
     // A client that failed mid-transaction is destroyed, never returned to the pool.
     for (const pool of pools()) for (const r of pool.released) expect(r).not.toBeNull();
+  });
+
+  // D5H-I1b.1 F02: reading the error code is itself part of the failure path. A code
+  // that cannot be read (throwing getter, throwing Proxy trap) must still produce the
+  // fixed refusal, and a code that occurs in the URL only after case folding is secret-
+  // derived and must not be exposed.
+  const throwingGetter = () =>
+    Object.defineProperty(new Error(`boom ${TEST_URL}`), 'code', {
+      get() {
+        throw new Error(`getter ${TEST_SECRET}`);
+      },
+    });
+  const throwingProxy = () =>
+    new Proxy(new Error(`proxy ${TEST_URL}`), {
+      get(target, key) {
+        if (key === 'code') throw new Error(`trap ${TEST_SECRET}`);
+        return Reflect.get(target, key);
+      },
+    });
+  it.each<[string, () => FakeDb, string]>([
+    ['a throwing code getter at connect', () => markedTest({ connectError: throwingGetter() }), 'connect'],
+    ['a Proxy whose code trap throws at connect', () => markedTest({ connectError: throwingProxy() }), 'connect'],
+    ['a throwing code getter in the identity query', () => markedTest({ failOn: { sql: 'to_regnamespace', error: throwingGetter() } }), 'identity'],
+    ['a Proxy whose code trap throws in the structure query', () => markedTest({ failOn: { sql: 'json_build_object', error: throwingProxy() } }), 'structure'],
+  ])('F02 %s still yields the fixed sanitized refusal', async (_label, db, phase) => {
+    state.databases.set(TEST_URL, db());
+    const error = await failure(await guard());
+    expect(error.name).toBe('TestDatabaseGuardError');
+    expect(error.phase).toBe(phase);
+    expect(error.code).toBe('unexpected');
+    expectSanitized(error);
+    for (const leak of ['boom', 'getter', 'proxy', 'trap']) expect(error.message).not.toContain(leak);
+    for (const pool of pools()) expect(pool.ended).toBe(1);
+  });
+
+  it.each([
+    ['a password fragment', 'SECRE'],
+    ['a project-ref fragment', 'TESTR'],
+  ])('F02 a SQLSTATE-shaped code matching %s only after case folding is not exposed', async (_label, code) => {
+    state.databases.set(TEST_URL, markedTest({ failOn: { sql: 'to_regnamespace', error: Object.assign(new Error('x'), { code }) } }));
+    const error = await failure(await guard());
+    expect(error.phase).toBe('identity');
+    expect(error.code).toBe('unexpected');
+    expect(error.message).not.toContain(code);
+    expectSanitized(error);
+  });
+
+  // D5H-I1b.1 adversarial: other ordinary shapes of an unreadable or secret-derived code.
+  const sanitizedRefusal = (error: Error & Record<string, unknown>, phase: string, code: string | undefined) => {
+    expect(error.name).toBe('TestDatabaseGuardError');
+    expect(error.phase).toBe(phase);
+    expect(error.code).toBe(code);
+    expectSanitized(error);
+    for (const leak of ['boom', 'getter', 'proxy', 'trap', 'revoked']) expect(error.message).not.toContain(leak);
+  };
+
+  it('ADV-A19 a revoked Proxy thrown at connect is a sanitized refusal', async () => {
+    const { proxy, revoke } = Proxy.revocable(new Error(`revoked ${TEST_URL}`), {});
+    revoke();
+    state.databases.set(TEST_URL, markedTest({ connectError: proxy }));
+    sanitizedRefusal(await failure(await guard()), 'connect', 'unexpected');
+  });
+
+  it('ADV-A20 a code getter is read once: a later secret-bearing answer is never consulted', async () => {
+    let reads = 0;
+    const error = Object.defineProperty(new Error('x'), 'code', {
+      get() {
+        reads += 1;
+        return reads === 1 ? '42501' : TEST_SECRET;
+      },
+    });
+    state.databases.set(TEST_URL, markedTest({ failOn: { sql: 'to_regnamespace', error } }));
+    sanitizedRefusal(await failure(await guard()), 'identity', '42501');
+    expect(reads).toBe(1);
+  });
+
+  it.each<[string, unknown]>([
+    ['a String object', new String('42501')],
+    ['a Symbol', Symbol('42501')],
+    ['a number', 42501],
+  ])('ADV-A21/A22 a code that is %s is not coerced', async (_label, code) => {
+    state.databases.set(TEST_URL, markedTest({ failOn: { sql: 'to_regnamespace', error: Object.assign(new Error('x'), { code }) } }));
+    sanitizedRefusal(await failure(await guard()), 'identity', undefined);
+  });
+
+  it('ADV-A23 a thrown function carrying a code is not treated as an error object', async () => {
+    const thrown = Object.assign(() => TEST_URL, { code: 'ECONNREFUSED' });
+    state.databases.set(TEST_URL, markedTest({ connectError: thrown }));
+    sanitizedRefusal(await failure(await guard()), 'connect', undefined);
+  });
+
+  it('ADV-A24 an allowlisted Node code that occurs in the URL only after case folding is not exposed', async () => {
+    const url = TEST_URL.replace('aws-0-test', 'aws-0-test-epipe');
+    standardEnv({ TEST_DATABASE_URL: url });
+    state.databases.set(url, markedTest({ connectError: Object.assign(new Error('x'), { code: 'EPIPE' }) }));
+    sanitizedRefusal(await failure(await guard()), 'connect', 'unexpected');
+  });
+
+  it('ADV-A25 an error whose prototype lookup throws is still a sanitized refusal', async () => {
+    const hostile = new Proxy(new Error(`proxy ${TEST_URL}`), {
+      getPrototypeOf() {
+        throw new Error(`trap ${TEST_SECRET}`);
+      },
+    });
+    state.databases.set(TEST_URL, markedTest({ connectError: hostile }));
+    sanitizedRefusal(await failure(await guard()), 'connect', 'unexpected');
+  });
+
+  it('ADV-A26 a code getter that throws a secret-bearing string is a sanitized refusal', async () => {
+    const error = Object.defineProperty(new Error('x'), 'code', {
+      get() {
+        throw `getter ${TEST_URL}`;
+      },
+    });
+    state.databases.set(TEST_URL, markedTest({ failOn: { sql: 'json_build_object', error } }));
+    sanitizedRefusal(await failure(await guard()), 'structure', 'unexpected');
+  });
+
+  it('ADV-A27 a cleanup failure whose code cannot be read is a sanitized cleanup refusal', async () => {
+    state.endError = Object.defineProperty(new Error(`boom ${TEST_URL}`), 'code', {
+      get() {
+        throw new Error(`getter ${TEST_SECRET}`);
+      },
+    });
+    const error = await failure(await guard());
+    sanitizedRefusal(error, 'cleanup', 'unexpected');
+    expect(error.cleanupFailed).toBe(true);
+  });
+
+  it('ADV-A28 a SQLSTATE-shaped code that matches the pinned marker id after case folding is not exposed', async () => {
+    const code = MARKER.slice(2, 7).toUpperCase();
+    state.databases.set(TEST_URL, markedTest({ failOn: { sql: 'to_regnamespace', error: Object.assign(new Error('x'), { code }) } }));
+    const error = await failure(await guard());
+    sanitizedRefusal(error, 'identity', 'unexpected');
+    expect(error.message).not.toContain(code);
+  });
+
+  // D5H-I1b.1 class C1: classifying a thrown value (instanceof) can itself run hostile
+  // Proxy traps; the failure path must still end in the fixed refusal.
+  const revokedProxy = (text: string) => {
+    const { proxy, revoke } = Proxy.revocable(new Error(`revoked ${text}`), {});
+    revoke();
+    return proxy;
+  };
+  it('C1-a a revoked Proxy thrown by the identity query is a sanitized refusal', async () => {
+    state.databases.set(TEST_URL, markedTest({ failOn: { sql: 'to_regnamespace', error: revokedProxy(TEST_URL) } }));
+    sanitizedRefusal(await failure(await guard()), 'identity', 'unexpected');
+  });
+  it('C1-b a prototype trap that throws a secret-bearing string in the structure query is a sanitized refusal', async () => {
+    const hostile = new Proxy(new Error('x'), {
+      getPrototypeOf() {
+        throw `trap ${TEST_URL}`;
+      },
+    });
+    state.databases.set(TEST_URL, markedTest({ failOn: { sql: 'json_build_object', error: hostile } }));
+    sanitizedRefusal(await failure(await guard()), 'structure', 'unexpected');
+  });
+  it('C1-c a revoked Proxy as the cleanup error is a sanitized cleanup refusal', async () => {
+    state.endError = revokedProxy(TEST_URL);
+    const error = await failure(await guard());
+    sanitizedRefusal(error, 'cleanup', 'unexpected');
+    expect(error.cleanupFailed).toBe(true);
+  });
+  it('C1-d a revoked Proxy from pool.end on the failure path only marks cleanupFailed', async () => {
+    state.endError = revokedProxy(TEST_URL);
+    state.databases.set(TEST_URL, markedTest({ connectError: Object.assign(new Error('x'), { code: 'ECONNREFUSED' }) }));
+    const error = await failure(await guard());
+    sanitizedRefusal(error, 'connect', 'ECONNREFUSED');
+    expect(error.cleanupFailed).toBe(true);
+  });
+  it('C1-f openSeedDatabase(test) with a revoked Proxy at connect is a sanitized refusal', async () => {
+    state.databases.set(TEST_URL, markedTest({ connectError: revokedProxy(TEST_URL) }));
+    const { openSeedDatabase } = await import('../scripts/demo-database.js');
+    sanitizedRefusal(await failure(() => openSeedDatabase('test')), 'connect', 'unexpected');
+  });
+
+  // D5H-I1b.1 class C2: identifiers bound to the target (marker id, gate attempt id) are
+  // secrets for code suppression too; ordinary SQLSTATEs stay visible.
+  it.each([
+    ['the marker tail', MARKER.slice(-12, -7).toUpperCase(), 'unexpected'],
+    ['the marker end', MARKER.slice(-5).toUpperCase(), 'unexpected'],
+    ['nothing (control)', '08006', '08006'],
+  ])('C2 a SQLSTATE-shaped code matching %s', async (_label, code, expected) => {
+    state.databases.set(TEST_URL, markedTest({ failOn: { sql: 'to_regnamespace', error: Object.assign(new Error('x'), { code }) } }));
+    sanitizedRefusal(await failure(await guard()), 'identity', expected);
   });
 
   it('reports a pool cleanup failure after a successful proof as a refusal', async () => {
@@ -2718,4 +2931,725 @@ describe('Task 4 LOCAL_TEST Prisma config contract', () => {
     expect(envReads.filter((name) => name !== 'LOCAL_TEST_DATABASE_URL')).toEqual([]);
     expect(literals.filter((s) => forbiddenNames.includes(s) || /supabase|\.env|ssl/i.test(s))).toEqual([]);
   });
+});
+
+// ---------------------------------------------------------------------------------------
+// D5H-I1b: the pinned, gate-only hosted TEST runtime adapter. A future D5H wrapper reads
+// and validates the hosted TEST configuration once and starts the suite with ONE inherited
+// variable; this process then proves THAT target and never re-reads the mutable repository
+// file. All databases below are scripted fakes keyed by URL; nothing can open a socket.
+//
+// D5H-I1b.1: the gate decision and its subject are pinned for the life of the PROCESS, so
+// vi.resetModules() can no longer move a worker between gate and non-gate. Every case that
+// is about a start-up state is registered with `isolated(subject, ...)` and runs in a child
+// Vitest process started with exactly that subject (null: started without the variable).
+// The child is spawned with a constructed environment (synthetic .invalid URLs, PGHOST
+// 127.0.0.1, PGPORT 1, nothing inherited but PATH), no config file, no setupFiles and no
+// globalSetup, so this file's own pg/fs/dotenv fakes are the only "databases" it can see.
+// ---------------------------------------------------------------------------------------
+describe('D5H-I1b pinned gate-only hosted TEST target', () => {
+  const GATE_VAR = 'MONA_D5H_PINNED_TEST_TARGET';
+  const GATE_SECRET = 'gAtE-SeCrEt-PW';
+  const GATE_REF = 'gaterefddddddddddddd';
+  const GATE_HOST = 'aws-0-gate.pooler.supabase.com';
+  const GATE_URL = `postgresql://postgres.${GATE_REF}:${GATE_SECRET}@${GATE_HOST}:5432/postgres`;
+  const GATE_MARKER = '3f2b8c1e-5d4a-4b6f-8a7c-1d2e3f4a5b6c';
+  const GATE_ATTEMPT = '9c1d2e3f-0a1b-4c2d-9e3f-a1b2c3d4e5f6';
+  const OTHER_REF = 'otherrefeeeeeeeeeeee';
+  const OTHER_SECRET = 'oThEr-SeCrEt-PW';
+  const OTHER_URL = `postgresql://postgres.${OTHER_REF}:${OTHER_SECRET}@${GATE_HOST}:5432/postgres`;
+  const OTHER_MARKER = '4a3b8c1e-5d4a-4b6f-8a7c-1d2e3f4a5b6c';
+  const LOCAL_MARKER = '3cc8a898-33c5-46c8-8c71-560ee5f6cffd';
+  const LOCAL_URL = 'postgresql://mona_local_test:local-secret@127.0.0.1:5432/mona_local_test';
+  const LEAKS = [GATE_SECRET, GATE_REF, GATE_HOST, GATE_URL, GATE_MARKER, GATE_ATTEMPT, `postgres.${GATE_REF}`, OTHER_SECRET, OTHER_REF, OTHER_MARKER];
+
+  const gateRaw = (patch: Record<string, unknown> = {}) =>
+    JSON.stringify({ v: 1, url: GATE_URL, markerId: GATE_MARKER, attemptId: GATE_ATTEMPT, ...patch });
+  const VALID = gateRaw();
+  const OTHER = JSON.stringify({ v: 1, url: OTHER_URL, markerId: OTHER_MARKER, attemptId: GATE_ATTEMPT });
+  // Registers the scripted databases a pinned subject may point at. The subject itself
+  // is the child's start-up environment; nothing here sets the gate variable.
+  function armDb() {
+    state.databases.set(
+      GATE_URL,
+      markedTest({ username: `postgres.${GATE_REF}`, address: '10.0.0.9', rows: [{ ...canonicalRow(), marker_id: GATE_MARKER }] }),
+    );
+    state.databases.set(
+      OTHER_URL,
+      markedTest({ username: `postgres.${OTHER_REF}`, address: '10.0.0.10', rows: [{ ...canonicalRow(), marker_id: OTHER_MARKER }] }),
+    );
+  }
+  const localDb = (): FakeDb => ({ ...unmarked('mona_local_test', '127.0.0.1'), local: { database: 'mona_local_test', user: 'mona_local_test', version: 'PostgreSQL 17.11 (synthetic)', rows: [{ environment: 'local_test', marker_id: LOCAL_MARKER, has_installed_at: true }] } });
+  const urls = () => pools().map((pool) => pool.config.connectionString);
+  const noGateLeak = (error: Error & Record<string, unknown>) => {
+    const everything = [error.message, String(error.stack), JSON.stringify(error), JSON.stringify(Object.getOwnPropertyNames(error).map((k) => String(error[k])))].join('\n');
+    for (const leak of LEAKS) expect(everything).not.toContain(leak);
+  };
+  const demo = () => import('../scripts/demo-database.js');
+
+  type Subject = string | null;
+  const registry = new Map<string, { id: string; subject: Subject; names: string[] }>();
+  // `slot` gives a case its own process even when another case shares its subject.
+  function isolated(subject: Subject, name: string, body: () => Promise<void>, slot = '') {
+    const key = JSON.stringify([subject, slot]);
+    let entry = registry.get(key);
+    if (!entry) {
+      entry = { id: String(registry.size), subject, names: [] };
+      registry.set(key, entry);
+    }
+    const full = `${name} [iso:${entry.id}]`;
+    entry.names.push(full);
+    if (CHILD_SUBJECT !== entry.id) return;
+    it(full, async () => {
+      // The child really started in the state this case is about.
+      expect(process.env[GATE_VAR]).toBe(subject ?? undefined);
+      await body();
+    });
+  }
+
+  isolated(VALID, 'G-01 a valid pinned target is proven INSTEAD of the repository-file target', async () => {
+    armDb();
+    await expect((await guard())()).resolves.toBeUndefined();
+    expect(urls().length).toBeGreaterThan(0);
+    for (const url of urls()) expect(url).toBe(GATE_URL);
+    expect(urls()).not.toContain(TEST_URL);
+    expect(pools().every((pool) => pool.ended === 1)).toBe(true);
+  });
+
+  isolated(VALID, 'G-02 gate mode performs zero .env.development reads, through every hosted entry point', async () => {
+    armDb();
+    await (await guard())();
+    const { openSeedDatabase } = await demo();
+    const db = await openSeedDatabase('test');
+    await db.close();
+    expect(state.envReads).toBe(0);
+  });
+
+  isolated(VALID, 'G-03 setup.ts in gate mode skips dotenv, never reads the file and feeds env.ts only a presence value', async () => {
+    armDb();
+    await import('./setup.js');
+    expect(state.dotenvCalls).toBe(0);
+    expect(state.envReads).toBe(0);
+    for (const url of urls()) expect(url).toBe(GATE_URL);
+    expect(urls().length).toBeGreaterThan(0);
+    expect(process.env.TEST_DATABASE_URL).toBe(GATE_URL);
+    expect(new URL(process.env.DATABASE_URL!).hostname.endsWith('.invalid')).toBe(true);
+    expect(process.env.NODE_ENV).toBe('test');
+  });
+
+  isolated(VALID, 'G-04 the pool and the proof use the canonical reconstructed URL', async () => {
+    armDb();
+    const { openProvenTestPool, testPoolConfig } = await demo();
+    const { pool, target } = await openProvenTestPool(1);
+    await pool.end();
+    expect(target.url).toBe(GATE_URL);
+    expect(target.markerId).toBe(GATE_MARKER);
+    expect(testPoolConfig(target.url, 1).connectionString).toBe(GATE_URL);
+  });
+
+  const refusedAtStartUp = async () => {
+    armDb();
+    const error = await failure(await guard());
+    expect(error.phase).toBe('config');
+    noGateLeak(error);
+    expect(pools()).toHaveLength(0);
+  };
+  for (const [label, raw] of [
+    ['not JSON', 'not json'],
+    ['empty value', ''],
+    ['truncated', gateRaw().slice(0, -3)],
+    ['an array', '[]'],
+    ['null', 'null'],
+    ['a string', JSON.stringify(gateRaw())],
+    ['a number', '1'],
+    ['appended text', `${gateRaw()} `],
+    ['appended garbage', `${gateRaw()}x`],
+    ['a leading BOM', `\ufeff${gateRaw()}`],
+  ] as const) {
+    isolated(raw, `G-05 malformed pinned JSON (${label}) fails before any pool`, refusedAtStartUp);
+  }
+
+  const without = (key: string) => {
+    const o = JSON.parse(gateRaw());
+    delete o[key];
+    return JSON.stringify(o);
+  };
+  for (const [label, raw] of [
+    ['missing v', without('v')],
+    ['missing url', without('url')],
+    ['missing markerId', without('markerId')],
+    ['missing attemptId', without('attemptId')],
+    ['an extra key', gateRaw({ extra: 1 })],
+    ['an extra __proto__ own key', gateRaw().replace('{', '{"__proto__":{"x":1},')],
+    ['an empty object', '{}'],
+  ] as const) {
+    isolated(raw, `G-06 pinned JSON with ${label} fails before any pool`, refusedAtStartUp);
+  }
+
+  for (const [label, raw] of [
+    ['pretty-printed', JSON.stringify(JSON.parse(gateRaw()), null, 2)],
+    ['reordered keys', JSON.stringify({ url: GATE_URL, v: 1, markerId: GATE_MARKER, attemptId: GATE_ATTEMPT })],
+    ['a duplicate key', gateRaw().replace('{"v":1,', '{"v":1,"v":1,')],
+    ['an escaped key spelling', gateRaw().replace('"url"', '"\\u0075rl"')],
+    ['inserted whitespace', gateRaw().replace(':1,', ': 1,')],
+    ['a decimal-point version', gateRaw().replace('"v":1,', '"v":1.0,')],
+  ] as const) {
+    isolated(raw, `G-07 a non-canonical JSON rendering (${label}) is refused`, refusedAtStartUp);
+  }
+
+  for (const [label, url] of [
+    ['the postgres:// spelling of the same target', GATE_URL.replace('postgresql://', 'postgres://')],
+    ['an unnecessarily percent-encoded password', GATE_URL.replace('gAtE-SeCrEt-PW', 'gAtE%2DSeCrEt%2DPW')],
+    ['an upper-case host', GATE_URL.replace(GATE_HOST, GATE_HOST.toUpperCase())],
+    ['a trailing query', `${GATE_URL}?sslmode=disable`],
+    ['an unrelated host class', GATE_URL.replace(GATE_HOST, 'db.example.invalid')],
+    ['a non-5432 port', GATE_URL.replace(':5432/', ':6543/')],
+  ] as const) {
+    isolated(gateRaw({ url }), `G-08 a url that is not the canonical reconstruction (${label}) is refused`, refusedAtStartUp);
+  }
+
+  for (const [label, markerId] of [
+    ['upper-case', GATE_MARKER.toUpperCase()],
+    ['version 1', '3f2b8c1e-5d4a-1b6f-8a7c-1d2e3f4a5b6c'],
+    ['no hyphens', GATE_MARKER.replace(/-/g, '')],
+    ['padded', ` ${GATE_MARKER}`],
+    ['empty', ''],
+    ['a number', 12345],
+    ['null', null],
+  ] as const) {
+    isolated(gateRaw({ markerId }), `G-09 an invalid pinned markerId (${label}) fails before any pool`, refusedAtStartUp);
+  }
+
+  for (const [label, attemptId] of [
+    ['upper-case', GATE_ATTEMPT.toUpperCase()],
+    ['version 1', '9c1d2e3f-0a1b-1c2d-9e3f-a1b2c3d4e5f6'],
+    ['no hyphens', GATE_ATTEMPT.replace(/-/g, '')],
+    ['empty', ''],
+    ['an object', {}],
+    ['the marker id reused', GATE_MARKER + 'x'],
+  ] as const) {
+    isolated(gateRaw({ attemptId }), `G-10 an invalid pinned attemptId (${label}) fails before any pool`, refusedAtStartUp);
+  }
+
+  for (const [label, v] of [['the string "1"', '"1"'], ['2', '2'], ['true', 'true'], ['null', 'null']] as const) {
+    isolated(gateRaw().replace('"v":1', `"v":${v}`), `G-11 a pinned version of ${label} is refused`, refusedAtStartUp);
+  }
+
+  isolated(VALID, 'G-12 gate mode can never select LOCAL_TEST, by selector or by explicit target', async () => {
+    armDb();
+    state.databases.set(LOCAL_URL, localDb());
+    const { resolveAutomatedTestTarget, openSeedDatabase } = await demo();
+    expect(resolveAutomatedTestTarget({})).toBe('test');
+    expect(resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'test' })).toBe('test');
+    expect(() => resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'local' })).toThrow();
+    expect(() => resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'anything' })).toThrow();
+    process.env.MONA_TEST_DATABASE_TARGET = 'local';
+    process.env.LOCAL_TEST_DATABASE_URL = LOCAL_URL;
+    process.env.LOCAL_TEST_DATABASE_MARKER_ID = LOCAL_MARKER;
+    await expect((await guard())()).rejects.toThrow();
+    await expect(openSeedDatabase('local-test')).rejects.toThrow();
+    await expect(openSeedDatabase('automated-test')).rejects.toThrow();
+    expect(urls()).not.toContain(LOCAL_URL);
+  });
+
+  // D5H-I1b.1: deleting or changing the pin after start-up no longer "keeps going" on the
+  // captured target: the process fails closed, and never falls back to the repository file.
+  isolated(VALID, 'G-13 deleting or mutating the pin after start-up fails closed and never redirects', async () => {
+    armDb();
+    const { openProvenTestPool } = await demo();
+    const first = await openProvenTestPool(1);
+    await first.pool.end();
+    expect(first.target.url).toBe(GATE_URL);
+    delete process.env[GATE_VAR];
+    process.env.TEST_DATABASE_URL = DEV_URL;
+    standardEnv({ TEST_DATABASE_URL: DEMO_URL });
+    const deleted = await failure(() => openProvenTestPool(1));
+    expect(deleted.phase).toBe('config');
+    noGateLeak(deleted);
+    process.env[GATE_VAR] = gateRaw({ attemptId: '1d2e3f4a-0a1b-4c2d-9e3f-a1b2c3d4e5f6' });
+    const mutated = await failure(() => openProvenTestPool(1));
+    expect(mutated.phase).toBe('config');
+    noGateLeak(mutated);
+    expect(urls()).toEqual([GATE_URL]);
+    expect(state.envReads).toBe(0);
+  });
+
+  for (const [index, raw] of [gateRaw({ markerId: GATE_MARKER.toUpperCase() }), gateRaw({ attemptId: 'x' }), gateRaw({ url: `${GATE_URL}?x=1` }), `${gateRaw()}${GATE_SECRET}`, gateRaw({ extra: GATE_SECRET })].entries()) {
+    isolated(raw, `G-14 gate refusals never carry the URL, password, host, project ref, marker or attempt id (${index})`, async () => {
+      const { D5H_PINNED_TARGET_VAR } = await demo().then((m) => m as unknown as { D5H_PINNED_TARGET_VAR?: string });
+      expect(D5H_PINNED_TARGET_VAR).toBe(GATE_VAR);
+      armDb();
+      const error = await failure(await guard());
+      noGateLeak(error);
+      const setup = await import('./setup.js').then(() => null, (e: Error & Record<string, unknown>) => e);
+      expect(setup).not.toBeNull();
+      noGateLeak(setup!);
+    });
+  }
+
+  it('G-15 without the gate variable at start-up, hosted TEST keeps reading the repository file exactly as before', async () => {
+    await (await guard())();
+    expect(state.envReads).toBeGreaterThan(0);
+    for (const url of urls()) expect(url).toBe(TEST_URL);
+    const { resolveAutomatedTestTarget } = await demo();
+    expect(resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'local' })).toBe('local');
+  });
+
+  it('G-16 non-gate setup restores the ambient selector and LOCAL_TEST controls after dotenv, so the file cannot switch targets', async () => {
+    state.databases.set(LOCAL_URL, localDb());
+    process.env.MONA_TEST_DATABASE_TARGET = 'local';
+    process.env.LOCAL_TEST_DATABASE_URL = LOCAL_URL;
+    process.env.LOCAL_TEST_DATABASE_MARKER_ID = LOCAL_MARKER;
+    standardEnv({ MONA_TEST_DATABASE_TARGET: 'test', LOCAL_TEST_DATABASE_URL: 'postgresql://evil:evil@127.0.0.1:5432/other', LOCAL_TEST_DATABASE_MARKER_ID: GATE_MARKER });
+    await import('./setup.js');
+    expect(process.env.MONA_TEST_DATABASE_TARGET).toBe('local');
+    expect(process.env.LOCAL_TEST_DATABASE_URL).toBe(LOCAL_URL);
+    expect(process.env.LOCAL_TEST_DATABASE_MARKER_ID).toBe(LOCAL_MARKER);
+    for (const url of urls()) expect(url).toBe(LOCAL_URL);
+    expect(urls().length).toBeGreaterThan(0);
+  });
+
+  it('G-17 non-gate setup does not let the file introduce a selector or LOCAL_TEST variables that were absent', async () => {
+    standardEnv({ MONA_TEST_DATABASE_TARGET: 'local', LOCAL_TEST_DATABASE_URL: LOCAL_URL, LOCAL_TEST_DATABASE_MARKER_ID: LOCAL_MARKER });
+    await import('./setup.js');
+    expect(process.env.MONA_TEST_DATABASE_TARGET).toBeUndefined();
+    expect(process.env.LOCAL_TEST_DATABASE_URL).toBeUndefined();
+    expect(process.env.LOCAL_TEST_DATABASE_MARKER_ID).toBeUndefined();
+    expect(state.dotenvCalls).toBe(1);
+    for (const url of urls()) expect(url).toBe(TEST_URL);
+  });
+
+  it('G-18 .env.development cannot manufacture the gate: the variable is removed again and the file target is used', async () => {
+    standardEnv({ [GATE_VAR]: gateRaw() });
+    armDb();
+    await import('./setup.js');
+    expect(process.env[GATE_VAR]).toBeUndefined();
+    expect(state.envReads).toBeGreaterThan(0);
+    for (const url of urls()) expect(url).toBe(TEST_URL);
+    vi.resetModules();
+    await (await guard())();
+    for (const url of urls()) expect(url).toBe(TEST_URL);
+  });
+
+  isolated(VALID, 'G-19 the marker proof stays mandatory in gate mode: an unmarked pinned target is refused', async () => {
+    state.databases.set(GATE_URL, unmarked(`postgres.${GATE_REF}`, '10.0.0.9'));
+    const unproven = await failure(await guard());
+    expect(unproven.phase).toBe('identity');
+    noGateLeak(unproven);
+    expect(pools().every((pool) => pool.ended === 1)).toBe(true);
+  });
+
+  isolated(gateRaw({ markerId: '1d2e3f4a-5d4a-4b6f-8a7c-1d2e3f4a5b6c' }), 'G-19 the marker proof stays mandatory in gate mode: a wrong-marker pinned target is refused', async () => {
+    armDb();
+    const wrong = await failure(await guard());
+    expect(wrong.phase).toBe('mismatch');
+    noGateLeak(wrong);
+  });
+
+  // D5H-I1b.1 F01: the start-up decision and subject survive module re-evaluation.
+  isolated(VALID, 'F01-1 a gate process whose pin is deleted cannot downgrade through a re-evaluated module', async () => {
+    armDb();
+    state.databases.set(LOCAL_URL, localDb());
+    const before = await demo();
+    expect(() => before.resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'local' })).toThrow();
+    delete process.env[GATE_VAR];
+    vi.resetModules();
+    const after = await demo();
+    expect(() => after.resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'local' })).toThrow();
+    expect(() => after.resolveAutomatedTestTarget({})).toThrow();
+    expect(() => after.readD5hPinnedTarget()).toThrow();
+    process.env.MONA_TEST_DATABASE_TARGET = 'local';
+    process.env.LOCAL_TEST_DATABASE_URL = LOCAL_URL;
+    process.env.LOCAL_TEST_DATABASE_MARKER_ID = LOCAL_MARKER;
+    await expect(after.openSeedDatabase('local-test')).rejects.toThrow();
+    await expect(after.openSeedDatabase('automated-test')).rejects.toThrow();
+    const refused = await failure(() => after.openProvenTestPool(1));
+    expect(refused.phase).toBe('config');
+    noGateLeak(refused);
+    await expect((await guard())()).rejects.toThrow();
+    expect(urls()).toEqual([]);
+    expect(state.envReads).toBe(0);
+  });
+
+  isolated(VALID, 'F01-2 a gate process whose pin is changed cannot be redirected through a re-evaluated module', async () => {
+    armDb();
+    await demo();
+    process.env[GATE_VAR] = OTHER;
+    vi.resetModules();
+    const after = await demo();
+    expect(() => after.readD5hPinnedTarget()).toThrow();
+    const refused = await failure(() => after.openProvenTestPool(1));
+    expect(refused.phase).toBe('config');
+    noGateLeak(refused);
+    await expect((await guard())()).rejects.toThrow();
+    expect(urls()).toEqual([]);
+    expect(state.envReads).toBe(0);
+  });
+
+  isolated(OTHER, 'F01-2 control: the replacement subject is itself a valid pinned target when present at start-up', async () => {
+    armDb();
+    const { openProvenTestPool } = await demo();
+    const { pool, target } = await openProvenTestPool(1);
+    await pool.end();
+    expect(target.url).toBe(OTHER_URL);
+  });
+
+  isolated(null, 'F01-3 a process started without the gate cannot enable it later, even through a re-evaluated module', async () => {
+    armDb();
+    const before = await demo();
+    expect(before.readD5hPinnedTarget()).toBeNull();
+    process.env[GATE_VAR] = VALID;
+    vi.resetModules();
+    const after = await demo();
+    expect(() => after.readD5hPinnedTarget()).toThrow();
+    const refused = await failure(() => after.openProvenTestPool(1));
+    expect(refused.phase).toBe('config');
+    noGateLeak(refused);
+    expect(urls()).toEqual([]);
+  });
+
+  // ---- D5H-I1b.1 adversarial: the process-lifetime store and its interaction with errors ----
+  const PIN_KEY = Symbol.for('mona.d5h.pinnedTestTarget.v1');
+  const globalRecord = globalThis as unknown as Record<symbol, unknown>;
+  const pinnedPool = async () => {
+    const { openProvenTestPool } = await demo();
+    const { pool, target } = await openProvenTestPool(1);
+    await pool.end();
+    return target.url;
+  };
+  const refusedPool = async () => {
+    const { openProvenTestPool } = await demo();
+    const error = await failure(() => openProvenTestPool(1));
+    expect(error.phase).toBe('config');
+    noGateLeak(error);
+  };
+
+  isolated(VALID, 'ADV-A01 the stored pin cannot be deleted, and a re-evaluated module stays gated', async () => {
+    armDb();
+    await demo();
+    expect(() => delete globalRecord[PIN_KEY]).toThrow(TypeError);
+    vi.resetModules();
+    const after = await demo();
+    expect(() => after.resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'local' })).toThrow();
+    expect(await pinnedPool()).toBe(GATE_URL);
+  });
+
+  isolated(VALID, 'ADV-A02 the stored pin cannot be redefined as a non-gate record', async () => {
+    armDb();
+    await demo();
+    const forged = Object.freeze(Object.assign(Object.create(null) as object, { gate: false, raw: undefined }));
+    expect(() => Object.defineProperty(globalThis, PIN_KEY, { value: forged })).toThrow(TypeError);
+    vi.resetModules();
+    expect(await pinnedPool()).toBe(GATE_URL);
+    expect(state.envReads).toBe(0);
+  });
+
+  isolated(VALID, 'ADV-A03 the stored record itself cannot be mutated', async () => {
+    armDb();
+    await demo();
+    const record = globalRecord[PIN_KEY] as Record<string, unknown>;
+    expect(() => {
+      record.gate = false;
+    }).toThrow(TypeError);
+    expect(() => {
+      record.raw = OTHER;
+    }).toThrow(TypeError);
+    vi.resetModules();
+    expect(await pinnedPool()).toBe(GATE_URL);
+  });
+
+  const plant = (descriptor: PropertyDescriptor) => Object.defineProperty(globalThis, PIN_KEY, { configurable: false, enumerable: false, ...descriptor });
+  const nullRecord = (fields: Record<string, unknown>) => Object.freeze(Object.assign(Object.create(null) as object, fields));
+
+  isolated(null, 'ADV-A04 a pre-planted gate record that disagrees with the environment refuses every target', async () => {
+    armDb();
+    plant({ value: nullRecord({ gate: true, raw: OTHER }), writable: false });
+    const mod = await demo();
+    expect(() => mod.readD5hPinnedTarget()).toThrow();
+    await refusedPool();
+    expect(urls()).toEqual([]);
+  }, 'planted-gate');
+
+  isolated(VALID, 'ADV-A05 a pre-planted non-gate record cannot downgrade a gated process', async () => {
+    armDb();
+    plant({ value: nullRecord({ gate: false, raw: undefined }), writable: false });
+    const mod = await demo();
+    expect(() => mod.resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'local' })).toThrow();
+    await refusedPool();
+    expect(urls()).toEqual([]);
+    expect(state.envReads).toBe(0);
+  }, 'planted-nongate');
+
+  for (const [slot, label, descriptor] of [
+    ['planted-accessor', 'an accessor', { get: () => nullRecord({ gate: false, raw: undefined }) }],
+    ['planted-writable', 'a writable record', { value: nullRecord({ gate: false, raw: undefined }), writable: true }],
+    ['planted-proto', 'a record with Object.prototype', { value: Object.freeze({ gate: false, raw: undefined }), writable: false }],
+    ['planted-extra', 'a record with an extra key', { value: nullRecord({ gate: false, raw: undefined, extra: 1 }), writable: false }],
+  ] as const) {
+    isolated(null, `ADV-A06..09 a pre-planted pin that is ${label} is untrusted and refuses every target`, async () => {
+      armDb();
+      plant(descriptor as PropertyDescriptor);
+      const mod = await demo();
+      expect(mod.resolveAutomatedTestTarget({})).toBe('test');
+      expect(() => mod.resolveAutomatedTestTarget({ MONA_TEST_DATABASE_TARGET: 'local' })).toThrow();
+      await refusedPool();
+      expect(urls()).toEqual([]);
+      expect(state.envReads).toBe(0);
+    }, slot);
+  }
+
+  isolated(VALID, 'ADV-A10 repeated re-evaluation keeps the pin; once deleted every later evaluation refuses', async () => {
+    armDb();
+    for (let i = 0; i < 5; i += 1) {
+      vi.resetModules();
+      expect(await pinnedPool()).toBe(GATE_URL);
+    }
+    delete process.env[GATE_VAR];
+    for (let i = 0; i < 3; i += 1) {
+      vi.resetModules();
+      await refusedPool();
+    }
+    expect(urls()).toEqual(Array(5).fill(GATE_URL));
+    expect(state.envReads).toBe(0);
+  });
+
+  isolated(VALID, 'ADV-A11 a pin that differs only by trailing whitespace is a different subject', async () => {
+    armDb();
+    await demo();
+    process.env[GATE_VAR] = `${VALID} `;
+    vi.resetModules();
+    await refusedPool();
+    process.env[GATE_VAR] = VALID;
+    expect(await pinnedPool()).toBe(GATE_URL);
+  });
+
+  isolated(VALID, 'ADV-A12 an emptied pin refuses and never reads the repository file', async () => {
+    armDb();
+    await demo();
+    process.env[GATE_VAR] = '';
+    vi.resetModules();
+    await refusedPool();
+    expect(state.envReads).toBe(0);
+  });
+
+  isolated(VALID, 'ADV-A13 a gated process with a deleted pin cannot open the demo target', async () => {
+    armDb();
+    const { openSeedDatabase } = await demo();
+    delete process.env[GATE_VAR];
+    process.env.NODE_ENV = 'development';
+    await expect(openSeedDatabase('demo')).rejects.toThrow();
+    expect(state.envReads).toBe(0);
+    expect(pools()).toHaveLength(0);
+  });
+
+  isolated(null, 'ADV-A14 a non-gate process that gains a pin cannot open the demo target', async () => {
+    armDb();
+    const { openSeedDatabase } = await demo();
+    process.env[GATE_VAR] = VALID;
+    process.env.NODE_ENV = 'development';
+    await expect(openSeedDatabase('demo')).rejects.toThrow();
+    expect(state.envReads).toBe(0);
+    expect(pools()).toHaveLength(0);
+  });
+
+  isolated(null, 'ADV-A15 a non-gate process that gains a pin cannot open LOCAL_TEST', async () => {
+    armDb();
+    state.databases.set(LOCAL_URL, localDb());
+    const { openProvenLocalTestPool } = await demo();
+    process.env[GATE_VAR] = VALID;
+    const error = await failure(() => openProvenLocalTestPool(1, { LOCAL_TEST_DATABASE_URL: LOCAL_URL, LOCAL_TEST_DATABASE_MARKER_ID: LOCAL_MARKER }));
+    expect(error.message).toContain('phase=config');
+    noGateLeak(error);
+    expect(urls()).not.toContain(LOCAL_URL);
+  });
+
+  isolated(null, 'ADV-A16 a non-gate process refuses while a late pin is present and resumes the file target once it is gone', async () => {
+    armDb();
+    await demo();
+    process.env[GATE_VAR] = VALID;
+    vi.resetModules();
+    await refusedPool();
+    delete process.env[GATE_VAR];
+    vi.resetModules();
+    expect(await pinnedPool()).toBe(TEST_URL);
+    expect(urls()).not.toContain(GATE_URL);
+  });
+
+  isolated(VALID, 'ADV-A17 setup.ts in a gated process whose pin was deleted refuses and never falls back to dotenv', async () => {
+    armDb();
+    await demo();
+    delete process.env[GATE_VAR];
+    vi.resetModules();
+    const setup = await import('./setup.js').then(() => null, (e: Error & Record<string, unknown>) => e);
+    expect(setup).not.toBeNull();
+    noGateLeak(setup!);
+    expect(state.dotenvCalls).toBe(0);
+    expect(state.envReads).toBe(0);
+  });
+
+  isolated(VALID, 'ADV-A18 the stored pin is a non-writable, non-configurable, non-enumerable frozen record', async () => {
+    await demo();
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, PIN_KEY)!;
+    expect(descriptor.writable).toBe(false);
+    expect(descriptor.configurable).toBe(false);
+    expect(descriptor.enumerable).toBe(false);
+    expect(Object.isFrozen(descriptor.value)).toBe(true);
+    expect(Object.keys(globalThis)).not.toContain(String(PIN_KEY));
+  });
+
+  isolated(VALID, 'ADV-A29 gate-mode connect errors: an unreadable code and a code matching the attempt id are not exposed', async () => {
+    armDb();
+    state.databases.set(GATE_URL, markedTest({ connectError: Object.defineProperty(new Error(`boom ${GATE_URL}`), 'code', { get() { throw new Error(GATE_SECRET); } }) }));
+    const unreadable = await failure(await guard());
+    expect(unreadable.phase).toBe('connect');
+    expect(unreadable.code).toBe('unexpected');
+    noGateLeak(unreadable);
+    vi.resetModules();
+    state.databases.set(GATE_URL, markedTest({ connectError: Object.assign(new Error('x'), { code: GATE_ATTEMPT.slice(0, 5).toUpperCase() }) }));
+    const attempt = await failure(await guard());
+    expect(attempt.code).toBe('unexpected');
+    noGateLeak(attempt);
+  });
+
+  isolated(VALID, 'ADV-A30 gate-mode: a code matching the pinned password only after case folding is not exposed', async () => {
+    armDb();
+    state.databases.set(GATE_URL, markedTest({ rows: [{ ...canonicalRow(), marker_id: GATE_MARKER }], failOn: { sql: 'to_regnamespace', error: Object.assign(new Error('x'), { code: 'SECRE' }) } }));
+    const error = await failure(await guard());
+    expect(error.phase).toBe('identity');
+    expect(error.code).toBe('unexpected');
+    noGateLeak(error);
+  });
+
+  isolated(VALID, 'C1-e gate-mode: a revoked Proxy at connect is a sanitized refusal', async () => {
+    armDb();
+    const { proxy, revoke } = Proxy.revocable(new Error(`revoked ${GATE_URL}`), {});
+    revoke();
+    state.databases.set(GATE_URL, markedTest({ connectError: proxy }));
+    const error = await failure(await guard());
+    expect(error.name).toBe('TestDatabaseGuardError');
+    expect(error.phase).toBe('connect');
+    expect(error.code).toBe('unexpected');
+    noGateLeak(error);
+  });
+
+  for (const [label, code, expected] of [
+    ['the pinned marker id', GATE_MARKER.slice(0, 5).toUpperCase(), 'unexpected'],
+    ['the attempt id at a later offset', GATE_ATTEMPT.slice(-7, -2).toUpperCase(), 'unexpected'],
+    ['nothing (control)', '42P01', '42P01'],
+  ] as const) {
+    isolated(VALID, `C2 gate-mode: a SQLSTATE-shaped code matching ${label}`, async () => {
+      armDb();
+      state.databases.set(GATE_URL, markedTest({ rows: [{ ...canonicalRow(), marker_id: GATE_MARKER }], failOn: { sql: 'to_regnamespace', error: Object.assign(new Error('x'), { code }) } }));
+      const error = await failure(await guard());
+      expect(error.phase).toBe('identity');
+      expect(error.code).toBe(expected);
+      noGateLeak(error);
+    });
+  }
+
+  // ---- launchers: one fresh, contained child process per start-up subject ----
+  type ChildResult = { exit: number | null; passed: string[]; failed: string[] };
+  const API_DIR = fileURLToPath(new URL('..', import.meta.url));
+  const RESULT_PREFIX = 'D5H_I1B1_CHILD_RESULT ';
+  const ISOLATED_URL = 'postgresql://isolated:isolated@child-database-url.invalid:5432/postgres';
+  // Runs this file through the Vitest node API: no config file, no setupFiles, no
+  // globalSetup; only the tests whose full name matches `pattern` execute.
+  const CHILD_RUNNER = `
+import { createRequire } from 'node:module';
+const [file, pattern] = process.argv.slice(1);
+const { startVitest } = await import(createRequire(process.cwd() + '/runner.js').resolve('vitest/node'));
+const vitest = await startVitest('test', [file], {
+  config: false, root: process.cwd(), watch: false, setupFiles: [], globalSetup: [],
+  testNamePattern: pattern, reporters: [{}], testTimeout: 60000,
+});
+const result = { passed: [], failed: [] };
+const walk = (task) => {
+  if (task.type === 'test' && task.result?.state === 'pass') result.passed.push(task.name);
+  if (task.type === 'test' && task.result?.state === 'fail')
+    result.failed.push(task.name + ' :: ' + (task.result.errors ?? []).map((e) => e.message).join(' | '));
+  for (const child of task.tasks ?? []) walk(child);
+};
+for (const tested of vitest.state.getFiles()) {
+  walk(tested);
+  for (const e of tested.result?.errors ?? []) result.failed.push('file :: ' + e.message);
+}
+for (const e of vitest.state.getUnhandledErrors()) result.failed.push('unhandled :: ' + String(e?.message ?? e));
+console.log(${JSON.stringify(RESULT_PREFIX)} + JSON.stringify(result));
+await vitest.close();
+`;
+  function runChild(id: string, subject: Subject, pattern: string): Promise<ChildResult> {
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH ?? '/usr/bin:/bin',
+      NODE_ENV: 'test',
+      PGHOST: '127.0.0.1',
+      PGPORT: '1',
+      DATABASE_URL: ISOLATED_URL,
+      TEST_DATABASE_URL: ISOLATED_URL,
+      [CHILD_SUBJECT_VAR]: id,
+    };
+    if (subject !== null) env[GATE_VAR] = subject;
+    return new Promise((resolve) => {
+      let output = '';
+      const child = spawn(process.execPath, ['--input-type=module', '-e', CHILD_RUNNER, 'tests/test-db-guard.test.ts', pattern], {
+        cwd: API_DIR,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const timer = setTimeout(() => child.kill('SIGKILL'), 150_000);
+      child.stdout.on('data', (chunk) => (output += chunk));
+      child.stderr.on('data', (chunk) => (output += chunk));
+      const settle = (exit: number | null) => {
+        clearTimeout(timer);
+        const line = output.split('\n').find((l) => l.startsWith(RESULT_PREFIX));
+        if (!line) return resolve({ exit, passed: [], failed: [`no child result (exit ${exit}): ${output.slice(-4000)}`] });
+        resolve({ exit, ...(JSON.parse(line.slice(RESULT_PREFIX.length)) as Omit<ChildResult, 'exit'>) });
+      };
+      child.on('error', () => settle(null));
+      child.on('close', settle);
+    });
+  }
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  async function limited<T>(run: () => Promise<T>): Promise<T> {
+    while (active >= 4) await new Promise<void>((wake) => waiting.push(wake));
+    active += 1;
+    try {
+      return await run();
+    } finally {
+      active -= 1;
+      waiting.shift()?.();
+    }
+  }
+  const runs = new Map<string, Promise<ChildResult>>();
+  beforeAll(() => {
+    if (CHILD_SUBJECT !== undefined) return;
+    for (const entry of registry.values()) {
+      runs.set(entry.id, limited(() => runChild(entry.id, entry.subject, `\\[iso:${entry.id}\\]`)));
+    }
+  });
+  for (const entry of registry.values()) {
+    const label = entry.subject === null ? `no gate variable (#${entry.id})` : `pinned subject #${entry.id}`;
+    it.skipIf(CHILD_SUBJECT !== undefined)(`${LAUNCH_TAG} start-up with ${label}: ${entry.names.length} case(s) in a fresh contained process`, async () => {
+      const result = await runs.get(entry.id)!;
+      expect(result.failed).toEqual([]);
+      expect([...result.passed].sort()).toEqual([...entry.names].sort());
+      expect(result.exit).toBe(0);
+    }, 300_000);
+  }
+
+  // A worker that itself started gated (e.g. a D5H gate run whose setup already pinned the
+  // process) skips every non-gate case above and runs them here, in one child that starts
+  // without the variable.
+  it.runIf(STARTED_GATED)(`${LAUNCH_TAG} non-gate cases of this file in a fresh process started without the gate variable`, async (context) => {
+    const expected: string[] = [];
+    const collect = (task: { type: string; name: string; tasks?: unknown[] }) => {
+      if (task.type === 'test' && !/\[(?:iso:\d+|launch)\]/.test(task.name)) expected.push(task.name);
+      for (const child of (task.tasks ?? []) as Array<typeof task>) collect(child);
+    };
+    collect(context.task.file as unknown as { type: string; name: string; tasks?: unknown[] });
+    const result = await runChild('legacy', null, '^(?!.*\\[(?:iso:\\d+|launch)\\])');
+    expect(result.failed).toEqual([]);
+    expect([...result.passed].sort()).toEqual(expected.sort());
+    expect(result.exit).toBe(0);
+  }, 300_000);
 });

@@ -16,6 +16,87 @@ import {
 export const AUTOMATED_TEST_TARGET_VAR = 'MONA_TEST_DATABASE_TARGET';
 export type AutomatedTestTarget = 'test' | 'local';
 
+// D5H-I1b: a D5H gate process is started by the future gate wrapper with ONE inherited
+// variable holding the pinned hosted TEST target (canonical JSON, credential-bearing:
+// never log it, never put it in an error). Gate mode is decided ONCE PER PROCESS, from the
+// variable as it was when this module was first evaluated in the process. This is target
+// PINNING, not identity proof: the marker proof stays mandatory.
+//
+// D5H-I1b.1: the decision and its raw subject live on globalThis as a non-writable,
+// non-configurable property holding a frozen record, so a re-evaluated copy of this module
+// (vi.resetModules, a second loader) adopts the FIRST capture instead of re-reading the
+// variable, and nothing in the process can delete or replace it. Every target decision
+// then requires the variable to still equal the captured subject (absent stays absent): a
+// gate process whose pin was deleted or changed, or a non-gate process that gains one,
+// fails closed. A pre-existing property that is not exactly such a record (or a global
+// that cannot hold one) is never trusted: the process is treated as a gate process with
+// no valid subject, which refuses every target.
+export const D5H_PINNED_TARGET_VAR = 'MONA_D5H_PINNED_TEST_TARGET';
+const D5H_PIN_KEY = Symbol.for('mona.d5h.pinnedTestTarget.v1');
+type D5hStartupPin = Readonly<{ gate: boolean; raw: string | undefined }>;
+const D5H_UNTRUSTED_PIN: D5hStartupPin = Object.freeze({ gate: true, raw: undefined });
+function captureD5hStartupPin(): D5hStartupPin {
+  try {
+    const existing = Object.getOwnPropertyDescriptor(globalThis, D5H_PIN_KEY);
+    if (existing === undefined) {
+      const raw = process.env[D5H_PINNED_TARGET_VAR];
+      const pin: D5hStartupPin = Object.freeze(
+        Object.assign(Object.create(null) as object, { gate: raw !== undefined, raw }),
+      );
+      Object.defineProperty(globalThis, D5H_PIN_KEY, {
+        value: pin,
+        writable: false,
+        configurable: false,
+        enumerable: false,
+      });
+    }
+    const held = Object.getOwnPropertyDescriptor(globalThis, D5H_PIN_KEY);
+    if (!held || !('value' in held) || held.writable || held.configurable) {
+      return D5H_UNTRUSTED_PIN;
+    }
+    const pin = held.value as unknown;
+    if (
+      pin === null ||
+      typeof pin !== 'object' ||
+      Object.getPrototypeOf(pin) !== null ||
+      !Object.isFrozen(pin)
+    ) {
+      return D5H_UNTRUSTED_PIN;
+    }
+    const keys = Reflect.ownKeys(pin);
+    const gate = Object.getOwnPropertyDescriptor(pin, 'gate');
+    const raw = Object.getOwnPropertyDescriptor(pin, 'raw');
+    if (
+      keys.length !== 2 ||
+      !gate ||
+      !raw ||
+      !('value' in gate) ||
+      !('value' in raw) ||
+      typeof gate.value !== 'boolean' ||
+      (raw.value !== undefined && typeof raw.value !== 'string') ||
+      gate.value !== (raw.value !== undefined)
+    ) {
+      return D5H_UNTRUSTED_PIN;
+    }
+    // A local copy of the validated values: later reads never touch the global again.
+    return Object.freeze({ gate: gate.value, raw: raw.value as string | undefined });
+  } catch {
+    return D5H_UNTRUSTED_PIN;
+  }
+}
+const D5H_PIN = captureD5hStartupPin();
+const D5H_GATE_ACTIVE = D5H_PIN.gate;
+const D5H_GATE_REFUSAL =
+  'D5H pinned TEST target is missing or malformed; refusing to proceed';
+// The variable must still be exactly what the process started with (absent stays absent).
+function assertD5hPinUnchanged(): void {
+  if (process.env[D5H_PINNED_TARGET_VAR] !== D5H_PIN.raw) {
+    throw new Error(D5H_GATE_REFUSAL);
+  }
+}
+const D5H_GATE_TARGET_REFUSAL =
+  'A D5H gate process may use hosted TEST only; refusing the requested target';
+
 export const LOCAL_TEST_URL_VAR = 'LOCAL_TEST_DATABASE_URL';
 export const LOCAL_TEST_MARKER_VAR = 'LOCAL_TEST_DATABASE_MARKER_ID';
 export const TEST_SESSION_DIAGNOSTICS_VAR = 'MONA_TEST_SESSION_DIAGNOSTICS';
@@ -297,7 +378,15 @@ export async function proveIdentityOnTransaction(tx: ProtectedTx, expectedMarker
 export function resolveAutomatedTestTarget(
   source: NodeJS.ProcessEnv = process.env,
 ): AutomatedTestTarget {
+  assertD5hPinUnchanged();
   const value = source[AUTOMATED_TEST_TARGET_VAR];
+
+  // D5H gate: the approved gate is not a generic selector. Hosted TEST is the only
+  // possible answer; anything else is refused at this single decision point.
+  if (D5H_GATE_ACTIVE) {
+    if (value === undefined || value === 'test') return 'test';
+    throw new Error(D5H_GATE_TARGET_REFUSAL);
+  }
 
   if (value === undefined || value === 'test') return 'test';
   if (value === 'local') return 'local';
@@ -436,6 +525,7 @@ export async function openSeedDatabase(
   source: NodeJS.ProcessEnv = process.env,
   diagnosticOwner: TestSessionDiagnosticOwner = captureTestSessionDiagnosticOwner('seed'),
 ): Promise<SeedDatabase> {
+  assertD5hPinUnchanged();
   switch (target) {
     case 'automated-test':
       return openSeedDatabase(
@@ -450,8 +540,10 @@ export async function openSeedDatabase(
       // TEST-H1: TEST is proven by its own marker only; DATABASE_URL is never read.
       return openProvenTestDatabase(diagnosticOwner);
     case 'local-test':
+      if (D5H_GATE_ACTIVE) throw new Error(D5H_GATE_TARGET_REFUSAL);
       return openProvenLocalTestDatabase(source);
     case 'demo':
+      if (D5H_GATE_ACTIVE) throw new Error(D5H_GATE_TARGET_REFUSAL);
       if (process.env.NODE_ENV && process.env.NODE_ENV !== 'development') {
         throw new Error('Demo commands require a development environment');
       }
@@ -593,24 +685,130 @@ const SAFE_NODE_CODES = new Set([
 ]);
 
 // A SQLSTATE or an allowlisted Node code; anything else (or anything that also
-// occurs inside the connection URL) collapses to 'unexpected'. Never a message.
+// occurs inside a secret, compared case-insensitively) collapses to 'unexpected'.
+// Never a message. It never throws: `code` is read exactly once, and a throwing
+// getter or Proxy trap (or any other failure here) also yields 'unexpected'.
 function safeCode(error: unknown, secrets: string[]): string | undefined {
-  const code =
-    error !== null && typeof error === 'object'
-      ? (error as { code?: unknown }).code
-      : undefined;
-  if (typeof code !== 'string') return undefined;
-  if (!/^[0-9A-Z]{5}$/.test(code) && !SAFE_NODE_CODES.has(code))
+  try {
+    if (error === null || typeof error !== 'object') return undefined;
+    const code: unknown = Reflect.get(error, 'code');
+    if (typeof code !== 'string') return undefined;
+    if (!/^[0-9A-Z]{5}$/.test(code) && !SAFE_NODE_CODES.has(code))
+      return 'unexpected';
+    const lower = code.toLowerCase();
+    const upper = code.toUpperCase();
+    if (
+      secrets.some(
+        (secret) =>
+          secret.toLowerCase().includes(lower) ||
+          secret.toUpperCase().includes(upper),
+      )
+    )
+      return 'unexpected';
+    return code;
+  } catch {
     return 'unexpected';
-  if (secrets.some((secret) => secret.includes(code))) return 'unexpected';
-  return code;
+  }
 }
 
 type TestTarget = { url: string; markerId: string };
 
+export type D5hPinnedTarget = { url: string; markerId: string; attemptId: string };
+
+// The I1a canonical hosted TEST parser is the single source of truth for the hosted
+// target class (scripts/database/hosted-test-config.mjs: pure, bytes in). It is plain
+// ESM without declarations, so it is loaded synchronously and typed here.
+type HostedTestConfigApi = {
+  parseHostedTestConfig(bytes: Uint8Array):
+    | { ok: true; held: { markerId: string } }
+    | { ok: false };
+  toConnectionString(held: { markerId: string }): string;
+};
+let hostedTestConfigApi: HostedTestConfigApi | undefined;
+function hostedTestConfig(): HostedTestConfigApi {
+  hostedTestConfigApi ??= createRequire(import.meta.url)(
+    '../../scripts/database/hosted-test-config.mjs',
+  ) as HostedTestConfigApi;
+  return hostedTestConfigApi;
+}
+
+let d5hPinnedTarget: D5hPinnedTarget | undefined;
+
+// Returns the validated pinned target in gate mode, null otherwise. Every refusal is the
+// one fixed message: nothing from the variable is ever echoed. The url and the marker are
+// validated by the I1a parser (no second host/user/port/query/encoding/marker rule set),
+// and the url must already BE the parser's canonical reconstruction.
+export function readD5hPinnedTarget(): D5hPinnedTarget | null {
+  assertD5hPinUnchanged();
+  if (!D5H_GATE_ACTIVE) return null;
+  if (d5hPinnedTarget) return d5hPinnedTarget;
+  const refuse = (): never => {
+    throw new Error(D5H_GATE_REFUSAL);
+  };
+  const raw = D5H_PIN.raw;
+  if (typeof raw !== 'string') return refuse();
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return refuse();
+  }
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Object.prototype
+  ) {
+    return refuse();
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.length !== 4 ||
+    !['v', 'url', 'markerId', 'attemptId'].every((key) =>
+      Object.prototype.hasOwnProperty.call(record, key),
+    )
+  ) {
+    return refuse();
+  }
+  const { v, url, markerId, attemptId } = record;
+  if (
+    v !== 1 ||
+    typeof url !== 'string' ||
+    typeof markerId !== 'string' ||
+    typeof attemptId !== 'string' ||
+    !UUID_V4.test(markerId) ||
+    !UUID_V4.test(attemptId)
+  ) {
+    return refuse();
+  }
+  // Exactly one rendering is accepted: fixed key order, no whitespace, no duplicate key.
+  if (raw !== JSON.stringify({ v: 1, url, markerId, attemptId })) return refuse();
+  try {
+    const api = hostedTestConfig();
+    const parsed = api.parseHostedTestConfig(
+      Buffer.from(`TEST_DATABASE_URL=${url}\nTEST_DATABASE_MARKER_ID=${markerId}\n`, 'utf8'),
+    );
+    if (
+      !parsed.ok ||
+      parsed.held.markerId !== markerId ||
+      api.toConnectionString(parsed.held) !== url
+    ) {
+      return refuse();
+    }
+  } catch {
+    return refuse();
+  }
+  d5hPinnedTarget = Object.freeze({ url, markerId, attemptId });
+  return d5hPinnedTarget;
+}
+
 // Reads the ignored repository file (inherited shell URLs cannot redirect TEST).
-// Well-formedness only; identity is proven by proveTestMarker below.
+// Well-formedness only; identity is proven by proveTestMarker below. In a D5H gate
+// process the target comes ONLY from the pinned channel: the file is never opened.
 function readTestTarget(): TestTarget {
+  const pinned = readD5hPinnedTarget();
+  if (pinned) return { url: pinned.url, markerId: pinned.markerId };
   const local = parse(
     readFileSync(new URL('../../.env.development', import.meta.url)),
   );
@@ -759,6 +957,15 @@ type GuardClient = {
 class PhaseFailure {
   constructor(readonly phase: TestGuardPhase) {}
 }
+// `instanceof` can run a hostile Proxy's getPrototypeOf trap or hit a revoked Proxy;
+// a value that cannot even be classified is never one of ours, and reports 'unreadable'.
+function classifyFailure(error: unknown): PhaseFailure | 'foreign' | 'unreadable' {
+  try {
+    return error instanceof PhaseFailure ? error : 'foreign';
+  } catch {
+    return 'unreadable';
+  }
+}
 
 // Runs inside one READ ONLY transaction with search_path pinned to pg_catalog,
 // so no user-defined function/operator/type can be resolved by the proof.
@@ -795,20 +1002,27 @@ export async function openProvenTestPool(
 ): Promise<{ pool: Pool; target: TestTarget; fail: FailFn }> {
   const started = Date.now();
   let secrets: string[] = [];
-  const fail: FailFn = (phase, error, cleanupFailed = false) =>
-    new TestDatabaseGuardError(
+  const fail: FailFn = (phase, error, cleanupFailed = false) => {
+    const kind = classifyFailure(error);
+    return new TestDatabaseGuardError(
       phase,
-      error instanceof PhaseFailure ? undefined : safeCode(error, secrets),
+      kind instanceof PhaseFailure
+        ? undefined
+        : kind === 'unreadable'
+          ? 'unexpected'
+          : safeCode(error, secrets),
       Date.now() - started,
       cleanupFailed,
     );
+  };
   let target: TestTarget;
   try {
     target = readTestTarget();
   } catch {
     throw fail('config', undefined);
   }
-  secrets = [target.url];
+  // The URL and the identifiers bound to it: no code may be a (case-folded) piece of any.
+  secrets = [target.url, target.markerId, ...(d5hPinnedTarget ? [d5hPinnedTarget.attemptId] : [])];
   let phase: TestGuardPhase = 'connect';
   let pool: Pool;
   try {
@@ -833,7 +1047,8 @@ export async function openProvenTestPool(
       if (!released) client.release();
     }
   } catch (error) {
-    const reported = error instanceof PhaseFailure ? error.phase : phase;
+    const kind = classifyFailure(error);
+    const reported = kind instanceof PhaseFailure ? kind.phase : phase;
     const cleanupFailed = await pool.end().then(
       () => false,
       () => true,
@@ -912,6 +1127,8 @@ export async function openProvenLocalTestPool(
     );
   let target: LocalTestTarget;
   try {
+    assertD5hPinUnchanged();
+    if (D5H_GATE_ACTIVE) throw new Error(D5H_GATE_TARGET_REFUSAL);
     assertNoLocalTestPgOptions(source);
     target = readLocalTestTarget(source);
   } catch {
