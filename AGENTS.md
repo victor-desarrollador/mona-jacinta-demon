@@ -209,6 +209,70 @@ Development workflow for any non-trivial change:
     dedicated test harness and guards (`MONA_TEST_DATABASE_TARGET=local`,
     the marker proof, `api/tests/helpers/test-db.ts`).
   - DEV, TEST, DEMO and PILOT are not covered by this decision.
+- **2026-10-11 — OWNER decisions D1–D7: D5H-I1c durable TEST backup design**
+  (explicit OWNER approval of the D5H-I1c read-only preflight recommendations).
+  These are **APPROVED DESIGN only**: nothing is implemented, and neither
+  I1c-a nor I1c-b is authorized by this record — each needs its own owner
+  authorization. Details, evidence and status: Living Blueprint §16
+  "D5H-I1c owner design decisions".
+  - **D1 — target and binding.** The D5H backup takes its hosted TEST target
+    only from the canonical TEST configuration through the I1a parser
+    (`scripts/database/hosted-test-config.mjs`), and must demonstrably bind it
+    to the specific owner-authorized D5H operation and to the TEST subject the
+    later suite expects. Mismatch, missing binding proof, malformed
+    configuration, an ambiguous selector or any fallback fails closed. Never
+    `DATABASE_URL`, `LOCAL_TEST_*`, the legacy DEMO selection or an ambient
+    fallback. The I1b pinned target (`MONA_D5H_PINNED_TEST_TARGET`) is a
+    process-local test-harness mechanism; no cross-process inheritance is
+    assumed — I1c must establish and verify the binding explicitly.
+  - **D2 — identity proof.** The dedicated D5H backup path must prove the
+    expected TEST marker inside a verified read-only transaction, bound to the
+    exact snapshot the dump consumes (a proof on one connection does not prove
+    what a separate `pg_dump` process reached). Identity, transaction
+    confirmation or snapshot binding that cannot be established fails closed.
+  - **D3 — artifact format.** The existing `mona-test-backup/v1` set format is
+    kept unchanged; the durable D5H copy must stay consumable by the existing
+    restore verifier with no change to `scripts/database/restore.mjs`,
+    demonstrated DB-free before any live restore drill.
+  - **D4 — storage.** `OUTSIDE_WORKTREE_SAME_HOST`: an owner-controlled
+    directory outside the current worktree, the main checkout, every sibling
+    worktree or other checkout of this repository, and temporary/ephemeral
+    storage; symlink escapes and unsafe paths are refused. Contract: directory
+    `0700`, files `0600`, exclusive create (no overwrite), safe
+    temporary-to-final publication, file and directory sync, destination
+    re-verification, refusal on any incomplete, ambiguous or unverifiable
+    state. A same-host recovery point, **not** off-machine disaster recovery.
+    No path is fixed by this decision.
+  - **D5 — evidence.** A separate digest-only D5H sidecar (minimum: `setId`,
+    backup SHA-256, `targetDigest`, `markerDigest`); no URL, credential,
+    password, connection string or other sensitive source material. Exact
+    serialization, canonicalization and the I2 binding/verification rules are
+    deferred to the implementation slice; I2 is not implemented.
+  - **D6 — tooling integrity.** D5H execution never resolves `pg_dump` (or
+    `pg_restore` where a later authorized workflow needs it) from an
+    uncontrolled `PATH`: explicitly verified absolute binaries, version
+    compatibility checks, fixed-code refusal when missing, substituted or
+    incompatible. No binary path or PostgreSQL version is assumed here.
+  - **D7 — slices.** I1c is split into **I1c-a** (DB-free: canonical config
+    ingestion, binding contract at the DB-free boundary, destination-root
+    policy, durable exclusive publication, backup-pair verification, a
+    connection-free `--dry-run`) and **I1c-b** (verified TLS, read-only
+    REPEATABLE READ transaction, marker proof, exported snapshot,
+    snapshot-bound `pg_dump`, snapshot-consistent counts without the
+    `count(*)::int` capacity defect, the D5 sidecar; DB-free fakes). Proposed
+    files `scripts/database/d5h-backup.mjs` + `.test.mjs` are proposals, not
+    permission. Each slice needs its own authorization, valid RED/GREEN,
+    independent adversarial cases, Codex review and checkpoint approval.
+  - **Unchanged:** `scripts/database/backup.mjs` (its pre-marker,
+    attestation-only bootstrap TEST path and its legacy DEMO path),
+    `scripts/database/restore.mjs`, `scripts/database/lib.mjs`, the
+    `mona-test-backup/v1` manifest schema, DEV isolation (no D5H path reads
+    `DATABASE_URL` or reaches DEV), and the frozen `docs/production-v1/*`.
+    Nothing is superseded.
+  - **Unverified, each needing its own explicit owner authorization:**
+    snapshot import through the hosted Supabase session pooler, the installed
+    `pg_dump`/`pg_restore` binaries and versions, server-version
+    compatibility, any live backup, and any restore drill of a durable copy.
 - **DEV** must never be reset, backfilled, or otherwise mutated without
   explicit human approval.
 - **PILOT** tooling (marker, migrate, bootstrap, catalog bootstrap) is
