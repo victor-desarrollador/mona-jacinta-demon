@@ -423,6 +423,64 @@ pilot).
   cashier confirmation and raw-code confidentiality; global pricing only for
   the pilot; audit and location-scope requirements.
 
+**2026-10-11 — OWNER decisions C1–C4: pilot target, pilot database, employee
+current accounts, Block A / Block B organization** (explicit owner decisions;
+documentation only — nothing is implemented, deployed or migrated by them).
+Roadmap and status detail: Living Blueprint §1.5 and §23 rows 44–64.
+
+- **C1 — the one-store pilot runs on Production V1.** CONFIRMS the existing
+  pilot definition: the controlled one-store pilot runs the Production V1
+  codebase with the Pilot V1.1 safety overlay (`docs/pilot-v1.1/*`, Blueprint
+  §1.3) and the Pilot Pricing V2 rules above. Demo V2 stays the historical,
+  completed and superseded predecessor (History below); it is **not**
+  reinstated as a pilot or as a second active implementation track on
+  `feat/demo-v2`. The pilot is a controlled validation scenario: it is not
+  evidence that Production V1 is complete, not permission to deploy to a real
+  store and not authorization to touch any database.
+  **Supersedes:** only the recently PROPOSED (never approved) interpretation
+  that Demo V2 would become the active one-store pilot. **Does not supersede:**
+  the Demo V2 history, Pilot V1.1, Pilot Pricing V2, the Production V1
+  authorization design or the frozen requirements.
+- **C2 — the pilot database target is PILOT.** The pilot uses the existing
+  Production V1 PILOT environment and only its repository-defined OWNER-only
+  tooling and safety contracts (Database safety above). DEMO is **not** the
+  pilot target; DEMO and PILOT are never interchangeable, and no pilot
+  operation is ever routed through the legacy Demo V2 database selection. DEV
+  isolation is unchanged. A PILOT configuration existing proves nothing about
+  its readiness, schema, migration state or isolation. Every future PILOT
+  operation still needs the applicable in-process identity proof, Production
+  V1 schema/migration compatibility, the pilot safety gates, explicit owner
+  authorization for that operation, a dry-run where required, and a backup
+  plus human approval if existing rows would be deleted or transformed. No
+  PILOT location, credential or readiness is asserted here.
+- **C3 — employee current accounts (future product scope).** ADDS to the final
+  product vision and future roadmap a distinct bounded capability: employee
+  current accounts for clothing purchases, settled or deducted through salary
+  under approved commercial, payroll and legal rules. It is **not** customer
+  accounts receivable. Status: **OWNER-APPROVED FUTURE SCOPE — NOT IMPLEMENTED
+  — ACCEPTANCE CRITERIA PENDING.** It does **not** rewrite the frozen
+  requirements, does **not** change any frozen MUST/SHOULD priority, does
+  **not** make the module part of a completed Production V1, and is **not**
+  required in the one-store pilot. Its release milestone and contractual
+  priority remain subject to owner approval. No deduction percentage, consent
+  rule, payroll period, accounting entry or legal requirement is decided here.
+- **C4 — Block A / Block B product organization.** The final integrated
+  product is organized into **Block A — Operational / Commercial** and
+  **Block B — Administration, Accounting and ARCA** (scope lists and the
+  mapping to the frozen phase IDs and FR IDs: Blueprint §1.5). The blocks are
+  a product-organization and delivery-planning view: they do **not** replace
+  the frozen phase IDs (0A–10E) or MUST/SHOULD classifications, and they claim
+  no implementation status beyond the Blueprint's verified evidence. Block B
+  capabilities not in the frozen requirements are future scope.
+- **Pricing stages (restated, unchanged).** The pilot keeps one price mode per
+  sale (Pilot Pricing V2). The final product still requires mixed-payment
+  proportional repricing (the "Final product deferred requirement" above); it
+  is not implemented, and its precision, rounding, rate precedence, tender
+  composition, refund and reversal-accounting rules need owner approval.
+- **Not authorized by C1–C4:** any implementation, schema change, database
+  operation (DEV/TEST/LOCAL_TEST/DEMO/PILOT/production), deployment, branch
+  switch, OS change, or work on `feat/demo-v2`.
+
 **Living Blueprint**: `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` is
 the persistent implementation/status/failure/lessons ledger. Read it before
 substantial work; update it after implementation, review, checkpoint, and
