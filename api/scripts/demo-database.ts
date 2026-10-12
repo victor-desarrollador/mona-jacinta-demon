@@ -4,7 +4,7 @@ import { parse } from 'dotenv';
 import { Pool, type ClientConfig, type PoolClient, type PoolConfig } from 'pg';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/generated/prisma/client.js';
-import { attachPoolAttribution } from '../tests/helpers/pool-attribution.js';
+import { attachPoolAttribution } from './pool-attribution.js';
 import {
   LOCAL_TEST_LIVE_FACTS_SQL,
   LOCAL_TEST_MARKER_FACTS_SQL,
@@ -500,7 +500,7 @@ export function captureTestSessionDiagnosticOwner(
 // observable through the current hosted TEST connection path (1053 observer
 // polls, zero matches, worker env and the local pg chain verified). The owner
 // captured here now feeds the pool/PID sidecar attribution implemented in
-// tests/helpers/pool-attribution.ts, which never depends on application_name.
+// scripts/pool-attribution.ts, which never depends on application_name.
 
 export type SeedDatabase = {
   prisma: PrismaClient;
