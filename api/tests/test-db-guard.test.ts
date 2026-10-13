@@ -4,6 +4,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CHILD_PATTERN_VAR, CHILD_RESULT_PREFIX } from './helpers/d5h-guard-child-runner.js';
 
 // D5H-I1b.1: the D5H gate decision is pinned for the life of the PROCESS (it survives
 // vi.resetModules), so a case about a specific start-up state runs in a child Vitest
@@ -3550,33 +3551,12 @@ describe('D5H-I1b pinned gate-only hosted TEST target', () => {
   // ---- launchers: one fresh, contained child process per start-up subject ----
   type ChildResult = { exit: number | null; passed: string[]; failed: string[] };
   const API_DIR = fileURLToPath(new URL('..', import.meta.url));
-  const RESULT_PREFIX = 'D5H_I1B1_CHILD_RESULT ';
+  const RESULT_PREFIX = CHILD_RESULT_PREFIX;
   const ISOLATED_URL = 'postgresql://isolated:isolated@child-database-url.invalid:5432/postgres';
-  // Runs this file through the Vitest node API: no config file, no setupFiles, no
-  // globalSetup; only the tests whose full name matches `pattern` execute.
-  const CHILD_RUNNER = `
-import { createRequire } from 'node:module';
-const [file, pattern] = process.argv.slice(1);
-const { startVitest } = await import(createRequire(process.cwd() + '/runner.js').resolve('vitest/node'));
-const vitest = await startVitest('test', [file], {
-  config: false, root: process.cwd(), watch: false, setupFiles: [], globalSetup: [],
-  testNamePattern: pattern, reporters: [{}], testTimeout: 60000,
-});
-const result = { passed: [], failed: [] };
-const walk = (task) => {
-  if (task.type === 'test' && task.result?.state === 'pass') result.passed.push(task.name);
-  if (task.type === 'test' && task.result?.state === 'fail')
-    result.failed.push(task.name + ' :: ' + (task.result.errors ?? []).map((e) => e.message).join(' | '));
-  for (const child of task.tasks ?? []) walk(child);
-};
-for (const tested of vitest.state.getFiles()) {
-  walk(tested);
-  for (const e of tested.result?.errors ?? []) result.failed.push('file :: ' + e.message);
-}
-for (const e of vitest.state.getUnhandledErrors()) result.failed.push('unhandled :: ' + String(e?.message ?? e));
-console.log(${JSON.stringify(RESULT_PREFIX)} + JSON.stringify(result));
-await vitest.close();
-`;
+  // The child runs this file through tests/helpers/d5h-guard-child-runner.ts (Vitest node
+  // API: no config file, no setupFiles, no globalSetup; only the tests whose full name
+  // matches `pattern` execute). The argv is literal so the Task 4 scanner can prove the
+  // launch; the pattern travels in the child's explicit environment.
   function runChild(id: string, subject: Subject, pattern: string): Promise<ChildResult> {
     const env: NodeJS.ProcessEnv = {
       PATH: process.env.PATH ?? '/usr/bin:/bin',
@@ -3586,11 +3566,13 @@ await vitest.close();
       DATABASE_URL: ISOLATED_URL,
       TEST_DATABASE_URL: ISOLATED_URL,
       [CHILD_SUBJECT_VAR]: id,
+      [CHILD_PATTERN_VAR]: pattern,
     };
     if (subject !== null) env[GATE_VAR] = subject;
     return new Promise((resolve) => {
       let output = '';
-      const child = spawn(process.execPath, ['--input-type=module', '-e', CHILD_RUNNER, 'tests/test-db-guard.test.ts', pattern], {
+      // Literal flag: type stripping is unflagged only from Node 22.18; api/package.json allows >=22.12.
+      const child = spawn(process.execPath, ['--experimental-strip-types', 'tests/helpers/d5h-guard-child-runner.ts', 'tests/test-db-guard.test.ts'], {
         cwd: API_DIR,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
