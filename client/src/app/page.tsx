@@ -1140,25 +1140,46 @@ function CashierWorkspace({
     }
   }, [token, branchId, canViewCashHistory]);
 
+  // The register and the open session are location-bound too: only the latest
+  // read may write them, and never after a branch change. Bumped by every
+  // newer read, by a committed open and by a branch change, so a late answer
+  // (or failure) of an older read is dropped instead of overwriting newer state.
+  const cashStateRequest = useRef(0);
   const refreshCash = useCallback(async () => {
     if (!token || !branchId) return;
+    const request = ++cashStateRequest.current;
+    const epoch = branchEpoch.current;
+    const isLatest = () => request === cashStateRequest.current && epoch === branchEpoch.current;
     const query = new URLSearchParams({ branchId });
     void refreshCashHistory();
-    const currentRegister = await apiRequest<CashRegister>(`/cash/register?${query.toString()}`, token);
-    const currentSession = await apiRequest<CashSession | null>(`/cash/current?${query.toString()}`, token);
-    setRegister(currentRegister);
-    setCashSession(currentSession);
+    try {
+      const currentRegister = await apiRequest<CashRegister>(`/cash/register?${query.toString()}`, token);
+      const currentSession = await apiRequest<CashSession | null>(`/cash/current?${query.toString()}`, token);
+      if (!isLatest()) return;
+      setRegister(currentRegister);
+      setCashSession(currentSession);
+    } catch (cause) {
+      if (!isLatest()) return;
+      throw cause;
+    }
   }, [token, branchId, refreshCashHistory]);
 
+  // Only the latest refresh owns the loading flag and the error banner: a
+  // previous branch's refresh finishing late never re-enables the controls
+  // while the selected branch still loads, nor reports its failure there.
+  const refreshAllRequest = useRef(0);
   const refreshAll = useCallback(async () => {
+    const request = ++refreshAllRequest.current;
+    const epoch = branchEpoch.current;
     setLoading(true);
     setError("");
     try {
       await Promise.all([refreshCash(), refreshQueue()]);
     } catch (cause) {
+      if (request !== refreshAllRequest.current || epoch !== branchEpoch.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo actualizar caja.");
     } finally {
-      setLoading(false);
+      if (request === refreshAllRequest.current && epoch === branchEpoch.current) setLoading(false);
     }
   }, [refreshCash, refreshQueue]);
 
@@ -1207,18 +1228,25 @@ function CashierWorkspace({
 
     setLoading(true);
     setError("");
+    const epoch = branchEpoch.current;
     try {
       const session = await apiRequest<CashSession>("/cash/sessions/open", token, {
         method: "POST",
         body: JSON.stringify({ registerId: register.id, startingCash: amount }),
       });
+      // Opened for the previous branch: never show it as the selected one's.
+      if (epoch !== branchEpoch.current) return;
+      // A read started before this open must not replace the new session.
+      cashStateRequest.current += 1;
       setCashSession(session);
       setCloseResult(null);
       setNotice("Sesión de caja abierta.");
     } catch (cause) {
+      if (epoch !== branchEpoch.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo abrir caja.");
     } finally {
-      setLoading(false);
+      // After a branch change the new branch's refresh owns the loading flag.
+      if (epoch === branchEpoch.current) setLoading(false);
     }
   }
 
@@ -1259,7 +1287,7 @@ function CashierWorkspace({
       if (epoch !== branchEpoch.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo cerrar caja.");
     } finally {
-      setLoading(false);
+      if (epoch === branchEpoch.current) setLoading(false);
     }
   }
 
@@ -1427,6 +1455,12 @@ function CashierWorkspace({
     // answers that belong to the previous branch.
     branchEpoch.current += 1;
     cashHistoryRequest.current += 1;
+    cashStateRequest.current += 1;
+    refreshAllRequest.current += 1;
+    // The previous branch's register and session are never shown (nor
+    // closable) under the new branch while its own state loads.
+    setRegister(null);
+    setCashSession(null);
     setCashHistory([]);
     setCashHistoryFailed(false);
     setCloseResult(null);
