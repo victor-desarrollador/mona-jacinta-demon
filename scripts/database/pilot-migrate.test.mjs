@@ -620,6 +620,7 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
     '20260922210000_d3_initial_stock_and_global_audit',
     '20261002120000_block1_pricing_wholesale',
     '20261006120000_pilot_pricing_v2',
+    '20261012120000_cash_session_reconciliation',
   ]);
   assert.deepEqual([...NAMES].sort(), NAMES);
   assert.equal(new Set(NAMES).size, NAMES.length, 'V11 no duplicate manifest entry');
@@ -731,6 +732,16 @@ const PAYLOAD_MUTATIONS = {
   'V8 Pricing V2 substituted with Block 1 bytes': (api) => cpSync(sqlOf(api, 4), sqlOf(api, 5)),
   'V9 Block 1 migration changed by one byte': (api) => flipByte(sqlOf(api, 4)),
   'V10 extra file inside Pricing V2 directory': (api) => writeFileSync(path.join(migDir(api), NAMES[5], 'down.sql'), 'DROP TABLE x;\n'),
+  'C1 CASH-1 same-size byte mutation': (api) => flipByte(sqlOf(api, 6)),
+  'C2 CASH-1 appended byte': (api) => appendFileSync(sqlOf(api, 6), '\n'),
+  'C3 CASH-1 missing': (api) => rmSync(path.join(migDir(api), NAMES[6]), { recursive: true }),
+  'C4 CASH-1 extra file': (api) => writeFileSync(path.join(migDir(api), NAMES[6], 'down.sql'), 'SELECT 1;\n'),
+  'C5 CASH-1 SQL symlink': (api) => {
+    const copy = path.join(outside('cashsql'), 'migration.sql');
+    cpSync(sqlOf(api, 6), copy);
+    rmSync(sqlOf(api, 6));
+    symlinkSync(copy, sqlOf(api, 6));
+  },
 };
 
 test('H1: every payload deviation fails verification (class: exact tree + fd-pinned digests)', () => {
@@ -778,6 +789,11 @@ const EXPECTED_REASON = {
   'V8 Pricing V2 substituted with Block 1 bytes': /pilot_pricing_v2\/migration\.sql size differs/,
   'V9 Block 1 migration changed by one byte': /block1_pricing_wholesale\/migration\.sql does not match its approved SHA-256/,
   'V10 extra file inside Pricing V2 directory': /pilot_pricing_v2 must contain exactly one regular migration\.sql/,
+  'C1 CASH-1 same-size byte mutation': /cash_session_reconciliation\/migration\.sql does not match its approved SHA-256/,
+  'C2 CASH-1 appended byte': /cash_session_reconciliation\/migration\.sql size differs/,
+  'C3 CASH-1 missing': /does not hold exactly the OWNER-approved migrations/,
+  'C4 CASH-1 extra file': /cash_session_reconciliation must contain exactly one regular migration\.sql/,
+  'C5 CASH-1 SQL symlink': /cash_session_reconciliation must contain exactly one regular migration\.sql/,
 };
 
 test('V13/V12: the Pricing V2 pin is the exact reviewed metadata and the manifest stays a literal (never derived from disk)', () => {
@@ -789,6 +805,13 @@ test('V13/V12: the Pricing V2 pin is the exact reviewed metadata and the manifes
   assert.doesNotMatch(block, /readdir|readFile|createHash|\bglob(Sync)?\b|\bfs\.|process\.|import\(|require\(|\.map\(|\.filter\(/);
   const entries = block.match(/Object\.freeze\(\{ name: '\d{14}_[a-z0-9_]+', bytes: \d+, sha256: '[0-9a-f]{64}' \}\)/g) ?? [];
   assert.equal(entries.length, APPROVED_MIGRATION_PAYLOAD.migrations.length);
+});
+
+test('CASH-1: the seventh pin is the exact reviewed SQL metadata', () => {
+  assert.deepEqual({ ...APPROVED_MIGRATION_PAYLOAD.migrations[6] }, {
+    name: '20261012120000_cash_session_reconciliation', bytes: 390,
+    sha256: 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f',
+  });
 });
 
 test('H1/P17b: a lock with the approved size and a different provider fails the provider check', () => {

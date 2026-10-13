@@ -68,6 +68,9 @@ const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 // 2026-10-06 for exactly the reviewed file below (3282 B, additive only, no DML,
 // ProductVariant.price untouched, no invented cashPrice). Pinning does NOT apply it
 // anywhere. Any byte change needs a fresh OWNER review and a new pin.
+// CASH-1 (20261012120000_cash_session_reconciliation) was OWNER-authorized
+// for this offline pin only: 390 reviewed bytes, additive nullable BIGINT
+// columns. Pinning does not apply the migration to any database.
 export const APPROVED_MIGRATION_PAYLOAD = Object.freeze({
   migrations: Object.freeze([
     Object.freeze({ name: '20260907015311_init', bytes: 17328, sha256: 'a584edab13a2ae540d694578ffa3b5a622decff04e238a5cf16d3040d295e4cb' }),
@@ -76,6 +79,7 @@ export const APPROVED_MIGRATION_PAYLOAD = Object.freeze({
     Object.freeze({ name: '20260922210000_d3_initial_stock_and_global_audit', bytes: 482, sha256: '62b3b169e06a48dc2e2a3f81cee11e02a809b2733db2453c5b9eef91c15f77cf' }),
     Object.freeze({ name: '20261002120000_block1_pricing_wholesale', bytes: 10096, sha256: '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173' }),
     Object.freeze({ name: '20261006120000_pilot_pricing_v2', bytes: 3282, sha256: 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12' }),
+    Object.freeze({ name: '20261012120000_cash_session_reconciliation', bytes: 390, sha256: 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f' }),
   ]),
   lock: Object.freeze({ bytes: 128, sha256: '99836963713b4f5b269ad49af0ed3d7b0b2e336115c2f92dc9ac683d139d0900', provider: 'postgresql' }),
 });

@@ -43,6 +43,7 @@ const APPROVED_MIGRATIONS: ApprovedMigration[] = [
   { name: '20260922210000_d3_initial_stock_and_global_audit', checksum: '62b3b169e06a48dc2e2a3f81cee11e02a809b2733db2453c5b9eef91c15f77cf' },
   { name: '20261002120000_block1_pricing_wholesale', checksum: '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173' },
   { name: '20261006120000_pilot_pricing_v2', checksum: 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12' },
+  { name: '20261012120000_cash_session_reconciliation', checksum: 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f' },
 ];
 
 // inventory/sales validators require UUID branch and variant ids, so those

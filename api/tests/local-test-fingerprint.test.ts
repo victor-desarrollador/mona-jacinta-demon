@@ -156,15 +156,15 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(new Set(variants).size).toBe(variants.length);
   });
 
-  it('AC-150 TYPE_CONTRACT_V3 is the 172-column / 26-relation / 2-jsonb / 10-enum contract and equals an independent derivation from schema.prisma', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(172);
+  it('AC-150 TYPE_CONTRACT_V3 is the 175-column / 26-relation / 2-jsonb / 10-enum contract and equals an independent derivation from schema.prisma', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(175);
     expect(PROTECTED_RELATIONS).toHaveLength(26);
     expect(TYPE_CONTRACT_V3.filter((c) => c.type === 'jsonb')).toHaveLength(2);
     expect(ENUM_TYPES).toHaveLength(10);
     expect(PROTECTED_FUNCTION_NAMES).toHaveLength(3);
     const counts: Record<string, number> = {};
     for (const c of TYPE_CONTRACT_V3) counts[c.type] = (counts[c.type] ?? 0) + 1;
-    expect(counts).toEqual({ text: 102, int4: 9, int8: 21, bool: 5, tstz: 21, enum: 12, jsonb: 2 });
+    expect(counts).toEqual({ text: 102, int4: 9, int8: 24, bool: 5, tstz: 21, enum: 12, jsonb: 2 });
     // relations sorted by raw bytes, attnums contiguous from 1, exactly one PK column set per relation
     expect([...PROTECTED_RELATIONS].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))).toEqual([...PROTECTED_RELATIONS]);
     for (const r of PROTECTED_RELATIONS) {
@@ -195,7 +195,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
         checked += 1;
       }
     }
-    expect(checked).toBe(172 - 8); // every contract column except the 8 Prisma-internal _prisma_migrations columns is a schema.prisma field
+    expect(checked).toBe(175 - 8); // every contract column except the 8 Prisma-internal _prisma_migrations columns is a schema.prisma field
   });
 
   it('AC-150b the migrations the contract was derived from are pinned: a new/changed migration must update the contract and its review', () => {
@@ -205,9 +205,19 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
       '20260907015311_init', '20260912182432_add_company_location', '20260912191702_add_user_role_scope',
       '20260922210000_d3_initial_stock_and_global_audit', '20261002120000_block1_pricing_wholesale',
       '20261006120000_pilot_pricing_v2',
+      '20261012120000_cash_session_reconciliation',
     ]);
     const joined = names.map((n) => `${n}:${sha(readFileSync(path.join(dir, n, 'migration.sql')))}`).join('\n');
-    expect(sha(joined)).toBe('854c37caef36944848b211824a6d5bfc9027d09c0e75904bc60527c37d2f9552');
+    expect(sha(joined)).toBe('cc6a1e212c222e762b21b94e78a45386444460dffbec58556e21022bb684baa2');
+  });
+
+  it('CASH-1 pins the three physical nullable bigint columns after CashSession.status', () => {
+    const cols = TYPE_CONTRACT_V3.filter((c) => c.relation === 'CashSession');
+    expect(cols.slice(8).map((c) => [c.attnum, c.name, c.type, c.formatType, c.notNull, c.hasDefault, c.pk])).toEqual([
+      [9, 'expectedCash', 'int8', 'bigint', false, false, 0],
+      [10, 'countedCash', 'int8', 'bigint', false, false, 0],
+      [11, 'difference', 'int8', 'bigint', false, false, 0],
+    ]);
   });
 
   it('AC-136 SQL NULL, empty string and JSON null encode distinctly and boundary bytes cannot shift framing', () => {
@@ -317,7 +327,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(() => new DigestSink('MID' as never)).toThrow();
   });
 
-  it('AC-144 mutating any single one of the 172 columns changes both digests', () => {
+  it('AC-144 mutating any single one of the 175 columns changes both digests', () => {
     const base = run(buildState());
     let n = 0;
     for (const col of TYPE_CONTRACT_V3) {
@@ -326,7 +336,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
       expect(mutated.POST, `${col.relation}.${col.name} POST`).not.toBe(base.POST);
       n += 1;
     }
-    expect(n).toBe(172);
+    expect(n).toBe(175);
   });
 
   it('AC-145 every header field changes both digests; a wrong search_path or encoding is refused', () => {

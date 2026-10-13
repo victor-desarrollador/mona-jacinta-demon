@@ -13,6 +13,97 @@ const summary = (session: CashSession, branchId: string) => {
   return { sessionId: id, ...fields, branchId };
 };
 
+// CASH-1 (FR-CASH-001): PostgreSQL signed BIGINT bounds. The reconciliation
+// refuses instead of letting any intermediate value wrap or exceed them.
+const MAX_SIGNED_BIGINT = 9223372036854775807n;
+const MIN_SIGNED_BIGINT = -9223372036854775808n;
+
+export type CashReconciliationMovement = { type: string; amount: bigint; salePaymentId: string | null };
+export type CashReconciliationPayment = { id: string; amount: bigint };
+
+export type CashReconciliation =
+  | { ok: true; expectedCash: bigint; difference: bigint }
+  | {
+      ok: false;
+      reason:
+        | 'MISSING_OPENING'
+        | 'DUPLICATE_OPENING'
+        | 'OPENING_AMOUNT_MISMATCH'
+        | 'MOVEMENT_TYPE_NOT_ALLOWED'
+        | 'PAYMENT_MOVEMENT_MISMATCH'
+        | 'AMOUNT_OVERFLOW';
+    };
+
+// CASH-1: the pure, database-free reconciliation of one cash session.
+//
+// expectedCash = startingCash + the net SALE_INCOME movements:
+//   - the OPENING row must exist exactly once and match startingCash — it is
+//     consumed as the base, never summed again (no duplicated opening);
+//   - a CLOSING row is not income and is deliberately excluded;
+//   - MANUAL or any unknown movement type makes the session non-reconcilable
+//     (fail closed);
+//   - every SALE_INCOME movement must map 1:1, by salePaymentId and by NET
+//     amount, to a CASH payment bound to this session — the change (vuelto)
+//     returns to the customer, so the drawer keeps `amount`, never
+//     `receivedAmount`;
+//   - every accumulation is bounds-checked against signed BIGINT.
+// difference = countedCash - expectedCash (positive: sobra; negative: falta).
+export function reconcileCashSession(input: {
+  startingCash: bigint;
+  movements: CashReconciliationMovement[];
+  cashPayments: CashReconciliationPayment[];
+  countedCash: bigint;
+}): CashReconciliation {
+  const openings = input.movements.filter((movement) => movement.type === 'OPENING');
+  if (openings.length === 0) return { ok: false, reason: 'MISSING_OPENING' };
+  if (openings.length > 1) return { ok: false, reason: 'DUPLICATE_OPENING' };
+  if (openings[0]!.amount !== input.startingCash) return { ok: false, reason: 'OPENING_AMOUNT_MISMATCH' };
+
+  let income = 0n;
+  const movementByPaymentId = new Map<string, bigint>();
+  for (const movement of input.movements) {
+    if (movement.type === 'OPENING' || movement.type === 'CLOSING') continue;
+    if (movement.type !== 'SALE_INCOME') return { ok: false, reason: 'MOVEMENT_TYPE_NOT_ALLOWED' };
+    if (movement.salePaymentId === null) return { ok: false, reason: 'PAYMENT_MOVEMENT_MISMATCH' };
+    if (movementByPaymentId.has(movement.salePaymentId)) return { ok: false, reason: 'PAYMENT_MOVEMENT_MISMATCH' };
+    movementByPaymentId.set(movement.salePaymentId, movement.amount);
+    income += movement.amount;
+    if (income > MAX_SIGNED_BIGINT || income < MIN_SIGNED_BIGINT) return { ok: false, reason: 'AMOUNT_OVERFLOW' };
+  }
+
+  const paymentAmounts = new Map(input.cashPayments.map((payment) => [payment.id, payment.amount]));
+  if (paymentAmounts.size !== input.cashPayments.length) return { ok: false, reason: 'PAYMENT_MOVEMENT_MISMATCH' };
+  if (movementByPaymentId.size !== paymentAmounts.size) return { ok: false, reason: 'PAYMENT_MOVEMENT_MISMATCH' };
+  for (const [paymentId, amount] of paymentAmounts) {
+    const movementAmount = movementByPaymentId.get(paymentId);
+    if (movementAmount === undefined || movementAmount !== amount) {
+      return { ok: false, reason: 'PAYMENT_MOVEMENT_MISMATCH' };
+    }
+  }
+
+  const expectedCash = input.startingCash + income;
+  if (expectedCash > MAX_SIGNED_BIGINT || expectedCash < MIN_SIGNED_BIGINT) {
+    return { ok: false, reason: 'AMOUNT_OVERFLOW' };
+  }
+  const difference = input.countedCash - expectedCash;
+  if (difference > MAX_SIGNED_BIGINT || difference < MIN_SIGNED_BIGINT) {
+    return { ok: false, reason: 'AMOUNT_OVERFLOW' };
+  }
+  return { ok: true, expectedCash, difference };
+}
+
+// CASH-1: every reconciliation refusal is a fixed, detail-free 409 — the
+// movement/payment specifics are never exposed through the API.
+function reconciliationRefusal(reason: Extract<CashReconciliation, { ok: false }>['reason']) {
+  if (reason === 'PAYMENT_MOVEMENT_MISMATCH') {
+    return new AppError(409, 'CASH_PAYMENTS_INCONSISTENT', 'Los pagos en efectivo no coinciden con los movimientos de la sesión.');
+  }
+  if (reason === 'AMOUNT_OVERFLOW') {
+    return new AppError(409, 'CASH_AMOUNT_OVERFLOW', 'El importe de caja excede el límite permitido.');
+  }
+  return new AppError(409, 'CASH_RECONCILIATION_INCONSISTENT', 'Los movimientos de la sesión no permiten conciliar el cierre.');
+}
+
 export function createCashService(database: PrismaClient) {
   // Task 1D.5.3's firm decision: GET register/current keep coarse branch
   // membership only — no CASH_VIEW permission exists in the Production
@@ -86,9 +177,34 @@ export function createCashService(database: PrismaClient) {
         const register = await tx.cashRegister.findUniqueOrThrow({ where: { id: locked.registerId } });
         if (!hasPermissionAtLocation(ctx, PRODUCTION_PERMISSIONS.CASH_SESSION_CLOSE, register.branchId)) throw forbidden();
         if (locked.status !== 'OPEN') throw conflict(false);
+        // CASH-1: reconcile before any write. expectedCash comes from the
+        // session's own movements (locked row: startingCash), and the CASH
+        // payments bound to this session are cross-checked 1:1 against the
+        // SALE_INCOME movements, net of change. Both the movements and the
+        // payments are read inside this transaction, under the session row
+        // lock the cash charge also takes (payments.service.ts), so no income
+        // can commit between the lock and this snapshot.
+        const movements = await tx.cashMovement.findMany({
+          where: { sessionId },
+          select: { type: true, amount: true, salePaymentId: true },
+        });
+        const cashPayments = await tx.salePayment.findMany({
+          where: { cashSessionId: sessionId, method: 'CASH' },
+          select: { id: true, amount: true },
+        });
+        const reconciled = reconcileCashSession({
+          startingCash: locked.startingCash,
+          movements,
+          cashPayments,
+          countedCash: closingCash,
+        });
+        if (!reconciled.ok) throw reconciliationRefusal(reconciled.reason);
         const userId = ctx.userId;
         await tx.cashMovement.create({ data: { sessionId, type: 'CLOSING', amount: closingCash, salePaymentId: null, userId } });
-        const session = await tx.cashSession.update({ where: { id: sessionId }, data: { status: 'CLOSED', closedById: userId, closedAt: new Date() } });
+        const session = await tx.cashSession.update({ where: { id: sessionId }, data: {
+          status: 'CLOSED', closedById: userId, closedAt: new Date(),
+          expectedCash: reconciled.expectedCash, countedCash: closingCash, difference: reconciled.difference,
+        } });
         await createAuditLog(tx, {
           userId, branchId: register.branchId, action: 'CASH_SESSION_CLOSED', entityType: 'CashSession', entityId: sessionId,
           before: { status: 'OPEN' },
@@ -96,6 +212,21 @@ export function createCashService(database: PrismaClient) {
         });
         return { ...summary(session, register.branchId), closingCash };
       });
+    },
+    // CASH-1: close history for the register of one authorized location. The
+    // decision is the Production CASH_SESSION_CLOSE grant paired with this
+    // register's own persisted branchId — matching the history route's own
+    // requirePermission(CASH_SESSION_CLOSE) gate. Pre-CASH-1 closes keep the
+    // reconciliation fields NULL and are never presented as reconciled.
+    async listSessions(branchId: string, ctx: Express.AuthContext) {
+      const register = await getRegister(branchId, ctx);
+      if (!hasPermissionAtLocation(ctx, PRODUCTION_PERMISSIONS.CASH_SESSION_CLOSE, register.branchId)) throw forbidden();
+      const sessions = await database.cashSession.findMany({
+        where: { registerId: register.id, status: 'CLOSED' },
+        orderBy: [{ closedAt: 'desc' }, { openedAt: 'desc' }],
+        take: 10,
+      });
+      return sessions.map((session) => summary(session, branchId));
     },
   };
 }

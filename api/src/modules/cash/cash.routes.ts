@@ -15,6 +15,11 @@ export function createCashRouter(database: PrismaClient): Router {
   // hasBranchAccess.
   router.get('/register', validate(cashBranchDto, 'query'), controller.register);
   router.get('/current', validate(cashBranchDto, 'query'), controller.current);
+  // CASH-1: close history, location-authorized. The route gate is the Production
+  // CASH_SESSION_CLOSE grant; cash.service.ts pairs it with the register's own
+  // persisted branchId, so only locations in the caller's effective
+  // UserRoleScope are ever listed.
+  router.get('/sessions', requirePermission(PRODUCTION_PERMISSIONS.CASH_SESSION_CLOSE), validate(cashBranchDto, 'query'), controller.history);
   router.post('/sessions/open', requirePermission(PRODUCTION_PERMISSIONS.CASH_SESSION_OPEN), validate(openCashDto), controller.open);
   router.post('/sessions/:sessionId/close', requirePermission(PRODUCTION_PERMISSIONS.CASH_SESSION_CLOSE), validate(cashSessionParamsDto, 'params'), validate(closeCashDto), controller.close);
   return router;

@@ -36,6 +36,13 @@ const EXPECTED_PINS = [
   ['20261002120000_block1_pricing_wholesale', '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173'],
   ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12'],
 ];
+// Repository-tree compatibility only. D5H v1's operational ledger contract
+// remains the six independent EXPECTED_PINS above.
+const CASH1_TREE_ENTRY = Object.freeze({
+  name: '20261012120000_cash_session_reconciliation',
+  bytes: 390,
+  sha256: 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f',
+});
 const NAMES = EXPECTED_PINS.map(([name]) => name);
 const row = (i, patch = {}) => ({ migration_name: EXPECTED_PINS[i][0], checksum: EXPECTED_PINS[i][1], finished: true, rolled_back: false, ...patch });
 const applied = (n) => Array.from({ length: n }, (_, i) => row(i));
@@ -48,16 +55,57 @@ const noLeak = (value) => {
 
 // --- pins -------------------------------------------------------------------------------
 
-test('the six pinned migrations equal the reviewed list and the bytes on disk (no drift)', () => {
-  assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
-  const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
-  const onDisk = readdirSync(root).filter((name) => name !== 'migration_lock.toml').sort();
-  assert.deepEqual(onDisk, NAMES, 'the migrations directory holds exactly the six reviewed migrations');
+function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSync) {
+  const onDisk = list(root).filter((name) => name !== 'migration_lock.toml').sort();
+  assert.deepEqual(onDisk, [...NAMES, CASH1_TREE_ENTRY.name], 'the migrations directory holds exactly the six D5H pins plus CASH-1');
   for (const [name, sha] of EXPECTED_PINS) {
-    const bytes = readFileSync(path.join(root, name, 'migration.sql'));
+    const bytes = read(path.join(root, name, 'migration.sql'));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), sha, name);
   }
+  const cashSql = read(path.join(root, CASH1_TREE_ENTRY.name, 'migration.sql'));
+  assert.equal(cashSql.length, CASH1_TREE_ENTRY.bytes, CASH1_TREE_ENTRY.name);
+  assert.equal(createHash('sha256').update(cashSql).digest('hex'), CASH1_TREE_ENTRY.sha256, CASH1_TREE_ENTRY.name);
+}
+
+test('D5H v1 keeps six independent pins and verifies the seven-directory tree (no drift)', () => {
+  assert.equal(D5H_MIGRATIONS.length, 6);
+  assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
+  const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
+  assertReviewedMigrationTree(root);
   assert.ok(Object.isFrozen(D5H_MIGRATIONS));
+});
+
+test('the seven-directory drift guard rejects an eighth entry, a rename, a missing entry and changed SQL bytes', () => {
+  const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
+  const names = [...NAMES, CASH1_TREE_ENTRY.name, 'migration_lock.toml'];
+  for (const entries of [
+    [...names, '20270101000000_unapproved'],
+    [...names, 'README.md'],
+    names.filter((name) => name !== CASH1_TREE_ENTRY.name),
+    names.map((name) => name === CASH1_TREE_ENTRY.name ? '20261012120000_cash_session_reconciliations' : name),
+  ]) {
+    assert.throws(() => assertReviewedMigrationTree(root, () => entries), {
+      name: 'AssertionError', message: /the migrations directory holds exactly the six D5H pins plus CASH-1/,
+    });
+  }
+  const changed = (name, transform) => (file) => {
+    const bytes = readFileSync(file);
+    if (file !== path.join(root, name, 'migration.sql')) return bytes;
+    return transform(bytes);
+  };
+  assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(CASH1_TREE_ENTRY.name, (bytes) => {
+    const altered = Buffer.from(bytes);
+    altered[0] ^= 1;
+    return altered;
+  })), { name: 'AssertionError', message: new RegExp(CASH1_TREE_ENTRY.name) });
+  assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(CASH1_TREE_ENTRY.name, (bytes) => bytes.subarray(1))), {
+    name: 'AssertionError', message: new RegExp(CASH1_TREE_ENTRY.name),
+  });
+  assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(NAMES[0], (bytes) => {
+    const altered = Buffer.from(bytes);
+    altered[0] ^= 1;
+    return altered;
+  })), { name: 'AssertionError', message: new RegExp(NAMES[0]) });
 });
 
 test('the expectations are exactly pre-deploy and post-deploy', () => {
@@ -328,6 +376,27 @@ test('post-deploy PASS with six clean migrations, and the ledger query never sel
   for (const s of ledgerSql) {
     assert.ok(!/\blogs\b|applied_steps_count|\*/.test(s), s);
     assert.ok(/^SELECT /.test(s));
+  }
+});
+
+test('D5H v1 post-deploy rejects CASH-1 ledger rows without naming the unexpected migration', async () => {
+  const cashRow = { migration_name: CASH1_TREE_ENTRY.name, checksum: CASH1_TREE_ENTRY.sha256, finished: true, rolled_back: false };
+  const cases = [
+    { rows: [...applied(6), cashRow], unexpected: 1 },
+    { rows: [...applied(6), cashRow, cashRow], unexpected: 2 },
+    { rows: [...applied(6), { ...cashRow, checksum: '0'.repeat(64) }], unexpected: 1 },
+    { rows: [cashRow, ...applied(6)], unexpected: 1 },
+    { rows: [row(1), row(0), ...applied(6).slice(2), cashRow], unexpected: 1 },
+  ];
+  for (const { rows, unexpected } of cases) {
+    const result = await runPreflight({ expectation: 'post-deploy' }, harness({ rows }).deps);
+    assert.equal(result.result, 'FAIL');
+    assert.equal(result.marker, 'PASS');
+    assert.equal(result.migrationHistory.status, 'FAIL');
+    assert.equal(result.migrationHistory.unexpected, unexpected);
+    assert.deepEqual(result.failure, { phase: 'history', code: 'HISTORY_INVALID' });
+    assert.ok(!JSON.stringify(result).includes(CASH1_TREE_ENTRY.name));
+    noLeak(result);
   }
 });
 

@@ -34,8 +34,8 @@ export const PROTECTED_RELATION_NAMES = Object.freeze([
 // `local-test-backup.mjs --verify` still recognises. A generation is the exact ordered (name, sha256) migration set a manifest
 // binds, paired with the exact protected relation set that schema archived. Nothing here is derived from an archive, a
 // manifest or the migrations directory; an unlisted migration set (unknown, future, partial, reordered, altered) has no
-// generation and is refused. G6 is the current contract; adding a migration requires a new reviewed generation here (a test
-// pins G6 to the OWNER-approved migration payload). Backup creation and the resume always use the current contract only.
+// generation and is refused. G7 is the current contract; adding a migration requires a new reviewed generation here (a test
+// pins G7 to the OWNER-approved migration payload). Backup creation and the resume always use the current contract only.
 const pairs = (list) => Object.freeze(list.map((pair) => Object.freeze([...pair])));
 const RELATIONS_G5 = Object.freeze(PROTECTED_RELATION_NAMES.filter((name) => name !== 'CompanyPricingConfig'));
 const MIGRATIONS_G5 = pairs([
@@ -50,6 +50,14 @@ export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([
   Object.freeze({
     id: 'G1-6',
     migrations: pairs([...MIGRATIONS_G5, ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12']]),
+    relations: PROTECTED_RELATION_NAMES,
+  }),
+  Object.freeze({
+    id: 'G1-7',
+    migrations: pairs([...MIGRATIONS_G5,
+      ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12'],
+      ['20261012120000_cash_session_reconciliation', 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f'],
+    ]),
     relations: PROTECTED_RELATION_NAMES,
   }),
 ]);

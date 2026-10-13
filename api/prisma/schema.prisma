@@ -502,6 +502,13 @@ model CashSession {
   closedById   String?
   closedAt     DateTime?         @db.Timestamptz(3)
   startingCash BigInt
+  // CASH-1 (FR-CASH-001): reconciliation of the operational close. Nullable by
+  // design: sessions closed before CASH-1 keep these NULL forever and must
+  // never be presented as reconciled. expectedCash = startingCash + the net
+  // SALE_INCOME movements; difference = countedCash - expectedCash.
+  expectedCash BigInt?
+  countedCash  BigInt?
+  difference   BigInt?
   status       CashSessionStatus @default(OPEN)
   register     CashRegister      @relation(fields: [registerId], references: [id], onDelete: Restrict)
   openedBy     User              @relation("CashSessionOpenedBy", fields: [openedById], references: [id], onDelete: Restrict)

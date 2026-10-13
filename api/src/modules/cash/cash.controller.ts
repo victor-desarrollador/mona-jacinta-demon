@@ -18,5 +18,9 @@ export function createCashController(database: PrismaClient) {
     close: (async (req, res) => {
       sendJson(res, await service.closeSession(String(req.params.sessionId), req.auth!, req.body.closingCash));
     }) as RequestHandler,
+    // CASH-1: close history for one authorized location.
+    history: (async (req, res) => {
+      sendJson(res, await service.listSessions(String(req.query.branchId), req.auth!));
+    }) as RequestHandler,
   };
 }

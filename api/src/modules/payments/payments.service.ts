@@ -116,7 +116,16 @@ export function createPaymentsService(database: PrismaClient) {
       let changeAmount: bigint | null = null;
       if (input.method === 'CASH') {
         const register = await tx.cashRegister.findFirst({ where: { branchId: sale.branchId }, orderBy: { id: 'asc' } });
-        const session = register ? await tx.cashSession.findFirst({ where: { registerId: register.id, status: 'OPEN' } }) : null;
+        // CASH-1: take the same CashSession row lock the reconciliation close
+        // uses (cash.service.ts closes with SELECT ... FOR UPDATE on this
+        // row), so a cash charge and a close can never interleave on one
+        // session. Lock order is Sale -> CashSession on every path that takes
+        // both; the close locks only the session.
+        const [session] = register
+          ? await tx.$queryRaw<{ id: string }[]>`
+              SELECT id FROM "CashSession" WHERE "registerId" = ${register.id} AND "status" = 'OPEN' FOR UPDATE
+            `
+          : [];
         if (!session) throw new AppError(409, 'NO_OPEN_CASH_SESSION', 'No hay una sesión de caja abierta.');
         cashSessionId = session.id;
         changeAmount = input.receivedAmount! - input.amount;

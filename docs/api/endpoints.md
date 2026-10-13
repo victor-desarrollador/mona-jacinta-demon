@@ -90,7 +90,10 @@ Pilot P0.2 contract (see [`../pilot-v1.1/00-pilot-safety-gate.md`](../pilot-v1.1
 | GET | `/api/v1/cash/register?branchId=:branchId` | Authenticated | Get the cash register for a branch. |
 | GET | `/api/v1/cash/current?branchId=:branchId` | Authenticated | Get the current open cash session for a branch, if any. |
 | POST | `/api/v1/cash/sessions/open` | `cash.session.open` | Open a cash session. |
+| GET | `/api/v1/cash/sessions?branchId=:branchId` | `cash.session.close` at the register's location | List the most recent closed cash sessions of the branch register (CASH-1). |
 | POST | `/api/v1/cash/sessions/:sessionId/close` | `cash.session.close` | Close a cash session. |
+
+- **Close history** (`GET /cash/sessions`, CASH-1): the query accepts exactly `branchId` (UUID; any other parameter is `400`). The permission gate runs first: without `cash.session.close` the answer is `403` even for a malformed query. The service then re-checks `CASH_SESSION_CLOSE` at the register's own persisted location, so holding it at another location is still `403`; a branch without a register is `404`. The body is a JSON array (newest close first, at most 10) of `CLOSED` sessions: `sessionId`, `registerId`, `branchId`, `openedById`, `closedById`, `openedAt`, `closedAt`, `startingCash`, `status`, and the reconciliation `expectedCash`, `countedCash`, `difference` (integer centavos as strings; `difference = countedCash − expectedCash`, may be negative). Sessions closed before CASH-1 keep the three reconciliation fields `null`; they are never reconciled and never shown as a zero count.
 
 ## Payments
 

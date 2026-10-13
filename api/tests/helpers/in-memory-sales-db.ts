@@ -249,7 +249,8 @@ export function createInMemorySalesDb() {
   // Raw SQL used by the services: only `SELECT ... FOR UPDATE` row locks.
   async function queryRaw(strings: TemplateStringsArray, ...values: unknown[]): Promise<Row[]> {
     const sql = strings.join('?');
-    rawQueries.push(sql.replace(/\s+/g, ' ').trim());
+    const normalized = sql.replace(/\s+/g, ' ').trim();
+    rawQueries.push(normalized);
     const flat = values.map((value) => (isPlainObject(value) && Array.isArray(value.values) ? value.values : value));
     if (/FROM "Sale"\s/.test(sql)) return rows('sale').filter((row) => row.id === flat[0]).map((row) => ({ ...row }));
     if (/FROM "StockReservation"/.test(sql)) {
@@ -266,6 +267,20 @@ export function createInMemorySalesDb() {
       return rows('saleNumberCounter').filter((row) => row.branchId === flat[0]).map((row) => ({
         ...row, code: (rows('branch').find((branch) => branch.id === row.branchId) ?? {}).code,
       }));
+    }
+    // CASH-1: the payments service locks the register's OPEN cash session
+    // (payments.service.ts and the cash close share this row lock). Exact-form
+    // recognition only: the ONE query the service emits, normalized, compared
+    // as a whole string — bound by registerId (flat[0]) with the OPEN status
+    // as a literal. Any other SQL touching "CashSession" (including the
+    // close's id-keyed lock) stays unsupported, fail-closed.
+    if (
+      normalized ===
+      'SELECT id FROM "CashSession" WHERE "registerId" = ? AND "status" = \'OPEN\' FOR UPDATE'
+    ) {
+      return rows('cashSession')
+        .filter((row) => row.registerId === flat[0] && row.status === 'OPEN')
+        .map((row) => ({ ...row }));
     }
     return unsupported(`raw query: ${sql}`);
   }

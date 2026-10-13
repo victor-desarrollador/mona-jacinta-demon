@@ -58,10 +58,11 @@ const G5_PAIRS = [
   ['20261002120000_block1_pricing_wholesale', '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173'],
 ];
 const G6_PAIRS = [...G5_PAIRS, ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12']];
-const G6_MIGRATIONS = G6_PAIRS.map(([name, sha256]) => ({ name, sha256 }));
+const G7_PAIRS = [...G6_PAIRS, ['20261012120000_cash_session_reconciliation', 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f']];
+const G7_MIGRATIONS = G7_PAIRS.map(([name, sha256]) => ({ name, sha256 }));
 // V2.3.2: a backup binds the current prepare checkpoint, read from <home>/.local/state/...;
 // runs get a real owner-only home holding one current checkpoint for the default payload.
-const DEFAULT_PAYLOAD = Object.freeze({ ok: true, migrations: G6_MIGRATIONS, lock: { provider: 'postgresql', sha256: sha('lock') } });
+const DEFAULT_PAYLOAD = Object.freeze({ ok: true, migrations: G7_MIGRATIONS, lock: { provider: 'postgresql', sha256: sha('lock') } });
 const STORE_POLICY = Object.freeze({ uid: process.getuid(), repoRoot: '/synthetic/repo', forbiddenRoots: ['/synthetic/tmp'] });
 function checkpointedHome({ marker = MARKER, payload = DEFAULT_PAYLOAD, record = true } = {}) {
   const home = mkdtempSync(path.join(os.tmpdir(), 'mona-v232-backup-home-'));
@@ -501,7 +502,7 @@ test('V231-B1 the manifest (v4 since R4) binds the verified migration payload (n
   assert.equal(r.code, 0, r.text);
   const manifest = JSON.parse(readFileSync(path.join(root, runDirs(root)[0], 'local-test.dump.manifest.json'), 'utf8'));
   assert.equal(manifest.format, 'mona-local-test-backup/v4');
-  assert.deepEqual(manifest.migrations, G6_PAIRS);
+  assert.deepEqual(manifest.migrations, G7_PAIRS);
   assert.deepEqual(manifest.lock, { provider: 'postgresql', sha256: sha('lock') });
   assert.equal(manifest.manifestSha256, backup.manifestSelfHash(manifest));
 });
@@ -699,18 +700,18 @@ test('R4 an exporter that refuses (state not POST_BACKFILL, or the catalog chang
 });
 
 // --- HG. historical backup verification: explicit versioned schema generations ------------------------------------
-// Generation 1-5 (migrations through block1) archived 25 protected relations; generation 1-6 (Pricing V2) adds
-// CompanyPricingConfig. --verify must recognise exactly these two, each against its own exact relation set.
+// Generation 1-5 archived 25 protected relations; G1-6 adds CompanyPricingConfig;
+// G1-7 adds nullable CashSession columns and keeps the same 26 relations.
 const G5_RELATIONS = R4_RELATIONS.filter((n) => n !== 'CompanyPricingConfig');
 const HG_ENTRY = /^\d+; \d+ \d+ (TABLE DATA|TABLE|SCHEMA|COMMENT|TYPE|FUNCTION|CONSTRAINT|FK CONSTRAINT|INDEX|TRIGGER) (\S+) (.+) \S+$/;
 const HG_PAYLOAD = (pairs) => ({ ok: true, migrations: pairs.map(([name, sha256]) => ({ name, sha256 })), lock: { provider: 'postgresql', sha256: sha('lock') } });
-const HG_HOME = checkpointedHome({ payload: HG_PAYLOAD(G6_PAIRS) });
+const HG_HOME = checkpointedHome({ payload: HG_PAYLOAD(G7_PAIRS) });
 
 // A finalized run (made by the real tool under the CURRENT contract) whose manifest is re-bound, independently of the code
 // under test, to `pairs` and to the TOC listing `toc`: canonical, re-self-hashed, so only the version contract can refuse it.
-async function hgRun({ pairs = G6_PAIRS, toc = TOC, mutate } = {}) {
+async function hgRun({ pairs = G7_PAIRS, toc = TOC, mutate } = {}) {
   const { root } = scratchRoot();
-  const made = await execute(root, { payload: HG_PAYLOAD(G6_PAIRS), home: HG_HOME });
+  const made = await execute(root, { payload: HG_PAYLOAD(G7_PAIRS), home: HG_HOME });
   assert.equal(made.code, 0, made.text);
   const runDir = path.join(root, runDirs(root)[0]);
   const file = path.join(runDir, 'local-test.dump.manifest.json');
@@ -735,6 +736,12 @@ test('HG01 ALLOW: an exact approved migration-5 archive verifies against the 25-
 });
 
 test('HG02 ALLOW: an exact approved migration-6 archive verifies against the 26-relation generation', async () => {
+  const r = await hgVerify(await hgRun({ pairs: G6_PAIRS }), TOC);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /toc_tables=26/);
+});
+
+test('CASH-1/HG20 ALLOW: an exact migration-7 archive verifies against the 26-relation generation', async () => {
   const r = await hgVerify(await hgRun({}), TOC);
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /toc_tables=26/);
@@ -744,14 +751,18 @@ test('HG03/HG04/HG05/HG06/HG07/HG17 DENY: unknown, future, missing, reordered, w
   const swapped = [G6_PAIRS[1], G6_PAIRS[0], ...G6_PAIRS.slice(2)];
   const wrongDigest = G6_PAIRS.map(([n, s], i) => (i === 4 ? [n, sha('tampered block1')] : [n, s]));
   const wrongPricing = G6_PAIRS.map(([n, s], i) => (i === 5 ? [n, sha('tampered v2')] : [n, s]));
+  const wrongCash = G7_PAIRS.map(([n, s], i) => (i === 6 ? [n, sha('tampered cash')] : [n, s]));
   const cases = {
     unknownSynthetic: [['20260907015311_init', sha('m1')]],
-    futureSeventh: [...G6_PAIRS, ['20261201000000_future', sha('future')]],
+    futureEighth: [...G7_PAIRS, ['20261201000000_future', sha('future')]],
     missingKnown: G6_PAIRS.filter((_, i) => i !== 2),
     onlyFirstFour: G6_PAIRS.slice(0, 4),
     reordered: swapped,
     wrongDigestBlock1: wrongDigest,
     changedPricingPayload: wrongPricing,
+    changedCashPayload: wrongCash,
+    duplicatedCash: [...G7_PAIRS, G7_PAIRS[6]],
+    swappedCashAndPricing: [...G7_PAIRS.slice(0, 5), G7_PAIRS[6], G7_PAIRS[5]],
     empty: [],
   };
   for (const [label, pairs] of Object.entries(cases)) {
@@ -772,6 +783,9 @@ test('HG08/HG09/HG10/HG11/HG14 DENY: relation sets that are not exactly the mani
     ['g6 extra relation', G6_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'ExtraTable'] })],
     ['g5 duplicate relation', G5_PAIRS, r4Toc({ tables: [...G5_RELATIONS, 'Sale'] })],
     ['g6 duplicate relation', G6_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'CompanyPricingConfig'] })],
+    ['g7 missing CashSession', G7_PAIRS, r4Toc({ tables: dropOne(R4_RELATIONS, 'CashSession') })],
+    ['g7 extra relation', G7_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'ExtraTable'] })],
+    ['g7 duplicate CashSession', G7_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'CashSession'] })],
   ];
   for (const [label, pairs, toc] of cases) {
     const r = await hgVerify(await hgRun({ pairs, toc }), toc);
@@ -802,7 +816,7 @@ test('HG15 DENY: the expected relation set is never derived from the archive', (
 
 test('HG18 SCOPE: backup creation and the resume contract still require the current 26 relations', async () => {
   const { root } = scratchRoot();
-  const made = await execute(root, { payload: HG_PAYLOAD(G6_PAIRS), home: HG_HOME, spawn: { pg_restore: { toc: G5_TOC } } });
+  const made = await execute(root, { payload: HG_PAYLOAD(G7_PAIRS), home: HG_HOME, spawn: { pg_restore: { toc: G5_TOC } } });
   assert.equal(made.code, 1);
   assert.equal(runDirs(root).length, 0);
   assert.equal(prepare.checkToc(TOC).ok, true);
@@ -811,18 +825,24 @@ test('HG18 SCOPE: backup creation and the resume contract still require the curr
 test('HG19 the current generation is pinned to the OWNER-approved payload; a new migration needs a new reviewed generation', async () => {
   const witness = await import('./local-test-witness.mjs');
   const { APPROVED_MIGRATION_PAYLOAD } = await import('./pilot-migrate.mjs');
-  const [g5, g6] = witness.BACKUP_SCHEMA_GENERATIONS;
-  assert.deepEqual(witness.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id), ['G1-5', 'G1-6']);
-  assert.deepEqual(g6.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
+  const [g5, g6, g7] = witness.BACKUP_SCHEMA_GENERATIONS;
+  assert.deepEqual(witness.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id), ['G1-5', 'G1-6', 'G1-7']);
+  assert.deepEqual(g7.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
+  assert.deepEqual(g6.migrations, G6_PAIRS);
+  assert.deepEqual(g7.migrations.slice(0, 6), g6.migrations);
   assert.deepEqual(g5.migrations, g6.migrations.slice(0, 5));
   assert.deepEqual(g5.migrations, G5_PAIRS);
   assert.deepEqual([...g6.relations], [...witness.PROTECTED_RELATION_NAMES]);
+  assert.deepEqual([...g7.relations], [...witness.PROTECTED_RELATION_NAMES]);
   assert.deepEqual([...g5.relations], G5_RELATIONS);
   assert.equal(g5.relations.length, 25);
   assert.equal(g6.relations.length, 26);
+  assert.equal(g7.relations.length, 26);
   assert.ok(Object.isFrozen(witness.BACKUP_SCHEMA_GENERATIONS) && Object.isFrozen(g5) && Object.isFrozen(g5.migrations) && Object.isFrozen(g5.relations));
+  assert.ok(Object.isFrozen(g6) && Object.isFrozen(g6.migrations) && Object.isFrozen(g7) && Object.isFrozen(g7.migrations) && Object.isFrozen(g7.relations));
   assert.equal(witness.resolveBackupGeneration(g5.migrations)?.id, 'G1-5');
   assert.equal(witness.resolveBackupGeneration(g6.migrations)?.id, 'G1-6');
+  assert.equal(witness.resolveBackupGeneration(g7.migrations)?.id, 'G1-7');
   assert.equal(witness.resolveBackupGeneration(undefined), null);
   assert.equal(witness.resolveBackupGeneration('G1-6'), null);
 });

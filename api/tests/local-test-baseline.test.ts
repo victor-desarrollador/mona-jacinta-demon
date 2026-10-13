@@ -666,11 +666,14 @@ describe('R4 transformation verifier (seed #2: P → Q, in memory)', () => {
     expect(JSON.stringify([error?.message, error?.stack, Object.getOwnPropertyNames(error as object)])).not.toContain(TCANARY);
     expect((error as { cause?: unknown }).cause).toBeUndefined();
   });
-  it('AC-135 every one of the 172 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(172);
+  it('AC-135 every one of the 175 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(175);
     const categories = new Set(['PRESERVED_FROM_BACKUP', 'CANONICAL_VALUE', 'RECREATED_SEMANTIC_SET', 'ROW_CLASS_RULES', 'PRESERVED_AND_CREATED']);
     for (const c of TYPE_CONTRACT_V3) expect(categories.has(TRANSFORMATION_CATEGORIES[`${c.relation}.${c.name}`] as string), `${c.relation}.${c.name}`).toBe(true);
-    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(172);
+    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(175);
+    for (const name of ['expectedCash', 'countedCash', 'difference']) {
+      expect(TRANSFORMATION_CATEGORIES[`CashSession.${name}`]).toBe('PRESERVED_FROM_BACKUP');
+    }
     expect(TRANSFORMATION_CATEGORIES['ProductVariant.wholesalePrice']).toBe('PRESERVED_FROM_BACKUP');
     // Pilot Pricing V2: the seed writes the retail cash base; owner-managed pricing config is preserved.
     expect(TRANSFORMATION_CATEGORIES['ProductVariant.cashPrice']).toBe('CANONICAL_VALUE');

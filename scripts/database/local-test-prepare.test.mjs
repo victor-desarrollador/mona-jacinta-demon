@@ -1660,7 +1660,7 @@ test('V231-G1 the generic dry-run names the checkpoint action and phases; its ex
   assert.doesNotMatch(r.text, /^  backup evidence:|verify-baseline →|→ verify-baseline/m);
   assert.doesNotMatch(r.text.split('\n').find((l) => l.startsWith('  phases:')), /seed-demo.*seed-demo|verify-baseline/);
   assert.match(r.text, /^  --execute requires --confirm-local-target=\S+ --plan=[0-9a-f]{64}$/m);
-  assert.equal(r.text.split('\n').length, 22 + 1); // V2.3.2: + prepare source, + checkpoint store; + one pin line for the sixth approved migration (Pricing V2)
+  assert.equal(r.text.split('\n').length, 22 + 2); // V2.3.2: + prepare source, + checkpoint store; + one pin line each for the sixth (Pricing V2) and seventh (CASH-1) approved migrations
 });
 
 test('V231-I24 static: one seedDemo call site, behind the transition table; no full-pipeline success line or --stop-after remains', () => {
