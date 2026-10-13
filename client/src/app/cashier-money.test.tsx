@@ -142,7 +142,9 @@ describe("cashier payment prefill is exact (H2)", () => {
   it("M05 a non-split CASH payment of a centavo balance is prefilled exactly and accepted", async () => {
     const { calls, view } = await renderCashier({ queue: [row()] });
     const received = screen.getByRole("textbox", { name: /Recibido ARS/ }) as HTMLInputElement;
-    expect(received.value).toBe("1209,40");
+    // The prefill is written by a passive effect after the sale is selected, which may not
+    // have run yet when the heading appears: wait for it, the exact value stays asserted.
+    await waitFor(() => expect(received.value).toBe("1209,40"));
     fireEvent.click(registerButton());
     await waitFor(() => expect(paymentPosts(calls)).toHaveLength(1));
     expect(paymentPosts(calls)[0]!.body).toMatchObject({ method: "CASH", amount: "120940", receivedAmount: "120940" });
