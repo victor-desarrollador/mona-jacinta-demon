@@ -45,6 +45,8 @@ function createFetchRouter(user: PublicUser) {
     if (url.includes("/variants")) return jsonResponse({ items: [] });
     if (url.includes("/sales/pending")) return jsonResponse({ items: [] });
     if (url.includes("/cash/current")) return jsonResponse(null);
+    // CASH-1.1: the close history is an array (GET /cash/sessions).
+    if (url.includes("/cash/sessions?")) return jsonResponse([]);
     if (url.includes("/cash/register")) {
       return jsonResponse({ id: "reg-1", branchId: user.branchIds[0] ?? "branch-1", name: "Caja principal" });
     }

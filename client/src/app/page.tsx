@@ -2,7 +2,7 @@
 
 /* eslint-disable react-hooks/set-state-in-effect */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { catalogCashPrice } from "./catalog-price";
 
 type User = {
@@ -140,6 +140,12 @@ type CashSession = {
   openedAt: string;
   closedAt: string | null;
   closingCash?: string;
+  // CASH-1: server-side reconciliation of the close. Nullable by design:
+  // sessions closed before CASH-1 (and none other) carry no reconciliation
+  // and are never presented as reconciled.
+  expectedCash?: string | null;
+  countedCash?: string | null;
+  difference?: string | null;
 };
 
 type ApiError = { message?: string; error?: { message?: string } };
@@ -161,6 +167,12 @@ const money = new Intl.NumberFormat("es-AR", {
   currency: "ARS",
   maximumFractionDigits: 0,
 });
+const moneyWithCentavos = new Intl.NumberFormat("es-AR", {
+  style: "currency",
+  currency: "ARS",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
 const ZERO = BigInt(0);
 const ONE = BigInt(1);
 const ONE_HUNDRED = BigInt(100);
@@ -169,14 +181,49 @@ function cents(value: string) {
   return BigInt(value);
 }
 
+// H1: exact display of BigInt centavos. Whole pesos keep the "$ 9.500" format; an amount with
+// centavos always shows them ("$ 1.209,40"). The pesos are formatted as a BigInt (never a
+// Number, so no precision loss) and the fraction digits come from the remainder itself.
 function formatMoney(value: string) {
-  const pesos = cents(value) / ONE_HUNDRED;
-  return money.format(Number(pesos));
+  const amount = cents(value);
+  const absolute = amount < ZERO ? -amount : amount;
+  const pesos = absolute / ONE_HUNDRED;
+  const centavos = absolute % ONE_HUNDRED;
+  const text =
+    centavos === ZERO
+      ? money.format(pesos)
+      : moneyWithCentavos
+          .formatToParts(pesos)
+          .map((part) => (part.type === "fraction" ? centavos.toString().padStart(2, "0") : part.value))
+          .join("");
+  return amount < ZERO ? `-${text}` : text;
 }
 
 function formatSignedMoney(value: string) {
-  const amount = cents(value);
-  return amount < ZERO ? `-${formatMoney((-amount).toString())}` : formatMoney(value);
+  return formatMoney(value);
+}
+
+// CASH-1.1: shape check for one close row (history entry or close answer).
+// The server is authoritative; this only keeps a malformed payload from
+// breaking render or being shown as an invented amount. Money is integer
+// centavos as a decimal string: counted/expected/closing are non-negative,
+// the difference may be negative; null/absent means "not recorded".
+const UNSIGNED_CENTS = /^\d+$/;
+const SIGNED_CENTS = /^-?\d+$/;
+
+function isOptionalCents(value: unknown, pattern: RegExp) {
+  return value === null || value === undefined || (typeof value === "string" && pattern.test(value));
+}
+
+function isCashSessionEntry(value: unknown): value is CashSession {
+  if (typeof value !== "object" || value === null) return false;
+  const entry = value as Record<string, unknown>;
+  return typeof entry.sessionId === "string"
+    && (entry.closedAt === null || entry.closedAt === undefined || typeof entry.closedAt === "string")
+    && isOptionalCents(entry.countedCash, UNSIGNED_CENTS)
+    && isOptionalCents(entry.expectedCash, UNSIGNED_CENTS)
+    && isOptionalCents(entry.closingCash, UNSIGNED_CENTS)
+    && isOptionalCents(entry.difference, SIGNED_CENTS);
 }
 
 function shortId(value: string) {
@@ -280,8 +327,15 @@ function arsToCents(input: string) {
   return (BigInt(wholeDigits) * ONE_HUNDRED + BigInt(decimalPart.padEnd(2, "0") || "0")).toString();
 }
 
+// H2: exact prefill for the amount inputs ("1209,40", "0,01"; whole pesos stay "1209"), the
+// inverse of arsToCents, so a prefilled balance is never truncated into a short payment.
 function centsToArsInput(value: string) {
-  return (cents(value) / ONE_HUNDRED).toString();
+  const amount = cents(value);
+  const absolute = amount < ZERO ? -amount : amount;
+  const pesos = (absolute / ONE_HUNDRED).toString();
+  const centavos = absolute % ONE_HUNDRED;
+  const text = centavos === ZERO ? pesos : `${pesos},${centavos.toString().padStart(2, "0")}`;
+  return amount < ZERO ? `-${text}` : text;
 }
 
 async function apiRequest<T>(
@@ -950,6 +1004,16 @@ function CashierWorkspace({
 }) {
   const [register, setRegister] = useState<CashRegister | null>(null);
   const [cashSession, setCashSession] = useState<CashSession | null>(null);
+  // CASH-1: the reconciliation of the last close (only for sessions closed
+  // WITH reconciliation — never for pre-CASH-1 history) and the recent close
+  // history of the authorized branch.
+  const [closeResult, setCloseResult] = useState<CashSession | null>(null);
+  const [cashHistory, setCashHistory] = useState<CashSession[]>([]);
+  const [cashHistoryFailed, setCashHistoryFailed] = useState(false);
+  // CASH-1.1: the history route requires cash.session.close (re-checked by
+  // the server at the register's own location), so it is only requested when
+  // the projected permission is present.
+  const canViewCashHistory = user.permissions.includes("cash.session.close");
   const [pendingSales, setPendingSales] = useState<PendingSale[]>([]);
   const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null);
   const [selectedPayments, setSelectedPayments] = useState<SalePayment[]>([]);
@@ -1047,14 +1111,44 @@ function CashierWorkspace({
     setSplitPayment(false);
   }, []);
 
+  // CASH-1.1: the close history never rejects and is never awaited by the
+  // operational refresh. A 403/500 or a malformed payload only empties the
+  // list, and a slow answer can never keep the register controls disabled.
+  // Only the latest request may write: a late answer for a previously
+  // selected branch is dropped (location-bound presentation).
+  const cashHistoryRequest = useRef(0);
+  // CASH-1.1: bumped on every branch change, so an answer that belongs to the
+  // previously selected branch (e.g. a slow close) never writes into this one.
+  const branchEpoch = useRef(0);
+  const refreshCashHistory = useCallback(async () => {
+    const request = ++cashHistoryRequest.current;
+    if (!token || !branchId || !canViewCashHistory) {
+      setCashHistory([]);
+      setCashHistoryFailed(false);
+      return;
+    }
+    const query = new URLSearchParams({ branchId });
+    try {
+      const history = await apiRequest<unknown>(`/cash/sessions?${query.toString()}`, token);
+      if (request !== cashHistoryRequest.current) return;
+      setCashHistory(Array.isArray(history) ? history.filter(isCashSessionEntry) : []);
+      setCashHistoryFailed(false);
+    } catch {
+      if (request !== cashHistoryRequest.current) return;
+      setCashHistory([]);
+      setCashHistoryFailed(true);
+    }
+  }, [token, branchId, canViewCashHistory]);
+
   const refreshCash = useCallback(async () => {
     if (!token || !branchId) return;
     const query = new URLSearchParams({ branchId });
+    void refreshCashHistory();
     const currentRegister = await apiRequest<CashRegister>(`/cash/register?${query.toString()}`, token);
     const currentSession = await apiRequest<CashSession | null>(`/cash/current?${query.toString()}`, token);
     setRegister(currentRegister);
     setCashSession(currentSession);
-  }, [token, branchId]);
+  }, [token, branchId, refreshCashHistory]);
 
   const refreshAll = useCallback(async () => {
     setLoading(true);
@@ -1119,6 +1213,7 @@ function CashierWorkspace({
         body: JSON.stringify({ registerId: register.id, startingCash: amount }),
       });
       setCashSession(session);
+      setCloseResult(null);
       setNotice("Sesión de caja abierta.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo abrir caja.");
@@ -1137,14 +1232,31 @@ function CashierWorkspace({
 
     setLoading(true);
     setError("");
+    const epoch = branchEpoch.current;
     try {
-      const closed = await apiRequest<CashSession>(`/cash/sessions/${cashSession.sessionId}/close`, token, {
+      const closed = await apiRequest<unknown>(`/cash/sessions/${cashSession.sessionId}/close`, token, {
         method: "POST",
         body: JSON.stringify({ closingCash: amount }),
       });
+      // The branch changed while closing: this answer belongs to the previous
+      // branch and must not touch the selected branch's register or results.
+      if (epoch !== branchEpoch.current) return;
       setCashSession(null);
-      setNotice(`Caja cerrada con ${formatMoney(closed.closingCash ?? amount)}.`);
+      if (isCashSessionEntry(closed)) {
+        setCloseResult(closed);
+        setNotice(
+          closed.expectedCash != null && closed.difference != null
+            ? `Caja cerrada con ${formatMoney(closed.closingCash ?? amount)}. Diferencia ${formatSignedMoney(closed.difference)}.`
+            : `Caja cerrada con ${formatMoney(closed.closingCash ?? amount)}.`,
+        );
+      } else {
+        // Closed by the server, but the answer is malformed: no amounts.
+        setCloseResult(null);
+        setNotice("Caja cerrada.");
+      }
+      refreshCash().catch(() => undefined);
     } catch (cause) {
+      if (epoch !== branchEpoch.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo cerrar caja.");
     } finally {
       setLoading(false);
@@ -1310,6 +1422,14 @@ function CashierWorkspace({
 
   function changeBranch(nextBranchId: string) {
     onBranchChange(nextBranchId);
+    // CASH-1.1: history and close results are branch-bound; never show the
+    // previous branch's closes while the new branch loads, and drop late
+    // answers that belong to the previous branch.
+    branchEpoch.current += 1;
+    cashHistoryRequest.current += 1;
+    setCashHistory([]);
+    setCashHistoryFailed(false);
+    setCloseResult(null);
     setSelectedSaleId(null);
     setSelectedPayments([]);
     setCompletedSale(null);
@@ -1353,6 +1473,52 @@ function CashierWorkspace({
 
         {error ? <p className="error-banner">{error}</p> : null}
         {notice ? <p className="notice-banner">{notice}</p> : null}
+
+        {closeResult && closeResult.branchId === branchId && closeResult.expectedCash != null && closeResult.countedCash != null && closeResult.difference != null ? (
+          <section className="cash-session">
+            <div>
+              <p className="eyebrow">Conciliación de cierre</p>
+              <h2>Caja cerrada</h2>
+              <p>Esperado {formatMoney(closeResult.expectedCash)}</p>
+              <p>Contado {formatMoney(closeResult.countedCash)}</p>
+              <p>
+                Diferencia{" "}
+                <strong className={closeResult.difference === "0" ? "paid-pill" : "state-pill"}>
+                  {formatSignedMoney(closeResult.difference)}
+                </strong>
+              </p>
+            </div>
+          </section>
+        ) : null}
+
+        {cashHistory.length > 0 ? (
+          <section className="cash-session">
+            <div>
+              <p className="eyebrow">Cierres recientes</p>
+              <div className="readonly-items">
+                {cashHistory.map((entry) => (
+                  <div className="readonly-item" key={entry.sessionId}>
+                    <span>
+                      <strong>{entry.closedAt ? new Date(entry.closedAt).toLocaleString("es-AR") : "—"}</strong>
+                      {/* CASH-1.1: a close without a stored count never shows a zero count. */}
+                      <small>{entry.countedCash != null ? `Contado ${formatMoney(entry.countedCash)}` : "Contado no registrado"}</small>
+                    </span>
+                    {entry.expectedCash != null && entry.difference != null ? (
+                      <span className={entry.difference === "0" ? "paid-pill" : "state-pill"}>
+                        Diferencia {formatSignedMoney(entry.difference)}
+                      </span>
+                    ) : (
+                      // CASH-1: a pre-CASH-1 close has no reconciliation data
+                      // and is never presented as reconciled.
+                      <span className="state-pill">Sin conciliar</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        ) : null}
+        {cashHistoryFailed ? <p className="muted">No se pudo cargar el historial de cierres.</p> : null}
 
         <div className="queue-list">
           {loading && pendingSales.length === 0 ? (

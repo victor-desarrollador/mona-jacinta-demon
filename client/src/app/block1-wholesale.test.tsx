@@ -92,6 +92,8 @@ function cashierRouter(state: { queue: QueueRow[] }, calls: Call[]) {
         startingCash: "0", status: "OPEN", openedAt: "2030-01-01T00:00:00.000Z", closedAt: null,
       });
     }
+    // CASH-1.1: the close history is an array (GET /cash/sessions).
+    if (url.includes("/cash/sessions?")) return jsonResponse([]);
     if (url.includes("/cash/register")) return jsonResponse({ id: "reg-1", branchId: "CEN", name: "Caja principal" });
     return jsonResponse({ items: [] });
   });
