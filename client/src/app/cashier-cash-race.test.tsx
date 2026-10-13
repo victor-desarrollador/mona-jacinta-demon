@@ -138,6 +138,8 @@ const forceSwitch = (branchId: string) => fireEvent.change(branchSelect(), { tar
 function close(amount = "2000") {
   fireEvent.change(screen.getByRole("textbox", { name: /Cierre ARS/ }), { target: { value: amount } });
   fireEvent.click(screen.getByRole("button", { name: "Cerrar caja" }));
+  // M2: the close is only sent after the explicit confirmation.
+  fireEvent.click(screen.getByRole("button", { name: "Confirmar cierre" }));
 }
 function open(amount = "1000") {
   fireEvent.change(screen.getByRole("textbox", { name: /Inicial ARS/ }), { target: { value: amount } });

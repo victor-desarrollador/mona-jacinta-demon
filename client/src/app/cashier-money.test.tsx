@@ -32,6 +32,8 @@ function row(overrides: Row = {}): Row {
     items: [{ id: "i1", variantId: "v1", productName: "Remera", variantName: "Negro / M", sku: "R-1", quantity: "1", unitPrice: "120940", subtotal: "120940" }],
     subtotal: "120940", total: "120940", paidAmount: "0", remainingBalance: "120940",
     holdState: "VALID", canAcceptPayment: true, paymentCount: 0, canCorrect: false, canCancel: false,
+    // M1: the queue validator requires every field GET /sales/pending always sends.
+    pricingMode: "LIST", priceMode: "LIST", wholesaleConfirmed: false, canConfirmWholesale: false,
     ...overrides,
   };
 }
@@ -189,6 +191,8 @@ describe("cashier payment prefill is exact (H2)", () => {
     await renderCashier({ queue: [row()], closingCash: "200050" });
     fireEvent.change(screen.getByRole("textbox", { name: /Cierre ARS/ }), { target: { value: "2000,50" } });
     fireEvent.click(screen.getByRole("button", { name: "Cerrar caja" }));
+    // M2: the close is only sent after the explicit confirmation.
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar cierre" }));
     expect(await screen.findByText(money("Caja cerrada con $ 2.000,50"))).toBeInTheDocument();
     await settle();
   });

@@ -19,6 +19,7 @@ type QueueRow = {
   items: Item[]; subtotal: string; total: string; paidAmount: string; remainingBalance: string;
   holdState: "VALID" | "EXPIRED" | "PAYMENT_PROTECTED" | "PAID" | "COVERAGE_INVALID";
   canAcceptPayment: boolean; paymentCount: number; canCorrect: boolean; canCancel: boolean;
+  pricingMode: "LIST" | "WHOLESALE"; priceMode: "LIST"; wholesaleConfirmed: boolean; canConfirmWholesale: boolean;
 };
 
 type Payment = {
@@ -53,6 +54,8 @@ function row(overrides: Partial<QueueRow> = {}): QueueRow {
     saleId: "sale-1", saleNumber: "CEN-V-000001", sellerName: "Vendedor", status: "PENDING_PAYMENT",
     items: [item()], subtotal: "1000000", total: "1000000", paidAmount: "0", remainingBalance: "1000000",
     holdState: "VALID", canAcceptPayment: true, paymentCount: 0, canCorrect: true, canCancel: true,
+    // M1: the queue validator requires every field GET /sales/pending always sends.
+    pricingMode: "LIST", priceMode: "LIST", wholesaleConfirmed: false, canConfirmWholesale: false,
     ...overrides,
   };
 }

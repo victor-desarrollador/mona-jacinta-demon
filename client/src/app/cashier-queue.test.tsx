@@ -16,6 +16,13 @@ type QueueRow = {
   remainingBalance: string;
   holdState: "VALID" | "EXPIRED" | "PAYMENT_PROTECTED" | "PAID" | "COVERAGE_INVALID";
   canAcceptPayment: boolean;
+  paymentCount: number;
+  canCorrect: boolean;
+  canCancel: boolean;
+  pricingMode: "LIST";
+  priceMode: "LIST";
+  wholesaleConfirmed: boolean;
+  canConfirmWholesale: boolean;
 };
 
 type Payment = {
@@ -56,6 +63,14 @@ function row(overrides: Partial<QueueRow> = {}): QueueRow {
     remainingBalance: "1000000",
     holdState: "VALID",
     canAcceptPayment: true,
+    // M1: the queue validator requires every field GET /sales/pending always sends.
+    paymentCount: 0,
+    canCorrect: false,
+    canCancel: false,
+    pricingMode: "LIST",
+    priceMode: "LIST",
+    wholesaleConfirmed: false,
+    canConfirmWholesale: false,
     ...overrides,
   };
 }

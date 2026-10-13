@@ -223,6 +223,8 @@ describe("CASH-1.1 cashier close history", () => {
     expect(await screen.findByRole("heading", { name: "Caja abierta" })).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: /Cierre ARS/ }), { target: { value: "2000" } });
     fireEvent.click(screen.getByRole("button", { name: "Cerrar caja" }));
+    // M2: the close is only sent after the explicit confirmation.
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar cierre" }));
     expect(await screen.findByText("Cierres recientes")).toBeInTheDocument();
     expect(historyCalls(state).length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText(/^Diferencia\s*\$\s*0$/).length).toBeGreaterThan(0);
@@ -282,6 +284,8 @@ describe("CASH-1.1 iteration 2: close result is branch-bound", () => {
   async function closeCurrent(amount = "2000") {
     fireEvent.change(screen.getByRole("textbox", { name: /Cierre ARS/ }), { target: { value: amount } });
     fireEvent.click(screen.getByRole("button", { name: "Cerrar caja" }));
+    // M2: the close is only sent after the explicit confirmation.
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar cierre" }));
   }
   async function switchTo(branchId: string) {
     await waitFor(() => expect(branchSelect()).toBeEnabled());

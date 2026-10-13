@@ -158,6 +158,8 @@ type PaymentIntent = {
     idempotencyKey: string;
   };
   label: string;
+  // The sale's own reference, to name it if another sale is selected meanwhile.
+  saleRef: string;
 };
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api/v1";
@@ -224,6 +226,97 @@ function isCashSessionEntry(value: unknown): value is CashSession {
     && isOptionalCents(entry.expectedCash, UNSIGNED_CENTS)
     && isOptionalCents(entry.closingCash, UNSIGNED_CENTS)
     && isOptionalCents(entry.difference, SIGNED_CENTS);
+}
+
+// M1: a 200 answer whose shape breaks the contract. Kept apart from network
+// and HTTP failures: an invalid answer is never written into state (fail
+// closed) and what was shown for that resource is withdrawn, while a network
+// failure keeps the last validated state of the same resource.
+class InvalidResponseError extends Error {}
+
+// GET /sales/pending only ever lists sales waiting for the cashier.
+const QUEUE_STATUSES = new Set<unknown>(["PENDING_PAYMENT", "PAID"]);
+const HOLD_STATES = new Set<unknown>(["VALID", "EXPIRED", "PAYMENT_PROTECTED", "PAID", "COVERAGE_INVALID"]);
+const PRICING_MODES = new Set<unknown>(["LIST", "WHOLESALE"]);
+const PRICE_MODES = new Set<unknown>(["CASH", "LIST", "CREDIT_CARD", "DEBIT_CARD", "BANK_TRANSFER", "QR"]);
+const PAYMENT_METHODS = new Set<unknown>(["CASH", "TRANSFER", "CARD_DEBIT", "CARD_CREDIT", "QR"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCents(value: unknown, pattern: RegExp) {
+  return typeof value === "string" && pattern.test(value);
+}
+
+const POSITIVE_INTEGER = /^[1-9]\d*$/;
+
+function isNonEmptyString(value: unknown) {
+  return typeof value === "string" && value !== "";
+}
+
+function isSaleItem(value: unknown): value is SaleItem {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.id) && isNonEmptyString(value.variantId)
+    && ["productName", "variantName", "sku"].every((key) => typeof value[key] === "string")
+    && isCents(value.quantity, POSITIVE_INTEGER)
+    && isCents(value.unitPrice, UNSIGNED_CENTS)
+    && isCents(value.subtotal, UNSIGNED_CENTS);
+}
+
+function isPendingSale(value: unknown): value is PendingSale {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.saleId)
+    && (value.saleNumber === null || typeof value.saleNumber === "string")
+    && typeof value.sellerName === "string"
+    && Array.isArray(value.items) && value.items.every(isSaleItem)
+    && isCents(value.subtotal, UNSIGNED_CENTS)
+    && isCents(value.total, UNSIGNED_CENTS)
+    && isCents(value.paidAmount, UNSIGNED_CENTS)
+    && isCents(value.remainingBalance, SIGNED_CENTS)
+    && QUEUE_STATUSES.has(value.status)
+    && HOLD_STATES.has(value.holdState)
+    && PRICING_MODES.has(value.pricingMode)
+    && PRICE_MODES.has(value.priceMode)
+    && Number.isSafeInteger(value.paymentCount) && (value.paymentCount as number) >= 0
+    && ["canAcceptPayment", "canCorrect", "canCancel", "wholesaleConfirmed", "canConfirmWholesale"]
+      .every((key) => typeof value[key] === "boolean");
+}
+
+function isSalePayment(value: unknown, saleId: string): value is SalePayment {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.id)
+    && value.saleId === saleId
+    && PAYMENT_METHODS.has(value.method)
+    && isNonEmptyString(value.idempotencyKey)
+    && (value.cashSessionId === null || isNonEmptyString(value.cashSessionId))
+    && isNonEmptyString(value.paidAt)
+    && isCents(value.amount, UNSIGNED_CENTS)
+    && (value.receivedAmount === null || isCents(value.receivedAmount, UNSIGNED_CENTS))
+    && (value.changeAmount === null || isCents(value.changeAmount, UNSIGNED_CENTS));
+}
+
+// Every field the API always sends is required: an absent canAcceptPayment
+// or priceMode would silently lift a payment restriction.
+// The whole answer is rejected when any row is invalid: silently dropping a
+// row would hide a pending sale (or a payment) behind a plausible list.
+function parsePendingSales(body: unknown): PendingSale[] {
+  if (!isRecord(body) || !Array.isArray(body.items) || !body.items.every(isPendingSale)) {
+    throw new InvalidResponseError("La cola de ventas recibida del servidor no es válida. Reintentá con Actualizar.");
+  }
+  return body.items;
+}
+
+function parseSalePayments(body: unknown, saleId: string): SalePayment[] {
+  if (!isRecord(body) || !Array.isArray(body.items) || !body.items.every((item) => isSalePayment(item, saleId))) {
+    throw new InvalidResponseError("Los pagos recibidos del servidor no son válidos.");
+  }
+  return body.items;
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "fecha no informada" : date.toLocaleString("es-AR");
 }
 
 function shortId(value: string) {
@@ -991,6 +1084,12 @@ function SellerWorkspace({
   );
 }
 
+// M2: every register session whose close is in flight. Module level, so it
+// survives the cashier workspace being unmounted and mounted again (switching
+// to "Venta" and back) while a close is pending. A second close of any of them
+// is refused until its own answer arrives; other sessions are never blocked.
+const CLOSES_IN_FLIGHT = new Set<string>();
+
 function CashierWorkspace({
   token,
   user,
@@ -1016,7 +1115,24 @@ function CashierWorkspace({
   const canViewCashHistory = user.permissions.includes("cash.session.close");
   const [pendingSales, setPendingSales] = useState<PendingSale[]>([]);
   const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null);
-  const [selectedPayments, setSelectedPayments] = useState<SalePayment[]>([]);
+  // M1: payment lists are kept per sale (the last validated list of each), so
+  // another sale's payments (or "no payments") are never shown under the
+  // selected one, and returning to a sale keeps its last validated list.
+  const [paymentsBySale, setPaymentsBySale] = useState<
+    Record<string, { items: SalePayment[]; status: "ready" | "failed" | "invalid" }>
+  >({});
+  // M1: the last /sales/pending answer was invalid, so no row is shown (and
+  // the queue is never presented as empty) until a valid answer arrives.
+  const [queueInvalid, setQueueInvalid] = useState(false);
+  // M2: the close the cashier asked for, waiting for the explicit second step.
+  // Bound to the session and branch it was asked for; any change voids it.
+  const [closeConfirm, setCloseConfirm] = useState<{
+    sessionId: string;
+    branchId: string;
+    registerName: string;
+    openedAt: string;
+    closingCash: string;
+  } | null>(null);
   const [completedSale, setCompletedSale] = useState<Sale | null>(null);
   const [startingCash, setStartingCash] = useState("0");
   const [closingCash, setClosingCash] = useState("0");
@@ -1054,6 +1170,9 @@ function CashierWorkspace({
     };
   }, [completedSale, selectedSaleId]);
   const displaySale = selectedSale ?? completedSnapshot;
+  const selectedPaymentsEntry = selectedSaleId ? paymentsBySale[selectedSaleId] : undefined;
+  const selectedPayments = selectedPaymentsEntry?.items ?? [];
+  const paymentsStatus = selectedPaymentsEntry?.status ?? "loading";
   const fixedPriceMode = displaySale?.priceMode;
   const requiredMethod = fixedPriceMode ? PRICE_MODE_METHOD[fixedPriceMode] : undefined;
   useEffect(() => {
@@ -1080,24 +1199,66 @@ function CashierWorkspace({
       ? cents(cashReceivedCents) - cents(paymentAmountCents)
       : ZERO;
 
+  // M1: only the latest read of the sale that is still selected may write the
+  // payment list; a late answer for a previously selected sale is dropped.
+  const selectedSaleRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedSaleRef.current = selectedSaleId;
+  }, [selectedSaleId]);
+  const paymentsRequest = useRef({ next: 0, latest: new Map<string, number>() });
   const loadPayments = useCallback(
     async (saleId: string) => {
       if (!token) return;
-      const response = await apiRequest<{ items: SalePayment[] }>(`/sales/${saleId}/payments`, token);
-      setSelectedPayments(response.items);
+      const request = ++paymentsRequest.current.next;
+      paymentsRequest.current.latest.set(saleId, request);
+      const isLatest = () => paymentsRequest.current.latest.get(saleId) === request && selectedSaleRef.current === saleId;
+      try {
+        const items = parseSalePayments(await apiRequest<unknown>(`/sales/${saleId}/payments`, token), saleId);
+        if (!isLatest()) return;
+        setPaymentsBySale((current) => ({ ...current, [saleId]: { items, status: "ready" } }));
+      } catch (cause) {
+        if (!isLatest()) return;
+        if (cause instanceof InvalidResponseError) {
+          setPaymentsBySale((current) => ({ ...current, [saleId]: { items: [], status: "invalid" } }));
+        } else {
+          // A network/HTTP failure keeps this sale's last valid list; a sale
+          // that never loaded is shown as failed, never as "no payments".
+          setPaymentsBySale((current) =>
+            current[saleId]?.status === "ready" ? current : { ...current, [saleId]: { items: [], status: "failed" } },
+          );
+        }
+        throw cause;
+      }
     },
     [token],
   );
 
-  const refreshQueue = useCallback(async () => {
+  // M1: the queue is read by the manual refresh, the poll and the follow-up
+  // of every cashier action; only the latest read may write it (valid or
+  // invalid). An older answer, or its failure, is dropped (returns null).
+  const queueRequest = useRef(0);
+  const refreshQueue = useCallback(async (): Promise<PendingSale[] | null> => {
     if (!token) return [];
-    const response = await apiRequest<{ items: PendingSale[] }>("/sales/pending", token);
-    setPendingSales(response.items);
+    const request = ++queueRequest.current;
+    let items: PendingSale[];
+    try {
+      items = parsePendingSales(await apiRequest<unknown>("/sales/pending", token));
+    } catch (cause) {
+      if (request !== queueRequest.current) return null;
+      if (cause instanceof InvalidResponseError) {
+        setPendingSales([]);
+        setQueueInvalid(true);
+      }
+      throw cause;
+    }
+    if (request !== queueRequest.current) return null;
+    setQueueInvalid(false);
+    setPendingSales(items);
     setSelectedSaleId((current) => {
-      if (current && response.items.some((sale) => sale.saleId === current)) return current;
-      return response.items[0]?.saleId ?? current;
+      if (current && items.some((sale) => sale.saleId === current)) return current;
+      return items[0]?.saleId ?? current;
     });
-    return response.items;
+    return items;
   }, [token]);
 
   // Payment-entry state derived from an authoritative remaining balance.
@@ -1188,10 +1349,7 @@ function CashierWorkspace({
   }, [refreshAll]);
 
   useEffect(() => {
-    if (!selectedSaleId) {
-      setSelectedPayments([]);
-      return;
-    }
+    if (!selectedSaleId) return;
     loadPayments(selectedSaleId).catch((cause) =>
       setError(cause instanceof Error ? cause.message : "No se pudieron cargar los pagos."),
     );
@@ -1250,19 +1408,58 @@ function CashierWorkspace({
     }
   }
 
-  async function closeCashSession() {
-    if (!token || !cashSession) return;
+  // M2: a confirmation is void as soon as the session or the branch it was
+  // asked for is no longer the one shown (another session, a close done
+  // elsewhere, a branch change). A refresh of the same session keeps it.
+  useEffect(() => {
+    setCloseConfirm((current) =>
+      current && (current.sessionId !== cashSession?.sessionId || current.branchId !== branchId) ? null : current,
+    );
+  }, [cashSession, branchId]);
+
+  // M2, first step: validates the amount and asks for confirmation. It never
+  // calls the close endpoint.
+  function requestCloseCashSession() {
+    if (!cashSession) return;
     const amount = arsToCents(closingCash);
     if (!amount) {
       setError("Ingresá un monto de cierre válido.");
       return;
     }
+    setError("");
+    setNotice("");
+    setCloseConfirm({
+      sessionId: cashSession.sessionId,
+      branchId,
+      registerName: register?.name ?? "Caja de la sucursal",
+      openedAt: cashSession.openedAt,
+      closingCash: amount,
+    });
+  }
 
+  // M2, second step: closes exactly the confirmed session with the confirmed
+  // amount, once. The CASH-1 handling of the answer is unchanged.
+  async function closeCashSession() {
+    const confirm = closeConfirm;
+    if (!token || !confirm) return;
+    if (CLOSES_IN_FLIGHT.has(confirm.sessionId)) {
+      setCloseConfirm(null);
+      setError("El cierre de esta caja ya está en curso.");
+      return;
+    }
+    if (!cashSession || confirm.sessionId !== cashSession.sessionId || confirm.branchId !== branchId) {
+      setCloseConfirm(null);
+      setError("La caja cambió: revisá el cierre y confirmalo de nuevo.");
+      return;
+    }
+    const amount = confirm.closingCash;
+
+    CLOSES_IN_FLIGHT.add(confirm.sessionId);
     setLoading(true);
     setError("");
     const epoch = branchEpoch.current;
     try {
-      const closed = await apiRequest<unknown>(`/cash/sessions/${cashSession.sessionId}/close`, token, {
+      const closed = await apiRequest<unknown>(`/cash/sessions/${confirm.sessionId}/close`, token, {
         method: "POST",
         body: JSON.stringify({ closingCash: amount }),
       });
@@ -1287,6 +1484,9 @@ function CashierWorkspace({
       if (epoch !== branchEpoch.current) return;
       setError(cause instanceof Error ? cause.message : "No se pudo cerrar caja.");
     } finally {
+      CLOSES_IN_FLIGHT.delete(confirm.sessionId);
+      // Only this close's own confirmation is consumed (closed or failed).
+      setCloseConfirm((current) => (current === confirm ? null : current));
       if (epoch === branchEpoch.current) setLoading(false);
     }
   }
@@ -1302,16 +1502,32 @@ function CashierWorkspace({
         method: "POST",
         body: JSON.stringify(intent.body),
       });
-      setRetryIntent(null);
-      await loadPayments(intent.saleId);
-      await refreshQueue();
-      setNotice(`${intent.label} registrado.`);
     } catch (cause) {
-      setRetryIntent(intent);
-      setError(cause instanceof Error ? cause.message : "No se pudo registrar el pago.");
-    } finally {
+      // M1: the retry belongs to the sale that started the payment; it is
+      // never offered under another sale selected meanwhile.
+      const sameSale = selectedSaleRef.current === intent.saleId;
+      if (sameSale) setRetryIntent(intent);
+      const message = cause instanceof Error ? cause.message : "No se pudo registrar el pago.";
+      setError(sameSale ? message : `Venta ${intent.saleRef}: ${message}`);
       setPaymentLoading(false);
+      return;
     }
+    // M1: the payment is committed. A failed or invalid refresh afterwards is
+    // reported as such, never as a failed payment offered for retry.
+    setRetryIntent(null);
+    setNotice(
+      selectedSaleRef.current === intent.saleId
+        ? `${intent.label} registrado.`
+        : `${intent.label} registrado en la venta ${intent.saleRef}.`,
+    );
+    // Both reads are attempted: a failed payment list never leaves the queue
+    // (and its remaining balance) stale.
+    const refreshes = await Promise.allSettled([loadPayments(intent.saleId), refreshQueue()]);
+    const failed = refreshes.find((result) => result.status === "rejected");
+    if (failed) {
+      setError(failed.reason instanceof Error ? failed.reason.message : "No se pudo actualizar la venta.");
+    }
+    setPaymentLoading(false);
   }
 
   async function registerPayment() {
@@ -1341,6 +1557,7 @@ function CashierWorkspace({
         idempotencyKey: crypto.randomUUID(),
       },
       label: `${paymentMethodLabel(paymentMethod)} ${formatMoney(amount)}`,
+      saleRef: selectedSale.saleNumber ?? shortId(selectedSale.saleId),
     };
 
     await submitPayment(intent);
@@ -1375,7 +1592,7 @@ function CashierWorkspace({
         body: JSON.stringify({ items: correctionLines.map((line) => ({ variantId: line.variantId, quantity: line.quantity })) }),
       });
       setCorrectionLines(null);
-      const refreshed = (await refreshQueue()).find((sale) => sale.saleId === selectedSale.saleId);
+      const refreshed = (await refreshQueue())?.find((sale) => sale.saleId === selectedSale.saleId);
       if (refreshed) resetPaymentEntry(refreshed.remainingBalance);
       setNotice("Venta corregida.");
     } catch (cause) {
@@ -1417,7 +1634,7 @@ function CashierWorkspace({
       });
       setCancelReason(null);
       setCancelNote("");
-      setSelectedPayments([]);
+      setPaymentsBySale((current) => ({ ...current, [selectedSale.saleId]: { items: [], status: "ready" } }));
       await refreshQueue();
       setNotice("Venta cancelada.");
     } catch (cause) {
@@ -1440,7 +1657,7 @@ function CashierWorkspace({
       setCompletedSale(completed);
       setNotice(`Venta ${completed.saleNumber ?? completed.id} completada.`);
       await refreshQueue();
-      setSelectedPayments([]);
+      setPaymentsBySale((current) => ({ ...current, [selectedSale.saleId]: { items: [], status: "ready" } }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo completar la venta.");
     } finally {
@@ -1465,7 +1682,8 @@ function CashierWorkspace({
     setCashHistoryFailed(false);
     setCloseResult(null);
     setSelectedSaleId(null);
-    setSelectedPayments([]);
+    setPaymentsBySale({});
+    setCloseConfirm(null);
     setCompletedSale(null);
     setError("");
     setNotice("");
@@ -1502,7 +1720,10 @@ function CashierWorkspace({
           onStartingCashChange={setStartingCash}
           onClosingCashChange={setClosingCash}
           onOpen={openCashSession}
-          onClose={closeCashSession}
+          onClose={requestCloseCashSession}
+          confirm={closeConfirm}
+          onConfirmClose={closeCashSession}
+          onCancelClose={() => setCloseConfirm(null)}
         />
 
         {error ? <p className="error-banner">{error}</p> : null}
@@ -1533,7 +1754,7 @@ function CashierWorkspace({
                 {cashHistory.map((entry) => (
                   <div className="readonly-item" key={entry.sessionId}>
                     <span>
-                      <strong>{entry.closedAt ? new Date(entry.closedAt).toLocaleString("es-AR") : "—"}</strong>
+                      <strong>{entry.closedAt ? formatDateTime(entry.closedAt) : "—"}</strong>
                       {/* CASH-1.1: a close without a stored count never shows a zero count. */}
                       <small>{entry.countedCash != null ? `Contado ${formatMoney(entry.countedCash)}` : "Contado no registrado"}</small>
                     </span>
@@ -1555,7 +1776,12 @@ function CashierWorkspace({
         {cashHistoryFailed ? <p className="muted">No se pudo cargar el historial de cierres.</p> : null}
 
         <div className="queue-list">
-          {loading && pendingSales.length === 0 ? (
+          {queueInvalid ? (
+            <div className="queue-empty">
+              <h2>No se pudo validar la cola de ventas.</h2>
+              <p>La respuesta del servidor no es válida. Reintentá con Actualizar.</p>
+            </div>
+          ) : loading && pendingSales.length === 0 ? (
             <p className="muted">Cargando cola...</p>
           ) : pendingSales.length === 0 ? (
             <div className="queue-empty">
@@ -1656,7 +1882,13 @@ function CashierWorkspace({
               <section>
                 <h3>Pagos</h3>
                 <div className="payments-list">
-                  {selectedPayments.length === 0 ? (
+                  {paymentsStatus === "invalid" ? (
+                    <p className="muted">No se pudieron validar los pagos.</p>
+                  ) : paymentsStatus === "failed" ? (
+                    <p className="muted">No se pudieron cargar los pagos.</p>
+                  ) : paymentsStatus === "loading" ? (
+                    <p className="muted">Cargando pagos...</p>
+                  ) : selectedPayments.length === 0 ? (
                     <p className="muted">Todavía no hay pagos registrados.</p>
                   ) : (
                     selectedPayments.map((payment) => (
@@ -1892,7 +2124,7 @@ function CashierWorkspace({
               </>
             ) : null}
 
-            {retryIntent ? (
+            {retryIntent && retryIntent.saleId === selectedSale?.saleId ? (
               <button
                 className="secondary-button retry-button"
                 onClick={() => submitPayment(retryIntent)}
@@ -2063,6 +2295,9 @@ function CashSessionPanel({
   onClosingCashChange,
   onOpen,
   onClose,
+  confirm,
+  onConfirmClose,
+  onCancelClose,
 }: {
   register: CashRegister | null;
   session: CashSession | null;
@@ -2073,6 +2308,9 @@ function CashSessionPanel({
   onClosingCashChange: (value: string) => void;
   onOpen: () => void;
   onClose: () => void;
+  confirm: { sessionId: string; branchId: string; registerName: string; openedAt: string; closingCash: string } | null;
+  onConfirmClose: () => void;
+  onCancelClose: () => void;
 }) {
   return (
     <section className={session ? "cash-session open" : "cash-session"}>
@@ -2089,12 +2327,32 @@ function CashSessionPanel({
               inputMode="decimal"
               value={closingCash}
               onChange={(event) => onClosingCashChange(event.target.value)}
-              disabled={loading}
+              disabled={loading || confirm !== null}
             />
           </label>
-          <button className="secondary-button" onClick={onClose} disabled={loading}>
-            Cerrar caja
-          </button>
+          {confirm ? (
+            // M2: nothing is reconciled yet; the server computes the expected
+            // cash and the difference only when the close is confirmed.
+            <div className="close-confirm" role="group" aria-label="Confirmar cierre de caja">
+              <p className="eyebrow">Confirmar cierre</p>
+              <p>Sucursal <strong>{confirm.branchId}</strong></p>
+              <p>Caja <strong>{confirm.registerName}</strong></p>
+              <p>Sesión <strong>{confirm.sessionId}</strong></p>
+              <p>Abierta {formatDateTime(confirm.openedAt)}</p>
+              <p>Monto contado <strong>{formatMoney(confirm.closingCash)}</strong></p>
+              <p className="cart-note">El esperado y la diferencia los calcula el servidor al confirmar.</p>
+              <button className="primary-button" onClick={onConfirmClose} disabled={loading}>
+                Confirmar cierre
+              </button>
+              <button className="secondary-button" onClick={onCancelClose} disabled={loading}>
+                Cancelar cierre
+              </button>
+            </div>
+          ) : (
+            <button className="secondary-button" onClick={onClose} disabled={loading}>
+              Cerrar caja
+            </button>
+          )}
         </div>
       ) : (
         <div className="cash-controls">

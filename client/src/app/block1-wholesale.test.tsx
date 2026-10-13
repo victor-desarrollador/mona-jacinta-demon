@@ -70,6 +70,8 @@ function queueRow(overrides: QueueRow = {}): QueueRow {
     subtotal: "1400000", total: "1400000", paidAmount: "0", remainingBalance: "1400000",
     holdState: "VALID", canAcceptPayment: false, paymentCount: 0, canCorrect: true, canCancel: true,
     pricingMode: "WHOLESALE", wholesaleConfirmed: false, canConfirmWholesale: true,
+    // M1: the queue validator requires every field GET /sales/pending always sends.
+    priceMode: "LIST",
     ...overrides,
   };
 }
