@@ -1020,6 +1020,30 @@ select:focus {
   width: 100%;
 }
 
+/* R3-A4.2b: cobro proporcional. El panel reutiliza los campos, el resumen y el
+   vuelto del flujo de pagos; sólo agrupa sus propios bloques. */
+.proportional-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.proportional-methods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.proportional-tender {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfaf7;
+}
+
 .complete-button {
   min-height: 44px;
   border: 1px solid var(--green-dark);

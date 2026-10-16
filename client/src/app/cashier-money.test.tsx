@@ -34,6 +34,7 @@ function row(overrides: Row = {}): Row {
     holdState: "VALID", canAcceptPayment: true, paymentCount: 0, canCorrect: false, canCancel: false,
     // M1: the queue validator requires every field GET /sales/pending always sends.
     pricingMode: "LIST", priceMode: "LIST", wholesaleConfirmed: false, canConfirmWholesale: false,
+    pricingModel: "FIXED_TOTAL", checkoutRequired: false,
     ...overrides,
   };
 }

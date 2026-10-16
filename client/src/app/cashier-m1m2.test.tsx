@@ -34,6 +34,7 @@ function row(overrides: Record<string, unknown> = {}) {
     subtotal: "1000000", total: "1000000", paidAmount: "0", remainingBalance: "1000000",
     holdState: "VALID", canAcceptPayment: true, paymentCount: 0, canCorrect: false, canCancel: false,
     pricingMode: "LIST", priceMode: "LIST", wholesaleConfirmed: false, canConfirmWholesale: false,
+    pricingModel: "FIXED_TOTAL", checkoutRequired: false,
     ...overrides,
   };
 }

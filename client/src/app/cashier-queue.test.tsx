@@ -23,6 +23,8 @@ type QueueRow = {
   priceMode: "LIST";
   wholesaleConfirmed: boolean;
   canConfirmWholesale: boolean;
+  pricingModel: "FIXED_TOTAL" | "PROPORTIONAL_V1";
+  checkoutRequired: boolean;
 };
 
 type Payment = {
@@ -71,6 +73,8 @@ function row(overrides: Partial<QueueRow> = {}): QueueRow {
     priceMode: "LIST",
     wholesaleConfirmed: false,
     canConfirmWholesale: false,
+    pricingModel: "FIXED_TOTAL",
+    checkoutRequired: false,
     ...overrides,
   };
 }

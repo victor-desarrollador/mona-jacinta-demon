@@ -4,6 +4,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { catalogCashPrice } from "./catalog-price";
+import ProportionalChargePanel, { CodedApiError } from "./ProportionalChargePanel";
+import type { CheckoutAttempt } from "./checkout-quote";
 
 type User = {
   id: string;
@@ -42,6 +44,10 @@ type SaleStatus = "DRAFT" | "PENDING_PAYMENT" | "PAID" | "COMPLETED" | "CANCELLE
 // renders it. LIST is the ordinary price; WHOLESALE is sale-scoped.
 type PricingMode = "LIST" | "WHOLESALE";
 type PriceMode = "CASH" | "LIST" | "CREDIT_CARD" | "DEBIT_CARD" | "BANK_TRANSFER" | "QR";
+// R3-A4.2b: the settlement circuit the server persists on the sale. The POS
+// reads it and never infers it: a PROPORTIONAL_V1 sale is charged by its own
+// checkout circuit, and `checkoutRequired` is the routing artifact.
+type PricingModel = "FIXED_TOTAL" | "PROPORTIONAL_V1";
 
 type SaleItem = {
   id: string;
@@ -95,6 +101,12 @@ type PendingSale = {
   priceMode?: PriceMode;
   wholesaleConfirmed?: boolean;
   canConfirmWholesale?: boolean;
+  // R3-A4.2b: persisted settlement circuit. Both fields are required by the
+  // queue parser and must be coherent: an absent model (or a pair that
+  // contradicts itself) would silently route a proportional sale through the
+  // historical payment path, so the whole queue fails closed instead.
+  pricingModel: PricingModel;
+  checkoutRequired: boolean;
 };
 
 type CancellationReason = "WRONG_ITEM" | "WRONG_QUANTITY" | "CUSTOMER_CHANGED_MIND" | "DUPLICATE_SALE" | "OTHER";
@@ -205,6 +217,15 @@ function formatSignedMoney(value: string) {
   return formatMoney(value);
 }
 
+// R3-A4.2b: las herramientas de dinero y de fecha del POS, pasadas al panel
+// proporcional como valor. El panel no reimplementa ninguna.
+const MONEY_TOOLS = {
+  parse: arsToCents,
+  prefill: centsToArsInput,
+  format: formatMoney,
+  formatInstant: formatDateTime,
+};
+
 // CASH-1.1: shape check for one close row (history entry or close answer).
 // The server is authoritative; this only keeps a malformed payload from
 // breaking render or being shown as an invented amount. Money is integer
@@ -239,6 +260,7 @@ const QUEUE_STATUSES = new Set<unknown>(["PENDING_PAYMENT", "PAID"]);
 const HOLD_STATES = new Set<unknown>(["VALID", "EXPIRED", "PAYMENT_PROTECTED", "PAID", "COVERAGE_INVALID"]);
 const PRICING_MODES = new Set<unknown>(["LIST", "WHOLESALE"]);
 const PRICE_MODES = new Set<unknown>(["CASH", "LIST", "CREDIT_CARD", "DEBIT_CARD", "BANK_TRANSFER", "QR"]);
+const PRICING_MODELS = new Set<unknown>(["FIXED_TOTAL", "PROPORTIONAL_V1"]);
 const PAYMENT_METHODS = new Set<unknown>(["CASH", "TRANSFER", "CARD_DEBIT", "CARD_CREDIT", "QR"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -278,6 +300,10 @@ function isPendingSale(value: unknown): value is PendingSale {
     && HOLD_STATES.has(value.holdState)
     && PRICING_MODES.has(value.pricingMode)
     && PRICE_MODES.has(value.priceMode)
+    && PRICING_MODELS.has(value.pricingModel)
+    && typeof value.checkoutRequired === "boolean"
+    // La coherencia va en el parser: cada modelo tiene un único circuito.
+    && value.checkoutRequired === (value.pricingModel === "PROPORTIONAL_V1")
     && Number.isSafeInteger(value.paymentCount) && (value.paymentCount as number) >= 0
     && ["canAcceptPayment", "canCorrect", "canCancel", "wholesaleConfirmed", "canConfirmWholesale"]
       .every((key) => typeof value[key] === "boolean");
@@ -455,6 +481,45 @@ async function apiRequest<T>(
   }
 
   return body as T;
+}
+
+// R3-A4.2b: el mismo transporte, pero conservando el código y los `details`
+// que la respuesta traiga. Lo usa EXCLUSIVAMENTE el circuito proporcional: sin
+// ellos el POS no puede distinguir una cotización vencida (409
+// CHECKOUT_QUOTE_CHANGED, con el importe vigente) de un fallo de red, y
+// `apiRequest` los descarta a propósito para el resto de las operaciones.
+async function apiRequestCoded(
+  path: string,
+  token: string | null,
+  options: RequestInit = {},
+): Promise<unknown> {
+  const headers = new Headers(options.headers);
+  headers.set("Content-Type", "application/json");
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  const body = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const failure = body as {
+      error?: { code?: string; message?: string; details?: unknown };
+      message?: string;
+    };
+    const fallback =
+      response.status === 401
+        ? "No autorizado."
+        : response.status === 403
+          ? "No tenés permiso para realizar esta acción."
+          : "No se pudo completar la operación.";
+    throw new CodedApiError(
+      userFacingError(failure.message ?? failure.error?.message, fallback),
+      response.status,
+      failure.error?.code ?? null,
+      failure.error?.details ?? null,
+    );
+  }
+
+  return body;
 }
 
 type PosMode = "seller" | "cashier" | null;
@@ -1115,6 +1180,26 @@ function CashierWorkspace({
   const canViewCashHistory = user.permissions.includes("cash.session.close");
   const [pendingSales, setPendingSales] = useState<PendingSale[]>([]);
   const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null);
+  // R3-A4.2b: registro de intentos del cobro proporcional, por venta. Vive acá
+  // —y no dentro del panel— porque un intento tiene que sobrevivir al cambio de
+  // venta, al refresco de la cola (incluido el sondeo de 15 s) y al
+  // montaje/desmontaje del panel. Un intento pendiente, incierto o confirmado
+  // NUNCA se descarta solo: la venta puede dejar la cola y su intento sigue.
+  //
+  // Límite declarado: es memoria del proceso. Una recarga completa de la página
+  // lo pierde, y con él la única prueba local de la clave ya enviada. No se
+  // persiste en localStorage/sessionStorage (ver los riesgos en el informe de
+  // R3-A4.2b): una copia en el navegador quedaría fuera del ciclo de vida de la
+  // sesión y del token, y sobreviviría al cierre de sesión.
+  const [checkoutAttempts, setCheckoutAttempts] = useState<Record<string, CheckoutAttempt>>({});
+  const checkoutInFlight = useRef<Set<string>>(new Set());
+  const codedRequest = useCallback(
+    (path: string, options: RequestInit) => apiRequestCoded(path, token, options),
+    [token],
+  );
+  const recordAttempt = useCallback((next: CheckoutAttempt) => {
+    setCheckoutAttempts((current) => ({ ...current, [next.saleId]: next }));
+  }, []);
   // M1: payment lists are kept per sale (the last validated list of each), so
   // another sale's payments (or "no payments") are never shown under the
   // selected one, and returning to a sale keeps its last validated list.
@@ -1167,6 +1252,11 @@ function CashierWorkspace({
       paidAmount: completedSale.total,
       remainingBalance: "0",
       priceMode: completedSale.priceMode,
+      // El snapshot completado sólo lo produce el flujo FIXED_TOTAL (POST
+      // /complete): una venta proporcional se cobra por su propio circuito y
+      // nunca llega acá.
+      pricingModel: "FIXED_TOTAL",
+      checkoutRequired: false,
     };
   }, [completedSale, selectedSaleId]);
   const displaySale = selectedSale ?? completedSnapshot;
@@ -1185,6 +1275,10 @@ function CashierWorkspace({
   const effectivePaidAmount = completedSnapshot ? saleTotal : displaySale ? cents(displaySale.paidAmount) : ZERO;
   const remaining = completedSnapshot ? ZERO : displaySale ? cents(displaySale.remainingBalance) : ZERO;
   const isPaid = Boolean(displaySale && saleTotal > ZERO && remaining === ZERO);
+  // R3-A4.2b: el circuito lo decide el `checkoutRequired` que el servidor
+  // persistió, nunca una inferencia local. La coherencia con `pricingModel` ya
+  // la exigió el parser de la cola, así que acá alcanza con leerlo.
+  const proportionalCircuit = displaySale?.checkoutRequired === true;
   const paymentBlocked = selectedSale?.canAcceptPayment === false;
   const selectedStatus = completedSale?.id === selectedSaleId ? "COMPLETED" : isPaid ? "PAID" : "PENDING_PAYMENT";
   const cashReceivedCents = arsToCents(cashReceived);
@@ -2037,7 +2131,8 @@ function CashierWorkspace({
         <div className="cart-heading">
           <div>
             <p className="eyebrow">Cobro</p>
-            <h2>Registrar pago</h2>
+            {/* El circuito persistido es la señal: nunca hay dos cobros posibles. */}
+            <h2>{proportionalCircuit ? "Cobro proporcional" : "Registrar pago"}</h2>
           </div>
         </div>
 
@@ -2047,6 +2142,18 @@ function CashierWorkspace({
             <p>Sin venta seleccionada</p>
             <small>Seleccioná una venta pendiente para cobrar.</small>
           </div>
+        ) : proportionalCircuit ? (
+          <ProportionalChargePanel
+            key={displaySale.saleId}
+            request={codedRequest}
+            money={MONEY_TOOLS}
+            sale={displaySale}
+            cashSession={cashSession}
+            chargeBlocked={paymentBlocked}
+            attempt={checkoutAttempts[displaySale.saleId] ?? null}
+            inFlight={checkoutInFlight}
+            onAttempt={recordAttempt}
+          />
         ) : (
           <>
             <div className="payment-summary">

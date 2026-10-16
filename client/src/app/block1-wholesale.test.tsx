@@ -72,6 +72,7 @@ function queueRow(overrides: QueueRow = {}): QueueRow {
     pricingMode: "WHOLESALE", wholesaleConfirmed: false, canConfirmWholesale: true,
     // M1: the queue validator requires every field GET /sales/pending always sends.
     priceMode: "LIST",
+    pricingModel: "FIXED_TOTAL", checkoutRequired: false,
     ...overrides,
   };
 }

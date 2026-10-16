@@ -20,6 +20,8 @@ type QueueRow = {
   holdState: "VALID" | "EXPIRED" | "PAYMENT_PROTECTED" | "PAID" | "COVERAGE_INVALID";
   canAcceptPayment: boolean; paymentCount: number; canCorrect: boolean; canCancel: boolean;
   pricingMode: "LIST" | "WHOLESALE"; priceMode: "LIST"; wholesaleConfirmed: boolean; canConfirmWholesale: boolean;
+  // R3-A4.2b: the queue parser requires the persisted settlement circuit.
+  pricingModel: "FIXED_TOTAL" | "PROPORTIONAL_V1"; checkoutRequired: boolean;
 };
 
 type Payment = {
@@ -56,6 +58,7 @@ function row(overrides: Partial<QueueRow> = {}): QueueRow {
     holdState: "VALID", canAcceptPayment: true, paymentCount: 0, canCorrect: true, canCancel: true,
     // M1: the queue validator requires every field GET /sales/pending always sends.
     pricingMode: "LIST", priceMode: "LIST", wholesaleConfirmed: false, canConfirmWholesale: false,
+    pricingModel: "FIXED_TOTAL", checkoutRequired: false,
     ...overrides,
   };
 }
