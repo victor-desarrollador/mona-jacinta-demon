@@ -481,6 +481,64 @@ Roadmap and status detail: Living Blueprint §1.5 and §23 rows 44–64.
   operation (DEV/TEST/LOCAL_TEST/DEMO/PILOT/production), deployment, branch
   switch, OS change, or work on `feat/demo-v2`.
 
+**2026-10-16 — R3-A4.3 proportional checkout: S1–S4 statically approved
+(registration, not a supersession).** The proportional (mixed-payment) checkout
+increment R3-A4.3 is implemented and undeployed: not released, not applied to
+any database. Its exact status:
+
+```
+IMPLEMENTADO PARCIALMENTE — S1–S4 APROBADOS ESTÁTICAMENTE — NO DESPLEGADO — PostgreSQL PENDIENTE
+```
+
+- **Design approved.** Codex returned APPROVED as a **static design review**
+  after the final normative corrections F6, T-X and P21b. That verdict does not
+  validate the S1 implementation and does not validate PostgreSQL behaviour.
+- **Approved slice sequence:** S1 → S2 → S3 → S4 → S5 → S6 → S-REF → S7 (T-S and
+  T-RR) → S8 (guards) → S9 (gate and cut-over) → S10 (client and admin) → S11
+  (R3-T). **S1–S4 are approved statically; S5–S11 (and S-REF) are pending.**
+- **Two R3 migrations**, both additive: R3-A2
+  `20261016120000_r3_proportional_checkout` (15340 bytes, sha256
+  `217e87eb5b156a57a5edcfd73433e1e9558ce59caa019208d9df8c0268f08dc6`) and
+  R3-A4.3 S1 `20261016130000_r3_checkout_attempts` (35290 bytes, sha256
+  `076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148`). The
+  joined pin over the nine migration files of the reviewed tree is
+  `1ca60b06b0f74e74713448900d2b3b5a6c6887a805f4f88695020b4198888137`. R3-A2 is
+  never touched; no already-applied migration is rewritten.
+- **G9 protected contract** (`api/scripts/local-test-fingerprint.ts`) now pins
+  **298 columns / 32 relations / 17 enums / 9 protected functions / 3 jsonb**,
+  `checked` = 290. Of the nine protected functions, **six are new** in the ninth
+  migration (F1–F6), including `fn_external_collection_guard`; the three
+  pre-existing are `fn_sale_payment_history`, `fn_sale_payment_truncate_guard`
+  and `fn_sale_wholesale_frozen_after_payment`.
+  `scripts/database/d5h-preflight.test.mjs` recognizes the two R3 migrations as
+  reviewed-tree entries only; `D5H_MIGRATIONS` keeps its six pins, and
+  `scripts/database/pilot-migrate.mjs` keeps `APPROVED_MIGRATION_PAYLOAD`
+  at G7. No R3 migration is enabled for application by any D5H or pilot path.
+- **Recorded documentary limits** (`docs/architecture/r3-a4.3-checkout-contract.md`
+  §12): the approved contract package is outside the repository; the pasted
+  source carries contradictory review-tail markers; this slice repins the
+  G9-affected contract observers: the mirrored-constant drift guard
+  (`api/tests/protected-capability-static.test.ts`), the baseline count pins
+  (`api/tests/local-test-baseline.test.ts`, now 298; the six new relations
+  classified `PRESERVED_FROM_BACKUP`) and the runtime count pins
+  (`api/tests/protected-capability-runtime.test.ts`: `LOCKED_TABLES` now derives
+  from `PROTECTED_RELATIONS.length`, with an explicit G9 pin of 32 relations,
+  and its lock-count, SQL-order and snapshot assertions stay
+  regression-sensitive). All of these DB-free suites pass. The operational G7
+  witness (`scripts/database/local-test-witness.mjs`) stays at 26 relations and
+  `BACKUP_SCHEMA_GENERATIONS` is not extended; G9 is not enabled in
+  `pilot-migrate.mjs` or `local-test-prepare.mjs`. No global green gate is
+  claimed beyond the suites actually executed, and no PostgreSQL evidence exists
+  (P21–P55 NOT RUN).
+- **The PILOT gate `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` is NOT implemented**
+  (it belongs to S-REF). The implemented fail-closed gate is
+  `PROPORTIONAL_CHECKOUT_LOCATION_IDS`, read only in `createDraftSale`.
+- **Authorizes nothing.** No database operation (DEV/TEST/LOCAL_TEST/DEMO/PILOT/
+  production), no migration execution, no backup bypass, no commit, no
+  deployment and no `feat/demo-v2` work. **Supersedes nothing:** the frozen
+  `docs/production-v1/*` requirements, Pilot Pricing V2, the authorization
+  model and the Database safety rules all stay in force.
+
 **Living Blueprint**: `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` is
 the persistent implementation/status/failure/lessons ledger. Read it before
 substantial work; update it after implementation, review, checkpoint, and
