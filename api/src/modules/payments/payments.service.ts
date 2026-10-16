@@ -1,4 +1,4 @@
-import type { PriceType, PrismaClient, SalePayment } from '../../generated/prisma/client.js';
+import type { PriceType, PrismaClient, SalePayment, SalePricingModel } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
@@ -11,7 +11,8 @@ import { assertPaymentCompatible, type PriceMode } from '../pricing/pricing.js';
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
 type LockedSale = {
   id: string; branchId: string; status: string; total: bigint;
-  pricingMode: PriceType; priceMode: PriceMode; wholesaleConfirmedAt: Date | null; wholesaleConfirmedById: string | null;
+  pricingMode: PriceType; priceMode: PriceMode; pricingModel: SalePricingModel;
+  wholesaleConfirmedAt: Date | null; wholesaleConfirmedById: string | null;
 };
 
 const transient = (error: unknown) => {
@@ -33,6 +34,15 @@ const isIdempotencyConflict = (error: unknown) => {
 
 function invalidState() {
   return new AppError(409, 'INVALID_SALE_STATE', 'La venta no admite nuevos pagos en su estado actual.');
+}
+
+// R3-A3.4 (R3 rev. 2 §5): a PROPORTIONAL_V1 sale is settled ONLY by the
+// proportional checkout. The decision is the persisted Sale.pricingModel read
+// under the Sale row lock (below), never the branch policy variable, which is
+// consulted once by createDraftSale. No payment, cash movement, reservation
+// change or audit row is written on this path.
+function checkoutRequired() {
+  return new AppError(409, 'CHECKOUT_REQUIRED', 'Esta venta se cobra con el checkout proporcional.');
 }
 
 // Pilot P0.1-C: stable, detail-free rejections for a NEW payment. The
@@ -69,11 +79,16 @@ export function createPaymentsService(database: PrismaClient) {
   async function attempt(req: RequestLike, userId: string, saleId: string, input: RegisterPaymentInput) {
     return database.$transaction(async (tx) => {
       const [sale] = await tx.$queryRaw<LockedSale[]>`
-        SELECT id, "branchId", status, total, "pricingMode", "priceMode", "wholesaleConfirmedAt", "wholesaleConfirmedById"
+        SELECT id, "branchId", status, total, "pricingMode", "priceMode", "pricingModel", "wholesaleConfirmedAt", "wholesaleConfirmedById"
         FROM "Sale" WHERE id = ${saleId} FOR UPDATE
       `;
       if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
       assertCurrentBranch(req, sale.branchId);
+
+      // R3-A3.4 (R3 rev. 2 §5): the durable path, decided on the row just
+      // locked. A proportional sale never takes the historical payment path —
+      // not even a replay of its own key.
+      if (sale.pricingModel === 'PROPORTIONAL_V1') throw checkoutRequired();
 
       const existing = await tx.salePayment.findUnique({
         where: { saleId_idempotencyKey: { saleId, idempotencyKey: input.idempotencyKey } },

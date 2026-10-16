@@ -139,6 +139,32 @@ export function actsAsRoleAtLocation(
     && assignment.permissions.includes(permission));
 }
 
+// R3-A4.3 (C1–C5 §4.3, correction C3): a SUPERVISOR acting at a location —
+// exceptional checkout confirmation, closing/declaring an attempt, supervised
+// stock recovery, recovery reservation and external refund registration.
+// Stricter than hasPermissionAtLocation, layered ON TOP of nothing else:
+//   - OWNER qualifies only through isOwner(ctx) (a valid COMPANY assignment);
+//   - otherwise ONE assignment must be roleCode ADMIN AND scopeKind COMPANY AND
+//     hold EVERY requested permission. Permissions are never combined across
+//     assignments; a LOCATION-scoped ADMIN never qualifies; no other role
+//     qualifies whatever permissions it holds (e.g. a CASHIER's own
+//     SALE_CANCEL_PENDING grant).
+// An empty locationId, an empty permission list or an empty permission code
+// fails closed, even for OWNER. Same contract as the rest of this module: a
+// COMPANY assignment covers any non-empty locationId, so the caller passes the
+// persisted location of the resource (sale.branchId read under lock).
+export function actsAsSupervisorAtLocation(
+  ctx: Ctx,
+  permissions: readonly string[],
+  locationId: string,
+): boolean {
+  if (!locationId || permissions.length === 0 || permissions.some((permission) => !permission)) return false;
+  if (isOwner(ctx)) return true;
+  return ctx.assignments.some((assignment) => assignment.roleCode === ROLE_CODES.ADMIN
+    && assignment.scopeKind === 'COMPANY'
+    && permissions.every((permission) => assignment.permissions.includes(permission)));
+}
+
 // Coarse membership only — "is this location within ANY assignment, in ANY
 // capacity" — no permission attached, and therefore not subject to the
 // COMPANY-required rule at all (there is no permission to check it

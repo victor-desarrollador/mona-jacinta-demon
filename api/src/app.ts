@@ -22,6 +22,7 @@ import { createInventoryRouter } from './modules/inventory/inventory.routes.js';
 import { createCashRouter } from './modules/cash/cash.routes.js';
 import { createSalesRouter } from './modules/sales/sales.routes.js';
 import { createPaymentsRouter } from './modules/payments/payments.routes.js';
+import { createCheckoutAttemptsRouter } from './modules/payments/checkout-attempts-recent.routes.js';
 import { createPricingRouter } from './modules/pricing/pricing.routes.js';
 import { createReservationAdminRouter } from './modules/sales/cancellation.routes.js';
 import { createAuditRouter } from './modules/audit/audit.routes.js';
@@ -62,6 +63,8 @@ export function createApp(database: PrismaClient = defaultPrisma, realtime: Real
   app.use('/api/v1/inventory', createInventoryRouter(database));
   app.use('/api/v1/sales', createSalesRouter(database, realtime));
   app.use('/api/v1/sales', createPaymentsRouter(database, realtime));
+  // R3-A4.3 S4: reload recovery of checkout attempts, outside /sales/:saleId.
+  app.use('/api/v1/checkout-attempts', createCheckoutAttemptsRouter(database));
   app.use('/api/v1/cash', createCashRouter(database));
   app.use('/api/v1/backoffice', createBackofficeRouter(database));
   app.use('/api/v1/admin', createReservationAdminRouter(database, realtime));

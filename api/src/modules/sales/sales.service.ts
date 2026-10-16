@@ -1,4 +1,4 @@
-import { Prisma, type PriceType, type PrismaClient } from '../../generated/prisma/client.js';
+import { Prisma, type PriceType, type PrismaClient, type SalePricingModel } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { actsAsRoleAtLocation, hasPermissionAtLocation } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
@@ -9,45 +9,39 @@ import { createInventoryService } from '../inventory/inventory.service.js';
 import type { AddSaleItemInput, UpdateSaleItemInput } from './dto/sale-item.dto.js';
 import { createReservationService } from './reservation.service.js';
 import { createCancellationService } from './cancellation.service.js';
-import { cashierHoldState, canAcceptPayment, evaluateCurrentHoldCoverage, type HoldCoverageFailure } from './hold-coverage.js';
+import { cashierHoldState, canAcceptPayment } from './hold-coverage.js';
 import {
-  assertPricingFinalizable,
   createWholesaleCodeVerifier,
   parseWholesaleCode,
   unitPriceFor,
   type WholesaleCodeVerifier,
 } from './wholesale-authorization.service.js';
+import { saleInclude, notFound, completionConflict, finalizePaidSaleInTransaction } from './sale-finalization.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 import { REALTIME_EVENTS } from '../../realtime/socket.js';
 import { type PriceCalculation, type PriceMode } from '../pricing/pricing.js';
 import { createPricingService } from '../pricing/pricing.service.js';
+import { env } from '../../config/env.js';
 
 type SaleDatabase = PrismaClient;
-
-const saleInclude = {
-  items: {
-    orderBy: { id: 'asc' as const },
-    include: {
-      variant: {
-        select: {
-          id: true, sku: true, barcode: true, color: true, size: true,
-          price: true, cashPrice: true, isActive: true,
-          product: { select: { id: true, name: true, slug: true, isActive: true } },
-        },
-      },
-    },
-  },
-  branch: { select: { id: true, name: true, code: true } },
-  seller: { select: { id: true, name: true, email: true } },
-} satisfies Prisma.SaleInclude;
-
-function notFound(message: string) {
-  return new AppError(404, 'NOT_FOUND', message);
-}
 
 function ensureDraft(sale: { status: string }) {
   if (sale.status !== 'DRAFT') {
     throw new AppError(409, 'SALE_NOT_DRAFT', 'La venta no se encuentra en borrador.');
+  }
+}
+
+// R3-A3.5 (R3 rev. 2 §5): a PROPORTIONAL_V1 sale is priced in CASH for its
+// whole life — its checkout needs the CASH snapshot — so no other price mode
+// may ever be written to it. The database CHECK is a backstop, never the
+// business rule: this is refused before any write, under the Sale lock.
+function ensurePriceModeApplies(pricingModel: SalePricingModel, priceMode: PriceMode) {
+  if (pricingModel === 'PROPORTIONAL_V1' && priceMode !== 'CASH') {
+    throw new AppError(
+      409,
+      'PRICE_MODE_NOT_APPLICABLE',
+      'Una venta con cobro proporcional solo admite el modo de precio CASH.',
+    );
   }
 }
 
@@ -60,19 +54,6 @@ function ensureSaleAccess(
   if (sale.sellerId !== userId) {
     throw new AppError(403, 'FORBIDDEN', 'No cuenta con permisos para esta venta.');
   }
-}
-
-function completionConflict(code: string, message: string, details?: unknown) {
-  return new AppError(409, code, message, details);
-}
-
-// Pilot P0.1-C: completion keeps its pre-existing stable codes/messages for
-// each current-coverage defect.
-function completionCoverageError(reason: HoldCoverageFailure, variantId?: string) {
-  if (reason === 'INVALID_ITEM_QUANTITY') return completionConflict('INVALID_SALE_QUANTITY', 'La venta contiene una cantidad inválida.');
-  if (reason === 'NO_ITEMS') return completionConflict('INVALID_RESERVATION', 'La venta no tiene cantidades para finalizar.');
-  if (reason === 'INVALID_HOLD') return completionConflict('INVALID_RESERVATION', 'La reserva de la venta no es válida para finalizarse.');
-  return completionConflict('INVALID_RESERVATION', 'Las reservas no respaldan exactamente los artículos de la venta.', variantId ? { variantId } : undefined);
 }
 
 function isTransientCompletionError(error: unknown) {
@@ -104,8 +85,8 @@ async function recalculateTotals(tx: Prisma.TransactionClient, saleId: string) {
 // so it serializes with a wholesale activation and can never snapshot a
 // price from the other catalog column.
 async function lockDraft(tx: Prisma.TransactionClient, saleId: string) {
-  const [sale] = await tx.$queryRaw<Array<{ id: string; status: string; pricingMode: PriceType; priceMode: PriceMode; total: bigint }>>`
-    SELECT id, status, "pricingMode", "priceMode", total FROM "Sale" WHERE id = ${saleId} FOR UPDATE
+  const [sale] = await tx.$queryRaw<Array<{ id: string; status: string; pricingMode: PriceType; priceMode: PriceMode; pricingModel: SalePricingModel; total: bigint }>>`
+    SELECT id, status, "pricingMode", "priceMode", "pricingModel", total FROM "Sale" WHERE id = ${saleId} FOR UPDATE
   `;
   if (!sale) throw notFound('No se encontró la venta.');
   ensureDraft(sale);
@@ -127,7 +108,14 @@ function priceSnapshotData(price: PriceCalculation) {
 export function createSalesService(
   database: SaleDatabase,
   // Block 1: without a verifier, wholesale activation is unavailable.
-  options: { realtime?: RealtimeEmitter; wholesaleVerifier?: WholesaleCodeVerifier } = {},
+  options: {
+    realtime?: RealtimeEmitter;
+    wholesaleVerifier?: WholesaleCodeVerifier;
+    // R3-A3.4: the branch policy seam. Production resolves the parsed
+    // environment value; a test injects its own list. The value is only ever
+    // consulted on the sale-creation path (createDraftSale below).
+    proportionalCheckoutLocationIds?: readonly string[];
+  } = {},
 ) {
   const wholesaleVerifier = options.wholesaleVerifier ?? createWholesaleCodeVerifier(undefined);
   const pricing = createPricingService(database);
@@ -166,6 +154,14 @@ export function createSalesService(
     return sale;
   }
 
+  // R3-A3.4 (R3 rev. 2 §1, §5): the branch policy, resolved lazily so the
+  // environment value is read at creation time (never at startup wiring) and
+  // so a test can substitute its own list. createDraftSale is its only caller:
+  // no other code path in the API consults this variable.
+  function proportionalCheckoutLocationIds(): readonly string[] {
+    return options.proportionalCheckoutLocationIds ?? env.PROPORTIONAL_CHECKOUT_LOCATION_IDS;
+  }
+
   async function createDraftSale(
     req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, requestedBranchId?: string,
   ) {
@@ -178,11 +174,18 @@ export function createSalesService(
     const location = await database.location.findUnique({ where: { id: branchId }, select: { isActive: true } });
     if (!location || !location.isActive) throw notFound('No se encontró la sucursal.');
     assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.SALE_CREATE, branchId);
+    // R3-A3.4 (R3 rev. 2 §5): the ONE read of the branch policy, and the only
+    // moment the durable checkout path is chosen. Sale.pricingModel is written
+    // here; every later decision reads that persisted column under the sale
+    // lock, so a policy change never re-routes an existing sale.
+    const pricingModel: SalePricingModel = proportionalCheckoutLocationIds().includes(branchId)
+      ? 'PROPORTIONAL_V1'
+      : 'FIXED_TOTAL';
     return database.$transaction(async (tx) => {
       const sale = await tx.sale.create({
         // Owner 2026-10-06: an unselected price mode is CASH, set here so the
         // default never rests on a database default.
-        data: { sellerId: userId, branchId, status: 'DRAFT', priceMode: 'CASH', subtotal: 0n, discountTotal: 0n, total: 0n },
+        data: { sellerId: userId, branchId, status: 'DRAFT', priceMode: 'CASH', pricingModel, subtotal: 0n, discountTotal: 0n, total: 0n },
         include: saleInclude,
       });
       await createAuditLog(tx, {
@@ -328,6 +331,9 @@ export function createSalesService(
     ensureDraft(sale);
     return database.$transaction(async (tx) => {
       const locked = await lockDraft(tx, saleId);
+      // Before the same-mode early return too: the durable checkout path, not
+      // the branch policy, decides which price modes this sale may hold.
+      ensurePriceModeApplies(locked.pricingModel, priceMode);
       if (locked.priceMode === priceMode) return tx.sale.findUniqueOrThrow({ where: { id: saleId }, include: saleInclude });
       const items = await tx.saleItem.findMany({
         where: { saleId }, orderBy: { id: 'asc' },
@@ -443,7 +449,7 @@ export function createSalesService(
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: {
         id: true, saleNumber: true, subtotal: true, total: true, status: true, branchId: true,
-        sellerId: true, pricingMode: true, priceMode: true, wholesaleConfirmedAt: true,
+        sellerId: true, pricingMode: true, priceMode: true, pricingModel: true, wholesaleConfirmedAt: true,
         seller: { select: { name: true } },
         // Historical item snapshots only; never join the current catalog.
         items: {
@@ -485,6 +491,11 @@ export function createSalesService(
         paymentCount: sale.payments.length,
         pricingMode: sale.pricingMode,
         priceMode: sale.priceMode,
+        // R3-A3.5: the durable checkout path, derived from the persisted
+        // column alone — never from the branch policy — so the POS can route
+        // the sale instead of guessing it from the branch configuration.
+        pricingModel: sale.pricingModel,
+        checkoutRequired: sale.pricingModel === 'PROPORTIONAL_V1',
         wholesaleConfirmed,
         canConfirmWholesale: sale.pricingMode === 'WHOLESALE' && !wholesaleConfirmed && sale.status === 'PENDING_PAYMENT'
           && Boolean(auth && auth.userId !== sale.sellerId
@@ -498,140 +509,13 @@ export function createSalesService(
     });
   }
 
-  async function completeSaleInTransaction(
-    tx: Prisma.TransactionClient,
-    req: Parameters<typeof assertPermissionAtLocation>[0],
-    userId: string,
-    saleId: string,
-  ) {
-    const [sale] = await tx.$queryRaw<Array<{
-      id: string;
-      branchId: string;
-      status: string;
-      total: bigint;
-      pricingMode: PriceType;
-      priceMode: PriceMode;
-      wholesaleConfirmedAt: Date | null;
-      wholesaleConfirmedById: string | null;
-    }>>`
-      SELECT id, "branchId", status, total, "pricingMode", "priceMode", "wholesaleConfirmedAt", "wholesaleConfirmedById"
-      FROM "Sale"
-      WHERE id = ${saleId}
-      FOR UPDATE
-    `;
-    if (!sale) throw notFound('No se encontró la venta.');
-
-    // Phase 1D.3.1 SWITCH: the real decision is the Production SALE_COMPLETE
-    // grant paired with this sale's own location (req.auth.assignments), not
-    // a bare effectiveLocationIds membership check.
-    if (!req.auth || !hasPermissionAtLocation(req.auth, PRODUCTION_PERMISSIONS.SALE_COMPLETE, sale.branchId)) {
-      throw new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
-    }
-
-    if (sale.status === 'COMPLETED') return tx.sale.findUniqueOrThrow({ where: { id: saleId }, include: saleInclude });
-    if (sale.status !== 'PAID') throw completionConflict('INVALID_SALE_STATE', 'La venta no está lista para finalizarse.');
-
-    // Block 1: defense in depth (payment already requires it; the DB CHECK
-    // chk_sale_wholesale_confirmed_when_paid is the last guard).
-    assertPricingFinalizable(sale);
-    const items = await tx.saleItem.findMany({ where: { saleId }, select: { variantId: true, quantity: true } });
-
-    // Pilot P0.1-C: only CURRENT ACTIVE holds back a completion. Historical
-    // RELEASED/CONSUMED rows are neither locked, matched nor re-consumed.
-    // A PAID sale is completable after its original expiresAt (the sweeper
-    // never touches PAID). Lock order stays Sale -> StockReservation(id
-    // ASC) -> Inventory(id ASC), the same prefix as B1 release and cancel.
-    const activeHolds = await tx.$queryRaw<Array<{
-      id: string;
-      variantId: string;
-      branchId: string;
-      quantity: bigint;
-      expiresAt: Date;
-    }>>`
-      SELECT id, "variantId", "branchId", quantity, "expiresAt"
-      FROM "StockReservation"
-      WHERE "saleId" = ${saleId} AND status = 'ACTIVE'
-      ORDER BY id ASC
-      FOR UPDATE
-    `;
-    const coverage = evaluateCurrentHoldCoverage({
-      branchId: sale.branchId, items, activeHolds, policy: { kind: 'PAID_COMPLETION' },
-    });
-    if (!coverage.ok) throw completionCoverageError(coverage.reason, coverage.variantId);
-    const { requirements } = coverage;
-
-    const variantIds = [...requirements.keys()];
-    const inventories = await tx.$queryRaw<Array<{
-      id: string;
-      variantId: string;
-      physical: bigint;
-      reserved: bigint;
-    }>>`
-      SELECT id, "variantId", physical, reserved
-      FROM "Inventory"
-      WHERE "branchId" = ${sale.branchId}
-        AND "variantId" IN (${Prisma.join(variantIds)})
-      ORDER BY id ASC
-      FOR UPDATE
-    `;
-    const inventoryByVariant = new Map(inventories.map((inventory) => [inventory.variantId, inventory]));
-    for (const [variantId, required] of requirements) {
-      const inventory = inventoryByVariant.get(variantId);
-      if (!inventory) throw completionConflict('INVENTORY_NOT_FOUND', 'No se encontró el inventario de la variante.', { variantId });
-      if (inventory.physical < required) throw completionConflict('INSUFFICIENT_PHYSICAL', 'El inventario físico no puede cubrir la venta.', { variantId });
-      if (inventory.reserved < required) throw completionConflict('INSUFFICIENT_RESERVED', 'El inventario reservado no puede cubrir la venta.', { variantId });
-    }
-
-    const finalizedInventory: Array<{ variantId: string; quantity: bigint }> = [];
-    for (const [variantId, required] of requirements) {
-      const inventory = inventoryByVariant.get(variantId)!;
-      await tx.inventory.update({
-        where: { id: inventory.id },
-        data: {
-          physical: inventory.physical - required,
-          reserved: inventory.reserved - required,
-        },
-      });
-      await tx.stockMovement.create({
-        data: {
-          inventoryId: inventory.id,
-          type: 'SALE',
-          quantityDelta: -required,
-          saleId,
-          userId,
-          branchId: sale.branchId,
-        },
-      });
-      finalizedInventory.push({ variantId, quantity: required });
-    }
-
-    const consumed = await tx.stockReservation.updateMany({
-      where: { id: { in: activeHolds.map(({ id }) => id) }, status: 'ACTIVE' },
-      data: { status: 'CONSUMED' },
-    });
-    if (consumed.count !== activeHolds.length) {
-      throw completionConflict('INVALID_RESERVATION', 'La reserva de la venta no es válida para finalizarse.');
-    }
-    await createAuditLog(tx, {
-      userId,
-      branchId: sale.branchId,
-      action: 'SALE_COMPLETED',
-      entityType: 'Sale',
-      entityId: saleId,
-      before: { status: 'PAID' },
-      after: { status: 'COMPLETED', inventory: finalizedInventory },
-    });
-    await tx.sale.update({ where: { id: saleId }, data: { status: 'COMPLETED' } });
-    return tx.sale.findUniqueOrThrow({ where: { id: saleId }, include: saleInclude });
-  }
-
   async function completeSale(
     req: Parameters<typeof assertPermissionAtLocation>[0], userId: string, saleId: string,
   ) {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
         return await database.$transaction(
-          (tx) => completeSaleInTransaction(tx, req, userId, saleId),
+          (tx) => finalizePaidSaleInTransaction(tx, req, userId, saleId),
           { isolationLevel: 'Serializable', timeout: 30000 },
         );
       } catch (error) {

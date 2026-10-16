@@ -85,6 +85,24 @@ const envSchema = z.object({
     (value) => (value === '' ? undefined : value),
     z.string().regex(/^\$2[aby]\$(1[0-9]|2[0-9]|3[01])\$[./A-Za-z0-9]{53}$/).optional(),
   ),
+  // R3-A3.4 (R3 rev. 2 §5): the durable selector of the proportional checkout
+  // path — comma-separated Location UUIDs (Location.id === Branch.id). It is
+  // read in exactly one place, createDraftSale, when a sale is created; that
+  // sale's Sale.pricingModel is fixed then and forever, and every later path
+  // decides from the persisted column. An absent, empty or whitespace-only
+  // value enables no branch. Otherwise the comma is a separator and nothing
+  // else: every segment is trimmed and KEPT, so a leading, trailing or
+  // intermediate empty segment is malformed configuration (never a silently
+  // dropped entry), and each segment must be a UUID. A malformed entry stops
+  // startup.
+  PROPORTIONAL_CHECKOUT_LOCATION_IDS: z
+    .string()
+    .default('')
+    .transform((value) => {
+      const configured = value.trim();
+      return configured === '' ? [] : configured.split(',').map((locationId) => locationId.trim());
+    })
+    .pipe(z.array(z.uuid())),
 }).transform(({ PORT, API_PORT, ...rest }, ctx) => {
   if (rest.NODE_ENV === 'test' && rest.TEST_DATABASE_URL === undefined) {
     ctx.addIssue({ code: 'custom', path: ['TEST_DATABASE_URL'], message: 'Required for tests' });

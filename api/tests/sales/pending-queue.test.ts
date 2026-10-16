@@ -225,6 +225,9 @@ describe('cashier pending-sales queue', () => {
       // Block 1: an ordinary sale is LIST and needs no wholesale confirmation.
       // Pilot Pricing V2: one customer price mode per sale (new sales default to CASH).
       pricingMode: 'LIST', priceMode: 'CASH', wholesaleConfirmed: false, canConfirmWholesale: false,
+      // R3-A3.5: the durable checkout path of the row (DB default here) and the
+      // flag the POS routes on; both derived from the persisted column only.
+      pricingModel: 'FIXED_TOTAL', checkoutRequired: false,
     }]);
   });
 
