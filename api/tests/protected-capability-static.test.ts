@@ -621,11 +621,30 @@ describe('executables: start guard, no restore, no path from the outcome tools t
 });
 
 describe('mirrored constants cannot drift (drift guard)', () => {
-  it('PROTECTED_RELATION_NAMES (witness.mjs) equals PROTECTED_RELATIONS (fingerprint.ts), same order, 26 entries', async () => {
+  // G8/G9 added exactly these six relations to the protected domain (ninth migration). The witness
+  // (local-test-witness.mjs) intentionally stays at the historical G7 set of 26 and is NOT revised here.
+  const NEW_IN_G8_G9 = ['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation'];
+  it('the witness keeps the historical 26-relation G7 subset, in order; G8/G9 add exactly the six new relations', async () => {
     const mod = (await import(pathToFileURL(path.join(DB_SCRIPTS, 'local-test-witness.mjs')).href)) as { PROTECTED_RELATION_NAMES: readonly string[] };
     const { PROTECTED_RELATIONS } = await import('../scripts/local-test-fingerprint.js');
-    expect([...mod.PROTECTED_RELATION_NAMES]).toEqual([...PROTECTED_RELATIONS]);
-    expect(PROTECTED_RELATIONS).toHaveLength(26);
+    const witness = [...mod.PROTECTED_RELATION_NAMES];
+    expect(witness).toHaveLength(26);
+    expect(PROTECTED_RELATIONS).toHaveLength(32);
+    // the 26 G7 relations are the correct historical subset of the 32, in the same (raw-byte) order
+    expect(witness).toEqual([...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G8_G9.includes(r)));
+    // and the difference is exactly the six new relations
+    expect([...PROTECTED_RELATIONS].filter((r) => !witness.includes(r))).toEqual(NEW_IN_G8_G9);
+  });
+  it('the operational witness exposes no G8/G9 backup generation (G7 stays the current contract)', async () => {
+    const mod = (await import(pathToFileURL(path.join(DB_SCRIPTS, 'local-test-witness.mjs')).href)) as {
+      PROTECTED_RELATION_NAMES: readonly string[];
+      BACKUP_SCHEMA_GENERATIONS: readonly { id: string; relations: readonly string[] }[];
+    };
+    expect(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id)).toEqual(['G1-5', 'G1-6', 'G1-7']);
+    for (const g of mod.BACKUP_SCHEMA_GENERATIONS) {
+      // every generation's relation set stays inside the historical 26: no generation carries a G8/G9 relation
+      expect(g.relations.every((r) => mod.PROTECTED_RELATION_NAMES.includes(r))).toBe(true);
+    }
   });
 });
 

@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -66,8 +66,19 @@ function fakeApi({ bin = 'link', version = '7.10.0', pinned = '7.10.0', config =
     writeFileSync(other, 'export default {}\n');
     symlinkSync(other, configPath);
   }
-  // Byte-exact copy of the real approved migrations tree (read-only source).
-  cpSync(path.join(API_DIR, 'prisma', 'migrations'), path.join(root, 'prisma', 'migrations'), { recursive: true });
+  // Synthetic G7 fixture: a byte-exact copy of ONLY the seven OWNER-approved migration directories
+  // (APPROVED_MIGRATION_PAYLOAD) plus migration_lock.toml, read from the real read-only source. The
+  // reviewed tree on disk may carry additional reviewed-but-unapplied migrations (G8/G9); those are not
+  // part of the operational G7 contract, so they must not be in this fixture — otherwise every functional
+  // case would be refused at phase=payload for a reason unrelated to what it is exercising. The real G9
+  // tree is asserted directly (H1/P27) to still be refused by the operational G7 payload.
+  const realMigrations = path.join(API_DIR, 'prisma', 'migrations');
+  const fixtureMigrations = path.join(root, 'prisma', 'migrations');
+  mkdirSync(fixtureMigrations, { recursive: true });
+  for (const { name } of APPROVED_MIGRATION_PAYLOAD.migrations) {
+    cpSync(path.join(realMigrations, name), path.join(fixtureMigrations, name), { recursive: true });
+  }
+  cpSync(path.join(realMigrations, 'migration_lock.toml'), path.join(fixtureMigrations, 'migration_lock.toml'));
   return root;
 }
 const API = fakeApi();
@@ -630,11 +641,26 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
   assert.ok(Object.isFrozen(APPROVED_MIGRATION_PAYLOAD) && Object.isFrozen(APPROVED_MIGRATION_PAYLOAD.migrations));
 });
 
-test('H1/P27: the real repository payload verifies against the pinned digests (files only)', () => {
-  const result = verifyMigrationPayload(API_DIR);
-  assert.equal(result.ok, true, result.reason);
-  assert.deepEqual(result.migrations.map((m) => [m.name, m.sha256]), APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
-  assert.equal(result.lock.sha256, APPROVED_MIGRATION_PAYLOAD.lock.sha256);
+test('H1/P27: the synthetic G7 fixture verifies against the pinned digests; the real G9 tree is refused by the operational G7 payload (files only)', () => {
+  const fixture = verifyMigrationPayload(fakeApi());
+  assert.equal(fixture.ok, true, fixture.reason);
+  assert.deepEqual(fixture.migrations.map((m) => [m.name, m.sha256]), APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
+  assert.equal(fixture.lock.sha256, APPROVED_MIGRATION_PAYLOAD.lock.sha256);
+  // The owner-authorized R3 migrations live in the reviewed tree but are NOT in the operational G7 payload:
+  // the payload still binds exactly its seven approved migrations and refuses everything else.
+  const real = verifyMigrationPayload(API_DIR);
+  assert.equal(real.ok, false);
+  assert.match(real.reason, /does not hold exactly the OWNER-approved migrations/);
+});
+
+test('H1/P27b: the real tree differs from the G7 payload by exactly the two reviewed R3 migrations (G8/G9)', () => {
+  const dirs = readdirSync(path.join(API_DIR, 'prisma', 'migrations'), { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name)
+    .sort();
+  const approved = APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => m.name).sort();
+  const extra = dirs.filter((name) => !approved.includes(name));
+  assert.deepEqual(extra, ['20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts']);
 });
 
 test('H1/P1: dry-run validates the payload and prints the names, digests and PASS lines', async () => {

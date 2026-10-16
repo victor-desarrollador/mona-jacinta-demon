@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { proveIdentityOnTransaction } from '../scripts/demo-database.js';
-import { DigestSink, protectedDomainContractSha256, type ProtectedTx } from '../scripts/local-test-fingerprint.js';
+import { DigestSink, PROTECTED_RELATIONS, protectedDomainContractSha256, type ProtectedTx } from '../scripts/local-test-fingerprint.js';
 import { TRANSFORMATION_CONTRACT_SHA256 } from '../scripts/local-test-baseline.js';
 import {
   OutcomeCheckFailure,
@@ -242,7 +242,17 @@ describe('commit gate (C10)', () => {
   });
 });
 
-const LOCKED_TABLES = 26;
+// G9: the runtime locks exactly the protected relation set. It is derived, never hard-coded, and the current
+// expected value is stated explicitly so an unchecked contract growth becomes a red test, not silent drift.
+const LOCKED_TABLES = PROTECTED_RELATIONS.length;
+const EXPECTED_LOCKED_TABLES = 32; // the 26 G7 relations + the 6 the ninth migration adds
+describe('protected relation count (G9)', () => {
+  it('the locked table count tracks the protected relation contract: 32 relations, 32 locks', () => {
+    expect(PROTECTED_RELATIONS).toHaveLength(EXPECTED_LOCKED_TABLES);
+    expect(LOCKED_TABLES).toBe(EXPECTED_LOCKED_TABLES);
+  });
+});
+
 describe('withProtectedResumeTransaction (T0–T16)', () => {
   it('AC-063/122 happy path: the steps run in the reviewed order and COMMIT is the last event, issued once', async () => {
     const hx = harness(); const events = hx.events;
@@ -254,7 +264,7 @@ describe('withProtectedResumeTransaction (T0–T16)', () => {
     expect(hx.calls()).toBe(1);
   });
 
-  it('AC-107/112 the owner statements: search_path first, then the timeouts and synchronous_commit, then the marker and 26 table locks, before any step', async () => {
+  it(`AC-107/112 the owner statements: search_path first, then the timeouts and synchronous_commit, then the marker and ${LOCKED_TABLES} table locks, before any step`, async () => {
     const hx = harness(); const events = hx.events;
     await run(hx, events);
     const sql = sqlOf(events);

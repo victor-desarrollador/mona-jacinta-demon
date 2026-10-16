@@ -488,7 +488,9 @@ export function createLocalTestBaselineRuntime(deps: LocalTestBaselineRuntimeDep
 // the protected transaction; this verifier is the ONLY place the pre-image is consulted, and neither P nor Q ever
 // leaves it (a violation carries a fixed rule id and nothing else). The post-image digest F_post attests exactly the Q
 // that passed here (verified == witnessed). Categories (R3 TRANSFORMATION-CONTRACT, retained by R4):
-//   PRESERVED_FROM_BACKUP   Q == P exactly (OWNER, wholesalePrice, AuditLog incl. jsonb, _prisma_migrations, operational rows)
+//   PRESERVED_FROM_BACKUP   Q == P exactly (OWNER, wholesalePrice, AuditLog incl. jsonb, _prisma_migrations, operational rows,
+//                           and — G8/G9 — the six checkout relations: CheckoutAttempt, CheckoutAttemptDeclaration,
+//                           CheckoutAttemptTender, ExternalCollection, SaleCheckout, SaleLineAllocation)
 //   CANONICAL_VALUE         Q == P exactly (already canonical at POST_BACKFILL; seed #2 rewrites identical values)
 //   RECREATED_SEMANTIC_SET  RolePermission: the whole row is the key, so set equality is exact equality
 //   ROW_CLASS_RULES         User: OWNER preserved; seed users equal except a fresh bcrypt hash of the default password
@@ -510,11 +512,18 @@ export class TransformationViolation extends Error {
 const PRESERVED_RELATIONS = new Set([
   'Company', 'CompanyPricingConfig', 'Location', 'UserBranchRole', 'AuditLog', 'Sale', 'SaleItem', 'SalePayment', 'CashSession', 'CashMovement', 'StockMovement', 'StockReservation', '_prisma_migrations',
 ]);
+// R3-A4.3 (G8/G9): the six relations the ninth migration adds are operational checkout evidence, not seed
+// content — seed #2 writes none of them, so across the resume Q == P exactly. Classified EXPLICITLY (never
+// inferred from "not otherwise mentioned") as PRESERVED_FROM_BACKUP, per the owner-reviewed contract.
+const PRESERVED_CHECKOUT_RELATIONS = new Set([
+  'CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation',
+]);
 const categoryOf = (relation: string, column: string) => {
   if (relation === 'ProductVariant' && column === 'wholesalePrice') return 'PRESERVED_FROM_BACKUP';
   if (relation === 'RolePermission') return 'RECREATED_SEMANTIC_SET';
   if (relation === 'User') return 'ROW_CLASS_RULES';
   if (relation === 'UserRoleScope') return 'PRESERVED_AND_CREATED';
+  if (PRESERVED_CHECKOUT_RELATIONS.has(relation)) return 'PRESERVED_FROM_BACKUP';
   return PRESERVED_RELATIONS.has(relation) ? 'PRESERVED_FROM_BACKUP' : 'CANONICAL_VALUE';
 };
 export const TRANSFORMATION_CATEGORIES: Readonly<Record<string, string>> = Object.freeze(

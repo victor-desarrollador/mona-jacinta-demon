@@ -43,6 +43,25 @@ const CASH1_TREE_ENTRY = Object.freeze({
   bytes: 390,
   sha256: 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f',
 });
+// R3-A2/A4.3 (2026-10-16): reviewed repository-tree entries. D5H v1's operational
+// ledger contract stays the six independent EXPECTED_PINS above; the two R3
+// migrations are recognized here only so the tree pin does not drift. Neither
+// entry widens D5H_MIGRATIONS, and neither authorizes a D5H backup over an
+// R3-migrated subject.
+const R3_TREE_ENTRIES = Object.freeze([
+  Object.freeze({
+    name: '20261016120000_r3_proportional_checkout',
+    bytes: 15340,
+    sha256: '217e87eb5b156a57a5edcfd73433e1e9558ce59caa019208d9df8c0268f08dc6',
+  }),
+  Object.freeze({
+    name: '20261016130000_r3_checkout_attempts',
+    bytes: 35290,
+    sha256: '076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148',
+  }),
+]);
+const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES]);
+const REVIEWED_TREE_NAMES = Object.freeze([...EXPECTED_PINS.map(([name]) => name), ...REVIEWED_TREE_ENTRIES.map((e) => e.name)]);
 const NAMES = EXPECTED_PINS.map(([name]) => name);
 const row = (i, patch = {}) => ({ migration_name: EXPECTED_PINS[i][0], checksum: EXPECTED_PINS[i][1], finished: true, rolled_back: false, ...patch });
 const applied = (n) => Array.from({ length: n }, (_, i) => row(i));
@@ -57,17 +76,19 @@ const noLeak = (value) => {
 
 function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSync) {
   const onDisk = list(root).filter((name) => name !== 'migration_lock.toml').sort();
-  assert.deepEqual(onDisk, [...NAMES, CASH1_TREE_ENTRY.name], 'the migrations directory holds exactly the six D5H pins plus CASH-1');
+  assert.deepEqual(onDisk, [...REVIEWED_TREE_NAMES].sort(), 'the migrations directory holds exactly the six D5H pins, CASH-1 and the two R3 migrations');
   for (const [name, sha] of EXPECTED_PINS) {
     const bytes = read(path.join(root, name, 'migration.sql'));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), sha, name);
   }
-  const cashSql = read(path.join(root, CASH1_TREE_ENTRY.name, 'migration.sql'));
-  assert.equal(cashSql.length, CASH1_TREE_ENTRY.bytes, CASH1_TREE_ENTRY.name);
-  assert.equal(createHash('sha256').update(cashSql).digest('hex'), CASH1_TREE_ENTRY.sha256, CASH1_TREE_ENTRY.name);
+  for (const entry of REVIEWED_TREE_ENTRIES) {
+    const sql = read(path.join(root, entry.name, 'migration.sql'));
+    assert.equal(sql.length, entry.bytes, entry.name);
+    assert.equal(createHash('sha256').update(sql).digest('hex'), entry.sha256, entry.name);
+  }
 }
 
-test('D5H v1 keeps six independent pins and verifies the seven-directory tree (no drift)', () => {
+test('D5H v1 keeps six independent pins and verifies the nine-directory tree (no drift)', () => {
   assert.equal(D5H_MIGRATIONS.length, 6);
   assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
   const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
@@ -75,17 +96,20 @@ test('D5H v1 keeps six independent pins and verifies the seven-directory tree (n
   assert.ok(Object.isFrozen(D5H_MIGRATIONS));
 });
 
-test('the seven-directory drift guard rejects an eighth entry, a rename, a missing entry and changed SQL bytes', () => {
+test('the reviewed-tree drift guard rejects an unapproved entry, a rename, a missing entry and changed SQL bytes', () => {
   const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
-  const names = [...NAMES, CASH1_TREE_ENTRY.name, 'migration_lock.toml'];
+  const names = [...REVIEWED_TREE_NAMES, 'migration_lock.toml'];
+  const r3Name = R3_TREE_ENTRIES[0].name;
   for (const entries of [
     [...names, '20270101000000_unapproved'],
     [...names, 'README.md'],
     names.filter((name) => name !== CASH1_TREE_ENTRY.name),
+    names.filter((name) => name !== r3Name),
     names.map((name) => name === CASH1_TREE_ENTRY.name ? '20261012120000_cash_session_reconciliations' : name),
+    names.map((name) => name === r3Name ? `${r3Name}_renamed` : name),
   ]) {
     assert.throws(() => assertReviewedMigrationTree(root, () => entries), {
-      name: 'AssertionError', message: /the migrations directory holds exactly the six D5H pins plus CASH-1/,
+      name: 'AssertionError', message: /the migrations directory holds exactly the six D5H pins, CASH-1 and the two R3 migrations/,
     });
   }
   const changed = (name, transform) => (file) => {
@@ -93,14 +117,16 @@ test('the seven-directory drift guard rejects an eighth entry, a rename, a missi
     if (file !== path.join(root, name, 'migration.sql')) return bytes;
     return transform(bytes);
   };
-  assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(CASH1_TREE_ENTRY.name, (bytes) => {
-    const altered = Buffer.from(bytes);
-    altered[0] ^= 1;
-    return altered;
-  })), { name: 'AssertionError', message: new RegExp(CASH1_TREE_ENTRY.name) });
-  assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(CASH1_TREE_ENTRY.name, (bytes) => bytes.subarray(1))), {
-    name: 'AssertionError', message: new RegExp(CASH1_TREE_ENTRY.name),
-  });
+  for (const name of [CASH1_TREE_ENTRY.name, r3Name]) {
+    assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(name, (bytes) => {
+      const altered = Buffer.from(bytes);
+      altered[0] ^= 1;
+      return altered;
+    })), { name: 'AssertionError', message: new RegExp(name) });
+    assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(name, (bytes) => bytes.subarray(1))), {
+      name: 'AssertionError', message: new RegExp(name),
+    });
+  }
   assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(NAMES[0], (bytes) => {
     const altered = Buffer.from(bytes);
     altered[0] ^= 1;

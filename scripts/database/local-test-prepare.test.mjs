@@ -406,14 +406,40 @@ test('A5c dry-run and a plan mismatch never import the runtime or spawn, even wi
   }
 });
 
-test('A6 dry-run against the real repository tree (read-only default static deps) passes every static gate', async () => {
+// A6 is the only test that reads the REAL repository tree. The reviewed tree holds nine migration directories
+// (the seven G7 payload migrations plus the two R3 ones), so the operational G7 payload MUST refuse it fail-closed
+// at phase=payload: nothing is planned, no runtime is imported and no child process is started.
+test('A6 the real reviewed tree (nine migration directories) is refused fail-closed at phase=payload by the operational G7 payload', async () => {
   const out = [];
-  const code = await main(DRY, { env: { ...ENV }, log: (l) => out.push(l), error: (l) => out.push(l) });
+  const loaded = [];
+  const spawned = [];
+  const code = await main(DRY, {
+    env: { ...ENV },
+    log: (l) => out.push(l),
+    error: (l) => out.push(l),
+    // These deps would record an escape; the payload gate must fail before any of them is reached.
+    loadRuntime: async (target) => { loaded.push(target); throw new Error('runtime must not be loaded'); },
+    tsImport: async (specifier) => { loaded.push(specifier); throw new Error('runtime must not be imported'); },
+    spawn: (...args) => { spawned.push(args); throw new Error('no child process may start'); },
+  });
   const text = out.join('\n');
-  assert.equal(code, 0, text);
-  assert.match(text, /plan digest: [0-9a-f]{64}/);
-  for (const m of APPROVED_MIGRATION_PAYLOAD.migrations) assert.ok(text.includes(`${m.name}  sha256 ${m.sha256}`));
+  assert.notEqual(code, 0);
+  assert.match(text, /phase=payload/);
+  assert.match(text, /does not hold exactly the OWNER-approved migrations/);
+  assert.match(text, /nothing was started/);
+  assert.doesNotMatch(text, /plan digest/);
+  assert.equal(loaded.length, 0, 'the runtime was reached');
+  assert.equal(spawned.length, 0, 'a child process was started');
   assertNoLeak(text);
+});
+
+test('A6b with the operational G7 payload (fakePayload) the same --dry-run passes every static gate and prints the plan', async () => {
+  const r = await run(DRY);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /plan digest: [0-9a-f]{64}/);
+  for (const m of APPROVED_MIGRATION_PAYLOAD.migrations) assert.ok(r.text.includes(`${m.name}  sha256 ${m.sha256}`));
+  assert.equal(r.spawned.length, 0);
+  assertNoLeak(r.text);
 });
 
 test('A7 the default spawn is node:child_process spawn, reached only through runChild; the scaffold stubs are gone', () => {

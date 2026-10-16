@@ -666,11 +666,11 @@ describe('R4 transformation verifier (seed #2: P → Q, in memory)', () => {
     expect(JSON.stringify([error?.message, error?.stack, Object.getOwnPropertyNames(error as object)])).not.toContain(TCANARY);
     expect((error as { cause?: unknown }).cause).toBeUndefined();
   });
-  it('AC-135 every one of the 175 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(175);
+  it('AC-135 every one of the 298 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(298);
     const categories = new Set(['PRESERVED_FROM_BACKUP', 'CANONICAL_VALUE', 'RECREATED_SEMANTIC_SET', 'ROW_CLASS_RULES', 'PRESERVED_AND_CREATED']);
     for (const c of TYPE_CONTRACT_V3) expect(categories.has(TRANSFORMATION_CATEGORIES[`${c.relation}.${c.name}`] as string), `${c.relation}.${c.name}`).toBe(true);
-    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(175);
+    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(298);
     for (const name of ['expectedCash', 'countedCash', 'difference']) {
       expect(TRANSFORMATION_CATEGORIES[`CashSession.${name}`]).toBe('PRESERVED_FROM_BACKUP');
     }
@@ -681,6 +681,12 @@ describe('R4 transformation verifier (seed #2: P → Q, in memory)', () => {
     expect(TRANSFORMATION_CATEGORIES['User.passwordHash']).toBe('ROW_CLASS_RULES');
     expect(TRANSFORMATION_CATEGORIES['RolePermission.roleId']).toBe('RECREATED_SEMANTIC_SET');
     expect(TRANSFORMATION_CATEGORIES['UserRoleScope.id']).toBe('PRESERVED_AND_CREATED');
+    // R3-A4.3 (G8/G9): all six checkout relations are explicitly PRESERVED_FROM_BACKUP across the resume.
+    for (const relation of ['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation']) {
+      const columns = TYPE_CONTRACT_V3.filter((c) => c.relation === relation);
+      expect(columns.length).toBeGreaterThan(0);
+      for (const c of columns) expect(TRANSFORMATION_CATEGORIES[`${relation}.${c.name}`], `${relation}.${c.name}`).toBe('PRESERVED_FROM_BACKUP');
+    }
     expect(TRANSFORMATION_CONTRACT_SHA256).toMatch(/^[0-9a-f]{64}$/);
   });
 });

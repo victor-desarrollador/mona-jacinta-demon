@@ -59,6 +59,61 @@ enum CustomerPriceMode {
   QR
 }
 
+// R3 (design rev. 2): durable selector of the checkout path. Historical rows
+// and any N-1 writer keep FIXED_TOTAL; only the new proportional checkout path
+// writes PROPORTIONAL_V1. The SQL migration adds a CHECK that a proportional
+// sale is priced CASH, plus the composite FK that keeps SalePayment consistent.
+enum SalePricingModel {
+  FIXED_TOTAL
+  PROPORTIONAL_V1
+}
+
+// R3: the role a checkout payment plays in the proportional settlement.
+enum CheckoutTenderRole {
+  FIXED
+  BALANCE
+}
+
+// R3: institution of a transfer external collection (non-cash money received
+// outside the POS). OTHER carries a free-text label.
+enum TransferInstitution {
+  MACRO
+  BBVA
+  NACION
+  GALICIA
+  MERCADO_PAGO
+  OTHER
+}
+
+// R3: lifecycle of an external (non-cash) collection.
+enum ExternalCollectionStatus {
+  APPLIED
+  UNAPPLIED
+  REFUNDED
+}
+
+// R3-A4.3: lifecycle of a durable checkout attempt (charge reservation). Shared
+// by CheckoutAttempt.status and SaleCheckout.attemptStatus (same PG type).
+enum CheckoutAttemptStatus {
+  RESERVED
+  CONFIRMED
+  REJECTED
+  ABANDONED
+}
+
+// R3-A4.3: a tender is new money, or an existing UNAPPLIED external collection.
+enum CheckoutTenderSource {
+  NEW
+  COLLECTION
+}
+
+// R3-A4.3: what a terminal attempt declares per tender.
+enum CheckoutDeclarationOutcome {
+  NONE
+  CHARGED
+  RETURNED
+}
+
 enum CashSessionStatus {
   OPEN
   CLOSED
@@ -155,6 +210,15 @@ model User {
   closedCashSessions CashSession[]    @relation("CashSessionClosedBy")
   cashMovements      CashMovement[]
   auditLogs          AuditLog[]
+  saleCheckouts      SaleCheckout[]
+  externalCollectionsRecorded ExternalCollection[] @relation("ExternalCollectionRecordedBy")
+  externalCollectionsResolved ExternalCollection[] @relation("ExternalCollectionResolvedBy")
+  checkoutAttemptsStarted     CheckoutAttempt[] @relation("CheckoutAttemptStartedBy")
+  checkoutAttemptsConfirmed   CheckoutAttempt[] @relation("CheckoutAttemptConfirmedBy")
+  checkoutAttemptsRejected    CheckoutAttempt[] @relation("CheckoutAttemptRejectedBy")
+  checkoutAttemptsAbandoned   CheckoutAttempt[] @relation("CheckoutAttemptAbandonedBy")
+  checkoutAttemptsDeclared    CheckoutAttempt[] @relation("CheckoutAttemptDeclaredBy")
+  checkoutDeclarations        CheckoutAttemptDeclaration[]
 }
 
 model Role {
@@ -244,6 +308,9 @@ model Branch {
   auditLogs         AuditLog[]
   // Task 5 creates the counter with the branch; branchId uniqueness prevents duplicates.
   saleNumberCounter SaleNumberCounter?
+  // R3 proportional checkout.
+  saleCheckouts       SaleCheckout[]
+  externalCollections ExternalCollection[]
 }
 
 // Phase 1C (Production V1) DEPRECATE step — transitional split, not a full
@@ -423,12 +490,25 @@ model Sale {
   // and the wholesale columns above are frozen by a DB trigger.
   paymentStartedAt       DateTime? @db.Timestamptz(3)
 
+  // R3 rev. 2: durable checkout-path selector. Existing rows and any write from
+  // an N-1 API default to FIXED_TOTAL; only the proportional checkout path
+  // writes PROPORTIONAL_V1. See the SQL migration for the CHECK tying a
+  // proportional sale to priceMode = CASH and the composite FKs below.
+  pricingModel SalePricingModel @default(FIXED_TOTAL)
+
   items             SaleItem[]
-  payments          SalePayment[]
+  payments          SalePayment[] @relation("SaleToSalePayment")
+  pricingModelPayments SalePayment[] @relation("SalePaymentPricingModel")
   stockReservations StockReservation[]
   stockMovements    StockMovement[]
+  checkouts         SaleCheckout[]
+  checkoutAttempts  CheckoutAttempt[]
+  externalOrigins   ExternalCollection[] @relation("ExternalCollectionOriginSale")
 
   @@unique([branchId, saleNumber])
+  @@unique([id, branchId], map: "Sale_id_branchId_key")
+  @@unique([id, pricingModel], map: "Sale_id_pricingModel_key")
+  @@unique([id, branchId, pricingModel], map: "Sale_id_branchId_pricingModel_key")
   @@index([branchId, status, createdAt])
   @@index([sellerId, status, createdAt])
   @@index([status, createdAt])
@@ -457,10 +537,12 @@ model SaleItem {
   sale        Sale           @relation(fields: [saleId], references: [id], onDelete: Restrict)
   variant     ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
   product     Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  allocations SaleLineAllocation[]
 
   @@index([saleId])
   @@index([variantId])
   @@index([productId])
+  @@unique([id, saleId], map: "SaleItem_id_saleId_key")
 }
 
 model SalePayment {
@@ -473,12 +555,30 @@ model SalePayment {
   cashSessionId  String?
   idempotencyKey String
   paidAt         DateTime      @default(now()) @db.Timestamptz(3)
-  sale           Sale          @relation(fields: [saleId], references: [id], onDelete: Restrict)
-  cashSession    CashSession?  @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+  // R3 rev. 2: durable pricing-model selector, defaulted for historical and
+  // N-1 writers. The composite FK to Sale(id, pricingModel) makes it consistent
+  // with the sale: a historical writer cannot settle a PROPORTIONAL_V1 sale.
+  pricingModel         SalePricingModel  @default(FIXED_TOTAL)
+  // R3 proportional-checkout shape. All NULL for historical/fixed-total rows.
+  checkoutId           String?
+  tenderRole           CheckoutTenderRole?
+  methodFullPrice      BigInt?
+  adjustmentBps        Int?
+  externalCollectionId String?           @unique(map: "SalePayment_externalCollectionId_key")
+
+  sale          Sale        @relation("SaleToSalePayment", fields: [saleId], references: [id], onDelete: Restrict)
+  pricingSale   Sale        @relation("SalePaymentPricingModel", fields: [saleId, pricingModel], references: [id, pricingModel], onDelete: Restrict, onUpdate: Restrict, map: "SalePayment_sale_pricing_model_fkey")
+  cashSession   CashSession? @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+  checkout      SaleCheckout? @relation(fields: [checkoutId, saleId, cashSessionId], references: [id, saleId, cashSessionId], onDelete: Restrict, onUpdate: Restrict, map: "SalePayment_checkout_fkey")
+  // Same applied sale, method and exact amount as the external collection.
+  externalCollection ExternalCollection? @relation(fields: [externalCollectionId, saleId, method, amount], references: [id, appliedSaleId, method, amount], onDelete: Restrict, onUpdate: Restrict, map: "SalePayment_external_collection_fkey")
 
   cashMovement CashMovement?
+  allocations  SaleLineAllocation[]
 
   @@unique([saleId, idempotencyKey])
+  @@unique([checkoutId, method], map: "SalePayment_checkoutId_method_key")
+  @@unique([id, checkoutId, method], map: "SalePayment_id_checkoutId_method_key")
   @@index([cashSessionId])
 }
 
@@ -516,6 +616,9 @@ model CashSession {
 
   payments  SalePayment[]
   movements CashMovement[]
+  saleCheckouts       SaleCheckout[]
+  externalCollections ExternalCollection[]
+  checkoutAttempts    CheckoutAttempt[]
 
   // The initial migration adds cash_session_one_open_per_register as a partial
   // unique index. CLOSED sessions must remain unlimited for each register.
@@ -568,4 +671,320 @@ model SaleNumberCounter {
   branchId  String @unique
   nextValue BigInt @default(1)
   branch    Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+}
+
+// R3 (design rev. 2): one durable record per completed proportional checkout.
+// Money is BigInt centavos; calculated values (full prices, balance, total) are
+// whole pesos, while received fixed amounts keep exact centavos. The raw SQL
+// migration adds the CHECK constraints and partial indexes below (Prisma cannot
+// express @@check or partial unique indexes).
+//
+// SQL-only constraints:
+//   chk_checkout_model             pricingModel = 'PROPORTIONAL_V1' AND algorithmVersion = 1
+//   chk_checkout_hash              requestHash ~ '^[0-9a-f]{64}$'
+//   chk_checkout_balance_method    balanceMethod IN ('CASH','TRANSFER','CARD_DEBIT')
+//   chk_checkout_amounts           total > 0 AND changeAmount >= 0 AND referenceSubtotal > 0
+//                                    AND fullPriceCash > 0 AND fullPriceCash % 100 = 0
+//   chk_checkout_config_snapshot   the pricing-config snapshot is all-or-nothing
+//                                    (pricingConfigId, pricingConfigUpdatedAt, both
+//                                    full prices and both adjustment bps NULL together,
+//                                    or all present and in range)
+//   chk_checkout_attempt_status    attemptStatus = 'CONFIRMED' (R3-A4.3)
+model SaleCheckout {
+  id                    String            @id @default(uuid())
+  saleId                String            @unique(map: "SaleCheckout_saleId_key")
+  branchId              String
+  pricingModel          SalePricingModel
+  operationKey          String            @unique(map: "SaleCheckout_operationKey_key") @db.Uuid
+  requestHash           String            @db.Char(64)
+  cashSessionId         String
+  userId                String
+  balanceMethod         PaymentMethod
+  // Sale.subtotal at checkout time (the cash reference); total is the final one.
+  referenceSubtotal     BigInt
+  total                 BigInt
+  changeAmount          BigInt            @default(0)
+  fullPriceCash         BigInt
+  fullPriceTransfer     BigInt?
+  fullPriceDebit        BigInt?
+  transferAdjustmentBps Int?
+  debitAdjustmentBps    Int?
+  pricingConfigId       String?
+  pricingConfigUpdatedAt DateTime?        @db.Timestamptz(3)
+  algorithmVersion      Int
+  completedAt           DateTime          @default(now()) @db.Timestamptz(3)
+  // R3-A4.3: always CONFIRMED (chk_checkout_attempt_status); part of the FK
+  // that requires the CONFIRMED attempt carrying the same hash.
+  attemptStatus         CheckoutAttemptStatus @default(CONFIRMED)
+
+  // Immutable link to the sale's branch and model (ON UPDATE RESTRICT).
+  sale        Sale        @relation(fields: [saleId, branchId, pricingModel], references: [id, branchId, pricingModel], onDelete: Restrict, onUpdate: Restrict, map: "SaleCheckout_sale_branch_model_fkey")
+  branch      Branch      @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  cashSession CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+  user        User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  // R3-A4.3: no checkout without a CONFIRMED attempt with requestHash =
+  // confirmationHash; ON UPDATE RESTRICT (and F1) freezes that attempt.
+  attempt     CheckoutAttempt @relation("SaleCheckoutAttempt", fields: [operationKey, saleId, attemptStatus, requestHash], references: [operationKey, saleId, status, confirmationHash], onDelete: Restrict, onUpdate: Restrict, map: "SaleCheckout_attempt_fkey")
+
+  payments            SalePayment[]
+  allocations         SaleLineAllocation[]
+  externalCollections ExternalCollection[] @relation("ExternalCollectionAppliedCheckout")
+
+  @@unique([id, saleId], map: "SaleCheckout_id_saleId_key")
+  @@unique([id, saleId, cashSessionId], map: "SaleCheckout_id_saleId_cashSessionId_key")
+  @@unique([id, saleId, branchId], map: "SaleCheckout_id_saleId_branchId_key")
+  @@unique([operationKey, saleId, attemptStatus, requestHash], map: "SaleCheckout_attempt_link_key")
+}
+
+// R3 (design rev. 2): a non-cash collection (transfer or debit) received outside
+// the POS. It is the durable source of reference/institution uniqueness, being
+// either APPLIED to a checkout or UNAPPLIED as a supervised incident.
+//
+// SQL-only constraints:
+//   chk_ec_amount        amount > 0
+//   chk_ec_reference     char_length(reference) BETWEEN 1 AND 64
+//                          AND referenceKey ~ '^[A-Z0-9]{3,40}$'
+//   chk_ec_institution   three explicit NULL-safe forms (debit, normal transfer,
+//                          OTHER transfer); implies method in {TRANSFER, CARD_DEBIT}
+//   chk_ec_status         three explicit NULL-safe forms keyed by status
+//   ExternalCollection_debit_ref_key     partial unique (branchId, referenceKey)
+//                                          WHERE method = 'CARD_DEBIT'
+//   ExternalCollection_transfer_ref_key  partial unique (branchId, institution,
+//                                          referenceKey) WHERE method = 'TRANSFER'
+//   chk_ec_origin_attempt  originAttemptId IS NULL OR originSaleId IS NOT NULL (R3-A4.3)
+//   chk_ec_claim_state     status <> 'REFUNDED' OR claimAttemptId IS NULL (R3-A4.3)
+//   chk_ec_refund_fields   REFUNDED <=> externalRefundedAt set, <= resolvedAt, with a
+//                            10..500-char resolutionNote and no claim (R3-A4.3)
+//   fn_external_collection_guard (trigger, R3-A4.3): rows are permanent; financial
+//     and origin data immutable; resolution write-once; status only UNAPPLIED ->
+//     APPLIED (by the claiming attempt's checkout) | REFUNDED (unclaimed); claim
+//     NULL -> X only from X's unsealed RESERVED plan holding it as COLLECTION,
+//     X -> NULL only once X is terminal and declared, never X -> Y.
+model ExternalCollection {
+  id               String                   @id @default(uuid())
+  branchId         String
+  method           PaymentMethod
+  // Exact centavos received.
+  amount           BigInt
+  reference        String
+  referenceKey     String
+  institution      TransferInstitution?
+  institutionOther String?
+  status           ExternalCollectionStatus
+  // Sale where the incident happened (may later be cancelled).
+  originSaleId     String?
+  cashSessionId    String?
+  // Sale the collection was finally applied to.
+  appliedCheckoutId String?
+  appliedSaleId    String?
+  recordedById     String
+  recordedAt       DateTime                 @default(now()) @db.Timestamptz(3)
+  incidentReason   String?
+  resolvedById     String?
+  resolvedAt       DateTime?                @db.Timestamptz(3)
+  refundReference  String?
+  resolutionNote   String?
+  // R3-A4.3: the attempt whose declaration recorded it (CHARGED, UNAPPLIED).
+  originAttemptId  String?
+  // R3-A4.3: the open attempt holding it as a COLLECTION tender (at most one).
+  claimAttemptId   String?
+  // R3-A4.3: when the refund was executed outside the POS (REFUNDED only).
+  externalRefundedAt DateTime?              @db.Timestamptz(3)
+
+  branch          Branch        @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  // Same branch as the incident: (originSaleId, branchId) -> Sale(id, branchId).
+  originSale      Sale?         @relation("ExternalCollectionOriginSale", fields: [originSaleId, branchId], references: [id, branchId], onDelete: Restrict, onUpdate: Restrict, map: "ExternalCollection_origin_sale_fkey")
+  // Same branch as the applied checkout: (appliedCheckoutId, appliedSaleId,
+  // branchId) -> SaleCheckout(id, saleId, branchId). A collection cannot be
+  // applied across branches.
+  appliedCheckout SaleCheckout? @relation("ExternalCollectionAppliedCheckout", fields: [appliedCheckoutId, appliedSaleId, branchId], references: [id, saleId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "ExternalCollection_applied_fkey")
+  cashSession     CashSession?  @relation(fields: [cashSessionId], references: [id], onDelete: Restrict)
+  recordedBy      User          @relation("ExternalCollectionRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
+  resolvedBy      User?         @relation("ExternalCollectionResolvedBy", fields: [resolvedById], references: [id], onDelete: Restrict)
+
+  // Same attempt, sale and branch as its origin declaration.
+  originAttempt   CheckoutAttempt? @relation("ExternalCollectionOriginAttempt", fields: [originAttemptId, originSaleId, branchId], references: [id, saleId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "ExternalCollection_origin_attempt_fkey")
+  claimAttempt    CheckoutAttempt? @relation("ExternalCollectionClaimAttempt", fields: [claimAttemptId, branchId], references: [id, branchId], onDelete: Restrict, onUpdate: Restrict, map: "ExternalCollection_claim_fkey")
+
+  // Applying the same collection twice is impossible: the payment FK target.
+  payments     SalePayment[]
+  tenders      CheckoutAttemptTender[]      @relation("CheckoutAttemptTenderCollection")
+  declarations CheckoutAttemptDeclaration[] @relation("CheckoutAttemptDeclarationCollection")
+
+  @@unique([id, appliedSaleId, method, amount], map: "ExternalCollection_id_applied_key")
+  @@unique([id, branchId, method, amount], map: "ExternalCollection_id_branch_method_amount_key")
+  @@unique([id, originAttemptId, originSaleId, branchId, method], map: "ExternalCollection_id_origin_attempt_key")
+  @@index([claimAttemptId], map: "ExternalCollection_claimAttemptId_idx")
+}
+
+// R3 (design rev. 2): the exact per-line amount each checkout payment settles.
+//
+// SQL-only constraint:
+//   chk_alloc   quantity > 0 AND baseUnitPrice > 0 AND unitPrice > 0
+//                 AND unitPrice % 100 = 0 AND lineFullPrice = quantity * unitPrice
+//                 AND amount >= 0 AND amount <= lineFullPrice
+model SaleLineAllocation {
+  id            String        @id @default(uuid())
+  checkoutId    String
+  saleId        String
+  saleItemId    String
+  salePaymentId String
+  method        PaymentMethod
+  quantity      BigInt
+  baseUnitPrice BigInt
+  unitPrice     BigInt
+  lineFullPrice BigInt
+  amount        BigInt
+
+  checkout  SaleCheckout @relation(fields: [checkoutId, saleId], references: [id, saleId], onDelete: Restrict, onUpdate: Restrict, map: "SaleLineAllocation_checkout_fkey")
+  // The allocation belongs to the payment, the checkout and the method.
+  payment   SalePayment  @relation(fields: [salePaymentId, checkoutId, method], references: [id, checkoutId, method], onDelete: Restrict, onUpdate: Restrict, map: "SaleLineAllocation_payment_fkey")
+  // The allotted line belongs to the same sale.
+  saleItem  SaleItem     @relation(fields: [saleItemId, saleId], references: [id, saleId], onDelete: Restrict, onUpdate: Restrict, map: "SaleLineAllocation_item_fkey")
+
+  @@unique([salePaymentId, saleItemId], map: "SaleLineAllocation_payment_item_key")
+  @@index([checkoutId], map: "SaleLineAllocation_checkoutId_idx")
+  @@index([saleItemId], map: "SaleLineAllocation_saleItemId_idx")
+}
+
+// R3-A4.3: a durable charge reservation (checkout attempt). The plan is sealed
+// at reservation; confirmation, rejection, abandonment and declaration are
+// recorded on the same row. The charge reservation never expires (stock holds
+// keep their usual expiry). Money is BigInt centavos.
+//
+// SQL-only (migration 20261016130000_r3_checkout_attempts):
+//   chk_attempt_hashes            planHash / confirmationHash are 64 lowercase hex
+//   chk_attempt_plan              balanceMethod, positive totals, whole-peso balance
+//                                   and cash full price, 1..3 tenders, algorithmVersion = 1
+//   chk_attempt_pricing_snapshot  pricing-config snapshot all-or-nothing
+//   chk_attempt_texts             supervisor reason 10..500 / evidence 3..200
+//   chk_attempt_status_fields     NULL-safe column set of each status
+//   chk_attempt_recovery          recoveryReason/recoveryEvidence both NULL or both valid
+//   CheckoutAttempt_one_open_per_sale  partial unique (saleId)
+//                                   WHERE status IN ('RESERVED','REJECTED') AND declaredAt IS NULL
+//   fn_checkout_attempt_guard         (trigger F1) no delete; plan frozen; sealing and
+//                                       status transitions closed; outcome frozen; declaration once
+//   fn_checkout_attempt_commit_check  (deferred trigger F3) sealed complete plan; complete
+//                                       single-actor declaration; claim state per status
+model CheckoutAttempt {
+  id                     String                @id @default(uuid())
+  saleId                 String
+  branchId               String
+  reserveKey             String                @unique(map: "CheckoutAttempt_reserveKey_key") @db.Uuid
+  operationKey           String                @unique(map: "CheckoutAttempt_operationKey_key") @db.Uuid
+  planHash               String                @db.Char(64)
+  cashSessionId          String
+  balanceMethod          PaymentMethod
+  expectedTotal          BigInt
+  expectedBalanceAmount  BigInt
+  tenderCount            Int
+  fullPriceCash          BigInt
+  fullPriceTransfer      BigInt?
+  fullPriceDebit         BigInt?
+  transferAdjustmentBps  Int?
+  debitAdjustmentBps     Int?
+  pricingConfigId        String?
+  pricingConfigUpdatedAt DateTime?             @db.Timestamptz(3)
+  algorithmVersion       Int
+  planSealed             Boolean               @default(false)
+  status                 CheckoutAttemptStatus @default(RESERVED)
+  startedById            String
+  startedAt              DateTime              @default(now()) @db.Timestamptz(3)
+  recoveryReason         String?
+  recoveryEvidence       String?
+  confirmationHash       String?               @db.Char(64)
+  confirmedById          String?
+  confirmedAt            DateTime?             @db.Timestamptz(3)
+  confirmReason          String?
+  confirmEvidence        String?
+  rejectionCode          String?
+  rejectionDetails       Json?
+  rejectedById           String?
+  rejectedAt             DateTime?             @db.Timestamptz(3)
+  abandonedById          String?
+  abandonedAt            DateTime?             @db.Timestamptz(3)
+  abandonReason          String?
+  abandonEvidence        String?
+  declaredById           String?
+  declaredAt             DateTime?             @db.Timestamptz(3)
+
+  sale        Sale        @relation(fields: [saleId, branchId], references: [id, branchId], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttempt_sale_branch_fkey")
+  cashSession CashSession @relation(fields: [cashSessionId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttempt_cashSessionId_fkey")
+  startedBy   User        @relation("CheckoutAttemptStartedBy", fields: [startedById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttempt_startedById_fkey")
+  confirmedBy User?       @relation("CheckoutAttemptConfirmedBy", fields: [confirmedById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttempt_confirmedById_fkey")
+  rejectedBy  User?       @relation("CheckoutAttemptRejectedBy", fields: [rejectedById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttempt_rejectedById_fkey")
+  abandonedBy User?       @relation("CheckoutAttemptAbandonedBy", fields: [abandonedById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttempt_abandonedById_fkey")
+  declaredBy  User?       @relation("CheckoutAttemptDeclaredBy", fields: [declaredById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttempt_declaredById_fkey")
+
+  tenders            CheckoutAttemptTender[]
+  declarations       CheckoutAttemptDeclaration[]
+  checkout           SaleCheckout?                @relation("SaleCheckoutAttempt")
+  originCollections  ExternalCollection[]         @relation("ExternalCollectionOriginAttempt")
+  claimedCollections ExternalCollection[]         @relation("ExternalCollectionClaimAttempt")
+
+  @@unique([id, branchId], map: "CheckoutAttempt_id_branchId_key")
+  @@unique([id, saleId, branchId], map: "CheckoutAttempt_id_saleId_branchId_key")
+  @@unique([operationKey, saleId, status, confirmationHash], map: "CheckoutAttempt_confirmation_key")
+  @@index([branchId, startedById, startedAt(sort: Desc)], map: "CheckoutAttempt_branch_starter_time_idx")
+  @@index([branchId, startedAt(sort: Desc)], map: "CheckoutAttempt_branch_time_idx")
+}
+
+// R3-A4.3: one tender of a sealed attempt plan.
+//
+// SQL-only:
+//   chk_tender_shape                  BALANCE+NEW without amount; FIXED+NEW with amount > 0;
+//                                       FIXED+COLLECTION (TRANSFER/CARD_DEBIT) with amount and collection
+//   CheckoutAttemptTender_one_balance  partial unique (attemptId) WHERE role = 'BALANCE'
+//   fn_checkout_attempt_tender_guard  (trigger F2) insert-only, only into an unsealed RESERVED attempt
+model CheckoutAttemptTender {
+  id                   String               @id @default(uuid())
+  attemptId            String
+  branchId             String
+  method               PaymentMethod
+  role                 CheckoutTenderRole
+  source               CheckoutTenderSource
+  amount               BigInt?
+  externalCollectionId String?
+
+  attempt            CheckoutAttempt     @relation(fields: [attemptId, branchId], references: [id, branchId], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttemptTender_attempt_fkey")
+  // A COLLECTION tender is the same collection: same branch, method and exact amount.
+  externalCollection ExternalCollection? @relation("CheckoutAttemptTenderCollection", fields: [externalCollectionId, branchId, method, amount], references: [id, branchId, method, amount], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttemptTender_collection_fkey")
+
+  declarations CheckoutAttemptDeclaration[]
+
+  @@unique([attemptId, method], map: "CheckoutAttemptTender_attempt_method_key")
+  @@unique([attemptId, method, source], map: "CheckoutAttemptTender_attempt_method_source_key")
+}
+
+// R3-A4.3: per-tender declaration of a terminal (REJECTED/ABANDONED) attempt.
+//
+// SQL-only:
+//   chk_declaration_shape     CASH: NONE | RETURNED (amount + evidence); TRANSFER/CARD_DEBIT:
+//                               NONE | CHARGED (NEW tender only, collection + evidence)
+//   chk_declaration_evidence  evidence 3..200 when present
+//   fn_checkout_attempt_declaration_guard  (trigger F4) insert-only into a terminal undeclared
+//                               attempt; non-initiator needs evidence; CHARGED needs an UNAPPLIED
+//                               collection recorded by the declarer
+//   fn_checkout_declaration_commit_check   (deferred trigger F5) the attempt is declared at commit
+model CheckoutAttemptDeclaration {
+  id                   String                     @id @default(uuid())
+  attemptId            String
+  saleId               String
+  branchId             String
+  method               PaymentMethod
+  tenderSource         CheckoutTenderSource
+  outcome              CheckoutDeclarationOutcome
+  externalCollectionId String?                    @unique(map: "CheckoutAttemptDeclaration_externalCollectionId_key")
+  returnedAmount       BigInt?
+  evidence             String?
+  declaredById         String
+  declaredAt           DateTime                   @default(now()) @db.Timestamptz(3)
+
+  tender             CheckoutAttemptTender @relation(fields: [attemptId, method, tenderSource], references: [attemptId, method, source], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttemptDeclaration_tender_fkey")
+  attempt            CheckoutAttempt       @relation(fields: [attemptId, saleId, branchId], references: [id, saleId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttemptDeclaration_attempt_fkey")
+  // CHARGED: same attempt, sale, branch and method as the collection it recorded.
+  externalCollection ExternalCollection?   @relation("CheckoutAttemptDeclarationCollection", fields: [externalCollectionId, attemptId, saleId, branchId, method], references: [id, originAttemptId, originSaleId, branchId, method], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttemptDeclaration_collection_fkey")
+  declaredBy         User                  @relation(fields: [declaredById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttemptDeclaration_declaredById_fkey")
+
+  @@unique([attemptId, method], map: "CheckoutAttemptDeclaration_attempt_method_key")
 }
