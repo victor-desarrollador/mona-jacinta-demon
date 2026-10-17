@@ -16,9 +16,12 @@ import {
 
 export function createCheckoutQuoteController(
   database: PrismaClient,
-  options: { service?: CheckoutQuoteService } = {},
+  options: { service?: CheckoutQuoteService; externalMethodsEnabled?: boolean } = {},
 ) {
-  const service = options.service ?? createCheckoutQuoteService(database);
+  const service = options.service
+    // S-REF.1: a controller built without an injected service or an explicit gate
+    // never enables the external methods (fail-closed).
+    ?? createCheckoutQuoteService(database, { externalMethodsEnabled: options.externalMethodsEnabled ?? false });
 
   return {
     quote: (async (req, res) => {

@@ -1,21 +1,35 @@
-// R3-A3.2 (R3 rev. 2 §5–§8): the proportional checkout, the single settlement
-// path of a PROPORTIONAL_V1 sale.
+// R3-A4.3 S5 (confirmación T-C): the ONE public settlement path of a
+// PROPORTIONAL_V1 sale. It turns a SEALED `CheckoutAttempt` (RESERVED) into a
+// committed, PAID -> COMPLETED sale, or terminally rejects the attempt.
 //
 // One Serializable transaction (timeout 30000, up to 3 attempts on P2034 /
-// 40001 / 40P01) does everything: it records the external collections, the
-// payments and the per-line allocations, the net cash movement, transitions
-// the sale to PAID and runs the shared PAID -> COMPLETED finalizer with the
-// SAME TransactionClient (never a second transaction). Any failure reverts
-// payments, stock, reservations, cash and audit together.
+// 40001 / 40P01) does everything: it confirms the attempt, records the external
+// collections, the payments and the per-line allocations, the net cash
+// movement, transitions the sale to PAID and runs the shared PAID -> COMPLETED
+// finalizer with the SAME TransactionClient (never a second transaction). Any
+// failure reverts payments, stock, reservations, cash and audit together.
 //
-// Pricing is never recomputed here: computeProportionalQuote (R3-A1) is the
-// only pricing authority, finalizePaidSaleInTransaction (R3-A3.1) the only
-// completion authority. No Socket.IO event is emitted: the caller emits after
-// commit, on the committed rows.
+// The sealed plan is the ONLY source of the amounts (design §5.2): T-C never
+// reads the current pricing configuration and never re-quotes the sale. It
+// rebuilds the per-line full prices from the
+// sale's OWN line snapshot and the SEALED basis points, through the shared pure
+// helpers of the pricing engine (lineFullPrices/allocate), so the settlement is
+// bit-identical to the quote that produced the seal. The request contributes
+// only the reserveKey, the operationKey, the CASH receivedAmount, new external
+// evidence and the optional supervisor justification: totals, balance, session,
+// roles and amounts always come from the sealed attempt and its tenders.
 //
-// Lock order (design §6): Sale -> ExternalCollection(id ASC) -> CashSession ->
-// StockReservation(id ASC) -> Inventory(id ASC). The finalizer re-locks the
-// sale, reservations and inventory in the same prefix.
+// Discriminated result (design §5.3): a terminal rejection (INVALID_SALE_STATE,
+// NO_OPEN_CASH_SESSION, CASH_SESSION_BRANCH_MISMATCH,
+// EXTERNAL_COLLECTION_NOT_APPLICABLE, INSUFFICIENT_PHYSICAL,
+// INSUFFICIENT_RESERVED) commits the attempt as REJECTED with no charge, and
+// the caller turns it into a 409 after commit. Correctable errors (tender
+// mismatch, insufficient cash, duplicate reference, expired/released stock)
+// throw and roll the whole transaction back: the attempt stays RESERVED.
+//
+// Lock order (design §6): Sale -> CheckoutAttempt -> ExternalCollection(id ASC)
+// -> CashSession -> StockReservation(id ASC) -> Inventory(id ASC). The
+// finalizer re-locks the sale, reservations and inventory in the same order.
 import { createHash } from 'node:crypto';
 import {
   Prisma,
@@ -26,23 +40,23 @@ import {
   type TransferInstitution,
 } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
-import { hasPermissionAtLocation } from '../rbac/authorization-policy.js';
+import { actsAsSupervisorAtLocation, hasPermissionAtLocation } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
+import type { CheckoutConfirmationRequest } from './dto/checkout.dto.js';
+import { CheckoutCanonicalError, REFERENCE_RAW_MAX, codePoints, confirmationHash, type ConfirmationTenderInput } from './checkout-canonical.js';
+import { readCheckoutResult } from './checkout-attempt-view.js';
 import { createAuditLog } from '../../shared/audit.js';
 import { evaluateCurrentHoldCoverage } from '../sales/hold-coverage.js';
 import { assertPricingFinalizable } from '../sales/wholesale-authorization.service.js';
 import { finalizePaidSaleInTransaction } from '../sales/sale-finalization.js';
-import { createPricingService } from '../pricing/pricing.service.js';
 import { type PriceMode } from '../pricing/pricing.js';
 import {
   PROPORTIONAL_METHODS,
-  computeProportionalQuote,
+  allocate,
+  lineFullPrices,
   type ProportionalLineInput,
   type ProportionalMethod,
-  type ProportionalPricingSnapshot,
-  type ProportionalQuote,
-  type ProportionalTenderInput,
 } from '../pricing/proportional-checkout.js';
 
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
@@ -116,6 +130,45 @@ type LockedSale = {
   wholesaleConfirmedById: string | null;
 };
 
+// Only the sealed snapshot of the attempt is read at T-C: totals, balance,
+// session, balance method, tender count and the sealed basis points. The plan
+// itself never comes from the request.
+type LockedCheckoutAttempt = {
+  id: string;
+  saleId: string;
+  branchId: string;
+  reserveKey: string;
+  operationKey: string;
+  planHash: string;
+  planSealed: boolean;
+  status: string;
+  startedById: string;
+  confirmationHash: string | null;
+  cashSessionId: string;
+  balanceMethod: ProportionalMethod;
+  expectedTotal: bigint;
+  expectedBalanceAmount: bigint;
+  tenderCount: number;
+  fullPriceCash: bigint;
+  fullPriceTransfer: bigint | null;
+  fullPriceDebit: bigint | null;
+  transferAdjustmentBps: number | null;
+  debitAdjustmentBps: number | null;
+  pricingConfigId: string | null;
+  pricingConfigUpdatedAt: Date | null;
+  rejectionCode: string | null;
+  rejectionDetails: unknown;
+  declaredAt: Date | null;
+};
+
+type SealedCheckoutTender = {
+  method: string;
+  role: string;
+  source: string;
+  amount: bigint | null;
+  externalCollectionId: string | null;
+};
+
 type LockedCollection = {
   id: string;
   branchId: string;
@@ -125,35 +178,69 @@ type LockedCollection = {
   referenceKey: string;
   institution: TransferInstitution | null;
   status: string;
+  claimAttemptId: string | null;
 };
 
 type LockedSession = { id: string; status: string; registerId: string; branchId: string };
 
+// The evidence a confirmation supplies for ONE method. Only the CASH received
+// amount and the NEW external reference/institution ever come from the request.
+type SealedEvidence = {
+  method: string;
+  receivedAmount: bigint | null;
+  reference: string | null;
+  referenceKey: string | null;
+  institution: TransferInstitution | null;
+  institutionOther: string | null;
+};
+
+// One method's settlement, derived exclusively from the sealed plan.
+type MethodSettlement = {
+  method: ProportionalMethod;
+  role: CheckoutTenderRole;
+  amount: bigint;
+  fullPrice: bigint;
+  perLine: bigint[];
+  allocations: Array<{ saleItemId: string; sku: string; amount: bigint }>;
+};
+
+// The discriminated outcome of one Serializable confirmation attempt. A
+// terminal rejection is COMMITTED (the attempt is REJECTED, no charge happened)
+// and only becomes an HTTP error after the commit; a defect or a correctable
+// error throws instead and rolls the transaction back.
+type ConfirmOutcome =
+  | { kind: 'CONFIRMED'; result: CheckoutResult }
+  | { kind: 'REJECTED'; code: string; message: string; details: Record<string, unknown> };
+
 // ---------------------------------------------------------------------------
-// Errors (design §5). Every one is thrown before the commit and leaves no row.
+// Errors (design §5). A correctable error is thrown before the commit and
+// leaves no row: the attempt stays RESERVED. A defect is a 500.
 // ---------------------------------------------------------------------------
+const INVALID_SALE_STATE = 'INVALID_SALE_STATE';
+const NO_OPEN_CASH_SESSION = 'NO_OPEN_CASH_SESSION';
+const CASH_SESSION_BRANCH_MISMATCH = 'CASH_SESSION_BRANCH_MISMATCH';
+const EXTERNAL_COLLECTION_NOT_APPLICABLE = 'EXTERNAL_COLLECTION_NOT_APPLICABLE';
+const INSUFFICIENT_PHYSICAL = 'INSUFFICIENT_PHYSICAL';
+const INSUFFICIENT_RESERVED = 'INSUFFICIENT_RESERVED';
+
 const validationError = (message: string) => new AppError(400, 'VALIDATION_ERROR', message);
 const notFound = () => new AppError(404, 'NOT_FOUND', 'No se encontró la venta.');
 const forbidden = () => new AppError(403, 'FORBIDDEN', 'No cuenta con acceso a esta sucursal.');
-const invalidState = (message = 'La venta no admite el cobro proporcional en su estado actual.') => new AppError(409, 'INVALID_SALE_STATE', message);
-// A FIXED_TOTAL sale never reaches the proportional checkout; the historical
-// /payments path owns it. No dedicated code exists in the design table.
-const notProportional = () => new AppError(409, 'INVALID_SALE_STATE', 'Esta venta no usa el cobro proporcional.');
 const methodNotEnabled = (method: string) => new AppError(409, 'PAYMENT_METHOD_NOT_ENABLED', `El medio ${method} no está habilitado para el cobro proporcional.`);
-const snapshotInconsistent = (message: string) => new AppError(409, 'PRICING_SNAPSHOT_INCONSISTENT', message);
-const quoteChanged = (quote: ProportionalQuote) => new AppError(409, 'CHECKOUT_QUOTE_CHANGED', 'La cotización cambió; vuelva a confirmar.', { total: quote.total, balance: quote.balance.amount });
 const cashReceivedInsufficient = () => new AppError(409, 'CASH_RECEIVED_INSUFFICIENT', 'El efectivo recibido es menor al importe.');
-const noCashSession = () => new AppError(409, 'NO_OPEN_CASH_SESSION', 'No hay una sesión de caja abierta.');
-const cashSessionBranch = () => new AppError(409, 'CASH_SESSION_BRANCH_MISMATCH', 'La sesión de caja pertenece a otra sucursal.');
-const reservationExpired = () => new AppError(409, 'RESERVATION_EXPIRED', 'La reserva de la venta venció; no admite un primer cobro.');
-const invalidReservation = () => new AppError(409, 'INVALID_RESERVATION', 'La venta no tiene reservas vigentes que respalden sus artículos.');
-const insufficientPhysical = (variantId: string) => new AppError(409, 'INSUFFICIENT_PHYSICAL', 'El inventario físico no puede cubrir la venta.', { variantId });
-const insufficientReserved = (variantId: string) => new AppError(409, 'INSUFFICIENT_RESERVED', 'El inventario reservado no puede cubrir la venta.', { variantId });
 const referenceAlreadyRecorded = (status: string) => new AppError(409, 'EXTERNAL_REFERENCE_ALREADY_RECORDED', 'La referencia ya está registrada.', { status });
-const unappliedPending = () => new AppError(409, 'UNAPPLIED_EXTERNAL_COLLECTION_PENDING', 'La venta tiene cobros externos sin imputar que no se incluyeron.');
-const collectionNotApplicable = () => new AppError(409, 'EXTERNAL_COLLECTION_NOT_APPLICABLE', 'El cobro registrado no se puede aplicar a este medio o importe.');
 const concurrencyError = () => new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
 const inconsistentState = (message: string) => new AppError(500, 'CHECKOUT_STATE_INCONSISTENT', message);
+// Defect (design §5.2 step 8): the sale's lines no longer reproduce the sealed
+// plan. Fails the whole transaction (500), never a silent re-price.
+const planInconsistent = (message: string) => new AppError(500, 'CHECKOUT_PLAN_INCONSISTENT', message);
+const invalidAttemptState = () => new AppError(409, 'INVALID_CHECKOUT_ATTEMPT_STATE', 'La reserva de cobro no admite una nueva confirmación.');
+const reservationClosed = () => new AppError(409, 'CHECKOUT_RESERVATION_CLOSED', 'La reserva de cobro ya fue cerrada y no admite confirmación.');
+const confirmationHashMismatch = () => new AppError(409, 'CHECKOUT_CONFIRMATION_HASH_MISMATCH', 'La confirmación no coincide con la confirmación ya registrada.');
+// Correctable stock errors (design §6.1 C5): 409, attempt stays RESERVED, and
+// the response carries the observed attempt status and the computed stock state.
+const stockHoldExpired = () => new AppError(409, 'STOCK_HOLD_EXPIRED', 'La reserva de stock de la venta venció.', { observedStatus: 'RESERVED', stockState: 'EXPIRED' });
+const stockHoldReleased = () => new AppError(409, 'STOCK_HOLD_RELEASED', 'La reserva de stock de la venta fue liberada.', { observedStatus: 'RESERVED', stockState: 'RELEASED' });
 
 const transient = (error: unknown) => {
   const candidate = error as { code?: string; meta?: { code?: string } };
@@ -163,34 +250,21 @@ const transient = (error: unknown) => {
     || message.includes('40P01') || message.includes('TransactionWriteConflict');
 };
 
-// Which unique constraint the driver reported. Prisma names the field list for a
-// declared @@unique and, for the SQL-only partial indexes, may name the index
-// itself; both shapes are recognised. The two reference indexes are told apart by
-// their own columns (the debit key is (branch, referenceKey); the transfer key
-// always carries institution), so the resolution can select the ONE method that
-// actually collided. A target that identifies no method stays `null` and fails
-// closed: no status is ever attributed to a guessed method.
-type UniqueCollision =
-  | { kind: 'operationKey' }
-  | { kind: 'saleId' }
-  | { kind: 'externalCollection' }
-  | { kind: 'reference'; method: ProportionalMethod | null };
-
-const uniqueCollision = (error: unknown): UniqueCollision | null => {
-  const candidate = error as { code?: string; meta?: { target?: unknown } };
-  if (candidate.code !== 'P2002') return null;
-  const target = candidate.meta?.target;
-  const text = (Array.isArray(target) ? target.join(',') : typeof target === 'string' ? target : '').toLowerCase();
-  if (text.includes('operationkey')) return { kind: 'operationKey' };
-  if (text.includes('externalcollectionid')) return { kind: 'externalCollection' };
-  if (text.includes('externalcollection_transfer_ref_key') || text.includes('institution')) return { kind: 'reference', method: 'TRANSFER' };
-  if (text.includes('externalcollection_debit_ref_key')) return { kind: 'reference', method: 'CARD_DEBIT' };
-  // (branchId, referenceKey) without institution can only be the debit index.
-  if (text.includes('branchid') && text.includes('referencekey')) return { kind: 'reference', method: 'CARD_DEBIT' };
-  if (text.includes('referencekey')) return { kind: 'reference', method: null };
-  if (text.includes('saleid')) return { kind: 'saleId' };
-  return null;
+// A terminal rejection persists its CODE and DETAILS but not its message. A
+// replay reconstructs the same 409 from the code alone, without ever writing or
+// re-auditing — see the last step of the JSDoc on `checkout`.
+const REJECTION_MESSAGES: Record<string, string> = {
+  [INVALID_SALE_STATE]: 'La venta no admite el cobro en su estado actual.',
+  [NO_OPEN_CASH_SESSION]: 'No hay una sesión de caja abierta.',
+  [CASH_SESSION_BRANCH_MISMATCH]: 'La sesión de caja pertenece a otra sucursal.',
+  [EXTERNAL_COLLECTION_NOT_APPLICABLE]: 'El cobro registrado no se puede aplicar a este intento.',
+  [INSUFFICIENT_PHYSICAL]: 'El inventario físico no puede cubrir la venta.',
+  [INSUFFICIENT_RESERVED]: 'El inventario reservado no puede cubrir la venta.',
 };
+const rejectionMessage = (code: string): string => REJECTION_MESSAGES[code] ?? 'La reserva de cobro fue rechazada.';
+const rejectionDetailsOf = (value: unknown): Record<string, unknown> => (
+  typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+);
 
 // Reference canonical form (design §7): upper-case letters and digits only.
 export function normalizeReferenceKey(reference: string): string {
@@ -302,7 +376,132 @@ export function validateCheckoutRequest(request: CheckoutRequest): void {
 }
 
 export function createCheckoutService(database: PrismaClient) {
-  const pricing = createPricingService(database);
+  // Everything a confirmation needs, derived exclusively from the SEALED plan:
+  // the canonical confirmation hash, the CASH change and the normalised evidence
+  // per method. Only the CASH receivedAmount and a NEW reference/institution ever
+  // come from the request; totals, balance and roles never do. Fails before any
+  // write when the confirmation does not match the reservation.
+  function hashSealedConfirmation(
+    attempt: LockedCheckoutAttempt,
+    planTenders: SealedCheckoutTender[],
+    request: CheckoutConfirmationRequest,
+  ): { hash: string; cashChange: bigint; evidenceByMethod: Map<string, SealedEvidence> } {
+    if (planTenders.length !== request.tenders.length) throw validationError('Los medios de confirmación no coinciden con la reserva.');
+    const requestByMethod = new Map<string, CheckoutConfirmationRequest['tenders'][number]>();
+    for (const tender of request.tenders) {
+      if (requestByMethod.has(tender.method)) throw validationError('Los medios de pago no pueden repetirse.');
+      requestByMethod.set(tender.method, tender);
+    }
+    const planMethods = new Set<string>();
+    for (const tender of planTenders) {
+      if (planMethods.has(tender.method) || !requestByMethod.has(tender.method)) {
+        throw validationError('Los medios de confirmación no coinciden con la reserva.');
+      }
+      planMethods.add(tender.method);
+      if (!['FIXED', 'BALANCE'].includes(tender.role) || !['NEW', 'COLLECTION'].includes(tender.source)) {
+        throw inconsistentState('La reserva contiene un tender inválido.');
+      }
+      if ((tender.role === 'FIXED' && (tender.amount === null || tender.amount <= 0n))
+        || (tender.role === 'BALANCE' && tender.amount !== null)) {
+        throw inconsistentState('La reserva contiene un importe de tender inválido.');
+      }
+      if (tender.source === 'COLLECTION'
+        && (tender.method === 'CASH' || tender.role !== 'FIXED' || tender.amount === null || tender.externalCollectionId === null)) {
+        throw inconsistentState('La reserva contiene un tender COLLECTION inválido.');
+      }
+      if (tender.source === 'NEW' && tender.externalCollectionId !== null) {
+        throw inconsistentState('La reserva NEW referencia un cobro externo.');
+      }
+    }
+    if (planMethods.size !== requestByMethod.size) throw validationError('Los medios de confirmación no coinciden con la reserva.');
+
+    let cashChange = 0n;
+    const evidenceByMethod = new Map<string, SealedEvidence>();
+    const hashTenders: ConfirmationTenderInput[] = [];
+    for (const sealed of planTenders) {
+      const evidence = requestByMethod.get(sealed.method)!;
+      if (evidence.reference !== null) {
+        if (evidence.referenceKey === null || normalizeReferenceKey(evidence.reference) !== evidence.referenceKey) {
+          throw validationError('La referencia del cobro no es válida.');
+        }
+        // Defence in depth (design §7, chk_ec_reference): the RAW reference is
+        // 1..64 Unicode code points. The HTTP DTO bounds it too, but repeating it
+        // here makes a caller that bypasses the boundary fail with 400 BEFORE any
+        // INSERT — never a PostgreSQL check violation or a silent truncation.
+        const rawLength = codePoints(evidence.reference);
+        if (rawLength < 1 || rawLength > REFERENCE_RAW_MAX) {
+          throw validationError('La referencia debe tener entre 1 y 64 caracteres.');
+        }
+      } else if (evidence.referenceKey !== null) {
+        throw validationError('La referencia del cobro no es válida.');
+      }
+
+      if (sealed.source === 'COLLECTION') {
+        if (evidence.reference !== null || evidence.referenceKey !== null || evidence.institution !== null || evidence.institutionOther !== null) {
+          throw validationError('Un cobro ya registrado no admite nueva evidencia de referencia o institución.');
+        }
+      } else if (sealed.method === 'TRANSFER') {
+        if (evidence.referenceKey === null || evidence.institution === null) {
+          throw validationError('La transferencia nueva requiere referencia e institución.');
+        }
+        if (evidence.institution === 'OTHER') {
+          if (evidence.institutionOther === null || evidence.institutionOther.trim().length === 0) {
+            throw validationError('La institución OTHER requiere un nombre.');
+          }
+        } else if (evidence.institutionOther !== null) {
+          throw validationError('institutionOther solo se usa con la institución OTHER.');
+        }
+      } else if (sealed.method === 'CARD_DEBIT') {
+        if (evidence.referenceKey === null || evidence.institution !== null || evidence.institutionOther !== null) {
+          throw validationError('El débito nuevo requiere referencia y no admite institución.');
+        }
+      } else {
+        if (evidence.receivedAmount === null || evidence.referenceKey !== null || evidence.institution !== null || evidence.institutionOther !== null) {
+          throw validationError('El efectivo requiere importe recibido y no admite referencia ni institución.');
+        }
+        const sealedCashAmount = sealed.role === 'BALANCE' ? attempt.expectedBalanceAmount : sealed.amount;
+        if (sealedCashAmount === null || sealedCashAmount <= 0n) {
+          throw inconsistentState('La reserva no contiene un importe de efectivo válido.');
+        }
+        if (evidence.receivedAmount < sealedCashAmount) throw validationError('El efectivo recibido es menor al importe reservado.');
+        cashChange += evidence.receivedAmount - sealedCashAmount;
+      }
+      if (sealed.method !== 'CASH' && evidence.receivedAmount !== null) {
+        throw validationError('Solo el efectivo admite importe recibido.');
+      }
+      hashTenders.push({
+        method: evidence.method,
+        receivedAmount: evidence.receivedAmount,
+        referenceKey: evidence.referenceKey,
+        institution: evidence.institution,
+        institutionOther: evidence.institutionOther,
+      });
+      evidenceByMethod.set(sealed.method, {
+        method: sealed.method,
+        receivedAmount: evidence.receivedAmount,
+        reference: evidence.reference,
+        referenceKey: evidence.referenceKey,
+        institution: evidence.institution,
+        institutionOther: evidence.institutionOther,
+      });
+    }
+
+    try {
+      return {
+        hash: confirmationHash({
+          planHash: attempt.planHash,
+          reserveKey: attempt.reserveKey,
+          operationKey: attempt.operationKey,
+          tenders: hashTenders,
+        }),
+        cashChange,
+        evidenceByMethod,
+      };
+    } catch (error) {
+      if (error instanceof CheckoutCanonicalError) throw validationError('La confirmación no cumple el formato canónico.');
+      throw error;
+    }
+  }
 
   function assertCanCharge(req: RequestLike, branchId: string) {
     // Phase 1D.3.2 SWITCH: the real decision is the Production SALE_CHARGE and
@@ -311,64 +510,89 @@ export function createCheckoutService(database: PrismaClient) {
     if (!req.auth || !hasPermissionAtLocation(req.auth, PRODUCTION_PERMISSIONS.SALE_COMPLETE, branchId)) throw forbidden();
   }
 
-  function enginePricing(snapshot: { id: string | null; adjustmentsBps: Record<PriceMode, number> }): ProportionalPricingSnapshot | null {
-    if (snapshot.id === null) return null;
-    return {
-      bankTransferAdjustmentBps: snapshot.adjustmentsBps.BANK_TRANSFER,
-      debitCardAdjustmentBps: snapshot.adjustmentsBps.DEBIT_CARD,
+  // The settlement is derived from the SEALED plan alone (design §5.2 step 8):
+  // amounts come from the sealed tenders, the balance from
+  // `expectedBalanceAmount`, the per-line full prices from the SEALED basis
+  // points applied to the sale's OWN line snapshot. Any disagreement with the
+  // seal is a defect (CHECKOUT_PLAN_INCONSISTENT) that reverts everything; the
+  // current pricing configuration is never consulted.
+  function buildSettlement(
+    attempt: LockedCheckoutAttempt,
+    planTenders: readonly SealedCheckoutTender[],
+    lines: readonly ProportionalLineInput[],
+  ): { methods: MethodSettlement[]; total: bigint; adjustments: Record<ProportionalMethod, number> } {
+    const adjustments: Record<ProportionalMethod, number> = { CASH: 0, TRANSFER: 0, CARD_DEBIT: 0 };
+    if (attempt.transferAdjustmentBps !== null) adjustments.TRANSFER = attempt.transferAdjustmentBps;
+    if (attempt.debitAdjustmentBps !== null) adjustments.CARD_DEBIT = attempt.debitAdjustmentBps;
+    const sealedFullPrice: Record<ProportionalMethod, bigint | null> = {
+      CASH: attempt.fullPriceCash,
+      TRANSFER: attempt.fullPriceTransfer,
+      CARD_DEBIT: attempt.fullPriceDebit,
     };
-  }
 
-  function adjustmentFor(quote: ProportionalQuote, method: ProportionalMethod, pricing: ProportionalPricingSnapshot | null): number {
-    if (method === 'CASH') return 0;
-    if (pricing === null) throw snapshotInconsistent(`Falta la configuración de precios para ${method}.`);
-    return method === 'TRANSFER' ? pricing.bankTransferAdjustmentBps : pricing.debitCardAdjustmentBps;
-  }
-
-  async function replay(tx: Prisma.TransactionClient, saleId: string, checkout: { id: string; total: bigint; changeAmount: bigint; completedAt: Date }) {
-    const sale = await tx.sale.findFirst({ where: { id: saleId }, select: { id: true, saleNumber: true, status: true } });
-    if (!sale) throw notFound();
-    if (sale.status !== 'COMPLETED') throw inconsistentState('La venta tiene un checkout pero no está COMPLETED.');
-    const payments = await tx.salePayment.findMany({ where: { saleId }, orderBy: [{ paidAt: 'asc' }, { id: 'asc' }] });
-    const allocations = await tx.saleLineAllocation.findMany({ where: { checkoutId: checkout.id }, orderBy: { id: 'asc' } });
-    const items = await tx.saleItem.findMany({ where: { saleId }, select: { id: true, sku: true, quantity: true }, orderBy: { id: 'asc' } });
-    const totals = new Map<string, bigint>();
-    for (const allocation of allocations) {
-      const current = totals.get(allocation.saleItemId) ?? 0n;
-      totals.set(allocation.saleItemId, current + allocation.amount);
+    const amounts = new Map<ProportionalMethod, bigint>();
+    for (const tender of planTenders) {
+      if (!(PROPORTIONAL_METHODS as readonly string[]).includes(tender.method)) {
+        throw planInconsistent('La reserva sellada contiene un medio inválido.');
+      }
+      const method = tender.method as ProportionalMethod;
+      if (amounts.has(method)) throw planInconsistent('La reserva sellada repite un medio.');
+      const isBalance = tender.role === 'BALANCE';
+      if (isBalance !== (method === attempt.balanceMethod)) {
+        throw planInconsistent('La reserva sellada no marca un único medio de saldo.');
+      }
+      const amount = isBalance ? attempt.expectedBalanceAmount : tender.amount;
+      if (amount === null || amount <= 0n) throw planInconsistent('La reserva sellada contiene un importe de medio inválido.');
+      amounts.set(method, amount);
     }
-    return {
-      saleId,
-      saleNumber: sale.saleNumber,
-      status: 'COMPLETED' as const,
-      checkoutId: checkout.id,
-      replayed: true,
-      total: checkout.total,
-      changeAmount: checkout.changeAmount,
-      payments: payments.map((payment) => ({
-        id: payment.id,
-        method: payment.method,
-        tenderRole: payment.tenderRole as CheckoutTenderRole,
-        amount: payment.amount,
-        methodFullPrice: payment.methodFullPrice ?? 0n,
-        adjustmentBps: payment.adjustmentBps ?? 0,
-        externalCollectionId: payment.externalCollectionId,
-        receivedAmount: payment.receivedAmount,
-        changeAmount: payment.changeAmount,
-      })),
-      lines: items.map((item) => ({
-        saleItemId: item.id,
-        sku: item.sku,
-        quantity: item.quantity,
-        finalAmount: totals.get(item.id) ?? 0n,
-      })),
-      completedAt: checkout.completedAt,
-    } satisfies CheckoutResult;
+    if (amounts.size !== attempt.tenderCount) throw planInconsistent('La reserva sellada no concilia con su número de medios.');
+    const total = [...amounts.values()].reduce((sum, value) => sum + value, 0n);
+    if (total !== attempt.expectedTotal) throw planInconsistent('El total sellado no concilia con sus medios.');
+
+    const methods: MethodSettlement[] = [];
+    for (const method of PROPORTIONAL_METHODS) {
+      if (!amounts.has(method)) continue;
+      if (method !== 'CASH' && (attempt.transferAdjustmentBps === null || attempt.debitAdjustmentBps === null)) {
+        throw planInconsistent(`Falta el ajuste sellado de ${method}.`);
+      }
+      const perLine = lineFullPrices(lines, adjustments[method]);
+      const fullPrice = perLine.reduce((sum, value) => sum + value, 0n);
+      const sealed = sealedFullPrice[method];
+      if (sealed === null || sealed !== fullPrice) {
+        throw planInconsistent(`El precio completo sellado de ${method} no coincide con la venta.`);
+      }
+      const amount = amounts.get(method)!;
+      const allocations = allocate({ amount, methodFullPrice: fullPrice, perLine, lines }).map((entry) => ({
+        saleItemId: entry.saleItemId,
+        sku: entry.sku,
+        amount: entry.amount,
+      }));
+      methods.push({ method, role: method === attempt.balanceMethod ? 'BALANCE' : 'FIXED', amount, fullPrice, perLine, allocations });
+    }
+    return { methods, total, adjustments };
   }
 
-  async function attempt(req: RequestLike, userId: string, saleId: string, request: CheckoutRequest, requestHash: string): Promise<CheckoutResult> {
-    return database.$transaction(async (tx) => {
-      // 1. Lock the sale.
+  // T-C: confirm a RESERVED attempt. ONE Serializable transaction (retried on a
+  // transient conflict); a terminal rejection is committed with the attempt
+  // REJECTED and only becomes an HTTP error after the commit.
+  async function checkout(req: RequestLike, userId: string, saleId: string, request: CheckoutConfirmationRequest): Promise<CheckoutResult> {
+    // The NEW references the request proposes. Kept OUTSIDE the transaction: the
+    // in-transaction pre-check is only fast-fail (design §5.2), and when a peer
+    // commits the same reference between it and the INSERT, the partial unique
+    // index is what stops us — the winner is only identifiable after the
+    // rollback, with a read-only lookup that never reopens a transaction.
+    const proposedReferences = request.tenders.flatMap((tender) => (
+      tender.reference === null
+        ? []
+        : [{
+            method: tender.method,
+            referenceKey: normalizeReferenceKey(tender.reference),
+            institution: tender.method === 'TRANSFER' ? tender.institution : null,
+          }]
+    ));
+
+    const confirmAttempt = async (): Promise<ConfirmOutcome> => database.$transaction(async (tx): Promise<ConfirmOutcome> => {
+      // 1. Sale, then attempt (design §5.2 steps 1-2). Never invert this order.
       const [sale] = await tx.$queryRaw<LockedSale[]>`
         SELECT id, "branchId", status, "saleNumber", subtotal, total, "pricingMode", "priceMode", "pricingModel",
                "paymentStartedAt", "wholesaleConfirmedAt", "wholesaleConfirmedById"
@@ -376,125 +600,164 @@ export function createCheckoutService(database: PrismaClient) {
       `;
       if (!sale) throw notFound();
 
-      // 2. Permissions on the sale's own branch.
-      assertCanCharge(req, sale.branchId);
-
-      // 3. Accept only the proportional model, then resolve idempotency.
-      if (sale.pricingModel !== 'PROPORTIONAL_V1') throw notProportional();
-
-      const existingByKey = await tx.saleCheckout.findUnique({ where: { operationKey: request.operationKey } });
-      if (existingByKey) {
-        if (existingByKey.saleId !== saleId || existingByKey.requestHash !== requestHash) {
-          throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD', 'La clave de idempotencia ya fue utilizada con otro contenido.');
-        }
-        return replay(tx, saleId, existingByKey);
+      const [attempt] = await tx.$queryRaw<LockedCheckoutAttempt[]>`
+        SELECT id, "saleId", "branchId", "reserveKey", "operationKey", "planHash", "planSealed", status,
+               "startedById", "confirmationHash", "cashSessionId", "balanceMethod", "expectedTotal",
+               "expectedBalanceAmount", "tenderCount", "fullPriceCash", "fullPriceTransfer", "fullPriceDebit",
+               "transferAdjustmentBps", "debitAdjustmentBps", "pricingConfigId", "pricingConfigUpdatedAt",
+               "rejectionCode", "rejectionDetails", "declaredAt"
+        FROM "CheckoutAttempt" WHERE "reserveKey" = ${request.reserveKey} FOR UPDATE
+      `;
+      if (!attempt || attempt.saleId !== saleId || attempt.branchId !== sale.branchId) throw notFound();
+      if (attempt.operationKey !== request.operationKey) {
+        throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD', 'La clave de idempotencia ya fue utilizada con otro contenido.');
       }
-      const existingBySale = await tx.saleCheckout.findUnique({ where: { saleId } });
-      if (existingBySale) throw new AppError(409, 'SALE_ALREADY_CHECKED_OUT', 'La venta ya tiene un checkout con otra clave.');
+      if (!attempt.planSealed) throw inconsistentState('La reserva de cobro no tiene un plan sellado.');
 
-      // 4. State and snapshot validation.
-      if (sale.status !== 'PENDING_PAYMENT') throw invalidState();
+      // 2. Permissions: the initiator charges on their own; anyone else must act
+      //    as a supervisor at the sale's branch and leave a justification.
+      const authenticatedUserId = req.auth?.userId;
+      if (!authenticatedUserId || authenticatedUserId !== userId) throw forbidden();
+      let supervisorReason: string | null = null;
+      let supervisorEvidence: string | null = null;
+      if (attempt.startedById === authenticatedUserId) {
+        assertCanCharge(req, sale.branchId);
+      } else {
+        if (!request.supervisor || !req.auth || !actsAsSupervisorAtLocation(
+          req.auth,
+          [PRODUCTION_PERMISSIONS.SALE_CHARGE, PRODUCTION_PERMISSIONS.SALE_COMPLETE],
+          sale.branchId,
+        )) throw forbidden();
+        supervisorReason = request.supervisor.reason;
+        supervisorEvidence = request.supervisor.evidence;
+      }
+
+      // 3. State. A persisted TERMINAL rejection is idempotent: the same
+      //    reserveKey and operationKey reproduce EXACTLY the rejection already
+      //    committed — no settlement, no audit, no mutation. A different
+      //    operationKey is a key reuse and never reaches here (step 1). A
+      //    REJECTED attempt that T-X already DECLARED (declaredAt set) is closed
+      //    for good: its rejection is no longer replayable (S6.2).
+      if (attempt.status === 'REJECTED') {
+        if (attempt.declaredAt !== null) throw reservationClosed();
+        if (attempt.rejectionCode === null) throw inconsistentState('El intento rechazado no conserva su código de rechazo.');
+        return {
+          kind: 'REJECTED',
+          code: attempt.rejectionCode,
+          message: rejectionMessage(attempt.rejectionCode),
+          details: rejectionDetailsOf(attempt.rejectionDetails),
+        };
+      }
+      // An ABANDONED attempt was closed by T-X: it is never confirmed, and the
+      // refusal writes nothing (no plan read, no settlement, no audit).
+      if (attempt.status === 'ABANDONED') throw reservationClosed();
+      // 4. A normal confirmation (or its replay) is decided by the sealed plan
+      //    and the confirmation hash.
+      if (attempt.status !== 'RESERVED' && attempt.status !== 'CONFIRMED') throw invalidAttemptState();
+      const planTenders = await tx.checkoutAttemptTender.findMany({
+        where: { attemptId: attempt.id },
+        select: { method: true, role: true, source: true, amount: true, externalCollectionId: true },
+      });
+      const { hash: requestConfirmationHash, cashChange, evidenceByMethod } = hashSealedConfirmation(attempt, planTenders, request);
+      if (attempt.status === 'CONFIRMED') {
+        if (attempt.confirmationHash === null) throw inconsistentState('El intento confirmado no tiene confirmationHash.');
+        if (attempt.confirmationHash !== requestConfirmationHash) throw confirmationHashMismatch();
+        return { kind: 'CONFIRMED', result: await readCheckoutResult(tx, attempt) };
+      }
+
+      // A terminal rejection COMMITS (attempt REJECTED, no charge); the caller
+      // turns it into a 409 after commit (design §5.3).
+      const reject = async (code: string, message: string, details: Record<string, unknown> = {}): Promise<ConfirmOutcome> => {
+        const now = new Date();
+        await tx.sale.update({ where: { id: saleId }, data: { updatedAt: now } });
+        await tx.checkoutAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            status: 'REJECTED',
+            rejectionCode: code,
+            rejectionDetails: details as Prisma.InputJsonValue,
+            rejectedById: userId,
+            rejectedAt: now,
+          },
+        });
+        await createAuditLog(tx, {
+          userId, branchId: sale.branchId, action: 'CHECKOUT_RESERVATION_REJECTED',
+          entityType: 'CheckoutAttempt', entityId: attempt.id,
+          before: { status: 'RESERVED' },
+          after: { status: 'REJECTED', code, details },
+        });
+        return { kind: 'REJECTED', code, message, details };
+      };
+
+      // 4. Terminal sale-state rejection: no charge is possible.
+      if (sale.pricingModel !== 'PROPORTIONAL_V1' || sale.status !== 'PENDING_PAYMENT') {
+        return reject(INVALID_SALE_STATE, 'La venta no admite el cobro en su estado actual.');
+      }
       assertPricingFinalizable(sale);
-      if (sale.pricingMode === 'WHOLESALE' && sale.wholesaleConfirmedAt === null) throw invalidState();
-      if (sale.priceMode !== 'CASH') throw snapshotInconsistent('Una venta proporcional debe estar tasada en efectivo.');
+      if (sale.priceMode !== 'CASH') throw planInconsistent('Una venta proporcional debe estar tasada en efectivo.');
       const previousPayments = await tx.salePayment.findMany({ where: { saleId }, select: { id: true } });
-      // PROPORTIONAL_V1 is a single-shot settlement: no payment may exist and no
-      // payment history may have started (the DB trigger maintains that marker).
-      if (previousPayments.length > 0 || sale.paymentStartedAt !== null) throw invalidState();
+      if (previousPayments.length > 0 || sale.paymentStartedAt !== null) {
+        return reject(INVALID_SALE_STATE, 'La venta ya tiene cobros registrados.');
+      }
 
-      const items = await tx.saleItem.findMany({
-        where: { saleId },
-        select: { id: true, sku: true, quantity: true, baseUnitPrice: true, priceMode: true, priceBaseType: true },
-        orderBy: { id: 'asc' },
-      });
-      if (items.length === 0) throw snapshotInconsistent('La venta no tiene renglones para cotizar.');
-      const lines: ProportionalLineInput[] = items.map((item) => {
-        if (item.priceMode !== 'CASH') throw snapshotInconsistent('Un renglón no está tasado en efectivo.');
-        if (item.priceBaseType !== sale.pricingMode) throw snapshotInconsistent('La base del renglón no coincide con la venta.');
-        if (item.baseUnitPrice === null || item.baseUnitPrice <= 0n || item.quantity <= 0n) throw snapshotInconsistent('Un renglón tiene cantidad o precio base inválido.');
-        return { saleItemId: item.id, sku: item.sku, quantity: item.quantity, baseUnitPrice: item.baseUnitPrice };
-      });
-
-      const tenders = request.tenders;
-      const tenderByMethod = new Map<ProportionalMethod, CheckoutTender>(tenders.map((tender) => [tender.method, tender]));
-
-      // Existing external collections named by the request, locked in id order.
-      const includedCollectionIds = tenders
-        .map((tender) => tender.externalCollectionId)
-        .filter((id): id is string => id !== null)
-        .sort();
+      // 5. External collections, locked in id order: the plan's COLLECTION
+      //    tenders, then the NEW references that must not already exist.
+      const collectionIds = [...new Set(
+        planTenders.filter((tender) => tender.source === 'COLLECTION').map((tender) => tender.externalCollectionId!),
+      )].sort();
       const lockedCollections = new Map<string, LockedCollection>();
-      if (includedCollectionIds.length > 0) {
+      if (collectionIds.length > 0) {
         const locked = await tx.$queryRaw<LockedCollection[]>`
-          SELECT id, "branchId", method, amount, reference, "referenceKey", institution, status
+          SELECT id, "branchId", method, amount, reference, "referenceKey", institution, status, "claimAttemptId"
           FROM "ExternalCollection"
-          WHERE id IN (${Prisma.join(includedCollectionIds)})
+          WHERE id IN (${Prisma.join(collectionIds)})
           ORDER BY id ASC
           FOR UPDATE
         `;
         for (const collection of locked) lockedCollections.set(collection.id, collection);
-        if (lockedCollections.size !== includedCollectionIds.length) throw collectionNotApplicable();
-        for (const tender of tenders) {
-          if (tender.externalCollectionId === null) continue;
-          const collection = lockedCollections.get(tender.externalCollectionId)!;
-          if (collection.status !== 'UNAPPLIED') throw collectionNotApplicable();
-          if (collection.branchId !== sale.branchId || collection.method !== tender.method) throw collectionNotApplicable();
-          if (tender.amount === null || collection.amount !== tender.amount) throw collectionNotApplicable();
+      }
+      for (const tender of planTenders) {
+        if (tender.source !== 'COLLECTION') continue;
+        const collection = tender.externalCollectionId === null ? undefined : lockedCollections.get(tender.externalCollectionId);
+        if (!collection || collection.branchId !== sale.branchId || collection.method !== tender.method
+          || collection.amount !== tender.amount || collection.status !== 'UNAPPLIED'
+          || collection.claimAttemptId !== attempt.id) {
+          return reject(EXTERNAL_COLLECTION_NOT_APPLICABLE, 'El cobro registrado no se puede aplicar a este intento.');
         }
       }
-
-      // A brand-new reference must not already exist (design §8, partial unique indexes).
-      for (const tender of tenders) {
-        if (tender.reference === null) continue;
-        const referenceKey = normalizeReferenceKey(tender.reference);
+      const newReferences = new Map<ProportionalMethod, { reference: string; referenceKey: string; institution: TransferInstitution | null; institutionOther: string | null }>();
+      for (const tender of planTenders) {
+        if (tender.source !== 'NEW' || tender.method === 'CASH') continue;
+        const method = tender.method as ProportionalMethod;
+        const evidence = evidenceByMethod.get(tender.method)!;
+        const referenceKey = evidence.referenceKey!;
+        const institution = tender.method === 'TRANSFER' ? evidence.institution : null;
         const conflict = await tx.externalCollection.findFirst({
-          where: {
-            branchId: sale.branchId,
-            method: tender.method,
-            referenceKey,
-            institution: tender.method === 'TRANSFER' ? tender.institution : null,
-          },
+          where: { branchId: sale.branchId, method, referenceKey, institution },
         });
         if (conflict) throw referenceAlreadyRecorded(conflict.status);
+        newReferences.set(method, {
+          reference: evidence.reference!,
+          referenceKey,
+          institution,
+          institutionOther: tender.method === 'TRANSFER' && evidence.institution === 'OTHER' ? evidence.institutionOther!.trim() : null,
+        });
       }
-
-      // A checkout must not silently leave an unapplied collection of this sale behind.
-      const pendingCollections = await tx.externalCollection.findMany({
-        where: { originSaleId: saleId, status: 'UNAPPLIED' },
-        select: { id: true },
-      });
-      if (pendingCollections.some((collection) => !lockedCollections.has(collection.id))) throw unappliedPending();
-
-      // 5. Price with the single authority and compare with the confirmed quote.
-      const snapshot = await pricing.getSnapshot(tx);
-      const engineSnapshot = enginePricing(snapshot);
-      const fixedTenders: ProportionalTenderInput[] = tenders
-        .filter((tender) => tender.role === 'FIXED')
-        .map((tender) => ({ method: tender.method, amount: tender.amount! }));
-      const quote = computeProportionalQuote({ lines, pricing: engineSnapshot, tenders: fixedTenders, balanceMethod: request.balanceMethod });
-
-      const cashTender = tenderByMethod.get('CASH') ?? null;
-      const cashMethod = quote.methods.find((method) => method.method === 'CASH') ?? null;
-      let changeAmount = 0n;
-      if (cashMethod) {
-        const received = cashTender?.receivedAmount ?? 0n;
-        if (received < cashMethod.amount) throw cashReceivedInsufficient();
-        changeAmount = received - cashMethod.amount;
-      }
-      if (quote.total !== request.expectedTotal || quote.balance.amount !== request.expectedBalanceAmount) throw quoteChanged(quote);
 
       // 6. An OPEN cash session of the sale's own branch.
       const [session] = await tx.$queryRaw<LockedSession[]>`
         SELECT cs.id, cs.status, cs."registerId", r."branchId"
         FROM "CashSession" cs
         JOIN "CashRegister" r ON r.id = cs."registerId"
-        WHERE cs.id = ${request.cashSessionId}
+        WHERE cs.id = ${attempt.cashSessionId}
         FOR UPDATE OF cs
       `;
-      if (!session || session.status !== 'OPEN') throw noCashSession();
-      if (session.branchId !== sale.branchId) throw cashSessionBranch();
+      if (!session || session.status !== 'OPEN') return reject(NO_OPEN_CASH_SESSION, 'No hay una sesión de caja abierta.');
+      if (session.branchId !== sale.branchId) return reject(CASH_SESSION_BRANCH_MISMATCH, 'La sesión de caja pertenece a otra sucursal.');
 
-      // 7. Reservations and inventory, in deterministic lock order.
+      // 7. Stock holds (FIRST_PAYMENT(now)) and inventory, in lock order. An
+      //    expired or released hold is CORRECTABLE: 409, the attempt stays
+      //    RESERVED and nothing is written.
       const coverageItems = await tx.saleItem.findMany({ where: { saleId }, select: { variantId: true, quantity: true } });
       const activeHolds = await tx.$queryRaw<Array<{ id: string; variantId: string; branchId: string; quantity: bigint; expiresAt: Date }>>`
         SELECT id, "variantId", "branchId", quantity, "expiresAt"
@@ -506,7 +769,11 @@ export function createCheckoutService(database: PrismaClient) {
       const coverage = evaluateCurrentHoldCoverage({
         branchId: sale.branchId, items: coverageItems, activeHolds, policy: { kind: 'FIRST_PAYMENT', now: new Date() },
       });
-      if (!coverage.ok) throw coverage.reason === 'EXPIRED' ? reservationExpired() : invalidReservation();
+      if (!coverage.ok) {
+        if (coverage.reason === 'EXPIRED') throw stockHoldExpired();
+        if (coverage.reason === 'NO_ACTIVE_HOLDS' || coverage.reason === 'COVERAGE_MISMATCH') throw stockHoldReleased();
+        throw inconsistentState('La reserva de stock de la venta es inválida.');
+      }
       const { requirements } = coverage;
 
       const variantIds = [...requirements.keys()];
@@ -521,154 +788,188 @@ export function createCheckoutService(database: PrismaClient) {
       const inventoryByVariant = new Map(inventories.map((inventory) => [inventory.variantId, inventory]));
       for (const [variantId, required] of requirements) {
         const inventory = inventoryByVariant.get(variantId);
-        if (!inventory) throw insufficientPhysical(variantId);
-        if (inventory.physical < required) throw insufficientPhysical(variantId);
-        if (inventory.reserved < required) throw insufficientReserved(variantId);
+        if (!inventory || inventory.physical < required) {
+          return reject(INSUFFICIENT_PHYSICAL, 'El inventario físico no puede cubrir la venta.', { variantId });
+        }
+        if (inventory.reserved < required) {
+          return reject(INSUFFICIENT_RESERVED, 'El inventario reservado no puede cubrir la venta.', { variantId });
+        }
       }
 
-      // 8. Writes, in the design's order.
-      // 8.1 Sale.total (only the proportional path reprices).
-      await tx.sale.update({ where: { id: saleId }, data: { total: quote.total } });
+      // 8. The settlement, from the sealed plan only.
+      const items = await tx.saleItem.findMany({
+        where: { saleId },
+        select: { id: true, sku: true, quantity: true, baseUnitPrice: true },
+        orderBy: { id: 'asc' },
+      });
+      if (items.length === 0) throw planInconsistent('La venta no tiene renglones.');
+      const lines: ProportionalLineInput[] = items.map((item) => {
+        if (item.baseUnitPrice === null || item.baseUnitPrice <= 0n || item.quantity <= 0n) {
+          throw planInconsistent('Un renglón tiene cantidad o precio base inválido.');
+        }
+        return { saleItemId: item.id, sku: item.sku, quantity: item.quantity, baseUnitPrice: item.baseUnitPrice };
+      });
+      const settlement = buildSettlement(attempt, planTenders, lines);
+      const tenderByMethod = new Map<string, SealedCheckoutTender>(planTenders.map((tender) => [tender.method, tender]));
 
-      // 8.2 SaleCheckout.
+      // 9. Writes, in the design's order. The FKs SaleCheckout -> CheckoutAttempt
+      //    and ExternalCollection -> SaleCheckout force the confirmation first.
+      const now = new Date();
+      await tx.sale.update({ where: { id: saleId }, data: { updatedAt: now } });
+      await tx.checkoutAttempt.update({
+        where: { id: attempt.id },
+        data: {
+          status: 'CONFIRMED',
+          confirmationHash: requestConfirmationHash,
+          confirmedById: userId,
+          confirmedAt: now,
+          confirmReason: supervisorReason,
+          confirmEvidence: supervisorEvidence,
+        },
+      });
+      await tx.sale.update({ where: { id: saleId }, data: { total: settlement.total } });
       const checkout = await tx.saleCheckout.create({
         data: {
           saleId,
           branchId: sale.branchId,
           pricingModel: 'PROPORTIONAL_V1',
-          operationKey: request.operationKey,
-          requestHash,
-          cashSessionId: request.cashSessionId,
+          operationKey: attempt.operationKey,
+          requestHash: requestConfirmationHash,
+          cashSessionId: attempt.cashSessionId,
           userId,
-          balanceMethod: request.balanceMethod,
+          balanceMethod: attempt.balanceMethod,
           referenceSubtotal: sale.subtotal,
-          total: quote.total,
-          changeAmount,
-          fullPriceCash: quote.fullPrices.CASH ?? 0n,
-          fullPriceTransfer: engineSnapshot === null ? null : quote.fullPrices.TRANSFER,
-          fullPriceDebit: engineSnapshot === null ? null : quote.fullPrices.CARD_DEBIT,
-          transferAdjustmentBps: engineSnapshot?.bankTransferAdjustmentBps ?? null,
-          debitAdjustmentBps: engineSnapshot?.debitCardAdjustmentBps ?? null,
-          pricingConfigId: snapshot.id,
-          pricingConfigUpdatedAt: snapshot.updatedAt,
+          total: settlement.total,
+          changeAmount: cashChange,
+          fullPriceCash: attempt.fullPriceCash,
+          fullPriceTransfer: attempt.fullPriceTransfer,
+          fullPriceDebit: attempt.fullPriceDebit,
+          transferAdjustmentBps: attempt.transferAdjustmentBps,
+          debitAdjustmentBps: attempt.debitAdjustmentBps,
+          pricingConfigId: attempt.pricingConfigId,
+          pricingConfigUpdatedAt: attempt.pricingConfigUpdatedAt,
           algorithmVersion: CHECKOUT_ALGORITHM_VERSION,
+          attemptStatus: 'CONFIRMED',
+          completedAt: now,
         },
       });
 
-      // 8.3 External collections: apply the named ones, record the new ones APPLIED.
+      // 9.1 External collections: apply the claimed ones, record the new ones.
       const collectionByMethod = new Map<ProportionalMethod, string>();
       const appliedCollections: Array<{ id: string; method: PaymentMethod; amount: bigint; referenceKey: string; created: boolean }> = [];
-      for (const methodQuote of quote.methods) {
-        if (methodQuote.method === 'CASH') continue;
-        const tender = tenderByMethod.get(methodQuote.method)!;
-        if (tender.externalCollectionId !== null) {
+      for (const methodSettlement of settlement.methods) {
+        if (methodSettlement.method === 'CASH') continue;
+        const tender = tenderByMethod.get(methodSettlement.method)!;
+        if (tender.source === 'COLLECTION') {
+          const id = tender.externalCollectionId!;
           await tx.externalCollection.update({
-            where: { id: tender.externalCollectionId },
+            where: { id },
             data: { status: 'APPLIED', appliedCheckoutId: checkout.id, appliedSaleId: saleId },
           });
-          const collection = lockedCollections.get(tender.externalCollectionId)!;
-          collectionByMethod.set(methodQuote.method, collection.id);
-          appliedCollections.push({ id: collection.id, method: collection.method, amount: collection.amount, referenceKey: collection.referenceKey, created: false });
+          const collection = lockedCollections.get(id)!;
+          collectionByMethod.set(methodSettlement.method, id);
+          appliedCollections.push({ id, method: collection.method, amount: collection.amount, referenceKey: collection.referenceKey, created: false });
         } else {
-          const reference = tender.reference!;
+          const reference = newReferences.get(methodSettlement.method)!;
           const created = await tx.externalCollection.create({
             data: {
               branchId: sale.branchId,
-              method: methodQuote.method,
-              amount: methodQuote.amount,
-              reference,
-              referenceKey: normalizeReferenceKey(reference),
-              institution: methodQuote.method === 'TRANSFER' ? tender.institution : null,
-              institutionOther: methodQuote.method === 'TRANSFER' && tender.institution === 'OTHER' ? tender.institutionOther!.trim() : null,
+              method: methodSettlement.method,
+              amount: methodSettlement.amount,
+              reference: reference.reference,
+              referenceKey: reference.referenceKey,
+              institution: reference.institution,
+              institutionOther: reference.institutionOther,
               status: 'APPLIED',
               originSaleId: saleId,
-              cashSessionId: request.cashSessionId,
+              cashSessionId: attempt.cashSessionId,
               appliedCheckoutId: checkout.id,
               appliedSaleId: saleId,
               recordedById: userId,
             },
           });
-          collectionByMethod.set(methodQuote.method, created.id);
-          appliedCollections.push({ id: created.id, method: methodQuote.method, amount: methodQuote.amount, referenceKey: normalizeReferenceKey(reference), created: true });
+          collectionByMethod.set(methodSettlement.method, created.id);
+          appliedCollections.push({ id: created.id, method: methodSettlement.method, amount: methodSettlement.amount, referenceKey: reference.referenceKey, created: true });
         }
       }
 
-      // 8.4 One SalePayment per method.
+      // 9.2 One SalePayment per method.
       const paymentByMethod = new Map<ProportionalMethod, { id: string; amount: bigint }>();
-      for (const methodQuote of quote.methods) {
-        const isCash = methodQuote.method === 'CASH';
+      for (const methodSettlement of settlement.methods) {
+        const isCash = methodSettlement.method === 'CASH';
         const payment = await tx.salePayment.create({
           data: {
             saleId,
-            method: methodQuote.method,
-            amount: methodQuote.amount,
+            method: methodSettlement.method,
+            amount: methodSettlement.amount,
             pricingModel: 'PROPORTIONAL_V1',
             checkoutId: checkout.id,
-            tenderRole: methodQuote.role,
-            methodFullPrice: methodQuote.fullPrice,
-            adjustmentBps: adjustmentFor(quote, methodQuote.method, engineSnapshot),
-            cashSessionId: request.cashSessionId,
-            idempotencyKey: `co:${request.operationKey}:${methodQuote.method}`,
-            externalCollectionId: isCash ? null : collectionByMethod.get(methodQuote.method)!,
-            receivedAmount: isCash ? (cashTender?.receivedAmount ?? 0n) : null,
-            changeAmount: isCash ? changeAmount : null,
+            tenderRole: methodSettlement.role,
+            methodFullPrice: methodSettlement.fullPrice,
+            adjustmentBps: settlement.adjustments[methodSettlement.method],
+            cashSessionId: attempt.cashSessionId,
+            idempotencyKey: `co:${attempt.operationKey}:${methodSettlement.method}`,
+            externalCollectionId: isCash ? null : collectionByMethod.get(methodSettlement.method)!,
+            receivedAmount: isCash ? (evidenceByMethod.get('CASH')?.receivedAmount ?? 0n) : null,
+            changeAmount: isCash ? cashChange : null,
           },
         });
-        paymentByMethod.set(methodQuote.method, { id: payment.id, amount: payment.amount });
+        paymentByMethod.set(methodSettlement.method, { id: payment.id, amount: payment.amount });
       }
 
-      // 8.5 One SaleLineAllocation per method per line.
-      for (const methodQuote of quote.methods) {
-        const payment = paymentByMethod.get(methodQuote.method)!;
-        const perLine = quote.lineFullPrices[methodQuote.method]!;
+      // 9.3 One SaleLineAllocation per method per line.
+      for (const methodSettlement of settlement.methods) {
+        const payment = paymentByMethod.get(methodSettlement.method)!;
         for (let index = 0; index < lines.length; index += 1) {
           const line = lines[index]!;
-          const lineFullPrice = perLine[index]!;
+          const lineFullPrice = methodSettlement.perLine[index]!;
           await tx.saleLineAllocation.create({
             data: {
               checkoutId: checkout.id,
               saleId,
               saleItemId: line.saleItemId,
               salePaymentId: payment.id,
-              method: methodQuote.method,
+              method: methodSettlement.method,
               quantity: line.quantity,
               baseUnitPrice: line.baseUnitPrice,
               unitPrice: lineFullPrice / line.quantity,
               lineFullPrice,
-              amount: methodQuote.allocations[index]!.amount,
+              amount: methodSettlement.allocations[index]!.amount,
             },
           });
         }
       }
 
-      // 9. The net cash income only — CASH-1 reconciliation keeps 1:1.
-      if (cashMethod) {
+      // 9.4 The net cash income only — CASH-1 reconciliation keeps 1:1.
+      const cashSettlement = settlement.methods.find((method) => method.method === 'CASH') ?? null;
+      if (cashSettlement) {
         await tx.cashMovement.create({
           data: {
-            sessionId: request.cashSessionId,
+            sessionId: attempt.cashSessionId,
             type: 'SALE_INCOME',
-            amount: cashMethod.amount,
+            amount: cashSettlement.amount,
             salePaymentId: paymentByMethod.get('CASH')!.id,
             userId,
           },
         });
       }
 
-      // 10. PAID, then the shared finalizer with the SAME transaction.
+      // 9.5 PAID, then the shared finalizer with the SAME transaction.
       await tx.sale.update({ where: { id: saleId }, data: { status: 'PAID' } });
       const finalized = await finalizePaidSaleInTransaction(tx, req, userId, saleId);
 
-      // 11. Audit, all inside the same transaction.
-      for (const methodQuote of quote.methods) {
-        const payment = paymentByMethod.get(methodQuote.method)!;
+      // 10. Audit, all inside the same transaction.
+      for (const methodSettlement of settlement.methods) {
+        const payment = paymentByMethod.get(methodSettlement.method)!;
         await createAuditLog(tx, {
           userId, branchId: sale.branchId, action: 'PAYMENT_REGISTERED',
           entityType: 'SalePayment', entityId: payment.id,
           before: { saleId, status: 'PENDING_PAYMENT' },
           after: {
-            saleId, status: 'PAID', method: methodQuote.method, tenderRole: methodQuote.role,
-            amount: payment.amount, receivedAmount: methodQuote.method === 'CASH' ? (cashTender?.receivedAmount ?? 0n) : null,
-            changeAmount: methodQuote.method === 'CASH' ? changeAmount : null,
+            saleId, status: 'PAID', method: methodSettlement.method, tenderRole: methodSettlement.role,
+            amount: payment.amount,
+            receivedAmount: methodSettlement.method === 'CASH' ? (evidenceByMethod.get('CASH')?.receivedAmount ?? 0n) : null,
+            changeAmount: methodSettlement.method === 'CASH' ? cashChange : null,
           },
         });
       }
@@ -677,11 +978,12 @@ export function createCheckoutService(database: PrismaClient) {
         entityType: 'SaleCheckout', entityId: checkout.id,
         before: { saleId, status: 'PAID' },
         after: {
-          checkoutId: checkout.id, requestHash, total: quote.total, changeAmount,
-          balanceMethod: request.balanceMethod,
-          fullPrices: quote.fullPrices,
-          adjustments: { transfer: engineSnapshot?.bankTransferAdjustmentBps ?? null, debit: engineSnapshot?.debitCardAdjustmentBps ?? null },
-          methods: quote.methods.map((method) => ({ method: method.method, role: method.role, amount: method.amount })),
+          checkoutId: checkout.id, requestHash: requestConfirmationHash, total: settlement.total, changeAmount: cashChange,
+          balanceMethod: attempt.balanceMethod,
+          fullPrices: { CASH: attempt.fullPriceCash, TRANSFER: attempt.fullPriceTransfer, CARD_DEBIT: attempt.fullPriceDebit },
+          adjustments: { transfer: attempt.transferAdjustmentBps, debit: attempt.debitAdjustmentBps },
+          methods: settlement.methods.map((method) => ({ method: method.method, role: method.role, amount: method.amount })),
+          supervisor: supervisorReason === null ? null : { byId: userId, reason: supervisorReason },
         },
       });
       for (const collection of appliedCollections) {
@@ -693,7 +995,7 @@ export function createCheckoutService(database: PrismaClient) {
         });
       }
 
-      // 12. Invariant read inside the transaction: anything off reverts everything.
+      // 11. Invariant read inside the transaction: anything off reverts everything.
       const writtenPayments = await tx.salePayment.findMany({ where: { saleId }, select: { amount: true } });
       const writtenAllocations = await tx.saleLineAllocation.findMany({
         where: { checkoutId: checkout.id },
@@ -702,110 +1004,113 @@ export function createCheckoutService(database: PrismaClient) {
       const [settled] = await tx.$queryRaw<Array<{ total: bigint }>>`SELECT total FROM "Sale" WHERE id = ${saleId}`;
       const paymentSum = writtenPayments.reduce((sum, payment) => sum + payment.amount, 0n);
       const allocationSum = writtenAllocations.reduce((sum, allocation) => sum + allocation.amount, 0n);
-      if (paymentSum !== quote.total || allocationSum !== quote.total || checkout.total !== quote.total || settled?.total !== quote.total) {
+      if (paymentSum !== settlement.total || allocationSum !== settlement.total || checkout.total !== settlement.total || settled?.total !== settlement.total) {
         throw inconsistentState('La conciliación de pagos, asignaciones y total no cierra.');
       }
       // Per-payment reconciliation: the global sums alone would hide two payments
-      // whose allocations offset each other. Each payment must be backed by exactly
-      // its own amount.
+      // whose allocations offset each other.
       const allocationByPayment = new Map<string, bigint>();
       for (const allocation of writtenAllocations) {
         allocationByPayment.set(allocation.salePaymentId, (allocationByPayment.get(allocation.salePaymentId) ?? 0n) + allocation.amount);
       }
-      for (const methodQuote of quote.methods) {
-        const payment = paymentByMethod.get(methodQuote.method)!;
+      for (const methodSettlement of settlement.methods) {
+        const payment = paymentByMethod.get(methodSettlement.method)!;
         if ((allocationByPayment.get(payment.id) ?? 0n) !== payment.amount) {
           throw inconsistentState('Las asignaciones de un pago no concilian con su importe.');
         }
       }
 
       return {
-        saleId,
-        saleNumber: finalized.saleNumber,
-        status: 'COMPLETED' as const,
-        checkoutId: checkout.id,
-        replayed: false,
-        total: quote.total,
-        changeAmount,
-        payments: quote.methods.map((methodQuote) => ({
-          id: paymentByMethod.get(methodQuote.method)!.id,
-          method: methodQuote.method,
-          tenderRole: methodQuote.role,
-          amount: methodQuote.amount,
-          methodFullPrice: methodQuote.fullPrice,
-          adjustmentBps: adjustmentFor(quote, methodQuote.method, engineSnapshot),
-          externalCollectionId: methodQuote.method === 'CASH' ? null : collectionByMethod.get(methodQuote.method)!,
-          receivedAmount: methodQuote.method === 'CASH' ? (cashTender?.receivedAmount ?? 0n) : null,
-          changeAmount: methodQuote.method === 'CASH' ? changeAmount : null,
-        })),
-        lines: quote.lines.map((line, index) => ({ ...line, quantity: lines[index]!.quantity })),
-        completedAt: checkout.completedAt,
-      } satisfies CheckoutResult;
+        kind: 'CONFIRMED',
+        result: {
+          saleId,
+          saleNumber: finalized.saleNumber,
+          status: 'COMPLETED' as const,
+          checkoutId: checkout.id,
+          replayed: false,
+          total: settlement.total,
+          changeAmount: cashChange,
+          payments: settlement.methods.map((methodSettlement) => ({
+            id: paymentByMethod.get(methodSettlement.method)!.id,
+            method: methodSettlement.method,
+            tenderRole: methodSettlement.role,
+            amount: methodSettlement.amount,
+            methodFullPrice: methodSettlement.fullPrice,
+            adjustmentBps: settlement.adjustments[methodSettlement.method],
+            externalCollectionId: methodSettlement.method === 'CASH' ? null : collectionByMethod.get(methodSettlement.method)!,
+            receivedAmount: methodSettlement.method === 'CASH' ? (evidenceByMethod.get('CASH')?.receivedAmount ?? 0n) : null,
+            changeAmount: methodSettlement.method === 'CASH' ? cashChange : null,
+          })),
+          lines: settlement.methods.length === 0 ? [] : lines.map((line, index) => ({
+            saleItemId: line.saleItemId,
+            sku: line.sku,
+            quantity: line.quantity,
+            finalAmount: settlement.methods.reduce((sum, method) => sum + method.allocations[index]!.amount, 0n),
+          })),
+          completedAt: checkout.completedAt,
+        },
+      };
     }, { isolationLevel: 'Serializable', timeout: CHECKOUT_TIMEOUT_MS });
-  }
 
-  // The reference a collision must be matched on is the FULL approved unique key,
-  // scoped to the sale's OWN branch: CARD_DEBIT (branch, referenceKey) and TRANSFER
-  // (branch, institution, referenceKey). ONLY the method the failed index names is
-  // consulted — never the first reference of the request — and a missing tender or
-  // a missing row returns null so the caller rethrows instead of inventing a cause.
-  async function referenceCollisionStatus(tx: Prisma.TransactionClient, branchId: string, method: ProportionalMethod, request: CheckoutRequest): Promise<string | null> {
-    const tender = request.tenders.find((candidate) => candidate.method === method && candidate.reference !== null);
-    if (!tender) return null;
-    const conflict = await tx.externalCollection.findFirst({
-      where: {
-        branchId,
-        method,
-        referenceKey: normalizeReferenceKey(tender.reference!),
-        institution: method === 'TRANSFER' ? tender.institution : null,
-      },
-    });
-    return conflict?.status ?? null;
-  }
+    // A P2002 for one of the two partial EXTERNAL reference indexes is the SAME
+    // domain error as the in-transaction pre-check (409
+    // EXTERNAL_REFERENCE_ALREADY_RECORDED) and stays CORRECTABLE. It arrives here
+    // only AFTER the transaction has rolled back, so the attempt stays RESERVED
+    // and no partial settlement can survive. Detection is by unique target: the
+    // partial index by SQL name, or Prisma's column list for it. Any other target
+    // (SaleCheckout.operationKey/saleId, SalePayment, ...) is never converted.
+    const isExternalReferenceCollision = (error: unknown): boolean => {
+      const candidate = error as { code?: string; meta?: { target?: unknown } };
+      if (candidate.code !== 'P2002') return false;
+      const target = candidate.meta?.target;
+      const text = (Array.isArray(target) ? target.join(',') : typeof target === 'string' ? target : '').toLowerCase();
+      return /externalcollection_(transfer|debit)_ref_key/.test(text)
+        || (text.includes('referencekey') && text.includes('branchid'));
+    };
 
-  // Resolve a P2002 in ONE fresh, consistent transaction (design §7). DB-only race
-  // path: an unresolvable collision returns null and the caller rethrows the
-  // original error rather than inventing a cause.
-  async function resolveUniqueConflict(error: unknown, saleId: string, request: CheckoutRequest, requestHash: string): Promise<CheckoutResult | null> {
-    const collision = uniqueCollision(error);
-    if (collision === null) return null;
-    return database.$transaction(async (tx) => {
-      const sale = await tx.sale.findFirst({ where: { id: saleId }, select: { branchId: true } });
+    // Read-only, OUTSIDE the failed transaction and with NO lock: which proposed
+    // reference is now recorded, and in which state. `null` = no proposed
+    // reference is recorded, so the collision was not a reference race and the
+    // original error must stand (never an invented status).
+    const recordedReferenceStatus = async (): Promise<string | null> => {
+      if (proposedReferences.length === 0) return null;
+      const sale = await database.sale.findUnique({ where: { id: saleId }, select: { branchId: true } });
       if (!sale) return null;
-      if (collision.kind === 'reference') {
-        if (collision.method === null) return null;
-        const status = await referenceCollisionStatus(tx, sale.branchId, collision.method, request);
-        if (status === null) return null;
-        throw referenceAlreadyRecorded(status);
+      for (const reference of proposedReferences) {
+        const recorded = await database.externalCollection.findFirst({
+          where: {
+            branchId: sale.branchId,
+            method: reference.method,
+            referenceKey: reference.referenceKey,
+            institution: reference.institution,
+          },
+          select: { status: true },
+        });
+        if (recorded) return recorded.status;
       }
-      const existing = await tx.saleCheckout.findUnique({ where: { operationKey: request.operationKey } });
-      if (existing) {
-        // The key of THIS very request (a concurrent duplicate) replays; the key of
-        // another payload or another sale is a reuse.
-        if (existing.saleId !== saleId || existing.requestHash !== requestHash) {
-          throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD', 'La clave de idempotencia ya fue utilizada con otro contenido.');
-        }
-        return replay(tx, saleId, existing);
-      }
-      if (collision.kind === 'saleId') throw new AppError(409, 'SALE_ALREADY_CHECKED_OUT', 'La venta ya tiene un checkout con otra clave.');
       return null;
-    });
-  }
-
-  async function checkout(req: RequestLike, userId: string, saleId: string, request: CheckoutRequest): Promise<CheckoutResult> {
-    // Fails before opening a transaction: no side effect on a malformed request.
-    validateCheckoutRequest(request);
-    const requestHash = checkoutRequestHash(saleId, request);
+    };
 
     for (let attemptNumber = 0; attemptNumber < MAX_ATTEMPTS; attemptNumber += 1) {
+      let outcome: ConfirmOutcome;
       try {
-        return await attempt(req, userId, saleId, request, requestHash);
+        outcome = await confirmAttempt();
       } catch (error) {
-        const resolved = await resolveUniqueConflict(error, saleId, request, requestHash);
-        if (resolved) return resolved;
+        if (isExternalReferenceCollision(error)) {
+          const status = await recordedReferenceStatus();
+          if (status !== null) throw referenceAlreadyRecorded(status);
+        }
         if (!transient(error)) throw error;
         if (attemptNumber === MAX_ATTEMPTS - 1) throw concurrencyError();
+        continue;
       }
+      if (outcome.kind === 'REJECTED') {
+        throw new AppError(409, outcome.code, outcome.message, {
+          ...outcome.details,
+          attempt: { reserveKey: request.reserveKey, operationKey: request.operationKey, status: 'REJECTED' },
+        });
+      }
+      return outcome.result;
     }
     throw concurrencyError();
   }

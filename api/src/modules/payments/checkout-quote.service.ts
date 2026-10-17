@@ -44,9 +44,10 @@ export type CheckoutQuoteRequest = {
 export type CheckoutQuoteEnabledMethod = {
   method: ProportionalMethod;
   available: boolean;
-  // The one availability rule the R3-A1 engine enforces: without a pricing
-  // configuration only CASH can be priced.
-  reason?: 'PRICING_CONFIG_MISSING';
+  // PRICING_CONFIG_MISSING: without a pricing configuration only CASH can be
+  // priced (the one availability rule of the R3-A1 engine). PAYMENT_METHOD_NOT_ENABLED:
+  // S-REF's pilot gate switched the two external methods off on purpose.
+  reason?: 'PRICING_CONFIG_MISSING' | 'PAYMENT_METHOD_NOT_ENABLED';
 };
 
 export type CheckoutQuoteCollection = {
@@ -81,8 +82,17 @@ const invalidState = (message = 'La venta no admite el cobro proporcional en su 
 const notProportional = () => new AppError(409, 'INVALID_SALE_STATE', 'Esta venta no usa el cobro proporcional.');
 const snapshotInconsistent = (message: string) => new AppError(409, 'PRICING_SNAPSHOT_INCONSISTENT', message);
 
-export function createCheckoutQuoteService(database: PrismaClient) {
+export function createCheckoutQuoteService(
+  database: PrismaClient,
+  options: { externalMethodsEnabled?: boolean } = {},
+) {
   const pricing = createPricingService(database);
+  // S-REF: the pilot gate is injected by composition, never read from the
+  // process here, so the quote stays a pure projection. S-REF.1: the fallback is
+  // FAIL-CLOSED — a caller that omits the option gets the external methods OFF,
+  // and no omission can ever enable them. The runtime always injects the
+  // validated configuration from app.ts.
+  const externalMethodsEnabled = options.externalMethodsEnabled ?? false;
 
   function assertCanQuote(req: RequestLike, branchId: string) {
     // Design §5: the route gate is SALE_CHARGE and the service re-checks it on
@@ -177,24 +187,36 @@ export function createCheckoutQuoteService(database: PrismaClient) {
         saleId,
         saleNumber: sale.saleNumber,
         pricingModel: sale.pricingModel,
-        enabledMethods: PROPORTIONAL_METHODS.map((method): CheckoutQuoteEnabledMethod => (
-          method === 'CASH' || engineSnapshot !== null
+        enabledMethods: PROPORTIONAL_METHODS.map((method): CheckoutQuoteEnabledMethod => {
+          if (method === 'CASH') return { method, available: true };
+          // S-REF gate: with the external methods switched off the two non-cash
+          // methods are unavailable whatever the pricing configuration says, and
+          // the reason distinguishes an intentional pilot switch-off from a
+          // missing configuration.
+          if (!externalMethodsEnabled) {
+            return { method, available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' };
+          }
+          return engineSnapshot !== null
             ? { method, available: true }
-            : { method, available: false, reason: 'PRICING_CONFIG_MISSING' }
-        )),
+            : { method, available: false, reason: 'PRICING_CONFIG_MISSING' };
+        }),
         fullPrices: priced.fullPrices,
         tenders: request.tenders.map((tender) => ({ method: tender.method, role: 'FIXED' as const, amount: tender.amount })),
         balance: priced.balance,
         total: priced.total,
         lines: priced.lines.map((line, index) => ({ ...line, quantity: lines[index]!.quantity })),
-        unappliedCollections: unappliedCollections.map((collection) => ({
-          id: collection.id,
-          method: collection.method,
-          amount: collection.amount,
-          reference: collection.reference,
-          institution: collection.institution,
-          institutionOther: collection.institutionOther,
-        })),
+        // S-REF.1: while the external methods are off, a recorded collection is
+        // not a consumable option (T-R refuses it), so the quote never offers it.
+        unappliedCollections: externalMethodsEnabled
+          ? unappliedCollections.map((collection) => ({
+            id: collection.id,
+            method: collection.method,
+            amount: collection.amount,
+            reference: collection.reference,
+            institution: collection.institution,
+            institutionOther: collection.institutionOther,
+          }))
+          : [],
         reservationExpiresAt: activeHolds.length === 0
           ? null
           : new Date(Math.min(...activeHolds.map((hold) => hold.expiresAt.getTime()))),

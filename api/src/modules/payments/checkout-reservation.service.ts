@@ -71,6 +71,10 @@ const stockExpired = () => new AppError(409, 'STOCK_HOLD_EXPIRED', 'La reserva d
 const stockReleased = () => new AppError(409, 'STOCK_HOLD_RELEASED', 'La reserva de stock de la venta fue liberada.');
 const inconsistentState = (message: string) => new AppError(500, 'CHECKOUT_STATE_INCONSISTENT', message);
 const concurrencyError = () => new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
+// S-REF pilot gate: the two external methods (TRANSFER/CARD_DEBIT) are switched
+// off on purpose, so a NEW attempt that needs one is refused before any attempt
+// row is read. Not a malformed plan and not a sale-state problem.
+const paymentMethodNotEnabled = (method: string) => new AppError(409, 'PAYMENT_METHOD_NOT_ENABLED', `El medio de pago ${method} no está habilitado.`);
 
 const transient = (error: unknown) => {
   const candidate = error as { code?: string; meta?: { code?: string } };
@@ -104,16 +108,30 @@ function enginePricing(snapshot: { id: string | null; adjustmentsBps: Record<str
 
 export function createCheckoutReservationService(
   database: PrismaClient,
-  options: { now?: () => Date; operationKey?: () => string } = {},
+  options: { now?: () => Date; operationKey?: () => string; externalMethodsEnabled?: boolean } = {},
 ) {
   const now = options.now ?? (() => new Date());
   const newOperationKey = options.operationKey ?? (() => randomUUID());
   const pricing = createPricingService(database);
+  // S-REF: app.ts injects the pilot gate. S-REF.1: the fallback is FAIL-CLOSED —
+  // a caller that omits the option gets the external methods OFF; no omission can
+  // ever enable them. The gate only ever applies to a NEW attempt.
+  const externalMethodsEnabled = options.externalMethodsEnabled ?? false;
 
   function assertCanReserve(req: RequestLike, branchId: string) {
     if (!req.auth
       || !hasPermissionAtLocation(req.auth, PRODUCTION_PERMISSIONS.SALE_CHARGE, branchId)
       || !hasPermissionAtLocation(req.auth, PRODUCTION_PERMISSIONS.SALE_COMPLETE, branchId)) throw forbidden();
+  }
+
+  // S-REF: while the external methods are disabled a NEW attempt may neither
+  // introduce a non-cash tender nor consume a recorded collection. The already
+  // committed replay above still answers with its own view, so idempotency is
+  // never broken by the gate.
+  function assertExternalMethodsEnabled(request: CheckoutReservationRequest) {
+    if (externalMethodsEnabled) return;
+    const external = request.tenders.find((tender) => tender.method !== 'CASH' || tender.source === 'COLLECTION');
+    if (external) throw paymentMethodNotEnabled(external.method);
   }
   function assertCanRead(req: RequestLike, branchId: string) {
     if (!req.auth || !hasPermissionAtLocation(req.auth, PRODUCTION_PERMISSIONS.SALE_CHARGE, branchId)) throw forbidden();
@@ -159,6 +177,9 @@ export function createCheckoutReservationService(
       // 3. Idempotency by reserveKey (D1).
       const replay = await replayOrRefuse(tx, saleId, request.reserveKey, hash);
       if (replay) return replay;
+
+      // 3.5. S-REF gate: only a NEW attempt reaches this point.
+      assertExternalMethodsEnabled(request);
 
       // 4. A new attempt: sale state and line snapshot.
       if (sale.pricingModel !== 'PROPORTIONAL_V1' || sale.status !== 'PENDING_PAYMENT') throw invalidState();

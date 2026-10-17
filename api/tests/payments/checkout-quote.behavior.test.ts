@@ -65,6 +65,7 @@ import express, { type Request } from 'express';
 import supertest from 'supertest';
 import { describe, expect, it } from 'vitest';
 import type { PrismaClient } from '../../src/generated/prisma/client.js';
+import { parseEnv } from '../../src/config/env.js';
 import { AppError } from '../../src/shared/errors.js';
 import { errorHandler } from '../../src/middleware/errorHandler.js';
 import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matrix.js';
@@ -84,6 +85,17 @@ const ROUTES_SOURCE = readFileSync(new URL('../../src/modules/payments/payments.
 
 const BRANCH = '11111111-1111-4111-8111-111111111111';
 const OTHER_BRANCH = '99999999-9999-4999-8999-999999999999';
+
+// S-REF.1: the minimum accepted environment, the SAME shape tests/env.test.ts
+// and the composition in app.ts use. PROPORTIONAL_EXTERNAL_METHODS_ENABLED is
+// deliberately ABSENT: the env default is what is under test.
+const ENV_BASE = {
+  DATABASE_URL: 'postgresql://test:test@demo.invalid:5432/bootstrap',
+  TEST_DATABASE_URL: 'postgresql://test:test@test.invalid:5432/bootstrap',
+  JWT_SECRET: 'synthetic-test-key-not-for-real-authentication',
+  JWT_ACCESS_TTL_SECONDS: '900',
+  CORS_ORIGINS: 'http://localhost:3000',
+};
 
 const RESPONSE_KEYS = [
   'balance', 'enabledMethods', 'fullPrices', 'lines', 'pricingModel', 'reservationExpiresAt',
@@ -173,7 +185,7 @@ function setup(options: { pricing?: boolean; transferBps?: number; debitBps?: nu
   };
   const client = db.client as unknown as PrismaClient;
   const sales = createSalesService(client, { proportionalCheckoutLocationIds: [BRANCH] });
-  const quotes = createCheckoutQuoteService(client);
+  const quotes = createCheckoutQuoteService(client, { externalMethodsEnabled: true });
 
   const draft = async (options: { items?: Array<[string, bigint]> | null; send?: boolean } = {}) => {
     const created = await sales.createDraftSale(reqs.seller, ids.seller, BRANCH);
@@ -670,3 +682,134 @@ function httpHarness(t: ReturnType<typeof setup>) {
   app.use(errorHandler);
   return { app, events };
 }
+
+// ---------------------------------------------------------------------------
+// S-REF gate: PROPORTIONAL_EXTERNAL_METHODS_ENABLED, quote side.
+// ---------------------------------------------------------------------------
+describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => {
+  const disabled = (t: ReturnType<typeof setup>) =>
+    createCheckoutQuoteService(t.db.client as unknown as PrismaClient, { externalMethodsEnabled: false });
+
+  it('GATE-01 gate OFF: TRANSFER/CARD_DEBIT are unavailable with PAYMENT_METHOD_NOT_ENABLED; CASH stays available', async () => {
+    const t = setup();
+    const saleId = await t.draft();
+    const quote = await disabled(t).quote(t.reqs.cashier, saleId, t.noFixed('CASH'));
+    expect(quote.enabledMethods).toEqual([
+      { method: 'CASH', available: true },
+      { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+    ]);
+  });
+
+  it('GATE-02 gate OFF wins over a missing pricing configuration: the reason is the gate, never the config', async () => {
+    const t = setup({ pricing: false });
+    const saleId = await t.draft();
+    const quote = await disabled(t).quote(t.reqs.cashier, saleId, t.noFixed('CASH'));
+    expect(quote.enabledMethods).toEqual([
+      { method: 'CASH', available: true },
+      { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+    ]);
+  });
+
+  it('GATE-03 gate ON: the three methods are available', async () => {
+    const t = setup();
+    const saleId = await t.draft();
+    const on = await createCheckoutQuoteService(t.db.client as unknown as PrismaClient, { externalMethodsEnabled: true })
+      .quote(t.reqs.cashier, saleId, t.noFixed('CASH'));
+    expect(on.enabledMethods).toEqual([
+      { method: 'CASH', available: true },
+      { method: 'TRANSFER', available: true },
+      { method: 'CARD_DEBIT', available: true },
+    ]);
+  });
+
+  // S-REF.1 (A1/A4): the omission of the option must NEVER enable the external
+  // methods. The old `?? true` fallback was a fail-open defect.
+  it('SREF-F01 a quote service built WITHOUT the option defaults to externals OFF, never ON', async () => {
+    const t = setup();
+    const saleId = await t.draft();
+    const detached = await createCheckoutQuoteService(t.db.client as unknown as PrismaClient)
+      .quote(t.reqs.cashier, saleId, t.noFixed('CASH'));
+    expect(detached.enabledMethods).toEqual([
+      { method: 'CASH', available: true },
+      { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+    ]);
+  });
+
+  it('GATE-04 the gate OFF hides the recorded collection candidates too: never a consumable option while external methods are off; prices/lines/totals stay byte-identical', async () => {
+    const t = setup();
+    const saleId = await t.draft();
+    t.db.externalCollection.push({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', originSaleId: saleId, branchId: BRANCH, status: 'UNAPPLIED',
+      reference: 'OP 88123', referenceKey: 'OP88123', amount: 11000n, method: 'TRANSFER', institution: 'GALICIA',
+      institutionOther: null, appliedCheckoutId: null, appliedSaleId: null, createdAt: new Date(),
+    });
+    const off = await disabled(t).quote(t.reqs.cashier, saleId, t.noFixed('CASH'));
+    const on = await createCheckoutQuoteService(t.db.client as unknown as PrismaClient, { externalMethodsEnabled: true })
+      .quote(t.reqs.cashier, saleId, t.noFixed('CASH'));
+    // The same collection the ON answer lists is NOT offered while OFF: T-R
+    // would refuse it, so the quote never presents it as usable.
+    expect(on.unappliedCollections).toHaveLength(1);
+    expect(off.unappliedCollections).toEqual([]);
+    expect({ ...off, enabledMethods: null, unappliedCollections: null })
+      .toEqual({ ...on, enabledMethods: null, unappliedCollections: null });
+    expect(off.total).toBe(on.total);
+  });
+
+  // S-REF.1 (A1/A4): real wiring evidence through the REAL payments router. The
+  // gate value comes from parseEnv exactly as app.ts injects
+  // env.PROPORTIONAL_EXTERNAL_METHODS_ENABLED — the chain env -> router option ->
+  // controller -> service -> answer is exercised over HTTP (no injected service).
+  function gateApp(t: ReturnType<typeof setup>, externalMethodsEnabled: boolean) {
+    const router = createPaymentsRouter(t.db.client as unknown as PrismaClient, undefined, { externalMethodsEnabled });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.auth = (t.reqs.cashier as unknown as { auth: Express.AuthContext }).auth;
+      next();
+    });
+    app.use('/api/v1/sales', router);
+    app.use(errorHandler);
+    return app;
+  }
+
+  it('SREF-F03 the env default (variable omitted) is false and reaches the quote through the real router: externals unavailable', async () => {
+    const gate = parseEnv({ ...ENV_BASE }).PROPORTIONAL_EXTERNAL_METHODS_ENABLED;
+    expect(gate).toBe(false);
+    const t = setup();
+    const saleId = await t.draft();
+    const response = await supertest(gateApp(t, gate))
+      .post(`/api/v1/sales/${saleId}/checkout/quote`)
+      .send({ balanceMethod: 'CASH', tenders: [] });
+    expect(response.status).toBe(200);
+    expect(response.body.enabledMethods).toEqual([
+      { method: 'CASH', available: true },
+      { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+    ]);
+  });
+
+  it('SREF-F05 an explicit env=true preserves the previous external behaviour through the real router', async () => {
+    const gate = parseEnv({ ...ENV_BASE, PROPORTIONAL_EXTERNAL_METHODS_ENABLED: 'true' }).PROPORTIONAL_EXTERNAL_METHODS_ENABLED;
+    expect(gate).toBe(true);
+    const t = setup();
+    const saleId = await t.draft();
+    t.db.externalCollection.push({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', originSaleId: saleId, branchId: BRANCH, status: 'UNAPPLIED',
+      reference: 'OP 88123', referenceKey: 'OP88123', amount: 11000n, method: 'TRANSFER', institution: 'GALICIA',
+      institutionOther: null, appliedCheckoutId: null, appliedSaleId: null, createdAt: new Date(),
+    });
+    const response = await supertest(gateApp(t, gate))
+      .post(`/api/v1/sales/${saleId}/checkout/quote`)
+      .send({ balanceMethod: 'CASH', tenders: [] });
+    expect(response.status).toBe(200);
+    expect(response.body.enabledMethods).toEqual([
+      { method: 'CASH', available: true },
+      { method: 'TRANSFER', available: true },
+      { method: 'CARD_DEBIT', available: true },
+    ]);
+    expect(response.body.unappliedCollections).toHaveLength(1);
+  });
+});

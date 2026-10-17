@@ -8,8 +8,13 @@ import { sendJson } from '../../shared/json-safe.js';
 import { createCheckoutReservationService, type CheckoutReservationService } from './checkout-reservation.service.js';
 import type { CheckoutReservationRequest } from './dto/checkout-reservation.dto.js';
 
-export function createCheckoutReservationController(database: PrismaClient, options: { service?: CheckoutReservationService } = {}) {
-  const service = options.service ?? createCheckoutReservationService(database);
+export function createCheckoutReservationController(
+  database: PrismaClient,
+  options: { service?: CheckoutReservationService; externalMethodsEnabled?: boolean } = {},
+) {
+  const service = options.service
+    // S-REF.1: fail-closed at the boundary too: no omission enables externals.
+    ?? createCheckoutReservationService(database, { externalMethodsEnabled: options.externalMethodsEnabled ?? false });
   return {
     reserve: (async (req, res) => {
       const result = await service.reserve(req, String(req.params.saleId), req.body as CheckoutReservationRequest);

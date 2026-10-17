@@ -25,9 +25,12 @@ import type { PrismaClient } from '../../src/generated/prisma/client.js';
 import { errorHandler } from '../../src/middleware/errorHandler.js';
 import { AppError } from '../../src/shared/errors.js';
 import { createPaymentsRouter } from '../../src/modules/payments/payments.routes.js';
-import { checkoutRequestDto } from '../../src/modules/payments/dto/checkout.dto.js';
+import {
+  checkoutConfirmationDto,
+  checkoutConfirmationParamsDto,
+  checkoutRequestDto,
+} from '../../src/modules/payments/dto/checkout.dto.js';
 import type {
-  CheckoutRequest,
   CheckoutResult,
   CheckoutService,
 } from '../../src/modules/payments/checkout.service.js';
@@ -35,6 +38,8 @@ import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matr
 import type { RealtimeEmitter, RealtimePayload } from '../../src/realtime/socket.js';
 
 const ROUTES_SOURCE = readFileSync(new URL('../../src/modules/payments/payments.routes.ts', import.meta.url), 'utf8');
+const CHECKOUT_ROUTE_BLOCK =
+  ROUTES_SOURCE.match(/router\.post\(\s*'\/:saleId\/checkout',[\s\S]*?\n {2}\);/)?.[0] ?? '';
 const CONTROLLER_SOURCE = readFileSync(new URL('../../src/modules/payments/checkout.controller.ts', import.meta.url), 'utf8');
 
 const BRANCH = '11111111-1111-4111-8111-111111111111';
@@ -44,6 +49,7 @@ const OPERATION_KEY = '33333333-3333-4333-8333-333333333333';
 const CASH_SESSION = '44444444-4444-4444-8444-444444444444';
 const COLLECTION = '55555555-5555-4555-8555-555555555555';
 const ENDPOINT = `/api/v1/sales/${SALE}/checkout`;
+const RESERVE_KEY = '66666666-6666-4666-8666-666666666666';
 
 type CheckoutArgs = Parameters<CheckoutService['checkout']>;
 type Role = 'CASHIER' | 'SELLER' | 'WAREHOUSE';
@@ -72,6 +78,17 @@ function validBody(overrides: Record<string, unknown> = {}): Record<string, unkn
 
 function withTenders(tenders: unknown[]): Record<string, unknown> {
   return validBody({ tenders });
+}
+
+function confirmationBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    reserveKey: RESERVE_KEY,
+    operationKey: OPERATION_KEY,
+    tenders: [
+      { method: 'CASH', receivedAmount: '42000' },
+    ],
+    ...overrides,
+  };
 }
 
 function rejected(body: unknown): boolean {
@@ -348,7 +365,7 @@ describe('R3 checkout DTO', () => {
 describe('POST /api/v1/sales/:saleId/checkout', () => {
   it('B1 a new checkout returns 201 with json-safe money and both events after commit', async () => {
     const t = harness();
-    const response = await request(t.app).post(ENDPOINT).send(validBody());
+    const response = await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(response.status).toBe(201);
     expect(response.body).toMatchObject({
@@ -367,22 +384,28 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
 
   it('B2 the DTO output is handed to the service unchanged (cents stay BigInt)', async () => {
     const t = harness();
-    await request(t.app).post(ENDPOINT).send(validBody());
+    await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(t.calls).toHaveLength(1);
     const [req, userId, saleId, payload] = t.calls[0]!;
     expect(req.auth!.userId).toBe('user-1');
     expect(userId).toBe('user-1');
     expect(saleId).toBe(SALE);
-    expect(payload).toEqual(checkoutRequestDto.parse(validBody()) as CheckoutRequest);
-    expect(payload.expectedTotal).toBe(42037n);
+    expect(payload).toEqual(checkoutConfirmationDto.parse(confirmationBody()));
+    expect(payload.reserveKey).toBe(RESERVE_KEY);
+    expect(payload.operationKey).toBe(OPERATION_KEY);
+    expect(payload.tenders[0]!.receivedAmount).toBe(42000n);
+    expect(payload).not.toHaveProperty('cashSessionId');
+    expect(payload).not.toHaveProperty('balanceMethod');
+    expect(payload).not.toHaveProperty('expectedTotal');
+    expect(payload).not.toHaveProperty('expectedBalanceAmount');
   });
 
   it('B3 a replay returns 200 and emits nothing (the original call already notified)', async () => {
     const t = harness();
     t.setResult(result({ replayed: true }));
 
-    const response = await request(t.app).post(ENDPOINT).send(validBody());
+    const response = await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(response.status).toBe(200);
     expect(response.body.replayed).toBe(true);
@@ -392,7 +415,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
 
   it('B4 a caller without SALE_CHARGE gets 403 and never reaches the service', async () => {
     const t = harness({ auth: auth('SELLER', BRANCH) });
-    const response = await request(t.app).post(ENDPOINT).send(validBody());
+    const response = await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(response.status).toBe(403);
     expect(response.body).toEqual({ error: { code: 'FORBIDDEN', message: 'No cuenta con permisos para esta operación.' } });
@@ -402,13 +425,13 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
 
   it('B5 a WAREHOUSE caller gets 403 as well', async () => {
     const t = harness({ auth: auth('WAREHOUSE', BRANCH) });
-    expect((await request(t.app).post(ENDPOINT).send(validBody())).status).toBe(403);
+    expect((await request(t.app).post(ENDPOINT).send(confirmationBody())).status).toBe(403);
     expect(t.calls).toEqual([]);
   });
 
   it('B6 an unauthenticated caller gets 401 and nothing runs', async () => {
     const t = harness({ auth: null });
-    const response = await request(t.app).post(ENDPOINT).send(validBody());
+    const response = await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(response.status).toBe(401);
     expect(response.body.error.code).toBe('UNAUTHORIZED');
@@ -418,7 +441,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
 
   it('B7 a malformed body is rejected with 400 before any service call', async () => {
     const t = harness();
-    const response = await request(t.app).post(ENDPOINT).send(validBody({ balanceMethod: 'QR' }));
+    const response = await request(t.app).post(ENDPOINT).send(confirmationBody({ operationKey: 'not-a-uuid' }));
 
     expect(response.status).toBe(400);
     expect(response.body.error.code).toBe('VALIDATION_ERROR');
@@ -428,7 +451,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
 
   it('B8 a non-UUID saleId is rejected with 400 on the params', async () => {
     const t = harness();
-    const response = await request(t.app).post('/api/v1/sales/not-an-id/checkout').send(validBody());
+    const response = await request(t.app).post('/api/v1/sales/not-an-id/checkout').send(confirmationBody());
 
     expect(response.status).toBe(400);
     expect(response.body.error).toMatchObject({ code: 'VALIDATION_ERROR' });
@@ -440,7 +463,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
     const t = harness();
     t.setResult(new AppError(409, 'CHECKOUT_QUOTE_CHANGED', 'La cotización cambió; vuelva a confirmar.', { total: 42037n, balance: 22000n }));
 
-    const response = await request(t.app).post(ENDPOINT).send(validBody());
+    const response = await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(response.status).toBe(409);
     expect(response.body.error).toMatchObject({
@@ -455,7 +478,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
     const t = harness();
     t.setResult(new Error('boom'));
 
-    const response = await request(t.app).post(ENDPOINT).send(validBody());
+    const response = await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(response.status).toBe(500);
     expect(response.body).toEqual({ error: { code: 'INTERNAL_ERROR', message: 'Ocurrió un error interno.' } });
@@ -466,7 +489,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
     const t = harness();
     t.failBranchRead();
 
-    const response = await request(t.app).post(ENDPOINT).send(validBody());
+    const response = await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(response.status).toBe(201);
     expect(response.body.status).toBe('COMPLETED');
@@ -477,7 +500,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
     const t = harness();
     t.setBranch(null);
 
-    expect((await request(t.app).post(ENDPOINT).send(validBody())).status).toBe(201);
+    expect((await request(t.app).post(ENDPOINT).send(confirmationBody())).status).toBe(201);
     expect(t.events).toEqual([]);
   });
 
@@ -485,7 +508,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
     const t = harness();
     t.failNotify();
 
-    expect((await request(t.app).post(ENDPOINT).send(validBody())).status).toBe(201);
+    expect((await request(t.app).post(ENDPOINT).send(confirmationBody())).status).toBe(201);
     expect(t.events).toEqual([]);
   });
 
@@ -497,7 +520,7 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
     })() });
     t.setBranch(BRANCH);
 
-    await request(t.app).post(ENDPOINT).send(validBody());
+    await request(t.app).post(ENDPOINT).send(confirmationBody());
 
     expect(t.events.map(({ payload }) => payload.branchId)).toEqual([BRANCH, BRANCH]);
   });
@@ -507,11 +530,13 @@ describe('POST /api/v1/sales/:saleId/checkout', () => {
 // C. Static wiring: the route table and the delegation contract
 // ---------------------------------------------------------------------------
 describe('R3 checkout wiring', () => {
-  it('C1 registers POST /:saleId/checkout with both validators and the SALE_CHARGE gate', () => {
-    expect(ROUTES_SOURCE).toContain("'/:saleId/checkout'");
-    expect(ROUTES_SOURCE).toContain('validate(checkoutParamsDto, \'params\')');
-    expect(ROUTES_SOURCE).toContain('validate(checkoutRequestDto)');
-    expect(ROUTES_SOURCE).toContain('requirePermission(PRODUCTION_PERMISSIONS.SALE_CHARGE)');
+  it('C1 registers POST /:saleId/checkout with the confirmation contract and SALE_CHARGE gate', () => {
+    expect(CHECKOUT_ROUTE_BLOCK).toContain("validate(checkoutConfirmationParamsDto, 'params')");
+    expect(CHECKOUT_ROUTE_BLOCK).toContain('validate(checkoutConfirmationDto)');
+    expect(CHECKOUT_ROUTE_BLOCK).toContain('requirePermission(PRODUCTION_PERMISSIONS.SALE_CHARGE)');
+    expect(CHECKOUT_ROUTE_BLOCK).toContain('checkout.create');
+    expect(CHECKOUT_ROUTE_BLOCK).not.toContain("validate(checkoutParamsDto, 'params')");
+    expect(CHECKOUT_ROUTE_BLOCK).not.toContain('validate(checkoutRequestDto)');
   });
 
   it('C2 leaves the historical /payments routes untouched and unguarded by the new policy', () => {
@@ -525,5 +550,99 @@ describe('R3 checkout wiring', () => {
     expect(CONTROLLER_SOURCE).not.toContain('computeProportionalQuote');
     expect(CONTROLLER_SOURCE).not.toContain('$transaction');
     expect(CONTROLLER_SOURCE).not.toContain('normalizeReferenceKey');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D. R3-A4.3 S5 RED: confirmation contract replaces the legacy A3 body
+// ---------------------------------------------------------------------------
+describe('R3-A4.3 S5 — confirmation HTTP contract RED', () => {
+  it('S5-A1 the confirmation DTO carries only reserve identity and confirmation evidence', () => {
+    const parsed = checkoutConfirmationDto.parse(confirmationBody());
+
+    expect(parsed).toEqual({
+      reserveKey: RESERVE_KEY,
+      operationKey: OPERATION_KEY,
+      tenders: [
+        {
+          method: 'CASH',
+          receivedAmount: 42000n,
+          reference: null,
+          referenceKey: null,
+          institution: null,
+          institutionOther: null,
+        },
+      ],
+      supervisor: null,
+    });
+
+    expect(parsed.tenders[0]!.receivedAmount).toBe(42000n);
+    expect(typeof parsed.tenders[0]!.receivedAmount).toBe('bigint');
+    expect(parsed).not.toHaveProperty('cashSessionId');
+    expect(parsed).not.toHaveProperty('balanceMethod');
+    expect(parsed).not.toHaveProperty('expectedTotal');
+    expect(parsed).not.toHaveProperty('expectedBalanceAmount');
+  });
+
+  it('S5-A2 POST /checkout must accept the sealed-attempt confirmation body', async () => {
+    const t = harness();
+
+    const response = await request(t.app)
+      .post(ENDPOINT)
+      .send(confirmationBody());
+
+    expect(response.status).toBe(201);
+    expect(t.calls).toHaveLength(1);
+
+    const [, , saleId, payload] = t.calls[0]!;
+    expect(saleId).toBe(SALE);
+    expect(payload).toEqual(checkoutConfirmationDto.parse(confirmationBody()));
+  });
+
+  it('S5-A3 POST /checkout must reject the legacy A3 settlement body', async () => {
+    const t = harness();
+
+    const response = await request(t.app)
+      .post(ENDPOINT)
+      .send(validBody());
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(t.calls).toEqual([]);
+  });
+
+  it('S5-A4 the route is wired to the confirmation params/body DTOs', () => {
+    expect(CHECKOUT_ROUTE_BLOCK).toContain(
+      "validate(checkoutConfirmationParamsDto, 'params')",
+    );
+    expect(CHECKOUT_ROUTE_BLOCK).toContain(
+      'validate(checkoutConfirmationDto)',
+    );
+    expect(CHECKOUT_ROUTE_BLOCK).toContain(
+      'requirePermission(PRODUCTION_PERMISSIONS.SALE_CHARGE)',
+    );
+    expect(CHECKOUT_ROUTE_BLOCK).toContain('checkout.create');
+    expect(CHECKOUT_ROUTE_BLOCK).not.toContain(
+      "validate(checkoutParamsDto, 'params')",
+    );
+    expect(CHECKOUT_ROUTE_BLOCK).not.toContain(
+      'validate(checkoutRequestDto)',
+    );
+  });
+
+  it('S5-A5 confirmation saleId remains canonical lowercase UUID v4', () => {
+    expect(checkoutConfirmationParamsDto.safeParse({ saleId: SALE }).success).toBe(true);
+
+    expect(
+      checkoutConfirmationParamsDto.safeParse({
+        saleId: '123e4567-e89b-12d3-a456-426614174000',
+      }).success,
+    ).toBe(false);
+
+    expect(
+      checkoutConfirmationParamsDto.safeParse({
+        saleId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'.toUpperCase(),
+      }).success,
+    ).toBe(false);
   });
 });

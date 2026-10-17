@@ -9,9 +9,11 @@ import {
   CHECKOUT_METHODS,
   MAX_PG_BIGINT,
   REFERENCE_KEY,
+  REFERENCE_RAW_MAX,
   TENDER_ROLES,
   TENDER_SOURCES,
   TRANSFER_INSTITUTIONS,
+  codePoints,
   normalizeInstitutionOther,
   normalizeReferenceKey,
 } from '../checkout-canonical.js';
@@ -45,8 +47,9 @@ export const tenderRole = z.enum(TENDER_ROLES);
 export const tenderSource = z.enum(TENDER_SOURCES);
 export const transferInstitution = z.enum(TRANSFER_INSTITUTIONS);
 
-// Unicode code points, as PostgreSQL char_length counts them.
-export const codePoints = (value: string): number => [...value].length;
+// Unicode code points, as PostgreSQL char_length counts them. Re-exported from
+// the canonical module so the boundary and the service share ONE definition.
+export { codePoints };
 
 // Trimmed text bounded in code points. The trimmed value is what travels on, so
 // the database btrim/char_length CHECKs see exactly the measured string.
@@ -62,7 +65,7 @@ export const supervisorJustification = z.object({
 // A non-cash reference as typed by the cashier: 1..64 code points raw
 // (chk_ec_reference), and a normalised key of [A-Z0-9]{3,40}.
 export const referenceString = z.string()
-  .refine((value) => codePoints(value) >= 1 && codePoints(value) <= 64, 'La referencia debe tener entre 1 y 64 caracteres.')
+  .refine((value) => codePoints(value) >= 1 && codePoints(value) <= REFERENCE_RAW_MAX, 'La referencia debe tener entre 1 y 64 caracteres.')
   .refine((value) => REFERENCE_KEY.test(normalizeReferenceKey(value)), 'La referencia no tiene un formato válido.');
 
 // The free-text label of institution OTHER, delivered in its single normal

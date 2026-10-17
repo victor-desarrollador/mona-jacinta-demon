@@ -162,15 +162,48 @@ export function createCheckoutReservationFakeDb(options: { now?: () => Date } = 
   async function queryRaw(strings: TemplateStringsArray, ...values: unknown[]): Promise<Row[]> {
     const sql = sqlOf(strings);
     if (/FROM "Sale" WHERE id = \? FOR UPDATE/.test(sql)) {
+      maybeFail('sale', 'lock');
       ops.push({ kind: 'lock', model: 'Sale' });
       const sale = table('sale').find((row) => row.id === values[0]);
       return sale ? [clone(sale)] : [];
     }
+    // R3-A4.3 S-REF: T-F locks ONE collection of the URL by primary key, with
+    // no claim predicate and no NOWAIT (plain FOR UPDATE). It must be matched
+    // before the two broader claim/plan branches below, whose value shapes
+    // differ (a single id string vs an id array).
+    if (/FROM "ExternalCollection" WHERE "id" = \? FOR UPDATE/.test(sql)) {
+      maybeFail('externalCollection', 'lock');
+      ops.push({ kind: 'lock', model: 'ExternalCollection', detail: 'id' });
+      const [id] = values as [string];
+      const row = table('externalCollection').find((candidate) => candidate.id === id);
+      return row ? [clone(row)] : [];
+    }
+    if (/FROM "ExternalCollection"/.test(sql) && /"claimAttemptId" = \?/.test(sql) && /FOR UPDATE/.test(sql)) {
+      maybeFail('externalCollection', 'lock');
+      ops.push({ kind: 'lock', model: 'ExternalCollection', detail: sql });
+      const [attemptId] = values as [string];
+      return clone(sortRows(table('externalCollection').filter((row) => row.claimAttemptId === attemptId), { id: 'asc' }));
+    }
     if (/FROM "ExternalCollection"/.test(sql) && /FOR UPDATE/.test(sql)) {
+      maybeFail('externalCollection', 'lock');
       ops.push({ kind: 'lock', model: 'ExternalCollection', detail: sql });
       const [ids, saleId, branchId] = values as [string[], string, string];
       return clone(sortRows(table('externalCollection').filter((row) => ids.includes(row.id as string)
         || (row.originSaleId === saleId && row.branchId === branchId && row.status === 'UNAPPLIED')), { id: 'asc' }));
+    }
+    if (/FROM "CheckoutAttempt" WHERE "reserveKey" = \? AND "saleId" = \? FOR UPDATE/.test(sql)) {
+      maybeFail('checkoutAttempt', 'lock');
+      ops.push({ kind: 'lock', model: 'CheckoutAttempt' });
+      const [reserveKey, saleId] = values as [string, string];
+      const attempt = table('checkoutAttempt').find((row) => row.reserveKey === reserveKey && row.saleId === saleId);
+      return attempt ? [clone(attempt)] : [];
+    }
+    if (/FROM "CheckoutAttempt" WHERE "reserveKey" = \? FOR UPDATE/.test(sql)) {
+      maybeFail('checkoutAttempt', 'lock');
+      ops.push({ kind: 'lock', model: 'CheckoutAttempt' });
+      const [reserveKey] = values as [string];
+      const attempt = table('checkoutAttempt').find((row) => row.reserveKey === reserveKey);
+      return attempt ? [clone(attempt)] : [];
     }
     if (/FROM "CashSession" cs JOIN "CashRegister" r/.test(sql)) {
       ops.push({ kind: 'lock', model: 'CashSession' });

@@ -8,7 +8,8 @@
 import type { RequestHandler } from 'express';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { sendJson } from '../../shared/json-safe.js';
-import { createCheckoutService, type CheckoutRequest, type CheckoutService } from './checkout.service.js';
+import type { CheckoutConfirmationRequest } from './dto/checkout.dto.js';
+import { createCheckoutService, type CheckoutService } from './checkout.service.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 import { REALTIME_EVENTS } from '../../realtime/socket.js';
 import { logger } from '../../shared/logger.js';
@@ -40,7 +41,7 @@ export function createCheckoutController(
 
   return {
     create: (async (req, res) => {
-      const result = await service.checkout(req, userId(req), String(req.params.saleId), req.body as CheckoutRequest);
+      const result = await service.checkout(req, userId(req), String(req.params.saleId), req.body as CheckoutConfirmationRequest);
       // A replay changed nothing: the original call already notified.
       if (!result.replayed) await notifyCommitted(result.saleId, result.saleNumber, result.status);
       sendJson(res.status(result.replayed ? 200 : 201), result);

@@ -5,6 +5,7 @@ import { useAuth } from './hooks/useAuth';
 import { canManageUsers, canUseBackoffice } from './lib/auth';
 import { Branches } from './pages/Branches';
 import { Dashboard } from './pages/Dashboard';
+import { ExternalCollections } from './pages/ExternalCollections';
 import { Inventory } from './pages/Inventory';
 import { Login } from './pages/Login';
 import { Products } from './pages/Products';
@@ -50,6 +51,7 @@ function ProtectedLayout() {
             <Route path="ventas" element={<SalesHistory />} />
             <Route path="productos" element={<Products />} />
             <Route path="inventario" element={<Inventory />} />
+            <Route path="cobros-externos" element={<ExternalCollections />} />
             <Route path="sucursales" element={<Branches />} />
             <Route
               path="usuarios"

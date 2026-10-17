@@ -197,6 +197,40 @@ describe('P — PROPORTIONAL_CHECKOUT_LOCATION_IDS is validated at startup (req.
   });
 });
 
+// S-REF gate: PROPORTIONAL_EXTERNAL_METHODS_ENABLED, startup validation.
+const GATE_VARIABLE = 'PROPORTIONAL_EXTERNAL_METHODS_ENABLED';
+
+describe('G — PROPORTIONAL_EXTERNAL_METHODS_ENABLED is validated at startup (S-REF)', () => {
+  it('GATE-S01 defaults to OFF when absent and parses exactly the two explicit booleans', () => {
+    expect(parseEnv(ENV_BASE).PROPORTIONAL_EXTERNAL_METHODS_ENABLED).toBe(false);
+    expect(parseEnv({ ...ENV_BASE, [GATE_VARIABLE]: 'false' }).PROPORTIONAL_EXTERNAL_METHODS_ENABLED).toBe(false);
+    expect(parseEnv({ ...ENV_BASE, [GATE_VARIABLE]: 'true' }).PROPORTIONAL_EXTERNAL_METHODS_ENABLED).toBe(true);
+  });
+
+  it.each(['', '1', '0', 'yes', 'TRUE', 'on', 'False'])(
+    'GATE-S02 rejects the non-explicit boolean %j before the server starts',
+    (value) => {
+      const message = (() => {
+        try {
+          parseEnv({ ...ENV_BASE, [GATE_VARIABLE]: value });
+          return null;
+        } catch (error) {
+          return (error as Error).message;
+        }
+      })();
+      expect(message).toContain(GATE_VARIABLE);
+    },
+  );
+
+  // The gate is injected by composition: the validated configuration and the
+  // composition read it, and no service reads it from the process (the refund is
+  // never gated in the first place). S-REF.1 replaced the old source-grep
+  // assertion with REAL wiring evidence at the composition boundary in
+  // checkout-quote.behavior.test.ts (SREF-F03/F05) and
+  // checkout-reservation.behavior.test.ts (SREF-F02/F04): parseEnv -> the router
+  // option exactly as app.ts injects it -> controller -> service -> HTTP answer.
+});
+
 describe('S — createDraftSale fixes the durable path once (req. 1, 2, 6)', () => {
   it('S1 a sale in a branch named by the policy is created PROPORTIONAL_V1', async () => {
     const t = setup({ proportional: [L1] });

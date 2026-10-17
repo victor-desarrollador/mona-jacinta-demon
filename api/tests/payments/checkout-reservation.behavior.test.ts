@@ -4,15 +4,30 @@
 // What PostgreSQL alone can prove (F1–F6, CHECKs, the partial index under real
 // concurrency) lives in checkout-reservation.pg.test.ts (opt-in).
 import { randomUUID } from 'node:crypto';
+import express from 'express';
+import supertest from 'supertest';
 import { describe, expect, it } from 'vitest';
 import type { PrismaClient } from '../../src/generated/prisma/client.js';
+import { parseEnv } from '../../src/config/env.js';
+import { errorHandler } from '../../src/middleware/errorHandler.js';
 import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matrix.js';
 import { planHash, type PlanTenderInput } from '../../src/modules/payments/checkout-canonical.js';
 import { computeProportionalQuote } from '../../src/modules/pricing/proportional-checkout.js';
 import { createCheckoutReservationService } from '../../src/modules/payments/checkout-reservation.service.js';
+import { createPaymentsRouter } from '../../src/modules/payments/payments.routes.js';
 import type { CheckoutReservationRequest } from '../../src/modules/payments/dto/checkout-reservation.dto.js';
 import { AppError } from '../../src/shared/errors.js';
 import { createCheckoutReservationFakeDb, p2002, type Row } from '../helpers/checkout-reservation-fake-db.js';
+
+// S-REF.1: the minimum accepted environment; PROPORTIONAL_EXTERNAL_METHODS_ENABLED
+// is deliberately ABSENT so the env default is what is under test.
+const ENV_BASE = {
+  DATABASE_URL: 'postgresql://test:test@demo.invalid:5432/bootstrap',
+  TEST_DATABASE_URL: 'postgresql://test:test@test.invalid:5432/bootstrap',
+  JWT_SECRET: 'synthetic-test-key-not-for-real-authentication',
+  JWT_ACCESS_TTL_SECONDS: '900',
+  CORS_ORIGINS: 'http://localhost:3000',
+};
 
 const NOW = new Date('2026-10-16T12:00:00.000Z');
 const LATER = new Date(NOW.getTime() + 20 * 60_000);
@@ -56,7 +71,7 @@ function setup(options: { pricing?: boolean; holdsExpireAt?: Date } = {}) {
     db.insert('stockReservation', { id: uuid(), saleId: sale.id, variantId: item.variantId, branchId: branch, quantity: item.quantity, status: 'ACTIVE', expiresAt: options.holdsExpireAt ?? LATER });
   }
   let next = 0;
-  const service = createCheckoutReservationService(db.client as unknown as PrismaClient, { now: () => NOW, operationKey: () => OP_KEYS[next++ % OP_KEYS.length]! });
+  const service = createCheckoutReservationService(db.client as unknown as PrismaClient, { now: () => NOW, operationKey: () => OP_KEYS[next++ % OP_KEYS.length]!, externalMethodsEnabled: true });
   const pricing = options.pricing === false ? null : { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300 };
   const lines = items.map((item) => ({ saleItemId: item.id as string, sku: item.sku as string, quantity: item.quantity as bigint, baseUnitPrice: item.baseUnitPrice as bigint }));
   function request(tenders: PlanTenderInput[], patch: Partial<CheckoutReservationRequest> = {}): CheckoutReservationRequest {
@@ -448,5 +463,127 @@ describe('R3-A4.3 S4 REVISE — a CONFIRMED attempt never comes back without a c
       expect(result.checkout, JSON.stringify(patch)).toBeNull();
       expect((await t.service.listForSale(t.asCashier, t.sale.id as string)).recent).toHaveLength(1);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// S-REF gate: PROPORTIONAL_EXTERNAL_METHODS_ENABLED, reservation side.
+// ---------------------------------------------------------------------------
+describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, T-R)', () => {
+  const disabled = (t: ReturnType<typeof setup>) =>
+    createCheckoutReservationService(t.db.client as unknown as PrismaClient, { now: () => NOW, externalMethodsEnabled: false });
+  const enabled = (t: ReturnType<typeof setup>) =>
+    createCheckoutReservationService(t.db.client as unknown as PrismaClient, { now: () => NOW, externalMethodsEnabled: true });
+  const externalPlan = (t: ReturnType<typeof setup>) => t.request([
+    { method: 'CASH', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+    { method: 'TRANSFER', role: 'FIXED', source: 'NEW', amount: 3000n, externalCollectionId: null },
+  ]);
+
+  it('GATE-05 a NEW TRANSFER tender with the gate OFF is 409 PAYMENT_METHOD_NOT_ENABLED and writes nothing', async () => {
+    const t = setup();
+    const req = externalPlan(t);
+    const mark = t.db.ops.length;
+    expect(await codeOf(disabled(t).reserve(t.asCashier, t.sale.id as string, req)))
+      .toMatchObject({ status: 409, code: 'PAYMENT_METHOD_NOT_ENABLED' });
+    expect(t.db.table('checkoutAttempt')).toEqual([]);
+    expect(t.db.writesSince(mark)).toEqual([]);
+    // The sale lock is taken first and then rolled back: the gate lives inside
+    // T-R, never before it.
+    expect(t.db.ops.filter((op) => op.kind === 'lock').map((op) => op.model)).toEqual(['Sale']);
+    expect(t.db.table('sale')[0]!.updatedAt).toEqual(new Date(0));
+  });
+
+  it('GATE-06 a NEW CARD_DEBIT tender with the gate OFF is refused the same way, with no attempt row', async () => {
+    const t = setup();
+    const req = t.request([{ method: 'CARD_DEBIT', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null }]);
+    expect(await codeOf(disabled(t).reserve(t.asCashier, t.sale.id as string, req)))
+      .toMatchObject({ status: 409, code: 'PAYMENT_METHOD_NOT_ENABLED' });
+    expect(t.db.table('checkoutAttempt')).toEqual([]);
+  });
+
+  it('GATE-07 consuming a recorded COLLECTION with the gate OFF is refused and the collection keeps its state', async () => {
+    const t = setup();
+    const ec = t.collection({ method: 'TRANSFER', amount: 3000n });
+    const req = t.request([
+      { method: 'CASH', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+      { method: 'TRANSFER', role: 'FIXED', source: 'COLLECTION', amount: 3000n, externalCollectionId: ec.id as string },
+    ]);
+    expect(await codeOf(disabled(t).reserve(t.asCashier, t.sale.id as string, req)))
+      .toMatchObject({ status: 409, code: 'PAYMENT_METHOD_NOT_ENABLED' });
+    expect(t.db.table('externalCollection')[0]).toMatchObject({ claimAttemptId: null, status: 'UNAPPLIED' });
+    expect(t.db.table('checkoutAttempt')).toEqual([]);
+  });
+
+  it('GATE-08 the gate only affects the external methods: CASH stays intact with it OFF, external behaviour is unchanged when it is ON', async () => {
+    const cashOff = setup();
+    const cash = await disabled(cashOff).reserve(cashOff.asCashier, cashOff.sale.id as string, cashOff.cashOnly());
+    expect(cash.replayed).toBe(false);
+    expect(cash.view.status).toBe('RESERVED');
+    expect(cashOff.db.table('checkoutAttempt')).toHaveLength(1);
+
+    const on = setup();
+    const result = await enabled(on).reserve(on.asCashier, on.sale.id as string, externalPlan(on));
+    expect(result.replayed).toBe(false);
+    expect(on.db.table('checkoutAttempt')[0]).toMatchObject({ status: 'RESERVED', tenderCount: 2 });
+    expect(on.db.table('checkoutAttemptTender')).toHaveLength(2);
+  });
+
+  // S-REF.1 (A1/A4): omitting the option must NEVER enable external methods.
+  it('SREF-F02 a reservation service built WITHOUT the option defaults to externals OFF, never ON', async () => {
+    const t = setup();
+    const detached = createCheckoutReservationService(t.db.client as unknown as PrismaClient, { now: () => NOW });
+    expect(await codeOf(detached.reserve(t.asCashier, t.sale.id as string, externalPlan(t))))
+      .toMatchObject({ status: 409, code: 'PAYMENT_METHOD_NOT_ENABLED' });
+    expect(t.db.table('checkoutAttempt')).toEqual([]);
+  });
+
+  // S-REF.1 (A1/A4): real wiring evidence through the REAL payments router: the
+  // gate value comes from parseEnv exactly as app.ts injects it, and the whole
+  // chain env -> router option -> controller -> service runs over HTTP.
+  const httpBody = (req: CheckoutReservationRequest) => ({
+    reserveKey: req.reserveKey, cashSessionId: req.cashSessionId, balanceMethod: req.balanceMethod,
+    expectedTotal: req.expectedTotal.toString(), expectedBalanceAmount: req.expectedBalanceAmount.toString(),
+    tenders: req.tenders.map((tender) => ({
+      method: tender.method, role: tender.role, source: tender.source,
+      ...(tender.amount === null ? {} : { amount: tender.amount.toString() }),
+      ...(tender.externalCollectionId === null ? {} : { externalCollectionId: tender.externalCollectionId }),
+    })),
+    ...(req.recovery === null ? {} : { recovery: req.recovery }),
+  });
+
+  function gateApp(t: ReturnType<typeof setup>, externalMethodsEnabled: boolean) {
+    const router = createPaymentsRouter(t.db.client as unknown as PrismaClient, undefined, { externalMethodsEnabled });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as { auth?: unknown }).auth = (t.asCashier as unknown as { auth: Express.AuthContext }).auth;
+      next();
+    });
+    app.use('/api/v1/sales', router);
+    app.use(errorHandler);
+    return app;
+  }
+
+  it('SREF-F04 the env default (variable omitted) is false and reaches T-R through the real router: a NEW external tender is 409 PAYMENT_METHOD_NOT_ENABLED', async () => {
+    const gate = parseEnv({ ...ENV_BASE }).PROPORTIONAL_EXTERNAL_METHODS_ENABLED;
+    expect(gate).toBe(false);
+    const t = setup({ holdsExpireAt: new Date(NOW.getTime() + 365 * 24 * 60 * 60_000) });
+    const response = await supertest(gateApp(t, gate))
+      .post(`/api/v1/sales/${t.sale.id}/checkout/reservations`)
+      .send(httpBody(externalPlan(t)));
+    expect(response.status, JSON.stringify(response.body)).toBe(409);
+    expect(response.body).toEqual({ error: { code: 'PAYMENT_METHOD_NOT_ENABLED', message: expect.any(String) } });
+    expect(t.db.table('checkoutAttempt')).toEqual([]);
+  });
+
+  it('SREF-F04b an explicit env=true preserves the external T-R behaviour through the real router', async () => {
+    const gate = parseEnv({ ...ENV_BASE, PROPORTIONAL_EXTERNAL_METHODS_ENABLED: 'true' }).PROPORTIONAL_EXTERNAL_METHODS_ENABLED;
+    expect(gate).toBe(true);
+    const t = setup({ holdsExpireAt: new Date(NOW.getTime() + 365 * 24 * 60 * 60_000) });
+    const response = await supertest(gateApp(t, gate))
+      .post(`/api/v1/sales/${t.sale.id}/checkout/reservations`)
+      .send(httpBody(externalPlan(t)));
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(t.db.table('checkoutAttempt')[0]).toMatchObject({ status: 'RESERVED', tenderCount: 2 });
   });
 });

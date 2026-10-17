@@ -103,6 +103,15 @@ const envSchema = z.object({
       return configured === '' ? [] : configured.split(',').map((locationId) => locationId.trim());
     })
     .pipe(z.array(z.uuid())),
+  // R3-A4.3 S-REF (R3 rev. 2 §5): the pilot gate of the external (TRANSFER /
+  // CARD_DEBIT) payment methods of the proportional checkout. Strictly opt-in,
+  // exactly like the sweeper: only an explicit 'true' enables them, and the
+  // default is off. It is validated once at startup and injected by app.ts into
+  // the quote and the reservation; the services never read the process. When it
+  // is off, the quote reports the two external methods unavailable and a NEW
+  // attempt needing one is refused with PAYMENT_METHOD_NOT_ENABLED — while
+  // CASH, the listing and the refund stay available.
+  PROPORTIONAL_EXTERNAL_METHODS_ENABLED: z.enum(['true', 'false']).default('false').transform((value) => value === 'true'),
 }).transform(({ PORT, API_PORT, ...rest }, ctx) => {
   if (rest.NODE_ENV === 'test' && rest.TEST_DATABASE_URL === undefined) {
     ctx.addIssue({ code: 'custom', path: ['TEST_DATABASE_URL'], message: 'Required for tests' });

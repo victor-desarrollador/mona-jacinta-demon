@@ -197,7 +197,10 @@ describe.skipIf(!enabled)('R3-A4.3 S4 — T-R on PostgreSQL (migrations 1–9, d
   it('P6 two terminals, overlap proven on the Sale row lock: exactly one 201, the other CHECKOUT_RESERVATION_OPEN; one open attempt; one audit', async () => {
     const f = await fixture();
     const sale = await f.sale();
-    const [a, b] = [createCheckoutReservationService(clients[1]!), createCheckoutReservationService(clients[2]!)];
+    const [a, b] = [
+      createCheckoutReservationService(clients[1]!, { externalMethodsEnabled: true }),
+      createCheckoutReservationService(clients[2]!, { externalMethodsEnabled: true }),
+    ];
     const requests = [await cashRequest(sale, f.session.id), await cashRequest(sale, f.session.id)];
     const coordinator = await holdRowLock('Sale', sale.id);
     let race: Promise<PromiseSettledResult<unknown>[]> | undefined;
@@ -221,7 +224,10 @@ describe.skipIf(!enabled)('R3-A4.3 S4 — T-R on PostgreSQL (migrations 1–9, d
     const f = await fixture();
     const sale = await f.sale();
     const request = await cashRequest(sale, f.session.id);
-    const services = [createCheckoutReservationService(clients[1]!), createCheckoutReservationService(clients[2]!)];
+    const services = [
+      createCheckoutReservationService(clients[1]!, { externalMethodsEnabled: true }),
+      createCheckoutReservationService(clients[2]!, { externalMethodsEnabled: true }),
+    ];
     const coordinator = await holdRowLock('Sale', sale.id);
     let race: Promise<Array<{ replayed: boolean; view: { operationKey: string } }>> | undefined;
     try {
@@ -243,8 +249,8 @@ describe.skipIf(!enabled)('R3-A4.3 S4 — T-R on PostgreSQL (migrations 1–9, d
     const reserveKey = randomUUID();
     const captured: unknown[] = [];
     const services = [
-      createCheckoutReservationService(capturing(clients[1]!, captured)),
-      createCheckoutReservationService(capturing(clients[2]!, captured)),
+      createCheckoutReservationService(capturing(clients[1]!, captured), { externalMethodsEnabled: true }),
+      createCheckoutReservationService(capturing(clients[2]!, captured), { externalMethodsEnabled: true }),
     ];
     const requests = [await cashRequest(saleA, f.session.id, undefined, reserveKey), await cashRequest(saleB, f.session.id, undefined, reserveKey)];
     // Both pass their OWN sale lock and the reserveKey lookup (still absent),
@@ -289,7 +295,7 @@ describe.skipIf(!enabled)('R3-A4.3 S4 — T-R on PostgreSQL (migrations 1–9, d
       { method: 'CASH', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
       { method: 'CARD_DEBIT', role: 'FIXED', source: 'COLLECTION', amount: 2000n, externalCollectionId: ec.id },
     ];
-    const service = createCheckoutReservationService(db);
+    const service = createCheckoutReservationService(db, { externalMethodsEnabled: true });
     const { view } = await service.reserve(actor(f.users[0]!.id, 'CASHIER', f.branch), sale.id, await cashRequest(sale, f.session.id, tenders));
     const attempt = await db.checkoutAttempt.findUniqueOrThrow({ where: { reserveKey: view.reserveKey } });
     expect(attempt).toMatchObject({ planSealed: true, status: 'RESERVED', tenderCount: 2 });
@@ -301,7 +307,7 @@ describe.skipIf(!enabled)('R3-A4.3 S4 — T-R on PostgreSQL (migrations 1–9, d
   it('P25 recent: a CONFIRMED attempt of a COMPLETED sale is visible to its cashier (mine), not to a colleague (mine), to a supervisor (branch); another branch is 403', async () => {
     const f = await fixture();
     const sale = await f.sale();
-    const { view } = await createCheckoutReservationService(db).reserve(actor(f.users[0]!.id, 'CASHIER', f.branch), sale.id, await cashRequest(sale, f.session.id));
+    const { view } = await createCheckoutReservationService(db, { externalMethodsEnabled: true }).reserve(actor(f.users[0]!.id, 'CASHIER', f.branch), sale.id, await cashRequest(sale, f.session.id));
     // S4 fixture of a confirmation (T-C is S5): CONFIRMED attempt + its SaleCheckout + COMPLETED sale, one transaction.
     await db.$transaction(async (tx) => {
       const attempt = await tx.checkoutAttempt.update({ where: { reserveKey: view.reserveKey }, data: { status: 'CONFIRMED', confirmationHash: 'c'.repeat(64), confirmedById: f.users[0]!.id, confirmedAt: new Date() } });

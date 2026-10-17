@@ -116,7 +116,25 @@ function assertAdjustmentBps(value: number, field: string): void {
   }
 }
 
-function allocate(input: {
+// Per-line full price of one method: one rounding per unit (design §2). Shared
+// by the quote engine and, since R3-A4.3 S5, by the confirmation T-C, which
+// rebuilds the sealed plan's line prices from the sale's own line snapshot and
+// the SEALED basis points — never from the current pricing configuration.
+export function lineFullPrices(
+  lines: readonly ProportionalLineInput[],
+  adjustmentBps: number,
+): bigint[] {
+  return lines.map((line) => {
+    const unitPrice = assertFitsInt8(roundPeso(line.baseUnitPrice * (BASIS_POINTS + BigInt(adjustmentBps)), BASIS_POINTS));
+    return assertFitsInt8(line.quantity * unitPrice);
+  });
+}
+
+// Exported for the confirmation T-C (R3-A4.3 S5): it distributes one method's
+// sealed amount over the sale's lines with the same Hamilton rule the quote
+// engine uses, so a settlement built from the sealed plan is bit-identical to
+// the quote that produced it. Pure: no database, no clock, no environment.
+export function allocate(input: {
   amount: bigint;
   methodFullPrice: bigint;
   perLine: readonly bigint[];
@@ -212,16 +230,13 @@ export function computeProportionalQuote(input: ProportionalQuoteInput): Proport
   }
 
   // Full price per method: one rounding per unit, lines and method totals bounded.
-  const lineFullPrices: Record<ProportionalMethod, bigint[] | null> = { CASH: null, TRANSFER: null, CARD_DEBIT: null };
+  const perLinePrices: Record<ProportionalMethod, bigint[] | null> = { CASH: null, TRANSFER: null, CARD_DEBIT: null };
   const fullPrices: Record<ProportionalMethod, bigint | null> = { CASH: null, TRANSFER: null, CARD_DEBIT: null };
   for (const method of PROPORTIONAL_METHODS) {
     const bps = adjustmentsBps[method];
     if (bps === null) continue;
-    const perLine = lines.map((line) => {
-      const unitPrice = assertFitsInt8(roundPeso(line.baseUnitPrice * (BASIS_POINTS + BigInt(bps)), BASIS_POINTS));
-      return assertFitsInt8(line.quantity * unitPrice);
-    });
-    lineFullPrices[method] = perLine;
+    const perLine = lineFullPrices(lines, bps);
+    perLinePrices[method] = perLine;
     fullPrices[method] = assertFitsInt8(perLine.reduce((sum, value) => sum + value, 0n));
   }
 
@@ -265,7 +280,7 @@ export function computeProportionalQuote(input: ProportionalQuoteInput): Proport
     if (!amounts.has(method)) continue;
     const amount = amounts.get(method)!;
     const methodFullPrice = fullPrices[method]!;
-    const allocations = allocate({ amount, methodFullPrice, perLine: lineFullPrices[method]!, lines });
+    const allocations = allocate({ amount, methodFullPrice, perLine: perLinePrices[method]!, lines });
     const methodSum = allocations.reduce((sum, entry) => sum + entry.amount, 0n);
     if (methodSum !== amount) throw invalidState(`La distribución de ${method} no concilia con su importe.`);
     for (let index = 0; index < allocations.length; index += 1) {
@@ -285,7 +300,7 @@ export function computeProportionalQuote(input: ProportionalQuoteInput): Proport
 
   return {
     fullPrices,
-    lineFullPrices,
+    lineFullPrices: perLinePrices,
     balance: { method: balanceMethod, amount: balance },
     total,
     methods,

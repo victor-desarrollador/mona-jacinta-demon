@@ -31,6 +31,14 @@ export const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a
 export const REFERENCE_KEY = /^[A-Z0-9]{3,40}$/;
 const HASH_HEX = /^[0-9a-f]{64}$/;
 
+// chk_ec_reference: the RAW reference is 1..64 Unicode code points, independent
+// of its normalised key. Shared so the HTTP boundary and the service's
+// defence-in-depth can never disagree.
+export const REFERENCE_RAW_MAX = 64;
+// Unicode code points, as PostgreSQL char_length counts them (never String.length,
+// which counts UTF-16 units and would reject a valid astral reference).
+export const codePoints = (value: string): number => [...value].length;
+
 export const PLAN_PREFIX = 'mona-checkout-plan/v1';
 export const CONFIRMATION_PREFIX = 'mona-checkout-confirmation/v1';
 

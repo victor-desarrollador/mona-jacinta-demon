@@ -23,6 +23,7 @@ import { createCashRouter } from './modules/cash/cash.routes.js';
 import { createSalesRouter } from './modules/sales/sales.routes.js';
 import { createPaymentsRouter } from './modules/payments/payments.routes.js';
 import { createCheckoutAttemptsRouter } from './modules/payments/checkout-attempts-recent.routes.js';
+import { createExternalCollectionsRouter } from './modules/payments/external-collections.routes.js';
 import { createPricingRouter } from './modules/pricing/pricing.routes.js';
 import { createReservationAdminRouter } from './modules/sales/cancellation.routes.js';
 import { createAuditRouter } from './modules/audit/audit.routes.js';
@@ -62,9 +63,17 @@ export function createApp(database: PrismaClient = defaultPrisma, realtime: Real
   app.use('/api/v1/pricing', createPricingRouter(database));
   app.use('/api/v1/inventory', createInventoryRouter(database));
   app.use('/api/v1/sales', createSalesRouter(database, realtime));
-  app.use('/api/v1/sales', createPaymentsRouter(database, realtime));
+  // R3-A4.3 S-REF: the PROPORTIONAL_EXTERNAL_METHODS_ENABLED pilot gate is
+  // validated once at startup and injected here; the quote and the reservation
+  // read it from their options, never from the process.
+  app.use('/api/v1/sales', createPaymentsRouter(database, realtime, {
+    externalMethodsEnabled: env.PROPORTIONAL_EXTERNAL_METHODS_ENABLED,
+  }));
   // R3-A4.3 S4: reload recovery of checkout attempts, outside /sales/:saleId.
   app.use('/api/v1/checkout-attempts', createCheckoutAttemptsRouter(database));
+  // R3-A4.3 S-REF: the external collections the pilot records outside the POS
+  // (refund + branch listing). The service decides scope and location.
+  app.use('/api/v1/external-collections', createExternalCollectionsRouter(database));
   app.use('/api/v1/cash', createCashRouter(database));
   app.use('/api/v1/backoffice', createBackofficeRouter(database));
   app.use('/api/v1/admin', createReservationAdminRouter(database, realtime));

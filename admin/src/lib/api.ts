@@ -25,6 +25,44 @@ export type DashboardSummary = {
 export type SaleStatus = 'DRAFT' | 'PENDING_PAYMENT' | 'PAID' | 'COMPLETED' | 'CANCELLED';
 export type PaymentMethod = 'CASH' | 'TRANSFER' | 'CARD_DEBIT' | 'CARD_CREDIT' | 'QR';
 
+export type ExternalCollectionStatus = 'APPLIED' | 'UNAPPLIED' | 'REFUNDED';
+
+// R3-A4.3 S-REF: a non-cash collection received outside the POS. `amount` is
+// integer centavos serialised as a decimal string (BigInt end-to-end on the
+// server); the UI never sends an amount back.
+export type ExternalCollection = {
+  id: string;
+  branchId: string;
+  method: PaymentMethod;
+  amount: string;
+  reference: string;
+  referenceKey: string;
+  institution: string | null;
+  institutionOther: string | null;
+  status: ExternalCollectionStatus;
+  originSaleId: string | null;
+  originAttemptId: string | null;
+  cashSessionId: string | null;
+  recordedById: string;
+  recordedAt: string;
+  resolvedById: string | null;
+  resolvedAt: string | null;
+  refundReference: string | null;
+  resolutionNote: string | null;
+  externalRefundedAt: string | null;
+};
+
+export type RefundExternalCollectionBody = {
+  refundReference: string;
+  externalRefundedAt: string;
+  reason: string;
+};
+
+export type ExternalCollectionRefundResult = {
+  replayed: boolean;
+  collection: ExternalCollection;
+};
+
 export type Seller = {
   id: string;
   name: string;
@@ -226,6 +264,12 @@ const allowedCatalogue: Array<[string, RegExp]> = [
   ['PATCH', /^\/pricing\/config$/],
   ['POST', /^\/inventory\/initial-stock$/],
 ];
+// R3-A4.3 S-REF: external collections (the branch listing and the refund). The
+// backend service is the authority for the location scope; the UI never is.
+const allowedExternalCollections: Array<[string, RegExp]> = [
+  ['GET', /^\/external-collections(?:\?.*)?$/],
+  ['POST', new RegExp(`^/external-collections/${UUID}/refund$`)],
+];
 
 function assertAllowed(method: string, path: string) {
   const authAllowed =
@@ -233,7 +277,8 @@ function assertAllowed(method: string, path: string) {
     (method === 'GET' && path === '/auth/me');
   const backofficeAllowed = method === 'GET' && allowedBackoffice.some((rule) => rule.test(path));
   const catalogueAllowed = allowedCatalogue.some(([allowedMethod, rule]) => allowedMethod === method && rule.test(path));
-  if (!authAllowed && !backofficeAllowed && !catalogueAllowed) {
+  const externalCollectionsAllowed = allowedExternalCollections.some(([allowedMethod, rule]) => allowedMethod === method && rule.test(path));
+  if (!authAllowed && !backofficeAllowed && !catalogueAllowed && !externalCollectionsAllowed) {
     throw new Error(`Endpoint no permitido: ${method} ${path}`);
   }
 }
@@ -341,4 +386,13 @@ export const api = {
     send<{ config: PricingConfig }>('PATCH', '/pricing/config', token, body, onUnauthorized),
   loadInitialStock: (token: string, body: InitialStockBody, onUnauthorized: () => void) =>
     send<InitialStockResult>('POST', '/inventory/initial-stock', token, body, onUnauthorized),
+  externalCollections: (token: string, params: URLSearchParams, onUnauthorized: () => void) => {
+    const query = params.toString();
+    return request<{ items: ExternalCollection[] }>(
+      `/external-collections${query ? `?${query}` : ''}`,
+      { token, onUnauthorized },
+    );
+  },
+  refundExternalCollection: (token: string, id: string, body: RefundExternalCollectionBody, onUnauthorized: () => void) =>
+    send<ExternalCollectionRefundResult>('POST', `/external-collections/${id}/refund`, token, body, onUnauthorized),
 };
