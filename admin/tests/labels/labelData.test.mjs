@@ -624,7 +624,9 @@ test('F-05 the page documents that report.view is not LABEL_PRINT and not a serv
 test('F-08 the page loads the catalogue through loadAllProducts and plans sheets through buildSheetPlans', () => {
   const code = pageCode();
   assert.match(code, /loadAllProducts\(/);
-  assert.match(code, /buildSheetPlans\(/);
+  // V3.1: the page plans through the single checked composition (deriveSheetPreview -> planLabelSheets -> buildSheetPlans).
+  assert.match(code, /deriveSheetPreview\(/);
+  assert.match(stripComments(read(join(libDir, 'labelCatalog.ts'))), /export function planLabelSheets[\s\S]*?buildSheetPlans\(/);
   assert.ok(!/let\s+cursor\b/.test(code), 'no mutable cursor in render');
   assert.ok(!/for\s*\(\s*let\s+page/.test(code), 'no pagination loop inside the component');
 });
@@ -833,4 +835,80 @@ test('CL-03 the page parses numeric fields only through the shared pure parsers 
   assert.ok(!/\bNumber\(/.test(code), 'no Number(text) parsing may remain in the page');
   assert.match(code, /parseDecimalField/);
   assert.match(code, /parseQuantityField/);
+});
+
+// ======================= V3.1 regression tests (M-01 checked expansion, page state) =======================
+const fakeCopies = (quantities) => quantities.map((quantity, i) => ({ variantId: `k${i + 1}`, quantity }));
+
+function fnOf(name) {
+  assert.equal(typeof labelDataModule[name], 'function', `${name} must be exported by labelData.ts`);
+  return labelDataModule[name];
+}
+
+test('M-01 expandCopiesChecked tells an empty selection apart from an over-limit one', () => {
+  const checked = fnOf('expandCopiesChecked');
+  assert.deepEqual(checked([]), { ok: true, copies: [] });
+  assert.deepEqual(checked(fakeCopies([200, 200, 200, 200, 200, 200])), { ok: false, code: 'TOTAL_EXCEEDS_LIMIT' });
+  assert.deepEqual(checked(fakeCopies([200, 200, 200, 200, 201])), { ok: false, code: 'TOTAL_EXCEEDS_LIMIT' });
+});
+
+test('M-01 expandCopiesChecked keeps exactly 1000 copies, in selection order', () => {
+  const checked = fnOf('expandCopiesChecked');
+  const result = checked(fakeCopies([200, 200, 200, 200, 200]));
+  assert.equal(result.ok, true);
+  assert.equal(result.copies.length, 1000);
+  assert.equal(result.copies[0].variantId, 'k1');
+  assert.equal(result.copies[999].variantId, 'k5');
+});
+
+test('M-01 expandCopiesChecked reports invalid quantities as errors, never as an empty selection, whatever their position', () => {
+  const checked = fnOf('expandCopiesChecked');
+  for (const quantities of [[Number.NaN], [1.5], [-1], [2, Number.NaN], [Number.NaN, 2], [200, 200, 200, 200, 200, 200, Number.NaN], [Number.NaN, 200, 200, 200, 200, 200, 200], [Number.POSITIVE_INFINITY]]) {
+    assert.deepEqual(checked(fakeCopies(quantities)), { ok: false, code: 'INVALID_QUANTITY' }, JSON.stringify(quantities));
+  }
+});
+
+test('M-01 expandCopiesChecked does no expansion work for an over-limit or invalid selection', () => {
+  const checked = fnOf('expandCopiesChecked');
+  for (const quantities of [[200, 200, 200, 200, 200, 200], [1e21], [Number.NaN, 3], [5000, 5000]]) {
+    const { expansions } = countExpansions(() => checked(fakeCopies(quantities)));
+    assert.equal(expansions, 0, JSON.stringify(quantities));
+  }
+});
+
+test('M-01 a label with quantity 0 is a valid selection with nothing to place', () => {
+  assert.deepEqual(fnOf('expandCopiesChecked')(fakeCopies([0])), { ok: true, copies: [] });
+});
+
+test('M-01 the legacy expandCopies stays lossy ([] for errors): the page must use the checked form instead', () => {
+  assert.deepEqual(expandCopies(fakeCopies([200, 200, 200, 200, 200, 200])), []);
+  assert.deepEqual(expandCopies(fakeCopies([Number.NaN])), []);
+});
+
+test('M-01 the page no longer expands copies with the lossy helper and derives its state from deriveSheetPreview (static)', () => {
+  const code = pageCode();
+  assert.ok(!/\bexpandCopies\b/.test(code), 'the page must not call or import expandCopies');
+  assert.match(code, /deriveSheetPreview\(/);
+});
+
+test('M-01 the success status line is rendered only for a READY preview (static)', () => {
+  const code = pageCode();
+  const occurrences = [...code.matchAll(/etiquetas incluidas/g)];
+  assert.equal(occurrences.length, 1, 'exactly one success line');
+  const before = code.slice(Math.max(0, occurrences[0].index - 260), occurrences[0].index);
+  assert.match(before, /kind === 'READY'/);
+});
+
+test('M-01 the over-limit message comes from the preview state, not from a separate flag (static)', () => {
+  const code = pageCode();
+  assert.match(code, /code === 'TOTAL_EXCEEDS_LIMIT'/);
+  assert.ok(!/result\.totalError/.test(code), 'no second source of truth for the limit error');
+});
+
+test('CL-05 catalogue failures never expose data as complete: products are set only on success (static)', () => {
+  const code = pageCode();
+  assert.equal([...code.matchAll(/setProducts\(outcome\.products\)/g)].length, 1);
+  assert.match(code, /if \(outcome\.ok\) \{\s*setProducts\(outcome\.products\)/);
+  assert.match(code, /else if \(outcome\.code === 'FAILED'\) \{\s*setError\(/);
+  assert.match(code, /\{!loading && !error \? \(/);
 });

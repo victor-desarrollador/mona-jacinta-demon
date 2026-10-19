@@ -3,13 +3,12 @@ import { useAuth } from '../hooks/useAuth';
 import { ApiError, api, type CatalogProduct } from '../lib/api';
 import { errorMessage } from '../lib/errors';
 import { formatARS, formatVariant } from '../lib/utils';
-import { buildSheetPlans, loadAllProducts } from '../lib/labels/labelCatalog.ts';
+import { type SheetPreview, deriveSheetPreview, loadAllProducts } from '../lib/labels/labelCatalog.ts';
 import {
   type ExclusionReason,
   type LabelModel,
   buildLabels,
   canAccessLabels,
-  expandCopies,
   summarizeExclusions,
 } from '../lib/labels/labelData.ts';
 import {
@@ -52,6 +51,16 @@ const REASON_TEXT: Record<ExclusionReason, string> = {
   DUPLICATE_BARCODE: 'Código de barras duplicado con otra variante del catálogo cargado.',
   PRICE_MISSING: 'Falta el precio efectivo (cashPrice); no se genera la etiqueta con precio.',
 };
+
+// Messages for a preview that could not be generated (no sheets, no success text).
+function previewErrorText(code: Extract<SheetPreview, { kind: 'ERROR' }>['code']): string {
+  if (code === 'TOTAL_EXCEEDS_LIMIT') {
+    return 'Se superó el máximo provisional de 1000 etiquetas por selección; reducí las cantidades. No se generó ningún plan de hojas.';
+  }
+  if (code === 'INVALID_QUANTITY') return 'Hay una cantidad inválida en la selección; no se generó ningún plan de hojas.';
+  if (code === 'START_OUT_OF_RANGE') return 'La posición inicial debe ser un entero dentro de la hoja.';
+  return 'No se pudo planificar las hojas; revisá la configuración de la hoja.';
+}
 
 type LayoutDraft = Record<keyof LayoutConfig, string>;
 
@@ -255,11 +264,10 @@ export function Labels() {
     [products, selection, showPrice, labelWidthMm],
   );
   const summary = useMemo(() => summarizeExclusions(result.excluded, products), [result.excluded, products]);
-  const copies = useMemo(() => expandCopies(result.labels), [result.labels]);
   const startSlotNumber = parseDecimalField(startSlot);
-  const sheetPlans = useMemo(
-    () => (layout.ok ? buildSheetPlans(copies, layout, startSlotNumber) : null),
-    [copies, layout, startSlotNumber],
+  const sheetPreview = useMemo(
+    () => deriveSheetPreview(result.labels, layout, startSlotNumber),
+    [result.labels, layout, startSlotNumber],
   );
 
   const reasonById = new Map(result.excluded.map(({ variantId, reason }) => [variantId, reason]));
@@ -564,27 +572,24 @@ export function Labels() {
 
       <section aria-label="Vista previa">
         <h3>Vista previa</h3>
-        <p className="field-hint" role="status">
-          {result.totalLabels} etiquetas incluidas
-          {sheetPlans?.ok ? ` en ${sheetPlans.sheets.length} ${sheetPlans.sheets.length === 1 ? 'hoja' : 'hojas'}` : ''}.
-          {summary.variants > 0 ? ` ${summary.variants} variantes quedaron excluidas (ver el resumen de exclusiones).` : ''}{' '}
-          Generar la vista previa no confirma que ninguna impresora haya impreso nada.
-        </p>
-        {result.totalError ? (
-          <p className="error-banner" role="alert">
-            Se superó el máximo provisional de 1000 etiquetas por selección; reducí las cantidades.
+        {sheetPreview.kind === 'READY' ? (
+          <p className="field-hint" role="status">
+            {sheetPreview.labelCount} etiquetas incluidas en {sheetPreview.sheetCount} {sheetPreview.sheetCount === 1 ? 'hoja' : 'hojas'}.
+            {summary.variants > 0 ? ` ${summary.variants} variantes quedaron excluidas (ver el resumen de exclusiones).` : ''}{' '}
+            Generar la vista previa no confirma que ninguna impresora haya impreso nada.
           </p>
         ) : null}
-        {sheetPlans && !sheetPlans.ok ? (
-          <p className="error-banner" role="alert">La posición inicial debe ser un entero dentro de la hoja.</p>
+        {sheetPreview.kind === 'ERROR' ? (
+          <p className="error-banner" role="alert">{previewErrorText(sheetPreview.code)}</p>
         ) : null}
-        {layout.ok && sheetPlans?.ok && !result.totalError && copies.length === 0 ? (
-          <p className="muted">Seleccioná variantes para ver la vista previa.</p>
+        {sheetPreview.kind === 'EMPTY' ? <p className="muted">Seleccioná variantes para ver la vista previa.</p> : null}
+        {sheetPreview.kind === 'LAYOUT_INVALID' ? (
+          <p className="muted">Corregí la configuración de la hoja para ver la vista previa.</p>
         ) : null}
-        {layout.ok && sheetPlans?.ok && !result.totalError
-          ? sheetPlans.sheets.map((sheet) => (
+        {sheetPreview.kind === 'READY'
+          ? sheetPreview.sheets.map((sheet) => (
               <div key={sheet.sheetNumber} style={{ overflowX: 'auto', marginBottom: '1rem' }}>
-                <p className="field-hint">Hoja {sheet.sheetNumber} de {sheetPlans.sheets.length}</p>
+                <p className="field-hint">Hoja {sheet.sheetNumber} de {sheetPreview.sheetCount}</p>
                 <div
                   style={{
                     position: 'relative',

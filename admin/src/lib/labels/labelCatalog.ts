@@ -5,7 +5,7 @@
 // ADM-15-A: read-only. The loader never writes and never retries.
 
 import type { CatalogProduct } from '../api';
-import type { LabelModel } from './labelData.ts';
+import { expandCopiesChecked, type LabelModel } from './labelData.ts';
 import { MAX_LABELS_PER_SELECTION, paginate, type LayoutResult } from './labelLayout.ts';
 
 export const CATALOG_PAGE_LIMIT = 100;
@@ -78,7 +78,7 @@ function isValidPage(response: unknown): response is CatalogPageResponse {
   if (!items.every(isValidProduct)) return false;
   if (typeof pagination !== 'object' || pagination === null) return false;
   const total = (pagination as { total?: unknown }).total;
-  return Number.isInteger(total) && (total as number) >= 0;
+  return Number.isSafeInteger(total) && (total as number) >= 0;
 }
 
 export async function loadAllProducts(fetchPage: FetchPage, options: LoadOptions = {}): Promise<LoadOutcome> {
@@ -86,10 +86,10 @@ export async function loadAllProducts(fetchPage: FetchPage, options: LoadOptions
   // size GET /products accepts (max 100).
   const limit: unknown = options.limit === undefined ? CATALOG_PAGE_LIMIT : options.limit;
   const maxPages: unknown = options.maxPages === undefined ? CATALOG_MAX_PAGES : options.maxPages;
-  if (!Number.isInteger(limit) || (limit as number) < 1 || (limit as number) > CATALOG_PAGE_LIMIT) {
+  if (!Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > CATALOG_PAGE_LIMIT) {
     return { ok: false, code: 'FAILED', cause: new Error('Opciones de carga inválidas: limit.') };
   }
-  if (!Number.isInteger(maxPages) || (maxPages as number) < 1) {
+  if (!Number.isSafeInteger(maxPages) || (maxPages as number) < 1 || (maxPages as number) > CATALOG_MAX_PAGES) {
     return { ok: false, code: 'FAILED', cause: new Error('Opciones de carga inválidas: maxPages.') };
   }
   const cancelled = () => options.isCancelled?.() === true;
@@ -136,7 +136,7 @@ export type SheetPlan = { sheetNumber: number; startSlot: number; placements: Sh
 
 export type SheetPlansResult =
   | { ok: true; sheets: SheetPlan[] }
-  | { ok: false; code: 'LAYOUT_INVALID' | 'SLOT_MISSING' | 'INVALID_TOTAL' | 'INVALID_PER_SHEET' | 'START_OUT_OF_RANGE' | 'TOTAL_EXCEEDS_LIMIT' };
+  | { ok: false; code: 'LAYOUT_INVALID' | 'SLOT_MISSING' | 'INVALID_TOTAL' | 'INVALID_PER_SHEET' | 'START_OUT_OF_RANGE' | 'TOTAL_EXCEEDS_LIMIT' | 'INVALID_QUANTITY' };
 
 // Places every copy on a sheet slot. Pure: the page calls it from useMemo, so
 // nothing is mutated while rendering.
@@ -164,4 +164,38 @@ export function buildSheetPlans(
     sheets.push({ sheetNumber: index + 1, startSlot: sheet.startSlot, placements });
   }
   return { ok: true, sheets };
+}
+
+// The single checked path from selection to sheets: layout, then quantities and
+// the global limit (before any expansion), then planning. Every failure is an
+// explicit error; an empty selection is a valid empty plan.
+export function planLabelSheets(
+  labels: ReadonlyArray<LabelModel>,
+  layout: LayoutResult | null | undefined,
+  startSlot: unknown,
+): SheetPlansResult {
+  if (!layout || layout.ok !== true) return { ok: false, code: 'LAYOUT_INVALID' };
+  const expanded = expandCopiesChecked(labels);
+  if (!expanded.ok) return { ok: false, code: expanded.code };
+  return buildSheetPlans(expanded.copies, layout, startSlot);
+}
+
+// What the page shows. Only READY carries sheets and counts, so a success message
+// can never be produced for an error.
+export type SheetPreview =
+  | { kind: 'LAYOUT_INVALID' }
+  | { kind: 'EMPTY' }
+  | { kind: 'ERROR'; code: Exclude<Extract<SheetPlansResult, { ok: false }>['code'], 'LAYOUT_INVALID'> }
+  | { kind: 'READY'; sheets: SheetPlan[]; labelCount: number; sheetCount: number };
+
+export function deriveSheetPreview(
+  labels: ReadonlyArray<LabelModel>,
+  layout: LayoutResult | null | undefined,
+  startSlot: unknown,
+): SheetPreview {
+  const plan = planLabelSheets(labels, layout, startSlot);
+  if (!plan.ok) return plan.code === 'LAYOUT_INVALID' ? { kind: 'LAYOUT_INVALID' } : { kind: 'ERROR', code: plan.code };
+  if (plan.sheets.length === 0) return { kind: 'EMPTY' };
+  const labelCount = plan.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
+  return { kind: 'READY', sheets: plan.sheets, labelCount, sheetCount: plan.sheets.length };
 }

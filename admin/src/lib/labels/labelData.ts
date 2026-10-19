@@ -393,15 +393,31 @@ export function summarizeExclusions(
   };
 }
 
+export type ExpandedCopies =
+  | { ok: true; copies: LabelModel[] }
+  | { ok: false; code: 'TOTAL_EXCEEDS_LIMIT' | 'INVALID_QUANTITY' };
+
 // One entry per physical label to place on the sheets, in selection order.
-// The global limit is verified BEFORE anything is materialised: an over-limit or
-// malformed selection yields no copies at all (the caller reports the limit).
-export function expandCopies(labels: ReadonlyArray<LabelModel>): LabelModel[] {
+// An empty selection is `{ ok: true, copies: [] }`; an invalid quantity or an
+// over-limit total is an explicit error, so the two can never be confused. Every
+// quantity is validated first (so invalid data wins over the total, wherever it
+// sits) and the global limit is verified BEFORE anything is materialised.
+export function expandCopiesChecked(labels: ReadonlyArray<LabelModel>): ExpandedCopies {
+  for (const label of labels) {
+    if (!Number.isInteger(label.quantity) || label.quantity < 0) return { ok: false, code: 'INVALID_QUANTITY' };
+  }
   let total = 0;
   for (const label of labels) {
-    if (!Number.isInteger(label.quantity) || label.quantity < 0) return [];
     total += label.quantity;
-    if (total > MAX_LABELS_PER_SELECTION) return [];
+    if (total > MAX_LABELS_PER_SELECTION) return { ok: false, code: 'TOTAL_EXCEEDS_LIMIT' };
   }
-  return labels.flatMap((label) => Array.from({ length: label.quantity }, () => label));
+  return { ok: true, copies: labels.flatMap((label) => Array.from({ length: label.quantity }, () => label)) };
+}
+
+// Lossy convenience kept for compatibility: errors collapse into []. Do NOT use it
+// to plan sheets (an empty array is indistinguishable from an empty selection);
+// the page goes through expandCopiesChecked / deriveSheetPreview.
+export function expandCopies(labels: ReadonlyArray<LabelModel>): LabelModel[] {
+  const expanded = expandCopiesChecked(labels);
+  return expanded.ok ? expanded.copies : [];
 }

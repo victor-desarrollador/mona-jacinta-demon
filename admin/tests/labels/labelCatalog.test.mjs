@@ -365,3 +365,189 @@ test('CL-05 invalid options take priority over cancellation and never touch the 
   assert.equal(outcome.code, 'FAILED');
   assert.equal(called, 0);
 });
+
+// ======================= V3.1 regression tests (M-01 composition, CL-05 safe limits) =======================
+import * as catalogModule from '../../src/lib/labels/labelCatalog.ts';
+
+const fromCatalog = (name) => {
+  assert.equal(typeof catalogModule[name], 'function', `${name} must be exported by labelCatalog.ts`);
+  return catalogModule[name];
+};
+const fakeSelection = (quantities) => quantities.map((quantity, i) => ({ variantId: `q${i + 1}`, quantity }));
+const noLayout = computeLayout({ labelWidthMm: 200 });
+function expansionsDuring(run) {
+  const real = Array.from;
+  let expansions = 0;
+  Array.from = function patched(...args) {
+    const source = args[0];
+    if (source && typeof source === 'object' && !Array.isArray(source) && typeof source.length === 'number' && typeof source[Symbol.iterator] !== 'function') expansions += 1;
+    return real.apply(this, args);
+  };
+  try {
+    return { value: run(), expansions };
+  } finally {
+    Array.from = real;
+  }
+}
+
+// ---- M-01: the real composition (validate -> expand -> plan -> displayed state)
+test('M-01 1200 labels: ERROR TOTAL_EXCEEDS_LIMIT, no sheets, no success state, no expansion', () => {
+  const derive = fromCatalog('deriveSheetPreview');
+  const { value, expansions } = expansionsDuring(() => derive(fakeSelection([200, 200, 200, 200, 200, 200]), defaultLayout, 0));
+  assert.deepEqual(value, { kind: 'ERROR', code: 'TOTAL_EXCEEDS_LIMIT' });
+  assert.ok(!('sheets' in value) && !('labelCount' in value));
+  assert.equal(expansions, 0);
+});
+
+test('M-01 1001 labels are an error too, while 1000 labels are READY over 72 sheets', () => {
+  const derive = fromCatalog('deriveSheetPreview');
+  assert.deepEqual(derive(fakeSelection([200, 200, 200, 200, 201]), defaultLayout, 0), { kind: 'ERROR', code: 'TOTAL_EXCEEDS_LIMIT' });
+  const ready = derive(fakeSelection([200, 200, 200, 200, 200]), defaultLayout, 0);
+  assert.equal(ready.kind, 'READY');
+  assert.equal(ready.labelCount, 1000);
+  assert.equal(ready.sheetCount, 72);
+  assert.equal(ready.sheets.length, 72);
+});
+
+test('M-01 0 labels is the valid empty state: neither an error nor a READY preview', () => {
+  const derive = fromCatalog('deriveSheetPreview');
+  assert.deepEqual(derive([], defaultLayout, 0), { kind: 'EMPTY' });
+  assert.deepEqual(derive(fakeSelection([0]), defaultLayout, 0), { kind: 'EMPTY' });
+});
+
+test('M-01 1 label is READY with one sheet', () => {
+  const ready = fromCatalog('deriveSheetPreview')(fakeSelection([1]), defaultLayout, 0);
+  assert.equal(ready.kind, 'READY');
+  assert.deepEqual([ready.labelCount, ready.sheetCount], [1, 1]);
+});
+
+test('M-01 an invalid quantity is an ERROR that differs from the empty selection, wherever it sits', () => {
+  const derive = fromCatalog('deriveSheetPreview');
+  for (const quantities of [[Number.NaN], [1.5], [-1], [3, Number.NaN], [Number.NaN, 3], [200, 200, 200, 200, 200, 200, Number.NaN], [Number.NaN, 200, 200, 200, 200, 200, 200]]) {
+    assert.deepEqual(derive(fakeSelection(quantities), defaultLayout, 0), { kind: 'ERROR', code: 'INVALID_QUANTITY' }, JSON.stringify(quantities));
+  }
+});
+
+test('M-01 an invalid layout is reported as LAYOUT_INVALID and nothing is expanded, even for an over-limit selection', () => {
+  const derive = fromCatalog('deriveSheetPreview');
+  for (const selection of [fakeSelection([3]), fakeSelection([200, 200, 200, 200, 200, 200])]) {
+    const { value, expansions } = expansionsDuring(() => derive(selection, noLayout, 0));
+    assert.deepEqual(value, { kind: 'LAYOUT_INVALID' });
+    assert.equal(expansions, 0);
+  }
+  assert.deepEqual(derive(fakeSelection([3]), null, 0), { kind: 'LAYOUT_INVALID' });
+});
+
+test('M-01 a bad start slot is an ERROR, also for an empty selection; a valid last slot is READY', () => {
+  const derive = fromCatalog('deriveSheetPreview');
+  for (const start of [14, -1, Number.NaN, 1.5]) {
+    assert.deepEqual(derive(fakeSelection([3]), defaultLayout, start), { kind: 'ERROR', code: 'START_OUT_OF_RANGE' }, String(start));
+  }
+  assert.deepEqual(derive([], defaultLayout, 14), { kind: 'ERROR', code: 'START_OUT_OF_RANGE' });
+  assert.equal(derive(fakeSelection([1]), defaultLayout, 13).kind, 'READY');
+});
+
+test('M-01 15 labels from slot 3 are READY over two sheets of 11 and 4', () => {
+  const ready = fromCatalog('deriveSheetPreview')(fakeSelection([15]), defaultLayout, 3);
+  assert.equal(ready.kind, 'READY');
+  assert.deepEqual(ready.sheets.map((sheet) => sheet.placements.length), [11, 4]);
+});
+
+test('M-01 planLabelSheets propagates the checked errors and never returns an empty successful plan for them', () => {
+  const plan = fromCatalog('planLabelSheets');
+  assert.deepEqual(plan(fakeSelection([200, 200, 200, 200, 200, 200]), defaultLayout, 0), { ok: false, code: 'TOTAL_EXCEEDS_LIMIT' });
+  assert.deepEqual(plan(fakeSelection([Number.NaN]), defaultLayout, 0), { ok: false, code: 'INVALID_QUANTITY' });
+  assert.deepEqual(plan([], defaultLayout, 0), { ok: true, sheets: [] });
+  assert.equal(plan(fakeSelection([200, 200, 200, 200, 200]), defaultLayout, 0).ok, true);
+  assert.deepEqual(plan(fakeSelection([3]), null, 0), { ok: false, code: 'LAYOUT_INVALID' });
+});
+
+test('M-01 the V3 building blocks keep their behaviour: buildSheetPlans([]) is an empty plan and 1001 copies are refused', () => {
+  assert.deepEqual(buildSheetPlans([], defaultLayout, 0), { ok: true, sheets: [] });
+  assert.deepEqual(buildSheetPlans(Array.from({ length: 1001 }, (_, i) => ({ variantId: `c${i}` })), defaultLayout, 0), { ok: false, code: 'TOTAL_EXCEEDS_LIMIT' });
+});
+
+// ---- CL-05: safe, bounded limits
+test('CL-05 maxPages 50 is valid and 51 is rejected before any request', async () => {
+  const ok = server(catalog(120));
+  const accepted = await loadAllProducts(ok.fetchPage, { maxPages: 50 });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.pagesLoaded, 2);
+  const rejected = server(catalog(120));
+  const outcome = await loadAllProducts(rejected.fetchPage, { maxPages: 51 });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.code, 'FAILED');
+  assert.equal(rejected.calls.length, 0);
+});
+
+test('CL-05 maxPages 49, 50 and 1 stay valid; 52, 100 and 1000 are rejected', async () => {
+  for (const maxPages of [1, 49, 50]) assert.equal((await loadAllProducts(server(catalog(5)).fetchPage, { maxPages })).ok, true, String(maxPages));
+  for (const maxPages of [52, 100, 1000]) {
+    const { fetchPage, calls } = server(catalog(5));
+    assert.equal((await loadAllProducts(fetchPage, { maxPages })).ok, false, String(maxPages));
+    assert.equal(calls.length, 0, String(maxPages));
+  }
+});
+
+test('CL-05 a maxPages beyond the safe-integer range is rejected without any request', async () => {
+  for (const maxPages of [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER + 1, 2 ** 53, 1e21, Number.MAX_VALUE]) {
+    const { fetchPage, calls } = server(catalog(5));
+    const outcome = await loadAllProducts(fetchPage, { maxPages });
+    assert.equal(outcome.ok, false, String(maxPages));
+    assert.equal(outcome.code, 'FAILED', String(maxPages));
+    assert.equal(calls.length, 0, String(maxPages));
+  }
+});
+
+test('CL-05 pagination.total beyond the safe-integer range is rejected (V3 only checked Number.isInteger)', async () => {
+  for (const total of [2 ** 53, 1e21, Number.MAX_VALUE]) {
+    const outcome = await loadAllProducts(async () => pageOf([], total));
+    assert.equal(outcome.ok, false, String(total));
+    assert.equal(outcome.code, 'FAILED', String(total));
+  }
+});
+
+test('CL-05 pagination.total of Number.MAX_SAFE_INTEGER is a safe integer: accepted, reported as truncated', async () => {
+  const outcome = await loadAllProducts(async () => pageOf([], Number.MAX_SAFE_INTEGER));
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.total, Number.MAX_SAFE_INTEGER);
+  assert.equal(outcome.truncated, true);
+});
+
+test('CL-05 pagination.total 0 is a valid empty catalogue; negative, fractional, NaN and non-numbers are rejected', async () => {
+  const empty = await loadAllProducts(async () => pageOf([], 0));
+  assert.deepEqual([empty.ok, empty.total, empty.truncated, empty.products.length], [true, 0, false, 0]);
+  for (const total of [-1, 1.5, Number.NaN, '5', null, undefined]) {
+    // a literal page: pageOf() would turn an undefined total into its default (items.length)
+    const outcome = await loadAllProducts(async () => ({ items: [], pagination: { total } }));
+    assert.equal(outcome.ok, false, String(total));
+  }
+});
+
+test('CL-05 an unsafe pagination.total on a later page fails the whole load and returns no partial data', async () => {
+  const all = catalog(150);
+  const outcome = await loadAllProducts(async (page, limit) => ({ items: all.slice((page - 1) * limit, page * limit), pagination: { page, limit, total: page === 1 ? 150 : 2 ** 60 } }));
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.code, 'FAILED');
+  assert.ok(!('products' in outcome));
+});
+
+test('CL-05 the page-size limit stays bounded: 100 valid, 101 / 0 / 1.5 / NaN rejected before any request', async () => {
+  assert.equal((await loadAllProducts(server(catalog(3)).fetchPage, { limit: 100 })).ok, true);
+  for (const limit of [101, 0, 1.5, Number.NaN, 2 ** 53]) {
+    const { fetchPage, calls } = server(catalog(3));
+    assert.equal((await loadAllProducts(fetchPage, { limit })).ok, false, String(limit));
+    assert.equal(calls.length, 0, String(limit));
+  }
+});
+
+test('CL-05 a catalogue failure on a later page is FAILED and returns no products', async () => {
+  const all = catalog(250);
+  const outcome = await loadAllProducts(async (page, limit) => {
+    if (page === 2) throw new Error('network');
+    return { items: all.slice(0, limit), pagination: { page, limit, total: 250 } };
+  });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.code, 'FAILED');
+  assert.ok(!('products' in outcome));
+});
