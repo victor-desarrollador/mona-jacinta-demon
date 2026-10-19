@@ -1,5 +1,6 @@
 // OWNER-only, PILOT-only import of the real Local 1 catalog and stock from the
-// OWNER's spreadsheet ("local1 corregido.xlsx" layout).
+// OWNER's spreadsheet: the 2026-10-13 "local1 corregido.xlsx" layout (local1-v1) or the
+// 2026-10-19 "local1.xlsx" layout (local1-v2, see parseLocal1V2), detected by header B2.
 //
 //   --dry-run   offline: reads the file, checks its SHA-256, validates every cell,
 //               prints a sanitized summary (no cost figures) and the catalog digest,
@@ -48,7 +49,7 @@ export class ImportError extends Error {
   }
 }
 
-class Stop extends Error {
+export class Stop extends Error {
   constructor(phase, reason) {
     super(reason);
     this.phase = phase;
@@ -65,10 +66,10 @@ const BRAND = 'Sin marca';
 const CASH_NUMERATOR = 80n;
 const CASH_DENOMINATOR = 100n;
 const PILOT_CUIT = 'PILOT-NO-FISCAL';
-const MAINTENANCE_ADVISORY_LOCK_ID = 506005;
-const TRANSACTION_OPTIONS = Object.freeze({ timeout: 600000, maxWait: 10000 });
-const AUTH_TTL_MS = 2 * 60 * 60 * 1000;
-const BACKUP_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+export const MAINTENANCE_ADVISORY_LOCK_ID = 506005;
+export const TRANSACTION_OPTIONS = Object.freeze({ timeout: 600000, maxWait: 10000 });
+export const AUTH_TTL_MS = 2 * 60 * 60 * 1000;
+export const BACKUP_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const CLOCK_SKEW_MS = 5 * 60 * 1000;
 const MAX_INPUT_BYTES = 5 * 1024 * 1024;
 const YELLOW = 'FFFFFF00';
@@ -76,10 +77,10 @@ const RED = 'FFFF0000';
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const MARKER_RECHECK_SQL = `SELECT to_regnamespace('mona_test_guard') IS NOT NULL AS test_guard_exists,
+export const MARKER_RECHECK_SQL = `SELECT to_regnamespace('mona_test_guard') IS NOT NULL AS test_guard_exists,
   (SELECT coalesce(json_agg(json_build_object('environment', environment, 'marker_id', marker_id::text)), '[]'::json)
      FROM mona_pilot_guard.database_identity) AS rows`;
-const MIGRATIONS_SQL = `SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NOT NULL AS rolled_back
+export const MIGRATIONS_SQL = `SELECT migration_name, checksum, finished_at IS NOT NULL AS finished, rolled_back_at IS NOT NULL AS rolled_back
   FROM public._prisma_migrations ORDER BY migration_name, started_at`;
 // The archive is held in memory for its inspections; a PILOT backup far above this is refused, not streamed.
 const MAX_ARCHIVE_BYTES = 256 * 1024 * 1024;
@@ -154,6 +155,7 @@ export function parseLocal1Workbook(buffer, expect) {
     return c && c.type === 's' ? c.value : null;
   };
   const has = (c) => c !== null && ((c.value !== null && c.value !== '') || c.formula !== null);
+  if ((text('B2') ?? '').normalize('NFC').trim() === V2_HEADER[0][1]) return parseLocal1V2({ cells, merges, at, text, has }, expect);
 
   for (const [ref, label, fill] of HEADER) {
     const c = at(ref);
@@ -229,18 +231,7 @@ export function parseLocal1Workbook(buffer, expect) {
     if (f === null || f !== list * stock) fail('VALUED', `row ${r}: stock valorizado (lista) differs from stock × precio`);
     if (j === null || (cost * stock - j > 1n || j - cost * stock > 1n)) fail('VALUED', `row ${r}: stock valorizado (costo) differs from stock × costo`);
 
-    const key = sku.toUpperCase();
-    if (skus.has(key)) fail('SKU', `row ${r}: code ${sku} repeats row ${skus.get(key)}`);
-    skus.set(key, r);
-    const slug = slugOf(sku);
-    if (!SLUG.test(slug) || slug.length > 120) fail('SLUG', `row ${r}: code ${sku} yields no valid slug`);
-    if (slugs.has(slug)) fail('SLUG', `row ${r}: code ${sku} collides with row ${slugs.get(slug)} as slug ${slug}`);
-    slugs.set(slug, r);
-
-    if (cost === 0n) anomalies.push({ row: r, sku, kind: 'COST_ZERO', listCents: String(list), costCents: '0' });
-    else if (cost > list) anomalies.push({ row: r, sku, kind: 'COST_ABOVE_LIST', listCents: String(list), costCents: String(cost) });
-
-    rows.push({ row: r, sku, barcode: sku, raw, name, slug, listCents: String(list), cashCents: String(cash), costCents: String(cost), stock: String(stock) });
+    rows.push(planRow({ r, sku, raw, name, list, cash, cost, stock, skus, slugs, anomalies }));
     units += stock;
     listValue += list * stock;
     cashValue += cash * stock;
@@ -260,22 +251,143 @@ export function parseLocal1Workbook(buffer, expect) {
   if (!expect || totals.items !== Number(expect.items) || totals.units !== String(expect.units)) {
     fail('COUNTS', `the sheet holds ${totals.items} items / ${totals.units} units, not the expected counts`);
   }
-  return { rows, anomalies, totals };
+  return { layout: 'local1-v1', rows, anomalies, totals };
+}
+
+// One plan row (both layouts): case-insensitive unique code, unique slug, cost anomalies reported.
+function planRow({ r, sku, raw, name, list, cash, cost, stock, skus, slugs, anomalies }) {
+  const key = sku.toUpperCase();
+  if (skus.has(key)) fail('SKU', `row ${r}: code ${sku} repeats row ${skus.get(key)}`);
+  skus.set(key, r);
+  const slug = slugOf(sku);
+  if (!SLUG.test(slug) || slug.length > 120) fail('SLUG', `row ${r}: code ${sku} yields no valid slug`);
+  if (slugs.has(slug)) fail('SLUG', `row ${r}: code ${sku} collides with row ${slugs.get(slug)} as slug ${slug}`);
+  slugs.set(slug, r);
+
+  if (cost === 0n) anomalies.push({ row: r, sku, kind: 'COST_ZERO', listCents: String(list), costCents: '0' });
+  else if (cost > list) anomalies.push({ row: r, sku, kind: 'COST_ABOVE_LIST', listCents: String(list), costCents: String(cost) });
+
+  return { row: r, sku, barcode: sku, raw, name, slug, listCents: String(list), cashCents: String(cash), costCents: String(cost), stock: String(stock) };
+}
+
+// --- workbook validation: the 2026-10-19 layout -----------------------------------------
+// OWNER's "local1.xlsx": one header row (2) and data from row 3 down to the first empty B, no
+// totals row, no merges, no formulas, values only in B..H. Persisted: tarjeta → list price,
+// p. efectivo → cash price (must be exactly list × 80 / 100, the current contract), precio de
+// costo → cost, Stock → INITIAL_STOCK (≥ 1: the canonical initial-stock service). p. debito and
+// p.transf are NOT persisted (no per-variant column exists: Pricing V2 derives them from the cash
+// base and the company adjustments); each is compared with roundHalfUpBps(cash, bps) and every
+// difference is reported, never fatal.
+const V2_HEADER = [['B2', 'Artículo'], ['C2', 'Stock'], ['D2', 'tarjeta'], ['E2', 'precio de costo'], ['F2', 'p. efectivo'], ['G2', 'p. debito'], ['H2', 'p.transf']];
+const V2_COLUMNS = ['B', 'C', 'D', 'E', 'F', 'G', 'H'];
+// Pricing V2 adjustments over the cash base (OWNER-confirmed 2026-10-19), api/src/modules/pricing/pricing.ts.
+const V2_PRICE_CHECKS = [['DEBIT_CARD', 'G', 'p. debito', 625], ['BANK_TRANSFER', 'H', 'p.transf', 1250]];
+const BASIS_POINTS = 10000n;
+const roundHalfUpBps = (base, bps) => (base * (BASIS_POINTS + BigInt(bps)) + BASIS_POINTS / 2n) / BASIS_POINTS;
+
+function parseLocal1V2({ cells, merges, at, text, has }, expect) {
+  for (const [ref, label] of V2_HEADER) {
+    if ((text(ref) ?? '').normalize('NFC').trim() !== label) fail('HEADER', `header ${ref} must read "${label}"`);
+  }
+  if (merges.length !== 0) fail('LAYOUT', 'the 2026-10-19 layout has no merged cells');
+  let last = 2;
+  while (has(at(`B${last + 1}`))) last += 1;
+  if (last < 3) fail('TOTALS', 'the sheet has no data rows');
+  for (const c of cells.values()) if (has(c) && !(c.row >= 2 && c.row <= last && V2_COLUMNS.includes(c.col))) fail('STRAY_CELL', `unexpected content at ${c.ref}`);
+  for (const c of cells.values()) if (c.formula !== null) fail('FORMULA_UNEXPECTED', `${c.ref} carries a formula; the 2026-10-19 layout holds values only`);
+
+  const rows = [];
+  const anomalies = [];
+  const priceDifferences = [];
+  const checks = Object.fromEntries(V2_PRICE_CHECKS.map(([mode, , column, bps]) => [mode, { column, adjustmentBps: bps, rows: 0, exact: 0, differ: 0, maxAbs: 0n }]));
+  const skus = new Map();
+  const slugs = new Map();
+  let units = 0n;
+  let listValue = 0n;
+  let cashValue = 0n;
+  let costValue = 0n;
+  for (let r = 3; r <= last; r += 1) {
+    const raw = text(`B${r}`);
+    const m = raw === null ? null : /^\s*(\S+)\s+(\S[\s\S]*?)\s*$/.exec(raw);
+    if (!m) fail('ROW_TEXT', `row ${r}: column B must hold "<code> <description>"`);
+    const sku = m[1];
+    const name = m[2].replace(/\s+/g, ' ');
+    if (sku.length > 64 || name.length > 120) fail('LENGTH', `row ${r}: code or description too long`);
+
+    const num = (col) => {
+      const c = at(`${col}${r}`);
+      return c && c.type === 'n' ? c.value : null;
+    };
+    const money = (col, label) => {
+      const cents = exactCents(num(col));
+      if (cents === null) fail('MONEY', `row ${r}: ${label} must be an amount with at most 2 decimals`);
+      return cents;
+    };
+    const d = num('C');
+    if (!/^[1-9][0-9]{0,8}$/.test(d ?? '')) fail('STOCK', `row ${r}: Stock must be a whole number of at least 1 (one INITIAL_STOCK per item)`);
+    const stock = BigInt(d);
+    const list = money('D', 'tarjeta');
+    if (list <= 0n || (list * CASH_NUMERATOR) % CASH_DENOMINATOR !== 0n) {
+      fail('LIST_PRICE', `row ${r}: tarjeta must be a positive amount whose 80% is exact in centavos`);
+    }
+    const cost = money('E', 'precio de costo');
+    if (cost < 0n) fail('COST', `row ${r}: the cost must be a non-negative amount with at most 2 decimals`);
+    const cash = money('F', 'p. efectivo');
+    if (cash !== (list * CASH_NUMERATOR) / CASH_DENOMINATOR) fail('CASH_PRICE', `row ${r}: p. efectivo must equal tarjeta × 80 / 100 exactly`);
+    for (const [mode, col, column, bps] of V2_PRICE_CHECKS) {
+      const sheet = money(col, column);
+      if (sheet <= 0n) fail('MONEY', `row ${r}: ${column} must be positive`);
+      const system = roundHalfUpBps(cash, bps);
+      const diff = sheet - system;
+      const k = checks[mode];
+      k.rows += 1;
+      if (diff === 0n) k.exact += 1;
+      else {
+        k.differ += 1;
+        const abs = diff < 0n ? -diff : diff;
+        if (abs > k.maxAbs) k.maxAbs = abs;
+        priceDifferences.push({ row: r, sku, mode, sheetCents: String(sheet), systemCents: String(system), diffCents: String(diff) });
+      }
+    }
+
+    rows.push(planRow({ r, sku, raw, name, list, cash, cost, stock, skus, slugs, anomalies }));
+    units += stock;
+    listValue += list * stock;
+    cashValue += cash * stock;
+    costValue += cost * stock;
+  }
+
+  const totals = { items: rows.length, units: String(units), listValueCents: String(listValue), cashValueCents: String(cashValue), costValueCents: String(costValue) };
+  if (!expect || totals.items !== Number(expect.items) || totals.units !== String(expect.units)) {
+    fail('COUNTS', `the sheet holds ${totals.items} items / ${totals.units} units, not the expected counts`);
+  }
+  const priceChecks = Object.fromEntries(Object.entries(checks).map(([mode, k]) => [mode,
+    { column: k.column, adjustmentBps: k.adjustmentBps, rows: k.rows, exact: k.exact, differ: k.differ, maxAbsDiffCents: String(k.maxAbs) }]));
+  return { layout: 'local1-v2', rows, anomalies, totals, priceChecks, priceDifferences };
 }
 
 // --- plan -------------------------------------------------------------------------------
 
 export function buildCatalogPlan({ fileSha256, parsed }) {
+  const v2 = parsed.layout === 'local1-v2';
   const doc = {
     format: 'mona-pilot-local1-catalog-plan/v1',
+    ...(v2 ? { layout: 'local1-v2' } : {}),
     file: { sha256: fileSha256, sheet: 'Hoja1' },
     decisions: {
       category: CATEGORY,
       brand: BRAND,
       barcode: 'sku',
-      listPrice: 'yellow column E (unit price)',
-      cashPrice: `list * ${CASH_NUMERATOR} / ${CASH_DENOMINATOR}, exact in centavos`,
-      costPrice: 'red column I (unit price)',
+      ...(v2 ? {
+        listPrice: 'column "tarjeta"',
+        cashPrice: `column "p. efectivo", equal to list * ${CASH_NUMERATOR} / ${CASH_DENOMINATOR} exactly`,
+        costPrice: 'column "precio de costo"',
+        debitTransfer: 'columns "p. debito" / "p.transf" compared with Pricing V2 (cash + company bps, half-up); never persisted',
+      } : {
+        listPrice: 'yellow column E (unit price)',
+        cashPrice: `list * ${CASH_NUMERATOR} / ${CASH_DENOMINATOR}, exact in centavos`,
+        costPrice: 'red column I (unit price)',
+      }),
       stock: 'all units to the target retail location; every other location receives nothing',
       initialStock: 'once per variant; any other prior state is a conflict',
     },
@@ -283,15 +395,18 @@ export function buildCatalogPlan({ fileSha256, parsed }) {
     rows: parsed.rows.map((r) => [r.row, r.sku, r.barcode, r.slug, r.name, r.raw, r.listCents, r.cashCents, r.costCents, r.stock]),
     anomalies: parsed.anomalies.map((a) => [a.row, a.sku, a.kind]),
     totals: parsed.totals,
+    ...(v2 ? { priceChecks: parsed.priceChecks } : {}),
   };
   const canonical = JSON.stringify(doc);
   return {
     fileSha256,
     canonical,
     catalogDigest: sha256(`${CATALOG_DOMAIN}\n${canonical}`),
+    layout: parsed.layout,
     rows: parsed.rows.map((r) => ({ ...r })),
     anomalies: parsed.anomalies.map((a) => ({ ...a })),
     totals: { ...parsed.totals },
+    ...(v2 ? { priceChecks: parsed.priceChecks, priceDifferences: parsed.priceDifferences.map((d) => ({ ...d })) } : {}),
   };
 }
 
@@ -369,7 +484,7 @@ function underAny(file, roots) {
   return roots.some((root) => [path.resolve(root), realLocation(root)].some((r) => targets.some((t) => t === r || t.startsWith(`${r}${path.sep}`))));
 }
 
-function ensurePrivateDir(dir, forbiddenRoots, phase) {
+export function ensurePrivateDir(dir, forbiddenRoots, phase) {
   if (underAny(dir, forbiddenRoots)) throw new Stop(phase, 'private output directory lies inside the repository or temporary storage');
   let st;
   try {
@@ -383,7 +498,7 @@ function ensurePrivateDir(dir, forbiddenRoots, phase) {
 
 const defaultFsOps = Object.freeze({ openSync, writeSync, fsyncSync, closeSync, unlinkSync });
 
-function writeExclusive(file, text, phase, fsOps = defaultFsOps) {
+export function writeExclusive(file, text, phase, fsOps = defaultFsOps) {
   const buffer = Buffer.from(text, 'utf8');
   let fd;
   try {
@@ -429,7 +544,7 @@ function publishReceipt({ reportRoot, forbiddenRoots, now, planDigest, authoriza
   writeExclusive(path.join(dir, 'receipt.json'), `${JSON.stringify({ format: 'mona-pilot-local1-import-receipt/v1', authId: authorization, planDigest, result }, (_, x) => (typeof x === 'bigint' ? String(x) : x), 2)}\n`, 'receipt', fsOps);
 }
 
-function readOwnerFile(file, maxBytes) {
+export function readOwnerFile(file, maxBytes) {
   let fd;
   try {
     fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
@@ -780,7 +895,7 @@ async function otherInventoryFingerprint(tx, excludeVariantIds) {
   return sha256(JSON.stringify(canonical));
 }
 
-function parseMarkerRows(marker) {
+export function parseMarkerRows(marker) {
   let rows = marker?.rows;
   if (typeof rows === 'string') {
     try {
@@ -888,13 +1003,13 @@ export async function importTransaction(tx, ctx) {
 
 // --- runtime defaults -------------------------------------------------------------------
 
-async function tsImport(rel) {
+export async function tsImport(rel) {
   const api = await import(pathToFileURL(path.join(ROOT, 'api/node_modules/tsx/dist/esm/api/index.mjs')).href);
   return api.tsImport(pathToFileURL(path.join(ROOT, rel)).href, import.meta.url);
 }
 
 // Prisma over the held connection fields with verified TLS (same as the other PILOT tools).
-async function createPilotPrisma(conn) {
+export async function createPilotPrisma(conn) {
   const { PrismaClient } = await tsImport('api/src/generated/prisma/client.ts');
   const { createRequire } = await import('node:module');
   const require = createRequire(path.join(ROOT, 'api', 'package.json'));
@@ -969,8 +1084,8 @@ export function toolDigest() {
   return sha256(`${importer}\n${reader}`);
 }
 
-const stamp = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.[0-9]{3}Z$/, 'Z');
-const recordHash = (record) => {
+export const stamp = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.[0-9]{3}Z$/, 'Z');
+export const recordHash = (record) => {
   const { recordSha256, ...rest } = record;
   void recordSha256;
   return sha256(JSON.stringify(rest));
@@ -1014,13 +1129,18 @@ export async function main(argv, deps = {}) {
       ensurePrivateDir(d.reportRoot, d.forbiddenRoots, 'report');
       const dir = path.join(d.reportRoot, `${stamp(now)}-${plan.catalogDigest.slice(0, 12)}-${randomBytes(4).toString('hex')}`);
       ensurePrivateDir(dir, d.forbiddenRoots, 'report');
-      const report = { format: 'mona-pilot-local1-import-report/v1', createdAt: now.toISOString(), fileSha256, catalogDigest: plan.catalogDigest, executionDigest: execDigest, totals: plan.totals, anomalies: plan.anomalies, rows: plan.rows };
+      const v2 = plan.layout === 'local1-v2';
+      const report = { format: 'mona-pilot-local1-import-report/v1', createdAt: now.toISOString(), fileSha256, catalogDigest: plan.catalogDigest, executionDigest: execDigest, totals: plan.totals, anomalies: plan.anomalies, rows: plan.rows,
+        ...(v2 ? { layout: plan.layout, priceChecks: plan.priceChecks, priceDifferences: plan.priceDifferences } : {}) };
       writeExclusive(path.join(dir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`, 'report', d.fsOps);
       const t = plan.totals;
       for (const line of [
         `${PREFIX} DRY RUN — offline: no URL file, network, Prisma or database client was used; nothing was written to any database`,
         `  file sha256: ${fileSha256}`,
+        `  layout: ${plan.layout}`,
         `  items: ${t.items}; units: ${t.units} (all to the target retail location; every other location: 0)`,
+        // Counts only on stdout; the per-row differences are in the private report.
+        ...(v2 ? Object.entries(plan.priceChecks).map(([mode, k]) => `  price check ${mode} (${k.column}, ${k.adjustmentBps} bps): exact ${k.exact}, differ ${k.differ}, max |diff| ${k.maxAbsDiffCents} centavos (reported, not persisted)`) : []),
         `  list value: ${t.listValueCents} centavos; cash value (list × 80%): ${t.cashValueCents} centavos; cost value: in the private report only`,
         `  decisions: category "${CATEGORY}", brand "${BRAND}", barcode = SKU, INITIAL_STOCK once, no updates of existing rows`,
         `  anomalies: ${plan.anomalies.length} (${plan.anomalies.map((a) => `${a.kind} ${a.sku} row ${a.row}`).join('; ')})`,

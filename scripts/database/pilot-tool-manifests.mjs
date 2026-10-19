@@ -1,14 +1,14 @@
-// Reviewed generator of the three PILOT tool code manifests (pilot-a4-readonly, pilot-backup,
-// pilot-clone-restore). Replaces any scratch helper: nothing is retyped by hand.
+// Reviewed generator of the four PILOT tool code manifests (pilot-a4-readonly, pilot-backup,
+// pilot-clone-restore, pilot-local1-preflight). Replaces any scratch helper: nothing is retyped by hand.
 //
 //   node scripts/database/pilot-tool-manifests.mjs --check   # read-only: CURRENT / STALE per tool
-//   node scripts/database/pilot-tool-manifests.mjs --write   # rewrite the three manifests from disk
+//   node scripts/database/pilot-tool-manifests.mjs --write   # rewrite the four manifests from disk
 //
 // Each manifest pins, by SHA-256 of the bytes on disk: the tool's own REQUIRED_REPO_FILES (taken
 // from the tool module, so the set can never drift from what the tool verifies), every file of the
 // pinned pg dependency closure (versions/integrities from package-lock.json), and — for the backup
 // and clone tools — their PostgreSQL 17 binaries. The Node version must be the pinned one. No
-// database, no network, no credential; only the three manifest files are ever written, atomically,
+// database, no network, no credential; only the four manifest files are ever written, atomically,
 // never through a symlink. Regenerate after any change to a pinned file (e.g. a new reference
 // generation), then review the diff like code.
 import { createHash } from 'node:crypto';
@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import * as A4 from './pilot-a4-readonly.mjs';
 import * as BK from './pilot-backup.mjs';
 import * as CR from './pilot-clone-restore.mjs';
+import * as L1 from './pilot-local1-preflight.mjs';
 import { EXPECTED_NODE } from './pilot-launch-command.mjs';
 
 const PREFIX = '[db:pilot-tool-manifests]';
@@ -30,6 +31,8 @@ export const TOOLS = Object.freeze({
   'pilot-backup': Object.freeze({ format: 'mona-pilot-tool-manifest/v1', repoFiles: () => BK.REQUIRED_REPO_FILES, binaries: Object.freeze([`${BIN}/pg_dump`, `${BIN}/pg_restore`]) }),
   'pilot-clone-restore': Object.freeze({ format: 'mona-pilot-tool-manifest/v1', repoFiles: () => CR.REQUIRED_REPO_FILES,
     binaries: Object.freeze(['initdb', 'pg_ctl', 'pg_restore', 'pg_dump', 'postgres'].map((b) => `${BIN}/${b}`)) }),
+  // Read-only Local 1 preflight: no binary, verified by verifyCodeManifest with an empty binary list.
+  'pilot-local1-preflight': Object.freeze({ format: 'mona-pilot-tool-manifest/v1', repoFiles: () => L1.REQUIRED_REPO_FILES, binaries: Object.freeze([]) }),
 });
 
 const sha = (fs, f) => createHash('sha256').update(fs.readFileSync(f)).digest('hex');

@@ -1720,3 +1720,162 @@ test('K01 classifyImportState is pure and reports every conflict', () => {
   assert.equal(state.state, 'CONFLICT');
   assert.ok(state.conflicts.length >= 2);
 });
+
+// --- V2: the OWNER's 2026-10-19 Local 1 layout ("local1.xlsx": Artículo | Stock | tarjeta | precio de costo |
+// p. efectivo | p. debito | p.transf), header in row 2, data from row 3, no totals row ---------------
+
+// [B text, stock, tarjeta (list), precio de costo, p. efectivo (cash), p. debito, p.transf]
+const SYN2 = [
+  ['SYN-101 Torno  de banco', 5, '9375', '4583.33', '7500', '7969', '8438'],
+  ['SYN-102 Vela', 1, '2500', '0', '2000', '2125', '2250'],
+  ['ÑAN-103 Muñeco de tela', 2, '5000', '6000', '4000', '4250', '4500'],
+  ['SYN-104 Libreta', 2, '1250', '333.33', '1000', '1063', '1125'],
+];
+const V2_HEADER = ['Artículo', 'Stock', 'tarjeta', 'precio de costo', 'p. efectivo', 'p. debito', 'p.transf'];
+const V2_COLS = ['B', 'C', 'D', 'E', 'F', 'G', 'H'];
+
+function sheetXmlV2(rows = SYN2, mutate = {}) {
+  const cells = new Map();
+  V2_HEADER.forEach((label, i) => cells.set(`${V2_COLS[i]}2`, { s: 0, str: label }));
+  rows.forEach((row, i) => {
+    const r = 3 + i;
+    row.forEach((value, j) => cells.set(`${V2_COLS[j]}${r}`, j === 0 ? { s: 3, str: value } : { s: 4, v: String(value) }));
+  });
+  for (const [ref, spec] of Object.entries(mutate.cells ?? {})) {
+    if (spec === null) cells.delete(ref);
+    else cells.set(ref, { ...(cells.get(ref) ?? { s: 0 }), ...spec });
+  }
+  const colNum = (ref) => [...ref.replace(/[0-9]+$/, '')].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+  const byRow = new Map();
+  for (const [ref, spec] of cells) {
+    const row = Number(ref.replace(/^[A-Z]+/, ''));
+    if (!byRow.has(row)) byRow.set(row, []);
+    byRow.get(row).push([ref, spec]);
+  }
+  const rowsXml = [...byRow.keys()].sort((a, b) => a - b).map((row) => `<row r="${row}">${byRow.get(row).sort((a, b) => colNum(a[0]) - colNum(b[0])).map(([ref, spec]) => {
+    if (spec.str !== undefined) return `<c r="${ref}" s="${spec.s}" t="inlineStr"><is><t xml:space="preserve">${esc(spec.str)}</t></is></c>`;
+    const f = spec.f !== undefined ? `<f>${esc(spec.f)}</f>` : '';
+    const v = spec.v !== undefined && spec.v !== null ? `<v>${spec.v}</v>` : '';
+    return f || v ? `<c r="${ref}" s="${spec.s}">${f}${v}</c>` : `<c r="${ref}" s="${spec.s}"/>`;
+  }).join('')}</row>`);
+  const merges = mutate.merges ?? [];
+  const mergeXml = merges.length ? `<mergeCells count="${merges.length}">${merges.map((m) => `<mergeCell ref="${m}"/>`).join('')}</mergeCells>` : '';
+  return `<?xml version="1.0"?><worksheet ${NS}><sheetData>${rowsXml.join('')}</sheetData>${mergeXml}</worksheet>`;
+}
+function workbookV2(rows = SYN2, mutate = {}) {
+  return zip([
+    { name: '[Content_Types].xml', data: '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>' },
+    { name: 'xl/workbook.xml', data: `<?xml version="1.0"?><workbook ${NS}><sheets><sheet name="Hoja1" sheetId="1" r:id="rId1"/></sheets></workbook>` },
+    { name: 'xl/_rels/workbook.xml.rels', data: '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>' },
+    { name: 'xl/styles.xml', data: STYLES },
+    { name: 'xl/worksheets/sheet1.xml', data: sheetXmlV2(rows, mutate) },
+  ]);
+}
+const EXPECT2 = { items: 4, units: 10 };
+const parse2 = (buf, expect = EXPECT2) => parseLocal1Workbook(buf, expect);
+
+test('V01 the 2026-10-19 layout maps every persisted column exactly (BigInt centavos) and computes the totals', () => {
+  const p = parse2(workbookV2());
+  assert.equal(p.layout, 'local1-v2');
+  assert.deepEqual(p.rows[0], {
+    row: 3, sku: 'SYN-101', barcode: 'SYN-101', raw: 'SYN-101 Torno  de banco', name: 'Torno de banco', slug: 'syn-101',
+    listCents: '937500', cashCents: '750000', costCents: '458333', stock: '5',
+  });
+  assert.equal(p.rows[2].slug, 'nan-103');
+  assert.deepEqual(p.totals, { items: 4, units: '10', listValueCents: '6187500', cashValueCents: '4950000', costValueCents: '3558331' });
+  assert.deepEqual(p.anomalies.map((a) => [a.row, a.kind]), [[4, 'COST_ZERO'], [5, 'COST_ABOVE_LIST']]);
+});
+
+test('V02 the v2 header must read exactly Artículo | Stock | tarjeta | precio de costo | p. efectivo | p. debito | p.transf', () => {
+  for (const [ref, str] of [['C2', 'stock'], ['G2', 'p. débito'], ['H2', 'p. transf'], ['F2', 'efectivo']]) {
+    assert.equal(errCode(() => parse2(workbookV2(SYN2, { cells: { [ref]: { str } } }))), 'HEADER', ref);
+  }
+  assert.equal(errCode(() => parse2(workbookV2(SYN2, { cells: { H2: null } }))), 'HEADER');
+});
+
+test('V03 cash must equal list × 80 / 100 exactly; the list must be positive', () => {
+  assert.equal(errCode(() => parse2(workbookV2([['SYN-101 Torno', 5, '9375', '4583.33', '7501', '7969', '8438'], ...SYN2.slice(1)]))), 'CASH_PRICE');
+  assert.equal(errCode(() => parse2(workbookV2([['SYN-101 Torno', 5, '9375.01', '4583.33', '7500.01', '7969', '8438'], ...SYN2.slice(1)]))), 'LIST_PRICE');
+  assert.equal(errCode(() => parse2(workbookV2([['SYN-101 Torno', 5, '0', '0', '0', '0', '0'], ...SYN2.slice(1)]))), 'LIST_PRICE');
+});
+
+test('V04 every money column must be an exact amount with at most 2 decimals (never float), cost non-negative', () => {
+  const row = (i, v) => { const r = [...SYN2[0]]; r[i] = v; return [r, ...SYN2.slice(1)]; };
+  for (const [i, v] of [[3, '4583.333'], [3, '-1'], [5, '7969.001'], [6, 'abc'], [4, '1e3'], [2, '9375.5.0']]) {
+    const code = errCode(() => parse2(workbookV2(row(i, v))));
+    assert.ok(['MONEY', 'COST', 'LIST_PRICE', 'CASH_PRICE'].includes(code), `${i}=${v} → ${code}`);
+  }
+  // a string cell where money is required
+  assert.equal(errCode(() => parse2(workbookV2(SYN2, { cells: { G3: { str: '7969', v: undefined } } }))), 'MONEY');
+});
+
+test('V05 stock must be an integer ≥ 1 (the canonical INITIAL_STOCK contract): zero, decimal, negative or text is refused', () => {
+  for (const v of ['0', '1.5', '-2', 'x']) {
+    const rows = [['SYN-101 Torno', v, '9375', '4583.33', '7500', '7969', '8438'], ...SYN2.slice(1)];
+    assert.equal(errCode(() => parse2(workbookV2(rows))), 'STOCK', v);
+  }
+});
+
+test('V06 duplicate SKU (case-insensitive), slug collision and a missing description are refused', () => {
+  assert.equal(errCode(() => parse2(workbookV2([...SYN2.slice(0, 3), ['syn-101 Otro', 2, '1250', '333.33', '1000', '1063', '1125']]))), 'SKU');
+  assert.equal(errCode(() => parse2(workbookV2([...SYN2.slice(0, 3), ['SYN_101 Otro', 2, '1250', '333.33', '1000', '1063', '1125']]))), 'SLUG');
+  assert.equal(errCode(() => parse2(workbookV2([...SYN2.slice(0, 3), ['SYN-104', 2, '1250', '333.33', '1000', '1063', '1125']]))), 'ROW_TEXT');
+});
+
+test('V07 stray cells, cells below the data, merges and formulas are refused', () => {
+  assert.equal(errCode(() => parse2(workbookV2(SYN2, { cells: { I3: { v: '1' } } }))), 'STRAY_CELL');
+  assert.equal(errCode(() => parse2(workbookV2(SYN2, { cells: { D9: { v: '1' } } }))), 'STRAY_CELL');
+  assert.equal(errCode(() => parse2(workbookV2(SYN2, { cells: { A3: { str: 'x' } } }))), 'STRAY_CELL');
+  assert.equal(errCode(() => parse2(workbookV2(SYN2, { merges: ['B2:C2'] }))), 'LAYOUT');
+  assert.equal(errCode(() => parse2(workbookV2(SYN2, { cells: { F3: { f: 'D3*0.8', v: '7500' } } }))), 'FORMULA_UNEXPECTED');
+  assert.equal(errCode(() => parse2(workbookV2([]))), 'TOTALS');
+});
+
+test('V08 debit/transfer are validated against Pricing V2 (cash + 625 / 1250 bps, half-up), reported, never fatal and never persisted', () => {
+  const p = parse2(workbookV2());
+  assert.deepEqual(p.priceChecks, {
+    DEBIT_CARD: { column: 'p. debito', adjustmentBps: 625, rows: 4, exact: 2, differ: 2, maxAbsDiffCents: '50' },
+    BANK_TRANSFER: { column: 'p.transf', adjustmentBps: 1250, rows: 4, exact: 3, differ: 1, maxAbsDiffCents: '50' },
+  });
+  assert.deepEqual(p.priceDifferences, [
+    { row: 3, sku: 'SYN-101', mode: 'DEBIT_CARD', sheetCents: '796900', systemCents: '796875', diffCents: '25' },
+    { row: 3, sku: 'SYN-101', mode: 'BANK_TRANSFER', sheetCents: '843800', systemCents: '843750', diffCents: '50' },
+    { row: 6, sku: 'SYN-104', mode: 'DEBIT_CARD', sheetCents: '106300', systemCents: '106250', diffCents: '50' },
+  ]);
+  for (const r of p.rows) assert.deepEqual(Object.keys(r).sort(), ['barcode', 'cashCents', 'costCents', 'listCents', 'name', 'raw', 'row', 'sku', 'slug', 'stock']);
+  const plan = buildCatalogPlan({ fileSha256: sha(workbookV2()), parsed: p });
+  assert.ok(!plan.canonical.includes('796900') && !plan.canonical.includes('843800'), 'debit/transfer sheet prices are not part of the persisted plan rows');
+  assert.ok(plan.canonical.includes('"layout":"local1-v2"'));
+  assert.ok(plan.canonical.includes('"priceChecks"'));
+});
+
+test('V09 the tarjeta column must reproduce the list as cash + 2500 bps exactly under the current contract (list × 80 / 100 = cash)', () => {
+  const p = parse2(workbookV2());
+  for (const r of p.rows) assert.equal((BigInt(r.cashCents) * 12500n + 5000n) / 10000n, BigInt(r.listCents));
+});
+
+test('V10 the 2026-10-13 layout is unchanged: no layout key, no price checks, same plan document shape', () => {
+  const p = parse(workbook());
+  assert.equal(p.layout, 'local1-v1');
+  assert.equal(p.priceChecks, undefined);
+  const plan = buildCatalogPlan({ fileSha256: sha(workbook()), parsed: p });
+  assert.ok(!plan.canonical.includes('"layout"') && !plan.canonical.includes('priceChecks'));
+});
+
+test('V11 a v2 dry-run prints counts only (no cost, no per-row price) and writes the differences to the private report', async () => {
+  const buf = workbookV2();
+  const h = harness({ buf });
+  const code = await main(['--dry-run', '--file=/x/local1.xlsx', `--expect-file-sha256=${sha(buf)}`, '--expect-items=4', '--expect-units=10'], h.deps);
+  assert.equal(code, 0, h.err.join('\n'));
+  const raw = h.out.join('\n');
+  assert.match(raw, /layout: local1-v2/);
+  assert.match(raw, /items: 4; units: 10/);
+  assert.match(raw, /DEBIT_CARD \(p\. debito, 625 bps\): exact 2, differ 2, max \|diff\| 50 centavos/);
+  assert.match(raw, /BANK_TRANSFER \(p\.transf, 1250 bps\): exact 3, differ 1, max \|diff\| 50 centavos/);
+  const stdout = raw.split(h.deps.reportRoot).join('<report>').replace(/[0-9a-f]{12,64}/g, '<hex>');
+  for (const secret of ['4583.33', '458333', '6000', '796900', '843800']) assert.ok(!stdout.includes(secret), `stdout leaks ${secret}`);
+  const report = JSON.parse(readFileSync(reportFile(h), 'utf8'));
+  assert.equal(report.layout, 'local1-v2');
+  assert.equal(report.priceDifferences.length, 3);
+  assert.deepEqual(report.priceChecks.DEBIT_CARD.differ, 2);
+});

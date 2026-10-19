@@ -1,4 +1,4 @@
-// DB-free tests for pilot-tool-manifests.mjs: the reviewed generator of the three PILOT tool code
+// DB-free tests for pilot-tool-manifests.mjs: the reviewed generator of the four PILOT tool code
 // manifests. Hashes are never typed: every entry is computed from the bytes on disk.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,6 +10,7 @@ import * as M from './pilot-tool-manifests.mjs';
 import * as A4 from './pilot-a4-readonly.mjs';
 import * as BK from './pilot-backup.mjs';
 import * as CR from './pilot-clone-restore.mjs';
+import * as L1 from './pilot-local1-preflight.mjs';
 import { verifyCodeManifest } from './pilot-launch-command.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -19,11 +20,12 @@ const mkTmp = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ptm-')); 
 process.on('exit', () => { for (const d of tmp) fs.rmSync(d, { recursive: true, force: true }); });
 const resolvePg = () => path.join(ROOT, 'node_modules', 'pg', 'esm', 'index.mjs');
 
-test('PTM-01 exactly the three PILOT tools, each repo file set taken from the tool itself', () => {
-  assert.deepEqual(Object.keys(M.TOOLS).sort(), ['pilot-a4-readonly', 'pilot-backup', 'pilot-clone-restore']);
+test('PTM-01 exactly the four PILOT tools, each repo file set taken from the tool itself', () => {
+  assert.deepEqual(Object.keys(M.TOOLS).sort(), ['pilot-a4-readonly', 'pilot-backup', 'pilot-clone-restore', 'pilot-local1-preflight']);
   assert.deepEqual(M.TOOLS['pilot-a4-readonly'].repoFiles(), A4.REQUIRED_REPO_FILES);
   assert.deepEqual(M.TOOLS['pilot-backup'].repoFiles(), BK.REQUIRED_REPO_FILES);
   assert.deepEqual(M.TOOLS['pilot-clone-restore'].repoFiles(), CR.REQUIRED_REPO_FILES);
+  assert.deepEqual(M.TOOLS['pilot-local1-preflight'].repoFiles(), L1.REQUIRED_REPO_FILES);
 });
 test('PTM-02 the binary lists equal the ones each tool verifies (read from the tool source, not retyped)', () => {
   const src = (f) => fs.readFileSync(path.join(HERE, f), 'utf8');
@@ -54,7 +56,7 @@ test('PTM-04 --check reports drift per tool and never writes; --write then --che
   const lines = [];
   const rcWrite = M.main(['--write'], { root: ROOT, manifestDir: dir, log: (l) => lines.push(l), error: (l) => lines.push(l) });
   assert.equal(rcWrite, 0, lines.join('\n'));
-  assert.deepEqual(fs.readdirSync(dir).sort(), ['pilot-a4-readonly.manifest.json', 'pilot-backup.manifest.json', 'pilot-clone-restore.manifest.json']);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['pilot-a4-readonly.manifest.json', 'pilot-backup.manifest.json', 'pilot-clone-restore.manifest.json', 'pilot-local1-preflight.manifest.json']);
   for (const f of fs.readdirSync(dir)) assert.equal(fs.statSync(path.join(dir, f)).mode & 0o777, 0o644);
   assert.equal(M.main(['--check'], { root: ROOT, manifestDir: dir, log: () => {}, error: () => {} }), 0);
   const f = path.join(dir, 'pilot-backup.manifest.json');

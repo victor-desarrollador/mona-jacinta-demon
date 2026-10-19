@@ -45,7 +45,9 @@ function transient(error: unknown) {
     || candidate.meta?.code === '40P01' || message.includes('40001') || message.includes('40P01');
 }
 
-async function releaseReservations(
+// Also the release the OWNER-only PILOT synthetic retirement reuses (scripts/database/
+// pilot-local1-synthetic-retire.mjs): same locks, same checks, same writes.
+export async function releaseReservations(
   tx: Prisma.TransactionClient,
   sale: LockedSale,
   reservations: LockedReservation[],
