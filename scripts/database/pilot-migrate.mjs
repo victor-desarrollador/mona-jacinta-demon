@@ -337,7 +337,7 @@ if (
   throw new Error('DATABASE_URL must be PostgreSQL without TLS query overrides');
 }
 const caPath = fileURLToPath(
-  new URL('../${STAGE_CA}', import.meta.url),
+  new URL('./${STAGE_CA}', import.meta.url),
 );
 migrationUrl.searchParams.set('sslmode', 'require');
 migrationUrl.searchParams.set('sslaccept', 'strict');

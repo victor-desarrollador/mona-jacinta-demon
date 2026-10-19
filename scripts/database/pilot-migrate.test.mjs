@@ -9,10 +9,10 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   API_DIR, APPROVED_MIGRATION_PAYLOAD, PRISMA_ARGS, MIGRATE_TOOLING_FILES, buildChildEnv, createRedactor, main, parseCliArgs, readPinned, resolvePrismaCli,
   stageMigrationRun, verifyMigrationPayload,
@@ -525,7 +525,7 @@ const HOSTILE_ENV = {
   SHADOW_DATABASE_URL: HOSTILE_URL, PGHOST: 'hostile.invalid', PGPORT: '1', PGUSER: 'hostile', PGPASSWORD: 'hostile',
   PGDATABASE: 'hostile', PGSERVICE: 'hostile', PGSERVICEFILE: '/hostile', PGSSLMODE: 'disable', PGSSLROOTCERT: '/hostile',
   PGAPPNAME: 'hostile', PGPASSFILE: '/hostile', NODE_OPTIONS: '--require /hostile.js', NODE_TLS_REJECT_UNAUTHORIZED: '0',
-  NODE_EXTRA_CA_CERTS: '/hostile.pem', NODE_PATH: '/hostile', DEBUG: '*', DOTENV_KEY: 'hostile', DOTENV_CONFIG_PATH: '/hostile',
+  NODE_EXTRA_CA_CERTS: '/hostile.pem', SSL_CERT_FILE: '/hostile-ca.pem', NODE_PATH: '/hostile', DEBUG: '*', DOTENV_KEY: 'hostile', DOTENV_CONFIG_PATH: '/hostile',
   DOTENV_CONFIG_OVERRIDE: 'true', PRISMA_SCHEMA_ENGINE_BINARY: '/hostile', PRISMA_ENGINES_MIRROR: 'http://hostile.invalid',
   PRISMA_CLI_BINARY_TARGETS: 'hostile', HTTPS_PROXY: 'http://hostile.invalid', HTTP_PROXY: 'http://hostile.invalid',
   PATH: '/hostile/bin:/usr/bin', HOME: '/hostile-home', NODE_ENV: 'development', LD_PRELOAD: '/hostile.so',
@@ -580,6 +580,66 @@ test('M39/M40/M42: exactly one argv-array child: node <verified prisma script> m
   assert.ok(options.shell === undefined || options.shell === false);
   assert.ok(!args.some((a) => /seed|reset|push|\bdev\b|--force|--accept-data-loss/.test(a)));
   assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
+});
+
+test('P1011/TLS: the remote Prisma child uses the exact pinned CA inside its verified stage, never parent TLS state or a rewritten held URL', async () => {
+  let observed;
+  const spawner = fakeSpawn({
+    onSpawn: ({ options }) => {
+      const configPath = path.join(options.cwd, 'prisma.config.ts');
+      const config = readFileSync(configPath, 'utf8');
+      const caSpecifier = /new URL\('([^']*supabase-prod-ca-2021\.crt)', import\.meta\.url\)/.exec(config)?.[1];
+      assert.equal(caSpecifier, './scripts/certs/supabase-prod-ca-2021.crt');
+      const resolvedCa = fileURLToPath(new URL(caSpecifier, pathToFileURL(configPath)));
+      const stagedCa = path.join(options.cwd, 'scripts', 'certs', 'supabase-prod-ca-2021.crt');
+      assert.equal(resolvedCa, stagedCa);
+      assert.equal(lstatSync(stagedCa).isSymbolicLink(), false);
+      assert.equal(lstatSync(stagedCa).isFile(), true);
+      assert.equal(
+        createHash('sha256').update(readFileSync(stagedCa)).digest('hex'),
+        createHash('sha256').update(readFileSync(path.join(TMP, 'scripts', 'certs', 'supabase-prod-ca-2021.crt'))).digest('hex'),
+      );
+      assert.match(config, /searchParams\.set\('sslmode', 'require'\)/);
+      assert.match(config, /searchParams\.set\('sslaccept', 'strict'\)/);
+      assert.match(config, /searchParams\.set\('sslcert', caPath\)/);
+      observed = true;
+    },
+  });
+  const r = await run(EXECUTE, { env: HOSTILE_ENV, spawner });
+  assert.equal(r.code, 0, r.text);
+  assert.equal(observed, true);
+  const childEnv = r.spawned[0].options.env;
+  assert.equal(childEnv.DATABASE_URL, URL_TEXT);
+  assert.equal(new URL(childEnv.DATABASE_URL).search, '');
+  for (const forbidden of ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'NODE_TLS_REJECT_UNAUTHORIZED']) {
+    assert.equal(forbidden in childEnv, false, forbidden);
+  }
+  assert.deepEqual(Object.keys(childEnv).sort(), ['CHECKPOINT_DISABLE', 'DATABASE_URL', 'HOME', 'NODE_ENV', 'PATH', 'PRISMA_HIDE_UPDATE_MESSAGE', 'TMPDIR']);
+  assertNoLeak(r.text);
+});
+
+test('P1011/TLS: a missing, altered or symlinked reviewed CA fails closed before Prisma spawn', async () => {
+  const ca = path.join(TMP, 'scripts', 'certs', 'supabase-prod-ca-2021.crt');
+  const saved = readFileSync(ca);
+  const moved = path.join(TMP, 'reviewed-ca.saved');
+  const foreign = path.join(TMP, 'foreign-ca.pem');
+  writeFileSync(foreign, 'FOREIGN-CA\n');
+  const cases = [
+    ['missing', () => renameSync(ca, moved), () => renameSync(moved, ca)],
+    ['altered', () => writeFileSync(ca, 'ALTERED-CA\n'), () => writeFileSync(ca, saved)],
+    ['symlinked/foreign', () => { rmSync(ca); symlinkSync(foreign, ca); }, () => { rmSync(ca); writeFileSync(ca, saved); }],
+  ];
+  for (const [label, arrange, restore] of cases) {
+    arrange();
+    try {
+      const r = await run(EXECUTE);
+      assert.equal(r.code, 1, label);
+      assert.equal(r.spawned.length, 0, label);
+      assertNoLeak(r.text);
+    } finally {
+      restore();
+    }
+  }
 });
 
 // --- child outcome -------------------------------------------------------------------------
