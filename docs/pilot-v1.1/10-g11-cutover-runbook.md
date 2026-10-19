@@ -34,9 +34,11 @@ the reviewed commit. The `/auth/me` branch-aware UX is **not** part of this cut-
    open the API service variables (never copy them into the repository, a chat, a ticket or a
    log). Confirm by eye, without writing the value anywhere: the host and user carry the
    **PILOT** project (the same project as the private `pilot-database-url`), port 5432 (session
-   pooler or direct), database `postgres`, `sslmode` present. Confirm no TEST/DEV/DEMO URL is
-   configured in any other variable of the service. Record only `RAILWAY_DATABASE_URL_VERIFIED
-   <date> <OWNER initials>`. If anything differs → STOP (no window).
+   pooler or direct), and database `postgres`. The Railway `DATABASE_URL` MUST NOT contain
+   `sslmode` or other TLS query overrides: remote TLS is enforced by the application runtime
+   with the pinned CA and `rejectUnauthorized: true`. Confirm no TEST/DEV/DEMO URL is configured
+   in any other variable of the service. Record only `RAILWAY_DATABASE_URL_VERIFIED <date>
+   <OWNER initials>`. If anything differs → STOP (no window).
 3. **A4 baseline (read-only).** Run `pilot-a4-readonly.mjs --target=pilot --read-only-state`.
    Required: identity proven and `A4_STATE=EXACT_S4` or `A4_STATE=EXACT_G7`, with the
    `cutover: ledger=… reference=MATCH probes_failed=0 rbac=CATALOG_35|CATALOG_36` line.

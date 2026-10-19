@@ -24,6 +24,7 @@ const cutover = read('../../docs/pilot-v1.1/10-g11-cutover-runbook.md');
 const rollback = read('../../docs/pilot-v1.1/11-g11-rollback-runbook.md');
 const serverSource = read('../../api/src/server.ts');
 const envSource = read('../../api/src/config/env.ts');
+const prismaSource = read('../../api/src/config/prisma.ts');
 const sweeperSource = read('../../api/src/modules/sales/reservation-sweeper.ts');
 
 test('RB-1 the real startup writer is a sweeper gated by RESERVATION_SWEEPER_ENABLED, default false (runbook ↔ code contract)', () => {
@@ -79,4 +80,18 @@ test('RB-7 smoke step 20 no longer claims the boundary', () => {
   assert.ok(!/The first business write of this step is the G11 write boundary/.test(step20));
   assert.match(step20, /rollback[- ]runbook/i);
   assert.match(step20, /lossless-restore guarantee ends at\s*\n?\s*step 18/);
+});
+
+test('RB-8 Railway DATABASE_URL has no TLS query overrides; runtime owns verified remote TLS', () => {
+  const railwayStep = cutover.slice(
+    cutover.indexOf('2. **Railway `DATABASE_URL` verification point'),
+    cutover.indexOf('3. **A4 baseline'),
+  );
+  assert.match(envSource, /'sslmode'/, 'the runtime environment rejects sslmode overrides');
+  assert.match(prismaSource, /rejectUnauthorized:\s*true/);
+  assert.match(prismaSource, /ca\s*}/, 'the remote runtime TLS configuration must carry the pinned CA');
+  assert.match(railwayStep, /MUST NOT contain\s+`sslmode` or other TLS query overrides/);
+  assert.match(railwayStep, /pinned CA/);
+  assert.match(railwayStep, /`rejectUnauthorized: true`/);
+  assert.doesNotMatch(railwayStep, /`sslmode` present/);
 });
