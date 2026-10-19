@@ -237,3 +237,131 @@ test('F-08 sheets do not mutate their inputs', () => {
   buildSheetPlans(copies, defaultLayout, 2);
   assert.equal(JSON.stringify([copies, defaultLayout]), before);
 });
+
+// ======================= V3 regression tests (M-01 plan guard, M-02, CL-05) =======================
+import { buildLabels } from '../../src/lib/labels/labelData.ts';
+
+const O3 = { showPrice: false, formatMoney: (c) => `$${c}`, formatVariant: (a, b) => [a, b].filter(Boolean).join(' / ') || 'Única' };
+const goodVariant = (id = 'v1', over = {}) => ({ id, productId: 'p1', sku: `SKU-${id}`, barcode: `BC-${id}`, color: null, size: null, price: '100', cashPrice: '90', isActive: true, ...over });
+const goodProduct = (over = {}, variants = [goodVariant()]) => ({ id: 'p1', name: 'Producto', slug: 'producto', description: null, category: { id: 'c', name: 'c' }, brand: { id: 'b', name: 'b' }, variants, ...over });
+const pageOf = (items, total = items.length) => ({ items, pagination: { page: 1, limit: 100, total } });
+
+// ---- M-01: planning refuses to build placements for an over-limit set of copies
+test('M-01 buildSheetPlans refuses 1001 copies before building any placement', () => {
+  const copies = Array.from({ length: 1001 }, (_, i) => ({ variantId: `c${i}` }));
+  assert.deepEqual(buildSheetPlans(copies, computeLayout(), 0), { ok: false, code: 'TOTAL_EXCEEDS_LIMIT' });
+});
+
+test('M-01 buildSheetPlans still plans exactly 1000 copies over 72 sheets', () => {
+  const copies = Array.from({ length: 1000 }, (_, i) => ({ variantId: `c${i}` }));
+  const plan = buildSheetPlans(copies, computeLayout(), 0);
+  assert.equal(plan.ok, true);
+  assert.equal(plan.sheets.length, 72);
+});
+
+// ---- M-02: a structurally invalid page is a controlled failure, never a render crash
+const MALFORMED = {
+  'product with only an id': [{ id: 'x' }],
+  'variants is null': [goodProduct({ variants: null })],
+  'variants contains null': [goodProduct({}, [null])],
+  'variants contains an empty object': [goodProduct({}, [{}])],
+  'sku is a number': [goodProduct({}, [goodVariant('v1', { sku: 7 })])],
+  'isActive is a string': [goodProduct({}, [goodVariant('v1', { isActive: 'yes' })])],
+  'barcode is an object': [goodProduct({}, [goodVariant('v1', { barcode: {} })])],
+  'product name is a number': [goodProduct({ name: 5 })],
+  'cashPrice is a number': [goodProduct({}, [goodVariant('v1', { cashPrice: 100 })])],
+  'color is a number': [goodProduct({}, [goodVariant('v1', { color: 5 })])],
+  'size is a boolean': [goodProduct({}, [goodVariant('v1', { size: true })])],
+  'variant id is empty': [goodProduct({}, [goodVariant('')])],
+};
+
+for (const [name, items] of Object.entries(MALFORMED)) {
+  test(`M-02 malformed catalogue (${name}) never reaches the render path`, async () => {
+    const outcome = await loadAllProducts(async () => pageOf(items));
+    if (outcome.ok) {
+      // V2 behaviour: the page is accepted and the consumers dereference it.
+      assert.doesNotThrow(() => {
+        buildLabels(outcome.products, [{ variantId: 'v1', quantity: 1 }], O3);
+        outcome.products.reduce((sum, product) => sum + product.variants.length, 0);
+      });
+    }
+    assert.equal(outcome.ok, false, 'a structurally invalid catalogue must be rejected');
+    assert.equal(outcome.code, 'FAILED');
+    assert.ok(!('products' in outcome));
+  });
+}
+
+test('M-02 a variant missing a consumed key (isActive, barcode, color) is rejected', async () => {
+  for (const key of ['isActive', 'barcode', 'color', 'size', 'cashPrice', 'sku', 'id']) {
+    const variant = goodVariant();
+    delete variant[key];
+    const outcome = await loadAllProducts(async () => pageOf([goodProduct({}, [variant])]));
+    assert.equal(outcome.ok, false, `missing ${key}`);
+    assert.equal(outcome.code, 'FAILED', `missing ${key}`);
+  }
+});
+
+test('M-02 documented nulls and empty variant lists are accepted (barcode, cashPrice, color and size may be null)', async () => {
+  const variant = goodVariant('v1', { barcode: null, cashPrice: null, color: null, size: null });
+  assert.equal((await loadAllProducts(async () => pageOf([goodProduct({}, [variant])]))).ok, true);
+  assert.equal((await loadAllProducts(async () => pageOf([goodProduct({}, [])]))).ok, true);
+});
+
+test('M-02 no invented requirements: unknown extra fields and fields the module never reads are not validated', async () => {
+  const variant = goodVariant('v1', { price: 100, productId: 5, unexpected: { deep: true } });
+  const product = goodProduct({ slug: 42, description: 7, category: null, extra: [1] }, [variant]);
+  const outcome = await loadAllProducts(async () => pageOf([product]));
+  assert.equal(outcome.ok, true);
+});
+
+test('M-02 the same variant id under two different products is still accepted (first wins; owner decision pending)', async () => {
+  const outcome = await loadAllProducts(async () => pageOf([goodProduct({ id: 'p1' }, [goodVariant('dup')]), goodProduct({ id: 'p2' }, [goodVariant('dup')])]));
+  assert.equal(outcome.ok, true);
+});
+
+test('M-02 a valid full page is accepted and its products are returned untouched', async () => {
+  const items = [goodProduct({ id: 'p1' }, [goodVariant('v1'), goodVariant('v2')]), goodProduct({ id: 'p2' }, [])];
+  const outcome = await loadAllProducts(async () => pageOf(items));
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(outcome.products, items);
+});
+
+// ---- CL-05: options are validated before any request is made
+test('CL-05 an invalid limit is FAILED and no request is made', async () => {
+  for (const limit of [0, -1, 1.5, Number.NaN, 101, '10', null, Number.POSITIVE_INFINITY]) {
+    const { fetchPage, calls } = server(catalog(10));
+    const outcome = await loadAllProducts(fetchPage, { limit });
+    assert.equal(outcome.ok, false, `limit ${String(limit)}`);
+    assert.equal(outcome.code, 'FAILED', `limit ${String(limit)}`);
+    assert.ok(outcome.cause instanceof Error);
+    assert.equal(calls.length, 0, `limit ${String(limit)} must not issue requests`);
+  }
+});
+
+test('CL-05 an invalid maxPages is FAILED and no request is made', async () => {
+  for (const maxPages of [0, -3, 1.5, Number.NaN, '2', null, Number.POSITIVE_INFINITY]) {
+    const { fetchPage, calls } = server(catalog(10));
+    const outcome = await loadAllProducts(fetchPage, { maxPages });
+    assert.equal(outcome.ok, false, `maxPages ${String(maxPages)}`);
+    assert.equal(outcome.code, 'FAILED', `maxPages ${String(maxPages)}`);
+    assert.equal(calls.length, 0, `maxPages ${String(maxPages)} must not issue requests`);
+  }
+});
+
+test('CL-05 the boundary values stay valid: limit 1 and 100, maxPages 1, and omitted options', async () => {
+  assert.equal((await loadAllProducts(server(catalog(3)).fetchPage, { limit: 1 })).ok, true);
+  assert.equal((await loadAllProducts(server(catalog(3)).fetchPage, { limit: 100 })).ok, true);
+  const single = await loadAllProducts(server(catalog(250)).fetchPage, { maxPages: 1 });
+  assert.equal(single.ok, true);
+  assert.deepEqual([single.products.length, single.truncated, single.pagesLoaded], [100, true, 1]);
+  const defaults = server(catalog(150));
+  assert.equal((await loadAllProducts(defaults.fetchPage, {})).ok, true);
+  assert.deepEqual(defaults.calls.map((c) => c.limit), [100, 100]);
+});
+
+test('CL-05 invalid options take priority over cancellation and never touch the fetcher', async () => {
+  let called = 0;
+  const outcome = await loadAllProducts(async () => { called += 1; return pageOf([]); }, { limit: 0, isCancelled: () => false });
+  assert.equal(outcome.code, 'FAILED');
+  assert.equal(called, 0);
+});

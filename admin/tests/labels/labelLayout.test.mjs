@@ -302,3 +302,63 @@ test('F-03 adversarial human text: bad character counts and widths are rejected'
   }
   assert.deepEqual(fitHumanText(10, 3), { ok: false, code: 'INVALID_LABEL_WIDTH' });
 });
+
+// ======================= V3 regression tests (CL-03 pure parsers) =======================
+import * as layoutModule from '../../src/lib/labels/labelLayout.ts';
+
+const parser = (name) => {
+  assert.equal(typeof layoutModule[name], 'function', `${name} must be exported by labelLayout.ts`);
+  return layoutModule[name];
+};
+
+test('CL-03 parseDecimalField rejects hexadecimal, binary, octal, scientific and non-finite notation', () => {
+  const parseDecimalField = parser('parseDecimalField');
+  for (const text of ['0x1F', '0X1f', '0b11', '0o7', '1e1', '1E5', '2e-3', 'Infinity', '-Infinity', 'NaN']) {
+    assert.ok(Number.isNaN(parseDecimalField(text)), text);
+  }
+});
+
+test('CL-03 parseDecimalField turns a numeric overflow into NaN (never Infinity)', () => {
+  const parseDecimalField = parser('parseDecimalField');
+  assert.ok(Number.isNaN(parseDecimalField('9'.repeat(400))));
+});
+
+test('CL-03 parseDecimalField keeps rejecting what V2 rejected: separators, spaces inside, comma decimals, other digit systems, empty', () => {
+  const parseDecimalField = parser('parseDecimalField');
+  for (const text of ['1_0', '', '   ', '1 0', '2,5', '1,000.5', '١٠', '１０']) {
+    assert.ok(Number.isNaN(parseDecimalField(text)), JSON.stringify(text));
+  }
+});
+
+test('CL-03 parseDecimalField keeps accepting the canonical decimal forms V2 accepted (including a sign, .5 and 5.)', () => {
+  const parseDecimalField = parser('parseDecimalField');
+  const accepted = { '10': 10, '2.5': 2.5, ' 7 ': 7, '0': 0, '007': 7, '+5': 5, '-5': -5, '.5': 0.5, '5.': 5, '70': 70, '0.30': 0.3 };
+  for (const [text, expected] of Object.entries(accepted)) assert.equal(parseDecimalField(text), expected, JSON.stringify(text));
+});
+
+test('CL-03 parseDecimalField rejects malformed decimals and non-strings', () => {
+  const parseDecimalField = parser('parseDecimalField');
+  for (const text of ['.', '+', '-', '-.', '+.', '1..2', '1.2.3', '--5', '5-', '1.5.', 'abc', '5px']) assert.ok(Number.isNaN(parseDecimalField(text)), text);
+  for (const value of [null, undefined, 5, {}, [], true]) assert.ok(Number.isNaN(parseDecimalField(value)), String(value));
+});
+
+test('CL-03 parseQuantityField accepts digits only, trims, and returns NaN for everything else', () => {
+  const parseQuantityField = parser('parseQuantityField');
+  assert.equal(parseQuantityField('007'), 7);
+  assert.equal(parseQuantityField(' 12 '), 12);
+  assert.equal(parseQuantityField('0'), 0);
+  for (const text of ['+5', '-1', '1.5', '1 0', '', '١٢', '0x10', '1e2', 'Infinity']) assert.ok(Number.isNaN(parseQuantityField(text)), JSON.stringify(text));
+  for (const value of [null, undefined, 5]) assert.ok(Number.isNaN(parseQuantityField(value)), String(value));
+});
+
+test('CL-03 parseQuantityField turns a 400-digit string into NaN (V2 produced Infinity)', () => {
+  const parseQuantityField = parser('parseQuantityField');
+  assert.ok(Number.isNaN(parseQuantityField('9'.repeat(400))));
+});
+
+test('CL-03 a layout built from parsed text rejects hex and scientific input instead of accepting it', () => {
+  const parseDecimalField = parser('parseDecimalField');
+  assert.deepEqual(computeLayout({ marginLeftMm: parseDecimalField('0x1F') }), { ok: false, code: 'INVALID_CONFIG' });
+  assert.deepEqual(computeLayout({ marginTopMm: parseDecimalField('1e1') }), { ok: false, code: 'INVALID_CONFIG' });
+  assert.equal(computeLayout({ marginLeftMm: parseDecimalField('10') }).ok, true);
+});

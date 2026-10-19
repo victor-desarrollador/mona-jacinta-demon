@@ -193,3 +193,27 @@ export function fitHumanText(chars: unknown, labelWidthMm: unknown): HumanTextFi
   const fontPt = Math.min(HUMAN_TEXT_MAX_PT, Math.floor(needed * 10 + MODULE_EPSILON) / 10);
   return { ok: true, fontPt, fits: fontPt >= HUMAN_TEXT_MIN_PT };
 }
+
+// ---- Numeric text fields (CL-03). Canonical decimal notation only: optional sign,
+// digits with an optional dot, never hexadecimal/octal/binary, scientific
+// notation, `Infinity` or a decimal comma. What the previous `Number(text)`
+// accepted in canonical form (for instance `+5`, `.5`, `5.`) is still accepted.
+const DECIMAL_FIELD = /^[+-]?(?:\d+\.?\d*|\.\d+)$/;
+const DIGITS_ONLY = /^\d+$/;
+
+// NaN means "not a valid number" and is rejected later by the layout checks.
+export function parseDecimalField(text: unknown): number {
+  if (typeof text !== 'string') return Number.NaN;
+  const trimmed = text.trim();
+  if (!DECIMAL_FIELD.test(trimmed)) return Number.NaN;
+  const value = Number(trimmed);
+  return Number.isFinite(value) ? value : Number.NaN;
+}
+
+export function parseQuantityField(text: unknown): number {
+  if (typeof text !== 'string') return Number.NaN;
+  const trimmed = text.trim();
+  if (!DIGITS_ONLY.test(trimmed)) return Number.NaN;
+  const value = Number(trimmed);
+  return Number.isFinite(value) ? value : Number.NaN;
+}

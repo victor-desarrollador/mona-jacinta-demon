@@ -21,6 +21,8 @@ import {
   QUIET_ZONE_MODULES,
   type LayoutConfig,
   computeLayout,
+  parseDecimalField,
+  parseQuantityField,
 } from '../lib/labels/labelLayout.ts';
 
 // ADM-15-A: select variants and preview label sheets. Read-only: the only
@@ -125,7 +127,7 @@ function LabelPreview({ label, xMm, yMm, widthMm, heightMm }: {
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1mm', fontSize: '6.5pt', letterSpacing: '0.04em' }}>
         <strong style={{ whiteSpace: 'nowrap' }}>MONA JACINTA</strong>
-        <span title={label.sku} style={{ minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label.skuShort}</span>
+        <span title={label.sku} style={{ minWidth: 0, whiteSpace: 'pre', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label.skuShort}</span>
       </div>
       <div title={label.productName} style={{ fontSize: '8.5pt', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {label.productNameShort}
@@ -135,7 +137,7 @@ function LabelPreview({ label, xMm, yMm, widthMm, heightMm }: {
         {label.priceText ? <strong style={{ fontSize: '10pt', whiteSpace: 'nowrap' }}>{label.priceText}</strong> : null}
       </div>
       <BarcodeSvg label={label} />
-      <div style={{ textAlign: 'center', fontFamily: 'monospace', fontSize: `${label.humanText?.fontPt ?? HUMAN_TEXT_MAX_PT}pt`, overflow: 'hidden', whiteSpace: 'nowrap' }}>
+      <div style={{ textAlign: 'center', fontSize: `${label.humanText?.fontPt ?? HUMAN_TEXT_MAX_PT}pt`, fontFamily: 'monospace', overflow: 'hidden', whiteSpace: 'pre' }}>
         {label.barcode}
       </div>
     </div>
@@ -165,7 +167,7 @@ export function Labels() {
   useEffect(() => {
     setQuantities({});
     setSearch('');
-  }, [userId]);
+  }, [userId, token]);
 
   // The catalogue is reloaded (and the previous one dropped) whenever the
   // session or the user changes; a late response of a closed load is ignored.
@@ -234,19 +236,19 @@ export function Labels() {
     () =>
       Object.entries(quantities).map(([variantId, text]) => ({
         variantId,
-        quantity: /^\d+$/.test(text.trim()) ? Number(text.trim()) : Number.NaN,
+        quantity: parseQuantityField(text),
       })),
     [quantities],
   );
 
   const layout = useMemo(() => {
     const parsed = Object.fromEntries(
-      Object.entries(layoutDraft).map(([key, value]) => [key, value.trim() === '' ? Number.NaN : Number(value)]),
+      Object.entries(layoutDraft).map(([key, value]) => [key, parseDecimalField(value)]),
     );
     return computeLayout(parsed);
   }, [layoutDraft]);
 
-  const labelWidthMm = layout.ok ? Number(layoutDraft.labelWidthMm) : DEFAULT_LAYOUT.labelWidthMm;
+  const labelWidthMm = layout.ok ? parseDecimalField(layoutDraft.labelWidthMm) : DEFAULT_LAYOUT.labelWidthMm;
 
   const result = useMemo(
     () => buildLabels(products, selection, { showPrice, formatMoney: formatARS, formatVariant, labelWidthMm }),
@@ -254,7 +256,7 @@ export function Labels() {
   );
   const summary = useMemo(() => summarizeExclusions(result.excluded, products), [result.excluded, products]);
   const copies = useMemo(() => expandCopies(result.labels), [result.labels]);
-  const startSlotNumber = startSlot.trim() === '' ? Number.NaN : Number(startSlot);
+  const startSlotNumber = parseDecimalField(startSlot);
   const sheetPlans = useMemo(
     () => (layout.ok ? buildSheetPlans(copies, layout, startSlotNumber) : null),
     [copies, layout, startSlotNumber],
@@ -600,7 +602,7 @@ export function Labels() {
                       xMm={placement.xMm}
                       yMm={placement.yMm}
                       widthMm={labelWidthMm}
-                      heightMm={Number(layoutDraft.labelHeightMm)}
+                      heightMm={parseDecimalField(layoutDraft.labelHeightMm)}
                     />
                   ))}
                 </div>

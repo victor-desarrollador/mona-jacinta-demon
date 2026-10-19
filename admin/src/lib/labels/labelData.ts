@@ -18,6 +18,7 @@ import type { CatalogProduct } from '../api';
 import { encodeCode128B, type Code128Encoded } from './code128.ts';
 import {
   DEFAULT_LAYOUT,
+  MAX_LABELS_PER_SELECTION,
   MIN_MODULE_WIDTH_MM,
   HUMAN_TEXT_MIN_PT,
   barcodeMetrics,
@@ -45,12 +46,37 @@ export const MAX_NAME_LENGTH = 28;
 export const MAX_SKU_DISPLAY_LENGTH = 22;
 export const MAX_VARIANT_DISPLAY_LENGTH = 22;
 
+let graphemeSegmenter: Intl.Segmenter | undefined;
+
+// Grapheme clusters when Intl.Segmenter is available (ZWJ emoji, flags, skin
+// tones and base letters with combining marks stay whole). Compatibility
+// fallback when it is not: Unicode code points, which can still split a
+// composed cluster. The check runs on every call so the fallback is testable.
+function splitGraphemes(text: string): string[] {
+  if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+    graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    return Array.from(graphemeSegmenter.segment(text), (part) => part.segment);
+  }
+  return Array.from(text);
+}
+
+function truncate(text: string, max: number): string {
+  const characters = splitGraphemes(text);
+  if (characters.length <= max) return text;
+  return `${characters.slice(0, Math.max(0, max - 1)).join('')}…`;
+}
+
+// Free text (product name, colour/size): whitespace is collapsed for display.
 export function shortenText(value: unknown, max: number): string {
   if (typeof value !== 'string') return '';
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  const characters = Array.from(normalized);
-  if (characters.length <= max) return normalized;
-  return `${characters.slice(0, Math.max(0, max - 1)).join('')}…`;
+  return truncate(value.replace(/\s+/g, ' ').trim(), max);
+}
+
+// Identifiers (SKU): significant spaces, tabs and edge whitespace are kept as they
+// are; only the length is bounded. The encoded barcode is never touched.
+export function shortenIdentifier(value: unknown, max: number): string {
+  if (typeof value !== 'string') return '';
+  return truncate(value, max);
 }
 
 export function shortenName(name: unknown): string {
@@ -286,7 +312,7 @@ export function buildLabels(
       variantId: variant.id,
       productId: product.id,
       sku: variant.sku,
-      skuShort: shortenText(variant.sku, MAX_SKU_DISPLAY_LENGTH),
+      skuShort: shortenIdentifier(variant.sku, MAX_SKU_DISPLAY_LENGTH),
       barcode: variant.barcode,
       productName: product.name,
       productNameShort: shortenName(product.name),
@@ -368,6 +394,14 @@ export function summarizeExclusions(
 }
 
 // One entry per physical label to place on the sheets, in selection order.
+// The global limit is verified BEFORE anything is materialised: an over-limit or
+// malformed selection yields no copies at all (the caller reports the limit).
 export function expandCopies(labels: ReadonlyArray<LabelModel>): LabelModel[] {
+  let total = 0;
+  for (const label of labels) {
+    if (!Number.isInteger(label.quantity) || label.quantity < 0) return [];
+    total += label.quantity;
+    if (total > MAX_LABELS_PER_SELECTION) return [];
+  }
   return labels.flatMap((label) => Array.from({ length: label.quantity }, () => label));
 }

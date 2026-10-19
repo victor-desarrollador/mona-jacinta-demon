@@ -685,3 +685,152 @@ test('F-09 a genuine duplicate is still caught when one of the two variants is a
   assert.deepEqual(result.duplicateGroups, [{ value: 'REPEAT-2', variantIds: ['a', 'b'] }]);
   assert.deepEqual(result.excluded.map(({ variantId, reason }) => [variantId, reason]), [['a', 'DUPLICATE_BARCODE']]);
 });
+
+// ======================= V3 regression tests (M-01, L-02, CL-02, L-01, CL-03 page) =======================
+// Each test below was run against the unmodified V2 sources first (see the RED log of the V3 delivery).
+
+// Counts Array.from({ length }) expansions, which is how expandCopies materialises copies.
+function countExpansions(run) {
+  const real = Array.from;
+  let expansions = 0;
+  Array.from = function patched(...args) {
+    const source = args[0];
+    if (source && typeof source === 'object' && !Array.isArray(source) && typeof source.length === 'number' && typeof source[Symbol.iterator] !== 'function') expansions += 1;
+    return real.apply(this, args);
+  };
+  try {
+    return { value: run(), expansions };
+  } finally {
+    Array.from = real;
+  }
+}
+const fakeLabels = (quantities) => quantities.map((quantity, i) => ({ variantId: `f${i + 1}`, quantity }));
+
+// ---- M-01: the global limit is checked before anything is expanded
+test('M-01 expandCopies refuses 1200 copies (6 x 200): empty result and no expansion work at all', () => {
+  const { value, expansions } = countExpansions(() => expandCopies(fakeLabels([200, 200, 200, 200, 200, 200])));
+  assert.deepEqual(value, []);
+  assert.equal(expansions, 0);
+});
+
+test('M-01 expandCopies still expands exactly 1000 copies (5 x 200) in selection order', () => {
+  const copies = expandCopies(fakeLabels([200, 200, 200, 200, 200]));
+  assert.equal(copies.length, 1000);
+  assert.equal(copies[0].variantId, 'f1');
+  assert.equal(copies[999].variantId, 'f5');
+});
+
+test('M-01 expandCopies refuses 1001 copies, a fractional quantity and a non-numeric one', () => {
+  assert.deepEqual(expandCopies(fakeLabels([200, 200, 200, 200, 201])), []);
+  assert.deepEqual(expandCopies(fakeLabels([1.5])), []);
+  assert.deepEqual(expandCopies(fakeLabels([Number.NaN])), []);
+  assert.deepEqual(expandCopies(fakeLabels([-1, 3])), []);
+});
+
+test('M-01 expandCopies keeps its ordinary behaviour for empty and small selections', () => {
+  assert.deepEqual(expandCopies([]), []);
+  assert.deepEqual(expandCopies(fakeLabels([2, 1])).map((l) => l.variantId), ['f1', 'f1', 'f2']);
+});
+
+// ---- L-02: truncation never splits a grapheme cluster
+const FAMILY = '\u{1F468}‍\u{1F469}‍\u{1F467}‍\u{1F466}';
+const FLAG = '\u{1F1E6}\u{1F1F7}';
+const E_ACUTE = 'é';
+const THUMB = '\u{1F44D}\u{1F3FD}';
+const KEYCAP = '1️⃣';
+
+test('L-02 a family ZWJ sequence is never cut: 6 families with max 5 keep 4 whole families', () => {
+  assert.equal(shortenText(FAMILY.repeat(6), 5), `${FAMILY.repeat(4)}…`);
+});
+
+test('L-02 regional-indicator flags are never cut in half', () => {
+  assert.equal(shortenText(FLAG.repeat(14), 5), `${FLAG.repeat(4)}…`);
+});
+
+test('L-02 a base letter keeps its combining mark: 30 decomposed e-acute with max 5 keep 4 whole clusters', () => {
+  const short = shortenText(E_ACUTE.repeat(30), 5);
+  assert.equal(short, `${E_ACUTE.repeat(4)}…`);
+  assert.ok(!/^[̀-ͯ]/.test(short));
+});
+
+test('L-02 an emoji keeps its skin-tone modifier, and keycap sequences stay whole', () => {
+  assert.equal(shortenText(THUMB.repeat(30), 5), `${THUMB.repeat(4)}…`);
+  assert.equal(shortenText(KEYCAP.repeat(10), 4), `${KEYCAP.repeat(3)}…`);
+});
+
+test('L-02 text that fits by graphemes is returned untouched (22 families with max 22)', () => {
+  assert.equal(shortenText(FAMILY.repeat(22), 22), FAMILY.repeat(22));
+  assert.equal(shortenText('x'.repeat(23), 22), `${'x'.repeat(21)}…`);
+});
+
+test('L-02 compatibility fallback: without Intl.Segmenter truncation is by code points (documented limitation)', () => {
+  const original = Intl.Segmenter;
+  Intl.Segmenter = undefined;
+  try {
+    assert.equal(shortenText(E_ACUTE.repeat(30), 5), `${E_ACUTE.repeat(2)}…`);
+    assert.equal(shortenText('x'.repeat(23), 22), `${'x'.repeat(21)}…`);
+    assert.equal(shortenText('  Remera \n azul ', 22), 'Remera azul');
+  } finally {
+    Intl.Segmenter = original;
+  }
+  assert.equal(shortenText(E_ACUTE.repeat(30), 5), `${E_ACUTE.repeat(4)}…`);
+});
+
+test('L-02 free text keeps collapsing whitespace', () => {
+  assert.equal(shortenText('  Remera \n azul ', 22), 'Remera azul');
+});
+
+// ---- CL-02: identifiers keep their significant spaces; the encoded barcode bytes never change
+const skuShortOf = (sku) => buildLabels([product([variant({ id: 's', sku, barcode: 'BC-S' })])], pick('s'), OPTIONS).labels[0].skuShort;
+
+test('CL-02 a SKU with a double space is shown as it is', () => {
+  assert.equal(skuShortOf('AB  CD'), 'AB  CD');
+});
+
+test('CL-02 leading and trailing spaces and tabs of a SKU are not normalised', () => {
+  assert.equal(skuShortOf(' AB '), ' AB ');
+  assert.equal(skuShortOf('A\tB'), 'A\tB');
+});
+
+test('CL-02 a long SKU is cut after 21 raw characters plus the ellipsis, spaces intact', () => {
+  const sku = 'AB  CD  EF  GH  IJ  KL  MN  OP';
+  assert.equal(sku.length, 30);
+  assert.equal(skuShortOf(sku), `${sku.slice(0, 21)}…`);
+});
+
+test('CL-02 the SKU of the model and the barcode bytes are untouched by display shortening', () => {
+  const [label] = buildLabels([product([variant({ id: 'b', sku: 'AB  CD', barcode: 'AB  CD' })])], pick('b'), OPTIONS).labels;
+  assert.equal(label.sku, 'AB  CD');
+  assert.equal(label.barcode, 'AB  CD');
+  assert.deepEqual(label.encoded, encodeCode128B('AB  CD'));
+});
+
+test('CL-02 variant text is free text and keeps collapsing whitespace; a non-string SKU is empty', () => {
+  const [label] = buildLabels([product([variant({ id: 'c', color: 'Azul   marino', size: null, barcode: 'BC-C' })])], pick('c'), OPTIONS).labels;
+  assert.equal(label.variantTextShort, 'Azul marino');
+  assert.equal(typeof labelDataModule.shortenIdentifier, 'function');
+  assert.equal(labelDataModule.shortenIdentifier(42, 22), '');
+  assert.equal(labelDataModule.shortenIdentifier('x'.repeat(23), 22), `${'x'.repeat(21)}…`);
+});
+
+test('CL-02 the page renders the SKU and the human-readable barcode with white-space: pre (static)', () => {
+  const code = pageCode();
+  assert.match(code, /title=\{label\.sku\}\s+style=\{\{[^}]*whiteSpace:\s*'pre'/);
+  assert.match(code, /fontFamily:\s*'monospace'[^}]*whiteSpace:\s*'pre'[^}]*\}\}>\s*\{label\.barcode\}/);
+});
+
+// ---- L-01 / CL-03 on the page (static: the component cannot run without installing dependencies)
+test('L-01 the selection-reset effect depends on the session token as well as the user (static)', () => {
+  assert.match(pageCode(), /setQuantities\(\{\}\);[\s\S]{0,60}?\},\s*\[userId,\s*token\]\)/);
+});
+
+test('L-01 the catalogue-load effect keeps its dependencies (static)', () => {
+  assert.match(pageCode(), /\[token,\s*logout,\s*mayAccessLabels,\s*userId\]/);
+});
+
+test('CL-03 the page parses numeric fields only through the shared pure parsers (static)', () => {
+  const code = pageCode();
+  assert.ok(!/\bNumber\(/.test(code), 'no Number(text) parsing may remain in the page');
+  assert.match(code, /parseDecimalField/);
+  assert.match(code, /parseQuantityField/);
+});
