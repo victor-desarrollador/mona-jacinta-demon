@@ -271,8 +271,21 @@ describe('S — createDraftSale fixes the durable path once (req. 1, 2, 6)', () 
     expect(nowHistorical.pricingModel).toBe('FIXED_TOTAL');
   });
 
-  it('S5 the variable is read only by the sale-creation path', () => {
-    expect(filesMentioning(POLICY_VARIABLE)).toEqual(['config/env.ts', 'modules/sales/sales.service.ts']);
+  // G11: checkout-readiness.ts may also read the variable, but only as a
+  // boolean for the startup schema gate (which migrations are required); it
+  // never selects the checkout or pricing path, and only server.ts uses it.
+  it('S5 the variable selects the path only in sale creation; readiness reads it only for the startup gate', () => {
+    expect(filesMentioning(POLICY_VARIABLE)).toEqual([
+      'config/env.ts',
+      'modules/payments/checkout-readiness.ts',
+      'modules/sales/sales.service.ts',
+    ]);
+    const readiness = readFileSync(new URL('modules/payments/checkout-readiness.ts', SRC), 'utf8');
+    expect(readiness.match(new RegExp(`\\benv\\.${POLICY_VARIABLE}\\b[^\\n]*`, 'g'))).toEqual([
+      `env.${POLICY_VARIABLE}.length > 0,`,
+    ]);
+    expect(readiness).not.toMatch(/from '\.\.\/sales\/|from '\.\.\/pricing\//);
+    expect(filesMentioning('checkout-readiness.js')).toEqual(['server.ts']);
   });
 });
 

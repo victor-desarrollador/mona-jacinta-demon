@@ -621,30 +621,33 @@ describe('executables: start guard, no restore, no path from the outcome tools t
 });
 
 describe('mirrored constants cannot drift (drift guard)', () => {
-  // G8/G9 added exactly these six relations to the protected domain (ninth migration). The witness
-  // (local-test-witness.mjs) intentionally stays at the historical G7 set of 26 and is NOT revised here.
+  // G8/G9 added exactly these six relations to the protected domain. G1-11 is the reviewed backup generation that
+  // carries them: the witness's current PROTECTED_RELATION_NAMES equals the fingerprint's 32, while G1-5..G1-7 keep the
+  // historical sets (G1-6/G1-7 = the 26 relations without the six).
   const NEW_IN_G8_G9 = ['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation'];
-  it('the witness keeps the historical 26-relation G7 subset, in order; G8/G9 add exactly the six new relations', async () => {
-    const mod = (await import(pathToFileURL(path.join(DB_SCRIPTS, 'local-test-witness.mjs')).href)) as { PROTECTED_RELATION_NAMES: readonly string[] };
+  type WitnessModule = {
+    PROTECTED_RELATION_NAMES: readonly string[];
+    BACKUP_SCHEMA_GENERATIONS: readonly { id: string; migrations: readonly (readonly string[])[]; relations: readonly string[] }[];
+  };
+  const loadWitness = async () => (await import(pathToFileURL(path.join(DB_SCRIPTS, 'local-test-witness.mjs')).href)) as WitnessModule;
+  it('the witness current relations equal the fingerprint PROTECTED_RELATIONS exactly (32, same raw-byte order)', async () => {
+    const mod = await loadWitness();
     const { PROTECTED_RELATIONS } = await import('../scripts/local-test-fingerprint.js');
-    const witness = [...mod.PROTECTED_RELATION_NAMES];
-    expect(witness).toHaveLength(26);
     expect(PROTECTED_RELATIONS).toHaveLength(32);
-    // the 26 G7 relations are the correct historical subset of the 32, in the same (raw-byte) order
-    expect(witness).toEqual([...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G8_G9.includes(r)));
-    // and the difference is exactly the six new relations
-    expect([...PROTECTED_RELATIONS].filter((r) => !witness.includes(r))).toEqual(NEW_IN_G8_G9);
+    expect([...mod.PROTECTED_RELATION_NAMES]).toEqual([...PROTECTED_RELATIONS]);
   });
-  it('the operational witness exposes no G8/G9 backup generation (G7 stays the current contract)', async () => {
-    const mod = (await import(pathToFileURL(path.join(DB_SCRIPTS, 'local-test-witness.mjs')).href)) as {
-      PROTECTED_RELATION_NAMES: readonly string[];
-      BACKUP_SCHEMA_GENERATIONS: readonly { id: string; relations: readonly string[] }[];
-    };
-    expect(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id)).toEqual(['G1-5', 'G1-6', 'G1-7']);
-    for (const g of mod.BACKUP_SCHEMA_GENERATIONS) {
-      // every generation's relation set stays inside the historical 26: no generation carries a G8/G9 relation
-      expect(g.relations.every((r) => mod.PROTECTED_RELATION_NAMES.includes(r))).toBe(true);
-    }
+  it('G1-11 carries the 32 current relations; G1-6/G1-7 keep the historical 26, i.e. the 32 minus exactly the six new ones', async () => {
+    const mod = await loadWitness();
+    const { PROTECTED_RELATIONS } = await import('../scripts/local-test-fingerprint.js');
+    expect(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id)).toEqual(['G1-5', 'G1-6', 'G1-7', 'G1-11']);
+    const byId = new Map(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => [g.id, g]));
+    expect([...byId.get('G1-11')!.relations]).toEqual([...PROTECTED_RELATIONS]);
+    expect(byId.get('G1-11')!.migrations).toHaveLength(11);
+    const historical = [...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G8_G9.includes(r));
+    expect(historical).toHaveLength(26);
+    expect([...byId.get('G1-6')!.relations]).toEqual(historical);
+    expect([...byId.get('G1-7')!.relations]).toEqual(historical);
+    expect([...byId.get('G1-5')!.relations]).toEqual(historical.filter((r) => r !== 'CompanyPricingConfig'));
   });
 });
 

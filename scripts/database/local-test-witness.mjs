@@ -22,22 +22,27 @@ export const AUTH_FORMAT = 'mona-local-test-resume-authorization/v1';
 export const AUTH_ACTION = 'resume-seed-2';
 export const AUTH_MAX_TTL_MS = 2 * 60 * 60 * 1000;
 export const WITNESS_MAX_BYTES = 4096;
-// The 26 protected relations (raw-byte order), mirrored from api/scripts/local-test-fingerprint.ts PROTECTED_RELATIONS; a vitest
-// test (local-test-fingerprint.test.ts) pins the two lists against each other so they cannot drift.
-export const PROTECTED_RELATION_NAMES = Object.freeze([
+// The historical 26 protected relations of G1-6/G1-7 (raw-byte order). Frozen as reviewed; never edited for a new schema.
+const RELATIONS_G7 = Object.freeze([
   'AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'CompanyPricingConfig', 'Inventory', 'Location', 'Permission', 'Product',
   'ProductVariant', 'Role', 'RolePermission', 'Sale', 'SaleItem', 'SaleNumberCounter', 'SalePayment', 'StockMovement', 'StockReservation', 'User',
   'UserBranchRole', 'UserRoleScope', '_prisma_migrations',
 ]);
+// G1-11: migrations 8–11 add exactly these six protected relations.
+const RELATIONS_ADDED_G11 = Object.freeze(['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation']);
+const rawCompare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+// The CURRENT 32 protected relations (raw-byte order), mirrored from api/scripts/local-test-fingerprint.ts PROTECTED_RELATIONS; a vitest
+// test (protected-capability-static.test.ts, drift guard) pins the two lists against each other so they cannot drift.
+export const PROTECTED_RELATION_NAMES = Object.freeze([...RELATIONS_G7, ...RELATIONS_ADDED_G11].sort(rawCompare));
 
 // Historical backup verification contract: an EXPLICIT, versioned list of the schema generations whose backups
 // `local-test-backup.mjs --verify` still recognises. A generation is the exact ordered (name, sha256) migration set a manifest
 // binds, paired with the exact protected relation set that schema archived. Nothing here is derived from an archive, a
 // manifest or the migrations directory; an unlisted migration set (unknown, future, partial, reordered, altered) has no
-// generation and is refused. G7 is the current contract; adding a migration requires a new reviewed generation here (a test
-// pins G7 to the OWNER-approved migration payload). Backup creation and the resume always use the current contract only.
+// generation and is refused. G1-11 is the current contract; adding a migration requires a new reviewed generation here (a test
+// pins G1-11 to the OWNER-approved migration payload). Backup creation and the resume always use the current contract only.
 const pairs = (list) => Object.freeze(list.map((pair) => Object.freeze([...pair])));
-const RELATIONS_G5 = Object.freeze(PROTECTED_RELATION_NAMES.filter((name) => name !== 'CompanyPricingConfig'));
+const RELATIONS_G5 = Object.freeze(RELATIONS_G7.filter((name) => name !== 'CompanyPricingConfig'));
 const MIGRATIONS_G5 = pairs([
   ['20260907015311_init', 'a584edab13a2ae540d694578ffa3b5a622decff04e238a5cf16d3040d295e4cb'],
   ['20260912182432_add_company_location', '19c345aa92c79a0a613dc03ea01dcf10e91b5a75fd6f3535076d8d71b6f740af'],
@@ -45,18 +50,25 @@ const MIGRATIONS_G5 = pairs([
   ['20260922210000_d3_initial_stock_and_global_audit', '62b3b169e06a48dc2e2a3f81cee11e02a809b2733db2453c5b9eef91c15f77cf'],
   ['20261002120000_block1_pricing_wholesale', '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173'],
 ]);
+const MIGRATIONS_G7 = pairs([...MIGRATIONS_G5,
+  ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12'],
+  ['20261012120000_cash_session_reconciliation', 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f'],
+]);
 export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([
   Object.freeze({ id: 'G1-5', migrations: MIGRATIONS_G5, relations: RELATIONS_G5 }),
   Object.freeze({
     id: 'G1-6',
     migrations: pairs([...MIGRATIONS_G5, ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12']]),
-    relations: PROTECTED_RELATION_NAMES,
+    relations: RELATIONS_G7,
   }),
+  Object.freeze({ id: 'G1-7', migrations: MIGRATIONS_G7, relations: RELATIONS_G7 }),
   Object.freeze({
-    id: 'G1-7',
-    migrations: pairs([...MIGRATIONS_G5,
-      ['20261006120000_pilot_pricing_v2', 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12'],
-      ['20261012120000_cash_session_reconciliation', 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f'],
+    id: 'G1-11',
+    migrations: pairs([...MIGRATIONS_G7,
+      ['20261016120000_r3_proportional_checkout', '217e87eb5b156a57a5edcfd73433e1e9558ce59caa019208d9df8c0268f08dc6'],
+      ['20261016130000_r3_checkout_attempts', '076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148'],
+      ['20261018120000_cash_movement_withdrawals_expenses', 'e37149442d1fb82ec87877e7b3e1f2e4311b36a9d47d314a3fd1843702c5adf9'],
+      ['20261018180000_cash_movement_reversals', 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770'],
     ]),
     relations: PROTECTED_RELATION_NAMES,
   }),

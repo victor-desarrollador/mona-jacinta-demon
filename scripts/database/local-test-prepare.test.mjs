@@ -1189,8 +1189,11 @@ test('V231-RED-C an explicit resume without verified backup evidence never reach
 // --- V231 suite: evidence is produced by the real local-test-backup.mjs code (fake runtime, fake
 // pg_dump/pg_restore) in a private temporary root; the policy roots of the prepare run are synthetic.
 const ARCHIVE = Buffer.from('PGDMP synthetic custom archive bytes\n');
-const R4_RELATIONS = ['AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'CompanyPricingConfig', 'Inventory', 'Location', 'Permission', 'Product', 'ProductVariant', 'Role', 'RolePermission', 'Sale', 'SaleItem', 'SaleNumberCounter', 'SalePayment', 'StockMovement', 'StockReservation', 'User', 'UserBranchRole', 'UserRoleScope', '_prisma_migrations'];
-// A TOC in the shape pg_restore --list prints, for the 26 protected relations plus a few allow-listed object kinds (R4 strict contract).
+const G7_RELATIONS = ['AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'CompanyPricingConfig', 'Inventory', 'Location', 'Permission', 'Product', 'ProductVariant', 'Role', 'RolePermission', 'Sale', 'SaleItem', 'SaleNumberCounter', 'SalePayment', 'StockMovement', 'StockReservation', 'User', 'UserBranchRole', 'UserRoleScope', '_prisma_migrations'];
+// G1-11 (migrations 8–11) adds six relations: the current contract is the 32, in raw-byte order.
+const G11_NEW_RELATIONS = ['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation'];
+const R4_RELATIONS = [...G7_RELATIONS, ...G11_NEW_RELATIONS].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+// A TOC in the shape pg_restore --list prints, for the 32 protected relations plus a few allow-listed object kinds (R4 strict contract).
 function r4Toc({ tables = R4_RELATIONS, data = tables, extra = [], dbname = 'mona_local_test', declared } = {}) {
   const entries = [
     '6; 2615 2200 SCHEMA - public pg_database_owner',
@@ -1419,7 +1422,7 @@ test('V231-P17/I32 a valid backup + a bound OWNER authorization: the resume prov
   const manifestSha = sha(readFileSync(path.join(b.runDir, MANIFEST)));
   assert.match(dry.text, new RegExp(`^  backup evidence: run ${RUN} dump sha256 ${b.dumpSha} bytes ${ARCHIVE.length} manifest sha256 ${manifestSha}$`, 'm'));
   assert.match(dry.text, /^  PRE witness \(digest only\): fPre [0-9a-f]{64} \(witness sha256 [0-9a-f]{64}; TOC multiset sha256 [0-9a-f]{64}\)$/m);
-  assert.match(dry.text, /^  backup verified: files \+ self-hashed manifest; age 3600s \(max 21600s\); bound to the current checkpoint cp-\d{8}T\d{6}Z-[0-9a-f]{32} \(record sha256 [0-9a-f]{64}\); pg_restore --list PASS \(\d+ entries, 26 tables with TABLE DATA, TOC sha256 [0-9a-f]{64} = manifest; pg_restore sha256 [0-9a-f]{64}\)$/m);
+  assert.match(dry.text, /^  backup verified: files \+ self-hashed manifest; age 3600s \(max 21600s\); bound to the current checkpoint cp-\d{8}T\d{6}Z-[0-9a-f]{32} \(record sha256 [0-9a-f]{64}\); pg_restore --list PASS \(\d+ entries, 32 tables with TABLE DATA, TOC sha256 [0-9a-f]{64} = manifest; pg_restore sha256 [0-9a-f]{64}\)$/m);
   assert.match(dry.text, /^\[db:local-test-prepare\] DRY RUN — no database connection was opened and no runtime was loaded; the only process started was the contained pg_restore --list/m);
   assert.match(dry.text, /^  action: resume-after-verified-backup — /m);
   assert.ok(dry.text.split('\n').includes(RESUME_PHASES_LINE));
@@ -2138,10 +2141,10 @@ import { execFileSync as r4ExecFileSync, spawnSync as r4SpawnSync } from 'node:c
 
 const r4Check = (text) => prepareModule.checkToc(text);
 
-test('R4-ARC-00 a well-formed strict TOC passes with 26 tables, a deterministic multiset digest independent of line order, and its entry count', () => {
+test('R4-ARC-00 a well-formed strict TOC passes with the 32 G1-11 tables, a deterministic multiset digest independent of line order, and its entry count', () => {
   const ok = r4Check(r4Toc());
   assert.equal(ok.ok, true, ok.reason);
-  assert.equal(ok.tables, 26);
+  assert.equal(ok.tables, 32);
   assert.match(ok.multisetSha256, /^[0-9a-f]{64}$/);
   const lines = r4Toc().split('\n');
   const body = lines.slice(14, -1).reverse();
@@ -2619,7 +2622,7 @@ test('R4-C01 the real PostgreSQL 17.11 shape (declared = listed + 4 header-only 
   const toc = realToc(4);
   const verdict = r4Check(toc);
   assert.equal(verdict.ok, true, verdict.reason);
-  assert.equal(verdict.tables, 26);
+  assert.equal(verdict.tables, 32);
   assert.equal(verdict.entries, listedCount(toc));
 });
 test('R4-C02/C03/C18 declared == listed, or listed + 1..4 (other PostgreSQL versions emit fewer header-only entries), is accepted', () => {
