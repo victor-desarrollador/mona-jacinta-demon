@@ -33,6 +33,7 @@ import { createPricingService } from '../../src/modules/pricing/pricing.service.
 import type { PlanTenderInput } from '../../src/modules/payments/checkout-canonical.js';
 import type { ExternalCollectionRefundRequest } from '../../src/modules/payments/dto/external-collection-refund.dto.js';
 import { AppError } from '../../src/shared/errors.js';
+import { pointOfSaleNumberFor } from '../helpers/r3-service-pg.js';
 
 const enabled = process.env.MONA_R3_SREF_PG === '1';
 
@@ -119,7 +120,7 @@ describe.skipIf(!enabled)('R3-A4.3 S-REF — T-F refund on PostgreSQL (migration
     const variant = await db.productVariant.findFirstOrThrow({ select: { id: true, productId: true, sku: true }, orderBy: { id: 'asc' } });
     const branch = randomUUID();
     const tag = branch.slice(0, 8);
-    await db.location.create({ data: { id: branch, companyId: company.id, code: `sref-${tag}`, name: `S-REF ${tag}`, type: 'RETAIL_BRANCH', address: 'Test', pointOfSaleNumber: 4_000_000 + parseInt(tag.slice(0, 5), 16) } });
+    await db.location.create({ data: { id: branch, companyId: company.id, code: `sref-${tag}`, name: `S-REF ${tag}`, type: 'RETAIL_BRANCH', address: 'Test', pointOfSaleNumber: pointOfSaleNumberFor('SREF', tag) } });
     await db.branch.create({ data: { id: branch, code: `sref-${tag}`, name: `S-REF ${tag}`, address: 'Test', pointOfSaleNumber: 1 } });
     const users = await Promise.all([1, 2].map((n) => db.user.create({ data: { name: `S-REF ${n}`, email: `sref-${tag}-${n}@test.invalid`, passwordHash: 'not-used' } })));
     const register = await db.cashRegister.create({ data: { branchId: branch, name: `S-REF ${tag}` } });

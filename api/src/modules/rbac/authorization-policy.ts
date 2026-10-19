@@ -47,6 +47,22 @@ function isValidOwnerAssignment(assignment: Express.ProductionAssignment): boole
   return assignment.roleCode === ROLE_CODES.OWNER && assignment.scopeKind === 'COMPANY';
 }
 
+// SECURITY-RBAC-01a: COMPANY scope is valid ONLY for OWNER and ADMIN
+// (AGENTS.md's Phase 1D target model). The scope writer enforces this on
+// assignment, but a persisted row can still violate it (direct SQL, legacy
+// data, a future writer). The single definition of the rule: the context
+// layer (authorization-context.ts) drops such a row before it becomes an
+// assignment or expands effectiveLocationIds, and this module re-checks it as
+// a second line of defense — a malformed COMPANY assignment contributes zero
+// authority, per assignment, never denying an independent valid assignment.
+export function isCompanyScopeRole(roleCode: string): boolean {
+  return roleCode === ROLE_CODES.OWNER || roleCode === ROLE_CODES.ADMIN;
+}
+
+function isMalformedCompanyAssignment(assignment: Express.ProductionAssignment): boolean {
+  return assignment.scopeKind === 'COMPANY' && !isCompanyScopeRole(assignment.roleCode);
+}
+
 // Phase 1D.2: the ONLY place OWNER's implicit authority is recognized. No
 // route, controller, service, or DTO outside this file and its direct
 // callers may compare a role code string to 'OWNER' for an authorization
@@ -71,6 +87,7 @@ function assignmentQualifies(
   permission: string,
   locationId?: string,
 ): boolean {
+  if (isMalformedCompanyAssignment(assignment)) return false;
   if (!assignment.permissions.includes(permission)) return false;
   if (requiresCompanyScope(permission)) return assignment.scopeKind === 'COMPANY';
   if (locationId === undefined) return true;
@@ -112,6 +129,26 @@ export function authorizedLocationIds(ctx: LocationFilterCtx, permission: string
     if (seen.has(locationId)) continue;
     seen.add(locationId);
     if (hasPermissionAtLocation(ctx, permission, locationId)) result.push(locationId);
+  }
+  return result;
+}
+
+// CLIENT-CASH-UX (2026-10-19, branch-aware cash permissions mini-slice):
+// location-filtered sibling of authorizedLocationIds built on STRICTLY SUPERVISOR
+// semantics (actsAsSupervisorAtLocation — OWNER, or ONE ADMIN COMPANY
+// assignment holding EVERY requested permission; a LOCATION assignment never
+// qualifies). Same contract as its sibling: the effective location universe is
+// the bounded list it never leaves, each id is re-checked in isolation, results
+// are deduplicated and follow effectiveLocationIds order. Projection only —
+// this never replaces hasPermissionAtLocation/actsAsSupervisorAtLocation as
+// authorization at the endpoints; every caller must still enforce them there.
+export function supervisorLocationIds(ctx: LocationFilterCtx, permissions: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const locationId of ctx.effectiveLocationIds) {
+    if (seen.has(locationId)) continue;
+    seen.add(locationId);
+    if (actsAsSupervisorAtLocation(ctx, permissions, locationId)) result.push(locationId);
   }
   return result;
 }
@@ -184,6 +221,7 @@ export function hasBranchAccess(ctx: Ctx, locationId: string): boolean {
   if (isOwner(ctx)) return true;
   return ctx.assignments.some((assignment) => {
     if (assignment.roleCode === ROLE_CODES.OWNER) return false;
+    if (isMalformedCompanyAssignment(assignment)) return false;
     return assignment.scopeKind === 'COMPANY' || assignment.locationId === locationId;
   });
 }

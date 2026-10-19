@@ -41,6 +41,7 @@ describe('Phase 1B RBAC domain module (no database)', () => {
       'INVENTORY_MANAGE',
       'CASH_SESSION_OPEN',
       'CASH_SESSION_CLOSE',
+      'CASH_MOVEMENT_MANAGE',
       'USER_MANAGE',
       'REPORT_VIEW',
       'AUDIT_VIEW',
@@ -62,7 +63,7 @@ describe('Phase 1B RBAC domain module (no database)', () => {
       'SALE_CANCEL_PENDING',
     ];
     expect(productionPermissionValues.slice().sort()).toEqual(expected.slice().sort());
-    expect(productionPermissionValues).toHaveLength(35);
+    expect(productionPermissionValues).toHaveLength(36);
     // Constant keys equal their string values (no invented abbreviations).
     for (const [key, value] of Object.entries(PRODUCTION_PERMISSIONS)) expect(key).toBe(value);
   });
@@ -83,6 +84,7 @@ describe('Phase 1B RBAC domain module (no database)', () => {
         'INVENTORY_VIEW',
         'CASH_SESSION_OPEN',
         'CASH_SESSION_CLOSE',
+        'CASH_MOVEMENT_MANAGE',
         'TRANSFER_REQUEST',
         'TRANSFER_VIEW',
         'TRANSFER_APPROVE',

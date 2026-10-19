@@ -593,11 +593,11 @@ These remain valid regardless of phase:
 ## Checkpoint
 
 **Current integrated baseline:**
-`9a3243f912d8b0f929767978e97454d229acedda` on `feat/production-v1`
-("docs(blueprint): update section 2 pointer for committed Pricing V2"). It is
+`829b8d39ed4bcf43a6c479df4f4bf0414085364d` on `feat/production-v1`
+("feat(r3): implement checkout close and external refund flow"). It is
 pushed to `origin/feat/production-v1`. The temporary
-`feat/production-v1-pricing-wholesale-t4` branch points to the same commit and
-has already been fast-forward integrated into Production V1.
+`feat/production-v1-pricing-wholesale-t4` branch (at `9a3243f`) has already
+been fast-forward integrated into Production V1.
 
 This baseline includes P0.2, TEST/PILOT safety tooling A1→D, Task 4
 LOCAL_TEST tooling, Block 1 sale-scoped wholesale, R4 LOCAL_TEST safety proof

@@ -124,6 +124,10 @@ enum CashMovementType {
   SALE_INCOME
   CLOSING
   MANUAL
+  WITHDRAWAL
+  EXPENSE
+  WITHDRAWAL_REVERSAL
+  EXPENSE_REVERSAL
 }
 
 enum LocationType {
@@ -636,10 +640,27 @@ model CashMovement {
   salePaymentId String?          @unique
   userId        String
   timestamp     DateTime         @default(now()) @db.Timestamptz(3)
+  // PILOT cash exit (WITHDRAWAL/EXPENSE): the free-text justification and the
+  // client-supplied idempotency key. NULL for every historical/income movement.
+  reason         String?
+  idempotencyKey String?
+  // PILOT reversal (WITHDRAWAL_REVERSAL/EXPENSE_REVERSAL, migration 11): the
+  // corrected WITHDRAWAL/EXPENSE of the SAME session. Unique: at most one
+  // reversal per original. The composite FK (with sessionId) makes a
+  // cross-session reversal impossible in the database. NULL for every other row.
+  reversesMovementId String? @unique
   session       CashSession      @relation(fields: [sessionId], references: [id], onDelete: Restrict)
   salePayment   SalePayment?     @relation(fields: [salePaymentId], references: [id], onDelete: Restrict)
   user          User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  reverses      CashMovement?    @relation("CashMovementReversal", fields: [reversesMovementId, sessionId], references: [id, sessionId], onDelete: Restrict, onUpdate: Restrict)
+  // One-to-many for Prisma only (a one-to-one would demand a redundant
+  // UNIQUE(reversesMovementId, sessionId)); the database keeps at most one
+  // reversal per original through UNIQUE(reversesMovementId) above.
+  reversals     CashMovement[]   @relation("CashMovementReversal")
 
+  @@unique([sessionId, idempotencyKey])
+  // Candidate key for the same-session composite FK above (migration 11).
+  @@unique([id, sessionId])
   @@index([sessionId, timestamp])
   @@index([userId])
 }

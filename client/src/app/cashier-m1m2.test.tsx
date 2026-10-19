@@ -12,7 +12,8 @@ const TOKEN_KEY = "mona-jacinta-token";
 type Reply = { status: number; body: unknown } | { network: true };
 
 type State = {
-  user: { id: string; name: string; email: string; roles: string[]; branchIds: string[]; permissions: string[] };
+  user: { id: string; name: string; email: string; roles: string[]; branchIds: string[]; permissions: string[];
+    cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[] };
   queue: () => Reply | Promise<Reply>;
   payments: (saleId: string) => Reply | Promise<Reply>;
   paymentPost?: () => Reply | Promise<Reply>;
@@ -25,6 +26,7 @@ type State = {
 const CLOSE = ["sale.charge", "cash.session.open", "cash.session.close"];
 const cashier = (branchIds = ["CEN"]) => ({
   id: "c1", name: "Cajero", email: "cashier@demo.local", roles: ["CASHIER"], branchIds, permissions: CLOSE,
+  cashMovementLocationIds: [], cashSupervisorLocationIds: [],
 });
 
 function row(overrides: Record<string, unknown> = {}) {

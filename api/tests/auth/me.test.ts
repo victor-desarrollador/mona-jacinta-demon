@@ -195,7 +195,9 @@ describe('GET /api/v1/auth/me', () => {
       const user = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } });
       const response = await request(app).get('/api/v1/auth/me').set('Authorization', `Bearer ${await getAuthToken(user)}`);
       expect(response.status).toBe(200);
-      expect(response.body.user.permissions.slice(-4)).toEqual(d3Codes);
+      // PILOT R-1: CASH_MOVEMENT_MANAGE is appended after the D3 codes.
+      expect(response.body.user.permissions.slice(-5, -1)).toEqual(d3Codes);
+      expect(response.body.user.permissions.at(-1)).toBe('CASH_MOVEMENT_MANAGE');
       expect(response.body.user.permissions).toContain('report.view');
       expect(response.body.user.permissions).toContain('user.manage');
       expect(response.body.user).not.toHaveProperty('assignments');

@@ -1,4 +1,4 @@
-import { hasPermission } from '../rbac/authorization-policy.js';
+import { hasPermission, authorizedLocationIds, supervisorLocationIds } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS, type ProductionPermission } from '../rbac/permissions.js';
 import { PERMISSIONS, type Permission } from '../../shared/permissions.js';
 import { roleCodeValues } from '../rbac/roles.js';
@@ -21,6 +21,22 @@ import { roleCodeValues } from '../rbac/roles.js';
 // UserBranchRole/legacy RolePermission grants. See
 // PUBLIC_PERMISSION_COMPATIBILITY_MAP below for the explicit, frozen 1:1
 // mapping this projects through.
+//
+// CLIENT-CASH-UX (2026-10-19, branch-aware cash permissions mini-slice): two
+// additive, server-computed, branch-aware UI hints — these are NOT
+// authorization, never enforced here, and never a client security boundary:
+//   - cashMovementLocationIds: where CASH_MOVEMENT_MANAGE is EFFECTIVE
+//     (authorization-policy.ts's authorizedLocationIds — same-permission/
+//     same-assignment pairing over the effective location universe);
+//   - cashSupervisorLocationIds: where the caller ACTS AS THE CASH SUPERVISOR
+//     (actsAsSupervisorAtLocation's exact effective semantics per location —
+//     only OWNER, or a COMPANY-scoped ADMIN holding the grant; a
+//     LOCATION-scoped role such as a CASHIER or a LOCATION ADMIN never does).
+// They exist so client/ can decide panel/button visibility per ACTIVE branch
+// (branchId ∈ hint), without the previous ambiguous global
+// `permissions.includes("CASH_MOVEMENT_MANAGE")` and without ever shipping
+// raw scopes; endpoints still enforce hasPermissionAtLocation /
+// cash.service.ts's supervisor rule server-side, unchanged.
 export type PublicUserContext = {
   id: string;
   name: string;
@@ -28,6 +44,8 @@ export type PublicUserContext = {
   roles: string[];
   branchIds: string[];
   permissions: string[];
+  cashMovementLocationIds: string[];
+  cashSupervisorLocationIds: string[];
 };
 
 type LegacyBranchRoleRow = { role: { code: string } };
@@ -68,11 +86,16 @@ const PUBLIC_PERMISSION_COMPATIBILITY_MAP: ReadonlyArray<readonly [ProductionPer
 // (which stay unchanged and in their original order). Explicit and closed —
 // still never a dynamic dump of every Production permission. Projection
 // only: server-side requirePermission remains authoritative.
+// PILOT R-1 (OWNER 2026-10-18): CASH_MOVEMENT_MANAGE is appended so the
+// cashier cash movement panel (exits, history, reversal) can see the grant it
+// is gated on. Projection only: the supervisor rule for withdrawals and
+// reversals stays in cash.service.ts.
 const PUBLIC_PRODUCTION_PERMISSION_PROJECTION: readonly ProductionPermission[] = [
   PRODUCTION_PERMISSIONS.PRODUCT_MANAGE,
   PRODUCTION_PERMISSIONS.PRODUCT_VARIANT_MANAGE,
   PRODUCTION_PERMISSIONS.PRICE_MANAGE,
   PRODUCTION_PERMISSIONS.IMPORT_RUN,
+  PRODUCTION_PERMISSIONS.CASH_MOVEMENT_MANAGE,
 ];
 
 // D1 (Phase 1 Global Closeout): `roles` now derives exclusively from the
@@ -113,5 +136,16 @@ export function toPublicUserContext(
         .map(([, legacyPublicPermission]) => legacyPublicPermission),
       ...PUBLIC_PRODUCTION_PERMISSION_PROJECTION.filter((permission) => hasPermission(context, permission)),
     ],
+    // CLIENT-CASH-UX: the two branch-aware visibility hints. Both iterate ONLY
+    // the effective location universe (authorized scope — nothing is ever
+    // fabricated) and re-check each id in isolation through the single
+    // centralized policy, so a permission from one assignment can never
+    // compose with a location from another. CASH_MOVEMENT_MANAGE is not in
+    // COMPANY_SCOPE_REQUIRED_FOR_ADMIN, so a LOCATION-scoped holding projects
+    // exactly its own locations; supervision (actsAsSupervisorAtLocation)
+    // additionally requires OWNER or an ADMIN COMPANY assignment — a
+    // LOCATION ADMIN is a manager there, never a supervisor.
+    cashMovementLocationIds: authorizedLocationIds(context, PRODUCTION_PERMISSIONS.CASH_MOVEMENT_MANAGE),
+    cashSupervisorLocationIds: supervisorLocationIds(context, [PRODUCTION_PERMISSIONS.CASH_MOVEMENT_MANAGE]),
   };
 }

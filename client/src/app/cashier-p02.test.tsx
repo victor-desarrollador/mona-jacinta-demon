@@ -38,6 +38,7 @@ type ServerState = {
 
 const cashier = {
   id: "u1", name: "Cajero", email: "cashier@demo.local", roles: ["CASHIER"], branchIds: ["CEN"], permissions: ["sale.charge"],
+  cashMovementLocationIds: [], cashSupervisorLocationIds: [],
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

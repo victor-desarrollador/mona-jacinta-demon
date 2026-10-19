@@ -100,6 +100,17 @@ describe('R3-A4.3 S4 — reservation routes', () => {
     expect((await request(bad.server).get(`${ENDPOINT}/${RESERVE.toUpperCase()}`)).status).toBe(400);
     expect(bad.calls).toEqual([]);
   });
+
+  it('H05 (R3-A4.3 S7-K) a recovery body (T-RR) → 201 for a fresh recovery reservation, 200 for its replay; the parsed recovery reaches the service', async () => {
+    const recovery = { reason: 'el cobro externo quedó sin imputar', evidence: 'cupón 0042' };
+    const fresh = app();
+    const response = await request(fresh.server).post(ENDPOINT).send(body({ recovery }));
+    expect(response.status).toBe(201);
+    expect(response.body).toMatchObject({ reserveKey: RESERVE });
+    expect(fresh.calls.map((call) => call.args[2])).toMatchObject([{ reserveKey: RESERVE, recovery }]);
+    const replay = app({ reservation: { reserve: (async () => ({ replayed: true, view })) as never } });
+    expect((await request(replay.server).post(ENDPOINT).send(body({ recovery }))).status).toBe(200);
+  });
 });
 
 describe('R3-A4.3 S4 — GET /api/v1/checkout-attempts/recent', () => {

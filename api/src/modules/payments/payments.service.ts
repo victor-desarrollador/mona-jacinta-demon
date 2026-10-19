@@ -7,6 +7,7 @@ import type { RegisterPaymentInput } from './dto/payment.dto.js';
 import { evaluateCurrentHoldCoverage } from '../sales/hold-coverage.js';
 import { assertPricingFinalizable } from '../sales/wholesale-authorization.service.js';
 import { assertPaymentCompatible, type PriceMode } from '../pricing/pricing.js';
+import { uniqueViolation } from './prisma-unique-violation.js';
 
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
 type LockedSale = {
@@ -23,13 +24,16 @@ const transient = (error: unknown) => {
     || message.includes('40P01') || message.includes('TransactionWriteConflict');
 };
 
-const isIdempotencyConflict = (error: unknown) => {
-  const candidate = error as { code?: string; meta?: { target?: unknown } };
-  if (candidate.code !== 'P2002') return false;
-  const target = candidate.meta?.target;
-  return Array.isArray(target)
-    ? target.includes('saleId') && target.includes('idempotencyKey')
-    : typeof target === 'string' && target.includes('idempotencyKey');
+// The SalePayment (saleId, idempotencyKey) unique key, read from meta.target or
+// the adapter-pg 7.10 shape (R-1, prisma-unique-violation.ts); a column list
+// must name both columns, a constraint name must contain idempotencyKey.
+// Exported for the classification unit tests only.
+export const isIdempotencyConflict = (error: unknown) => {
+  const violation = uniqueViolation(error);
+  if (violation === null) return false;
+  return violation.fields !== null
+    ? violation.fields.includes('saleId') && violation.fields.includes('idempotencyKey')
+    : violation.name !== null && violation.name.includes('idempotencyKey');
 };
 
 function invalidState() {

@@ -22,7 +22,7 @@ import { createCheckoutService } from '../../src/modules/payments/checkout.servi
 import type { CheckoutReservationRequest } from '../../src/modules/payments/dto/checkout-reservation.dto.js';
 import type { CheckoutCloseRequest, CheckoutDeclarationRow } from '../../src/modules/payments/dto/checkout-close.dto.js';
 import type { CheckoutConfirmationRequest } from '../../src/modules/payments/dto/checkout.dto.js';
-import { createCheckoutReservationFakeDb, p2002, type Row } from '../helpers/checkout-reservation-fake-db.js';
+import { createCheckoutReservationFakeDb, p2002, p2002Adapter, type Row } from '../helpers/checkout-reservation-fake-db.js';
 
 const NOW = new Date('2026-10-16T12:00:00.000Z');
 const LATER = new Date(NOW.getTime() + 20 * 60_000);
@@ -1053,5 +1053,103 @@ describe('R3-A4.3 S6.3 — S6-B05 write order: every CHARGED collection before a
     expect(collectionIndexes).toHaveLength(2);
     // RESERVED -> ABANDONED first, then every CHARGED collection.
     expect(abandonedAt).toBeLessThan(Math.min(...collectionIndexes));
+  });
+});
+
+// R-2 (R3 PG gate, OWNER 2026-10-18): T-X CHARGED with an external reference that
+// is ALREADY recorded on the branch. A read-only pre-check (T-C's step-5 pattern,
+// mirroring the two partial unique indexes) answers 409
+// EXTERNAL_REFERENCE_ALREADY_RECORDED before the first write; the P2002 of the
+// partial index — in the real adapter-pg 7.10 shape — stays the final authority
+// for a race after the pre-check. No new lock, no retry: READ COMMITTED + NOWAIT.
+describe('R-2 — T-X duplicate external reference: pre-check fast path + adapter-shaped P2002 defense', () => {
+  const transferPlan: PlanTenderInput[] = [
+    { method: 'CASH', role: 'FIXED', source: 'NEW', amount: 2000n, externalCollectionId: null },
+    { method: 'TRANSFER', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+  ];
+  const debitPlan: PlanTenderInput[] = [
+    { method: 'CASH', role: 'FIXED', source: 'NEW', amount: 2000n, externalCollectionId: null },
+    { method: 'CARD_DEBIT', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+  ];
+  const chargedTransfer = (attempt: Row, institution: CheckoutDeclarationRow['institution'] = 'GALICIA') => closeRequest([
+    d('CASH'), d('TRANSFER', { outcome: 'CHARGED', amount: attempt.expectedBalanceAmount as bigint, reference: 'OP 123', referenceKey: 'OP123', institution, evidence: 'comprobante' }),
+  ]);
+  const chargedDebit = (attempt: Row) => closeRequest([
+    d('CASH'), d('CARD_DEBIT', { outcome: 'CHARGED', amount: attempt.expectedBalanceAmount as bigint, reference: 'CUP 9', referenceKey: 'CUP9', evidence: 'cupón' }),
+  ]);
+
+  it('R2-01 TRANSFER: a recorded (branch, institution, referenceKey) is 409 EXTERNAL_REFERENCE_ALREADY_RECORDED with ZERO writes', async () => {
+    for (const status of ['UNAPPLIED', 'APPLIED', 'REFUNDED']) {
+      const t = setup();
+      await reserved(t, transferPlan);
+      t.collection({ method: 'TRANSFER', referenceKey: 'OP123', institution: 'GALICIA', status, originSaleId: null });
+      const attempt = t.db.table('checkoutAttempt')[0]!;
+      const collectionsBefore = t.db.table('externalCollection').length;
+      const mark = t.db.ops.length;
+      expect(await codeOf(t.close.close(t.asCashier, t.sale.id as string, attempt.reserveKey as string, chargedTransfer(attempt))), status)
+        .toMatchObject({ status: 409, code: 'EXTERNAL_REFERENCE_ALREADY_RECORDED' });
+      expect(t.db.writesSince(mark), status).toEqual([]);
+      expect(t.db.table('checkoutAttempt')[0]).toMatchObject({ status: 'RESERVED', declaredAt: null });
+      expect(t.db.table('checkoutAttemptDeclaration')).toHaveLength(0);
+      expect(t.db.table('externalCollection')).toHaveLength(collectionsBefore);
+      expect(t.db.table('auditLog').filter((row) => String(row.action).startsWith('CHECKOUT_DECLARATION') || row.action === 'EXTERNAL_COLLECTION_RECORDED')).toHaveLength(0);
+    }
+  });
+
+  it('R2-02 CARD_DEBIT: a recorded (branch, referenceKey) is 409 with ZERO writes, whatever its institution', async () => {
+    const t = setup();
+    await reserved(t, debitPlan);
+    t.collection({ method: 'CARD_DEBIT', referenceKey: 'CUP9', institution: null, originSaleId: null });
+    const attempt = t.db.table('checkoutAttempt')[0]!;
+    const mark = t.db.ops.length;
+    expect(await codeOf(t.close.close(t.asCashier, t.sale.id as string, attempt.reserveKey as string, chargedDebit(attempt))))
+      .toMatchObject({ status: 409, code: 'EXTERNAL_REFERENCE_ALREADY_RECORDED' });
+    expect(t.db.writesSince(mark)).toEqual([]);
+  });
+
+  it('R2-03 no false positive: another institution, another method or another branch does not block the close', async () => {
+    for (const other of [
+      { method: 'TRANSFER', referenceKey: 'OP123', institution: 'NACION' },
+      { method: 'CARD_DEBIT', referenceKey: 'OP123', institution: null },
+      { method: 'TRANSFER', referenceKey: 'OP123', institution: 'GALICIA', branchId: uuid() },
+    ]) {
+      const t = setup();
+      await reserved(t, transferPlan);
+      t.collection({ ...other, originSaleId: null });
+      const attempt = t.db.table('checkoutAttempt')[0]!;
+      const result = await t.close.close(t.asCashier, t.sale.id as string, attempt.reserveKey as string, chargedTransfer(attempt));
+      expect(result.view, JSON.stringify(other)).toMatchObject({ status: 'ABANDONED', declared: true });
+    }
+  });
+
+  it('R2-04 a race AFTER the pre-check: the real adapter-shaped P2002 of either partial index maps to the same 409 and the close rolls back', async () => {
+    for (const [plan, index, request] of [
+      [transferPlan, 'ExternalCollection_transfer_ref_key', chargedTransfer],
+      [debitPlan, 'ExternalCollection_debit_ref_key', chargedDebit],
+    ] as const) {
+      const t = setup();
+      await reserved(t, plan);
+      const attempt = t.db.table('checkoutAttempt')[0]!;
+      t.db.failOn('externalCollection', 'create', () => p2002Adapter({ index }, 'ExternalCollection'));
+      expect(await codeOf(t.close.close(t.asCashier, t.sale.id as string, attempt.reserveKey as string, request(attempt))), index)
+        .toMatchObject({ status: 409, code: 'EXTERNAL_REFERENCE_ALREADY_RECORDED' });
+      expect(t.db.table('checkoutAttempt')[0]).toMatchObject({ status: 'RESERVED', declaredAt: null });
+      expect(t.db.table('checkoutAttemptDeclaration')).toHaveLength(0);
+      expect(t.db.table('externalCollection')).toHaveLength(0);
+      expect(t.db.table('auditLog').filter((row) => row.action === 'EXTERNAL_COLLECTION_RECORDED' || row.action === 'CHECKOUT_DECLARATION_RECORDED')).toHaveLength(0);
+    }
+  });
+
+  it('R2-05 an adapter-shaped P2002 of an UNRELATED constraint, or with no constraint metadata, is rethrown untouched', async () => {
+    for (const raw of [
+      p2002Adapter({ index: 'ExternalCollection_id_applied_key' }, 'ExternalCollection'),
+      Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { modelName: 'ExternalCollection', driverAdapterError: { cause: { kind: 'UniqueConstraintViolation' } } } }),
+    ]) {
+      const t = setup();
+      await reserved(t, transferPlan);
+      const attempt = t.db.table('checkoutAttempt')[0]!;
+      t.db.failOn('externalCollection', 'create', () => raw);
+      await expect(t.close.close(t.asCashier, t.sale.id as string, attempt.reserveKey as string, chargedTransfer(attempt))).rejects.toBe(raw);
+    }
   });
 });

@@ -15,8 +15,9 @@ function jsonResponse(body: unknown, status = 200): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
 }
 
-const seller = { id: "s1", name: "Vendedor", email: "seller@demo.local", roles: ["SELLER"], branchIds: ["CEN"], permissions: [] };
-const cashier = { id: "c1", name: "Cajero", email: "cashier@demo.local", roles: ["CASHIER"], branchIds: ["CEN"], permissions: [] };
+// CLIENT-CASH-UX (2026-10-19): /auth/me branch-aware cash hints (empty — no effective cash authority in either fixture).
+const seller = { id: "s1", name: "Vendedor", email: "seller@demo.local", roles: ["SELLER"], branchIds: ["CEN"], permissions: [], cashMovementLocationIds: [], cashSupervisorLocationIds: [] };
+const cashier = { id: "c1", name: "Cajero", email: "cashier@demo.local", roles: ["CASHIER"], branchIds: ["CEN"], permissions: [], cashMovementLocationIds: [], cashSupervisorLocationIds: [] };
 
 function sale(overrides: Record<string, unknown> = {}) {
   return {

@@ -30,8 +30,8 @@ export const DIGEST_SCHEME = 'MONA/V233/STATE-DIGEST/SD1';
 export const PROTECTED_SEARCH_PATH = 'pg_catalog, pg_temp';
 export const DEFAULT_MAX_RELATION_BYTES = 64 * 1024 * 1024; // UNPINNED parameter: pin from real LOCAL_TEST sizes (design SCOPE risk)
 
-// GENERATED from the R3-A4.3 mechanical derivation of the nine migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
-// by digest in tests/local-test-fingerprint.test.ts AC-150b): 298 columns of the 32 protected relations (31 Prisma models plus
+// GENERATED from the R3-A4.3 mechanical derivation of the eleven migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
+// by digest in tests/local-test-fingerprint.test.ts AC-150b): 301 columns of the 32 protected relations (31 Prisma models plus
 // the Prisma-internal _prisma_migrations), by (relation, attnum). Pinned against schema.prisma and the migration set by
 // tests/local-test-fingerprint.test.ts.
 // Row: relation, attnum, column, field type, live format_type, notNull, hasDefault, enum type, primary-key position.
@@ -60,6 +60,9 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["CashMovement", 5, "salePaymentId", "text", "text", 0, 0, null, 0],
   ["CashMovement", 6, "userId", "text", "text", 1, 0, null, 0],
   ["CashMovement", 7, "timestamp", "tstz", "timestamp(3) with time zone", 1, 1, null, 0],
+  ["CashMovement", 8, "reason", "text", "text", 0, 0, null, 0],
+  ["CashMovement", 9, "idempotencyKey", "text", "text", 0, 0, null, 0],
+  ["CashMovement", 10, "reversesMovementId", "text", "text", 0, 0, null, 0],
   ["CashRegister", 1, "id", "text", "text", 1, 0, null, 1],
   ["CashRegister", 2, "branchId", "text", "text", 1, 0, null, 0],
   ["CashRegister", 3, "name", "text", "text", 1, 0, null, 0],
@@ -345,7 +348,7 @@ export const PROTECTED_RELATIONS: readonly string[] = Object.freeze([...new Set(
 export type ProtectedRelation = string;
 // Enum types ordered by (namespace, name) raw bytes: the index is the ordinal bound into every enum field.
 export const ENUM_TYPES: readonly Readonly<{ name: string; labels: readonly string[] }>[] = Object.freeze([
-  ["CashMovementType", ["OPENING","SALE_INCOME","CLOSING","MANUAL"]],
+  ["CashMovementType", ["OPENING","SALE_INCOME","CLOSING","MANUAL","WITHDRAWAL","EXPENSE","WITHDRAWAL_REVERSAL","EXPENSE_REVERSAL"]],
   ["CashSessionStatus", ["OPEN","CLOSED"]],
   ["CheckoutAttemptStatus", ["RESERVED","CONFIRMED","REJECTED","ABANDONED"]],
   ["CheckoutDeclarationOutcome", ["NONE","CHARGED","RETURNED"]],

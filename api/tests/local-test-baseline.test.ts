@@ -666,11 +666,11 @@ describe('R4 transformation verifier (seed #2: P → Q, in memory)', () => {
     expect(JSON.stringify([error?.message, error?.stack, Object.getOwnPropertyNames(error as object)])).not.toContain(TCANARY);
     expect((error as { cause?: unknown }).cause).toBeUndefined();
   });
-  it('AC-135 every one of the 298 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(298);
+  it('AC-135 every one of the 301 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(301);
     const categories = new Set(['PRESERVED_FROM_BACKUP', 'CANONICAL_VALUE', 'RECREATED_SEMANTIC_SET', 'ROW_CLASS_RULES', 'PRESERVED_AND_CREATED']);
     for (const c of TYPE_CONTRACT_V3) expect(categories.has(TRANSFORMATION_CATEGORIES[`${c.relation}.${c.name}`] as string), `${c.relation}.${c.name}`).toBe(true);
-    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(298);
+    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(301);
     for (const name of ['expectedCash', 'countedCash', 'difference']) {
       expect(TRANSFORMATION_CATEGORIES[`CashSession.${name}`]).toBe('PRESERVED_FROM_BACKUP');
     }

@@ -46,6 +46,9 @@ const cashier = {
   roles: ["CASHIER"],
   branchIds: ["CEN"],
   permissions: ["sale.charge"],
+  // CLIENT-CASH-UX (2026-10-19): /auth/me branch-aware cash hints (empty here).
+  cashMovementLocationIds: [],
+  cashSupervisorLocationIds: [],
 };
 
 function jsonResponse(body: unknown, status = 200): Response {

@@ -775,7 +775,10 @@ describe('Block 1 fix round — CASHIER actor for wholesale confirmation (N14-N2
     const saleId = await wholesalePending(t);
     const stripped = { ...assignment('CASHIER', t.L1), permissions: assignment('CASHIER', t.L1).permissions.filter((p) => p !== 'SALE_CHARGE') };
     await expectAppError(confirmAs(t, userReq([stripped]), saleId), 403, 'FORBIDDEN');
-    await expectAppError(confirmAs(t, userReq([assignment('CASHIER', null)]), saleId), 403, 'WHOLESALE_CASHIER_REQUIRED');
+    // SECURITY-RBAC-01a: a malformed COMPANY CASHIER no longer passes the
+    // generic SALE_CHARGE location gate (COMPANY is valid only for
+    // OWNER/ADMIN), so it is refused there, before the actor check.
+    await expectAppError(confirmAs(t, userReq([assignment('CASHIER', null)]), saleId), 403, 'FORBIDDEN');
     expect(t.sale(saleId).wholesaleConfirmedAt).toBeNull();
   });
 

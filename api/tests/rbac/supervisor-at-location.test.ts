@@ -35,6 +35,8 @@ const role = (roleCode: Assignment['roleCode'], locationId: string, permissions:
   roleId: `r-${roleCode}`, roleCode, scopeKind: 'LOCATION', locationId, permissions: [...permissions],
 });
 const cashierAtA = role('CASHIER', A, DEFAULT_ROLE_GRANTS.CASHIER);
+// SECURITY-RBAC-01a: malformed data — COMPANY is valid only for OWNER/ADMIN.
+const cashierCompany: Assignment = { ...cashierAtA, scopeKind: 'COMPANY', locationId: null, permissions: [...DEFAULT_ROLE_GRANTS.CASHIER, P.SALE_CANCEL_PENDING] };
 
 // The permission sets the later slices pass (C1–C5 §4.3, last-REVISE §3.2 and §4.2).
 const CONFIRM = [P.SALE_CHARGE, P.SALE_COMPLETE];
@@ -150,5 +152,14 @@ describe('R3-A4.3 S3 — actsAsSupervisorAtLocation', () => {
       adminAtA: [false, true, true, false, false, true, false, false],
       cashierAtA: [false, true, true, false, false, true, false, true],
     });
+  });
+
+  it('SECURITY-RBAC-01a: an invalid CASHIER + COMPANY assignment never acts as supervisor and has no authority at any location', () => {
+    const invalid = ctx(cashierCompany);
+    expect(actsAsSupervisorAtLocation(invalid, [P.SALE_CANCEL_PENDING], B)).toBe(false);
+    expect(actsAsSupervisorAtLocation(invalid, CONFIRM, B)).toBe(false);
+    expect(hasPermissionAtLocation(invalid, P.SALE_CHARGE, B)).toBe(false);
+    expect(hasBranchAccess(invalid, B)).toBe(false);
+    expect(actsAsSupervisorAtLocation(ctx(cashierAtA, cashierCompany), [P.SALE_CANCEL_PENDING], A)).toBe(false);
   });
 });

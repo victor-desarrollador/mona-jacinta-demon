@@ -11,6 +11,7 @@ const TOKEN_KEY = "mona-jacinta-token";
 
 type TestUser = {
   id: string; name: string; email: string; roles: string[]; branchIds: string[]; permissions: string[];
+  cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[];
 };
 
 type HistoryEntry = {
@@ -38,6 +39,7 @@ type ServerState = {
 
 const cashierUser = (permissions: string[]): TestUser => ({
   id: "c1", name: "Cajero", email: "cashier@demo.local", roles: ["CASHIER"], branchIds: ["CEN"], permissions,
+  cashMovementLocationIds: [], cashSupervisorLocationIds: [],
 });
 const CLOSE = ["sale.charge", "cash.session.open", "cash.session.close"];
 

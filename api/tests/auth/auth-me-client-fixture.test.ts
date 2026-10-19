@@ -1,0 +1,112 @@
+// PILOT R-1 (OWNER 2026-10-18): the client cash tests must be fed what
+// /auth/me can REALLY return. client/src/app/test-fixtures/auth-me.json holds
+// the public { roles, permissions } of the canonical actors; this DB-free test
+// recomputes each one through the real toPublicUserContext with the real
+// catalogued grants and fails on any drift, so a client fixture can never again
+// carry a permission the server never projects.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { toPublicUserContext } from '../../src/modules/auth/user-context.dto.js';
+import { resolveUserContext } from '../../src/modules/auth/auth.service.js';
+import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matrix.js';
+
+const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'client', 'src', 'app', 'test-fixtures', 'auth-me.json');
+
+type Actor = { roleCode: 'OWNER' | 'ADMIN' | 'CASHIER' | 'SELLER'; scopeKind: 'COMPANY' | 'LOCATION' };
+const ACTORS: Record<string, Actor> = {
+  OWNER: { roleCode: 'OWNER', scopeKind: 'COMPANY' },
+  ADMIN_COMPANY: { roleCode: 'ADMIN', scopeKind: 'COMPANY' },
+  ADMIN_LOCATION: { roleCode: 'ADMIN', scopeKind: 'LOCATION' },
+  CASHIER: { roleCode: 'CASHIER', scopeKind: 'LOCATION' },
+  SELLER: { roleCode: 'SELLER', scopeKind: 'LOCATION' },
+};
+
+function projected({ roleCode, scopeKind }: Actor) {
+  const location = scopeKind === 'LOCATION';
+  const dto = toPublicUserContext(
+    { id: 'u', name: roleCode, email: 'u@test.local', branchRoles: [] },
+    {
+      // CLIENT-CASH-UX: branch-1 is the ONLY active location in this fake
+      // universe, exactly as AMF-03's resolveUserContext expansion validates;
+      // passing it for COMPANY actors mirrors the real COMPANY→locations
+      // lookup the branch-aware hints are computed over (permissions, which
+      // never consults the expansion, is unchanged).
+      effectiveLocationIds: ['branch-1'],
+      assignments: [{
+        roleId: `r-${roleCode}`, roleCode, scopeKind, locationId: location ? 'branch-1' : null,
+        permissions: roleCode === 'OWNER' ? [] : [...DEFAULT_ROLE_GRANTS[roleCode]],
+      }],
+    },
+  );
+  return {
+    roles: dto.roles,
+    permissions: dto.permissions,
+    cashMovementLocationIds: dto.cashMovementLocationIds,
+    cashSupervisorLocationIds: dto.cashSupervisorLocationIds,
+  };
+}
+
+describe('client /auth/me fixture = the real public projection', () => {
+  it('AMF-01 every canonical actor in the client fixture equals toPublicUserContext output', () => {
+    const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, {
+      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[];
+    }>;
+    expect(Object.keys(fixture).sort()).toEqual(Object.keys(ACTORS).sort());
+    for (const [name, actor] of Object.entries(ACTORS)) {
+      expect(fixture[name], name).toEqual(projected(actor));
+    }
+  });
+
+  it('AMF-02 the cash movement panel gate is reachable for OWNER, COMPANY ADMIN and CASHIER, and not for SELLER', () => {
+    for (const name of ['OWNER', 'ADMIN_COMPANY', 'CASHIER']) expect(projected(ACTORS[name]!).permissions, name).toContain('CASH_MOVEMENT_MANAGE');
+    expect(projected(ACTORS.SELLER!).permissions).not.toContain('CASH_MOVEMENT_MANAGE');
+  });
+
+  // The SAME service /auth/me calls (resolveUserContext): RolePermission rows
+  // as Prisma returns them -> buildAuthorizationContext -> toPublicUserContext.
+  it('AMF-03 resolveUserContext over persisted role-scope rows returns exactly the fixture for every actor', async () => {
+    const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, {
+      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[];
+    }>;
+    for (const [name, { roleCode, scopeKind }] of Object.entries(ACTORS)) {
+      const location = scopeKind === 'LOCATION';
+      const row = {
+        id: `user-${name}`, name, email: `${name}@test.local`, isActive: true, passwordHash: 'unused', branchRoles: [],
+        roleScopes: [{
+          roleId: `role-${roleCode}`, scopeKind, locationId: location ? 'branch-1' : null,
+          role: { code: roleCode, permissions: (roleCode === 'OWNER' ? [] : [...DEFAULT_ROLE_GRANTS[roleCode]]).map((code) => ({ permission: { code } })) },
+        }],
+      };
+      const database = {
+        user: { findUnique: async () => row },
+        location: { findMany: async () => [{ id: 'branch-1' }] },
+      } as unknown as Parameters<typeof resolveUserContext>[0];
+      const dto = await resolveUserContext(database, row.id);
+      expect({
+        roles: dto.roles,
+        permissions: dto.permissions,
+        cashMovementLocationIds: dto.cashMovementLocationIds,
+        cashSupervisorLocationIds: dto.cashSupervisorLocationIds,
+      }, name).toEqual(fixture[name]);
+    }
+  });
+
+  // CLIENT-CASH-UX: the branch-aware arrays must separate the supervisor
+  // audience (OWNER / COMPANY ADMIN — Retiro & Corregir visible) from the
+  // manager audience (CASHIER, LOCATION ADMIN — Gasto/Historial visible,
+  // never Retiro/Corregir), and never hand a hint to an actor with no
+  // effective cash authority (SELLER).
+  it('AMF-04 the hints separate supervisor from manager and stay empty for the unauthorized', () => {
+    for (const name of ['OWNER', 'ADMIN_COMPANY']) {
+      expect(projected(ACTORS[name]!).cashSupervisorLocationIds, name).toContain('branch-1');
+    }
+    for (const name of ['ADMIN_LOCATION', 'CASHIER']) {
+      expect(projected(ACTORS[name]!).cashMovementLocationIds, name).toContain('branch-1');
+      expect(projected(ACTORS[name]!).cashSupervisorLocationIds, name).toEqual([]);
+    }
+    expect(projected(ACTORS.SELLER!).cashMovementLocationIds).toEqual([]);
+    expect(projected(ACTORS.SELLER!).cashSupervisorLocationIds).toEqual([]);
+  });
+});

@@ -40,6 +40,7 @@ import { attemptCollision, createCheckoutReservationService } from '../../src/mo
 import { createCheckoutAttemptsRecentService } from '../../src/modules/payments/checkout-attempts-recent.service.js';
 import type { PlanTenderInput } from '../../src/modules/payments/checkout-canonical.js';
 import { AppError } from '../../src/shared/errors.js';
+import { pointOfSaleNumberFor } from '../helpers/r3-service-pg.js';
 
 const enabled = process.env.MONA_R3_S4_PG === '1';
 const WAIT_FOR_BLOCKED_MS = 10_000;
@@ -152,10 +153,17 @@ describe.skipIf(!enabled)('R3-A4.3 S4 — T-R on PostgreSQL (migrations 1–9, d
 
   async function fixture() {
     const company = await db.company.findFirstOrThrow({ orderBy: { createdAt: 'asc' }, select: { id: true } });
+    // PG gate 2026-10-18: no LOCAL_TEST baseline carries a pricing config; the
+    // CARD_DEBIT T-R case must not depend on another suite having run first.
+    await db.companyPricingConfig.upsert({
+      where: { companyId: company.id },
+      create: { companyId: company.id, bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300 },
+      update: {},
+    });
     const variant = await db.productVariant.findFirstOrThrow({ select: { id: true, productId: true, sku: true }, orderBy: { id: 'asc' } });
     const branch = randomUUID();
     const tag = branch.slice(0, 8);
-    await db.location.create({ data: { id: branch, companyId: company.id, code: `r3s4-${tag}`, name: `R3 S4 ${tag}`, type: 'RETAIL_BRANCH', address: 'Test', pointOfSaleNumber: 3_000_000 + parseInt(tag.slice(0, 5), 16) } });
+    await db.location.create({ data: { id: branch, companyId: company.id, code: `r3s4-${tag}`, name: `R3 S4 ${tag}`, type: 'RETAIL_BRANCH', address: 'Test', pointOfSaleNumber: pointOfSaleNumberFor('S4', tag) } });
     await db.branch.create({ data: { id: branch, code: `r3s4-${tag}`, name: `R3 S4 ${tag}`, address: 'Test', pointOfSaleNumber: 1 } });
     const users = await Promise.all([1, 2].map((n) => db.user.create({ data: { name: `R3 S4 ${n}`, email: `r3s4-${tag}-${n}@test.invalid`, passwordHash: 'not-used' } })));
     const register = await db.cashRegister.create({ data: { branchId: branch, name: `R3 S4 ${tag}` } });

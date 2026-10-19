@@ -6,8 +6,8 @@
 // Before any database client exists, in this order: exact arguments; Node v24.20.0
 // with no runtime options; an environment of exactly HOME/PATH/LANG (pg reads PG*
 // variables and NODE_PG_FORCE_NATIVE itself, and NODE_OPTIONS would run code before
-// this file); the manifest (SHA-256 of pilot-marker.mjs, lib.mjs, the CA, the seven
-// migrations and every file of the pinned pg dependency closure, bound to the
+// this file); the manifest (SHA-256 of pilot-marker.mjs, lib.mjs, the CA, the eleven
+// migrations, the four shared G11 cut-over modules and every file of the pinned pg dependency closure, bound to the
 // versions/integrities in package-lock.json); the private files under the passwd
 // home and their parent directories; and the target: a supported Supabase host shape
 // whose project ref digest equals the pinned PILOT digest and is not a forbidden one.
@@ -60,23 +60,49 @@ const REF_DIGESTS = Object.freeze({
 
 export const PACKAGE_CLOSURE = Object.freeze(['pg', 'pg-connection-string', 'pg-pool', 'pg-protocol', 'pg-types', 'pgpass',
   'split2', 'pg-int8', 'postgres-array', 'postgres-bytea', 'postgres-date', 'postgres-interval', 'pg-cloudflare', 'xtend']);
+// G11 cut-over (OWNER 2026-10-18): all eleven reviewed migrations (pilot-migration-states.mjs
+// pins the same list; a test asserts equality).
 export const MIGRATIONS = Object.freeze([
   '20260907015311_init', '20260912182432_add_company_location', '20260912191702_add_user_role_scope',
   '20260922210000_d3_initial_stock_and_global_audit', '20261002120000_block1_pricing_wholesale',
   '20261006120000_pilot_pricing_v2', '20261012120000_cash_session_reconciliation',
+  '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
+  '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals',
 ]);
-const REQUIRED_REPO_FILES = Object.freeze(['scripts/database/pilot-marker.mjs', 'scripts/database/lib.mjs',
-  'scripts/certs/supabase-prod-ca-2021.crt', ...MIGRATIONS.map((m) => `api/prisma/migrations/${m}/migration.sql`)]);
+// The builtins-only shared cut-over modules. They are pinned by the manifest and imported only
+// AFTER it verified (never statically): states/ledger classifier, app-schema projection,
+// generated references + probes, RBAC catalogs.
+export const SHARED_MODULES = Object.freeze({
+  states: 'scripts/database/pilot-migration-states.mjs',
+  projection: 'scripts/database/app-schema-projection.mjs',
+  references: 'scripts/database/pilot-schema-references.mjs',
+  rbac: 'scripts/database/pilot-rbac-catalog.mjs',
+});
+export const REQUIRED_REPO_FILES = Object.freeze(['scripts/database/pilot-marker.mjs', 'scripts/database/lib.mjs',
+  'scripts/certs/supabase-prod-ca-2021.crt', ...Object.values(SHARED_MODULES), ...MIGRATIONS.map((m) => `api/prisma/migrations/${m}/migration.sql`)]);
+// m8/m9: the six R3 tables (counted and relation-checked like every operational table).
+export const R3_TABLES = Object.freeze(['SaleCheckout', 'SaleLineAllocation', 'ExternalCollection', 'CheckoutAttempt', 'CheckoutAttemptTender', 'CheckoutAttemptDeclaration']);
 export const OPERATIONAL_TABLES = Object.freeze(['Company', 'CompanyPricingConfig', 'Location', 'Branch', 'User', 'Role',
   'Permission', 'RolePermission', 'UserRoleScope', 'UserBranchRole', 'CashRegister', 'SaleNumberCounter', 'Category', 'Brand',
   'Product', 'ProductVariant', 'Inventory', 'StockMovement', 'StockReservation', 'Sale', 'SaleItem', 'SalePayment',
-  'CashSession', 'CashMovement', 'AuditLog']);
+  'CashSession', 'CashMovement', 'AuditLog', ...R3_TABLES]);
 const LEDGER_TABLE = '_prisma_migrations';
 // Columns that exist only once the schema of each pending migration is really present.
 const PROBES = Object.freeze({
   '20261002120000_block1_pricing_wholesale': [['Sale', 'pricingMode'], ['Sale', 'paymentStartedAt'], ['Sale', 'wholesaleConfirmedById'], ['ProductVariant', 'wholesalePrice']],
   '20261006120000_pilot_pricing_v2': [['ProductVariant', 'cashPrice'], ['Sale', 'priceMode'], ['SaleItem', 'priceMode'], ['SaleItem', 'baseUnitPrice'], ['CompanyPricingConfig', 'listAdjustmentBps']],
   '20261012120000_cash_session_reconciliation': [['CashSession', 'expectedCash'], ['CashSession', 'countedCash'], ['CashSession', 'difference']],
+  '20261016120000_r3_proportional_checkout': [['Sale', 'pricingModel'], ['SalePayment', 'checkoutId']],
+  '20261016130000_r3_checkout_attempts': [['SaleCheckout', 'attemptStatus'], ['CheckoutAttempt', 'reserveKey']],
+  '20261018120000_cash_movement_withdrawals_expenses': [['CashMovement', 'reason'], ['CashMovement', 'idempotencyKey']],
+  '20261018180000_cash_movement_reversals': [['CashMovement', 'reversesMovementId']],
+});
+// What a pre-G11 state necessarily lacks (and therefore flags): the later migrations, their
+// tables and their probe columns. Nothing else is tolerated for an exact initial state.
+const LATER = Object.freeze({
+  EXACT_S4: Object.freeze({ migrations: MIGRATIONS.slice(4), tables: ['CompanyPricingConfig', ...R3_TABLES] }),
+  EXACT_G7: Object.freeze({ migrations: MIGRATIONS.slice(7), tables: [...R3_TABLES] }),
+  EXACT_G11: Object.freeze({ migrations: [], tables: [] }),
 });
 // Column type contract for every value-bearing read: [column, type schema, typtype, allowed type names].
 // Only built-in pg_catalog base types or the schema's own public enums (built-in enum I/O);
@@ -90,6 +116,10 @@ const TYPE_CONTRACT = Object.freeze({
   Sale: [['status', 'public', 'e', ['SaleStatus']]],
   CashSession: [['status', 'public', 'e', ['CashSessionStatus']]],
   User: [['isActive', 'pg_catalog', 'b', ['bool']]],
+  // G11: the RBAC catalog rows classified against CATALOG_35/CATALOG_36.
+  Role: [['id', 'pg_catalog', 'b', ['text']], ['code', 'pg_catalog', 'b', ['text']]],
+  Permission: [['id', 'pg_catalog', 'b', ['text']], ['code', 'pg_catalog', 'b', ['text']]],
+  RolePermission: [['roleId', 'pg_catalog', 'b', ['text']], ['permissionId', 'pg_catalog', 'b', ['text']]],
 });
 const COLLATABLE_TYPES = new Set(['varchar', 'text']);
 const LOCATION_TYPES = new Set(['RETAIL_BRANCH', 'CENTRAL_WAREHOUSE']);
@@ -379,6 +409,11 @@ function defaultDeps() {
     root, fs: nodeFs,
     resolvePg: () => fileURLToPath(import.meta.resolve('pg')),
     importMarker: () => import(pathToFileURL(path.join(root, 'scripts', 'database', 'pilot-marker.mjs')).href),
+    importShared: async () => {
+      const load = (rel) => import(pathToFileURL(path.join(root, rel)).href);
+      const [states, projection, references, rbac] = await Promise.all(Object.values(SHARED_MODULES).map(load));
+      return { states, projection, rbac, references: { SCHEMA_REFERENCES: references.SCHEMA_REFERENCES, STATE_PROBES: references.STATE_PROBES } };
+    },
     createClient: null, refDigests: REF_DIGESTS,
     log: (line) => console.log(line), error: (line) => console.error(line), endTimeoutMs: 5000,
   };
@@ -396,6 +431,14 @@ export async function main(argv, overrides = {}) {
 
   let marker;
   try { marker = await deps.importMarker(); } catch { return refuse('integrity', 'pilot-marker.mjs could not be loaded', 3); }
+  let shared;
+  try {
+    shared = await deps.importShared();
+    if (typeof shared?.states?.classifyLedger !== 'function' || typeof shared?.projection?.readProjection !== 'function'
+      || typeof shared?.rbac?.classifyCatalog !== 'function' || shared?.references?.STATE_PROBES === undefined) throw new Error('shape');
+  } catch {
+    return refuse('integrity', 'the shared cut-over modules could not be loaded', 3);
+  }
 
   const cfg = path.join(deps.homedir, '.config');
   const dir = path.join(cfg, 'mona-jacinta');
@@ -414,10 +457,10 @@ export async function main(argv, overrides = {}) {
   const target = checkTarget(conn, deps.refDigests, marker.deriveProjectRef);
   if (!target.ok) return refuse('target', target.reason, 3);
 
-  return connectAndRead({ deps, marker, conn, markerId, ref: target.ref, repoSha: integrity.repoSha, refuse });
+  return connectAndRead({ deps, marker, shared, conn, markerId, ref: target.ref, repoSha: integrity.repoSha, refuse });
 }
 
-async function connectAndRead({ deps, marker, conn, markerId, ref, repoSha, refuse }) {
+async function connectAndRead({ deps, marker, shared, conn, markerId, ref, repoSha, refuse }) {
   const secrets = [conn.password, conn.host, conn.user, conn.database, String(conn.port), ref, markerId];
   const createClient = deps.createClient ?? marker.createVerifiedClient;
   let client;
@@ -425,6 +468,12 @@ async function connectAndRead({ deps, marker, conn, markerId, ref, repoSha, refu
 
   let inTx = false;
   const run = async (id) => client.query(STATEMENTS[id]);
+  // The shared modules' constant SQL (manifest-pinned bytes): the only text sent besides STATEMENTS.
+  const sharedSql = new Set([...Object.values(shared.projection.PROJECTION_SQL), ...Object.values(shared.rbac.CATALOG_SQL)]);
+  const runShared = async (text) => {
+    if (!sharedSql.has(text)) throw Object.assign(new Error('statement outside the allowlist'), { code: 'A4_ALLOWLIST' });
+    return client.query(text);
+  };
   const rollback = async () => {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try { await client.query(STATEMENTS.ROLLBACK); inTx = false; return true; } catch { /* retried, then reported */ }
@@ -471,14 +520,14 @@ async function connectAndRead({ deps, marker, conn, markerId, ref, repoSha, refu
       return identityRefused('marker row is not exactly one pilot row with the expected id');
     }
 
-    const report = await readState(run, repoSha);
+    const report = await readState(run, repoSha, shared, runShared);
     const closed = await rollback();
     if (!closed) { deps.error(`${PREFIX} ERROR: phase=cleanup — ROLLBACK not confirmed; results not trusted`); deps.log('A4_RESULT=ERROR'); return 5; }
     deps.log(`${PREFIX} identity: canonical PILOT marker structure and row verified in one READ ONLY snapshot; TEST guard absent; project ref digest matched the pinned PILOT digest (values not shown)`);
     for (const line of report.lines) deps.log(clean(line));
     deps.log(`  flags: ${report.flags.length ? report.flags.map(clean).join(', ') : 'none'}`);
     deps.log('A4_IDENTITY=VERIFIED');
-    deps.log(`A4_STATE=${report.flags.length ? 'PARTIAL' : 'COMPLETE'}`);
+    deps.log(`A4_STATE=${report.state}`);
     deps.log('A4_RESULT=VERIFIED');
     return 0;
   } catch (err) {
@@ -517,9 +566,10 @@ function classifyMigration(rows, repoChecksum) {
   return { status, applied: applied.length, failed: failed.length, rolledBack: rolledBack.length, allMatch: rows.every((r) => r.checksum === repoChecksum) };
 }
 
-async function readState(run, repoSha) {
+async function readState(run, repoSha, shared, runShared) {
   const lines = [];
   const flags = [];
+  let ledgerRows = null;
   // Relation safety (catalog only): ordinary table, no RLS/rules, owned by the current role,
   // built-in heap access method, no inheritance/partitioning, only built-in index AMs/opclasses.
   const safe = new Set();
@@ -556,6 +606,7 @@ async function readState(run, repoSha) {
       flags.push(`ROWS_TOO_MANY:${LEDGER_TABLE}`); lines.push('  ledger: NOT READ (row count above the cap)');
     } else {
       const rows = (await run('LEDGER')).rows ?? [];
+      ledgerRows = rows;
       if (BigInt(rows.length) !== BigInt(n)) flags.push('LEDGER_COUNT_MISMATCH');
       // Every row of every migration is kept (one row per apply attempt); nothing is overwritten.
       const groups = new Map();
@@ -638,7 +689,40 @@ async function readState(run, repoSha) {
     if (rows.some((r) => typeof r.active !== 'boolean')) flags.push('INVALID_VALUE:User');
     lines.push(`  users active/inactive (counts only): ${rows.filter((r) => r.active === true).length}/${rows.filter((r) => r.active === false).length}`);
   }
-  return { lines, flags: [...new Set(flags)] };
+
+  // ---- G11 cut-over verdict (same snapshot) ----
+  // The ledger as one of the three exact states, the app-owned schema projection against that
+  // state's generated reference, its semantic probes, and the RBAC catalog.
+  const ledger = ledgerRows === null || flags.includes('LEDGER_COUNT_MISMATCH') ? null : shared.states.classifyLedger(ledgerRows);
+  const ledgerState = ledger?.ok ? ledger.state : null;
+  const schema = await shared.projection.readProjection({ query: runShared });
+  const digest = shared.projection.projectionDigest(schema);
+  const refDigest = ledgerState ? shared.references.SCHEMA_REFERENCES?.[ledgerState]?.digest : undefined;
+  const reference = refDigest === undefined ? 'NONE' : refDigest === digest ? 'MATCH' : 'MISMATCH';
+  const probeFailures = ledgerState ? shared.projection.runProbes(schema, shared.references.STATE_PROBES?.[ledgerState] ?? []) : [];
+  let catalog = 'NOT_READ';
+  if (readable('Role') && readable('Permission') && readable('RolePermission')) {
+    const rows = async (key) => (await runShared(shared.rbac.CATALOG_SQL[key])).rows ?? null;
+    const c = shared.rbac.classifyCatalog({ roles: await rows('roles'), permissions: await rows('permissions'), grants: await rows('grants') });
+    catalog = c.ok ? c.catalog : 'UNCLASSIFIED';
+  }
+  if (catalog !== 'CATALOG_36') flags.push(`RBAC_CATALOG:${catalog}`);
+  lines.push(`  cutover: ledger=${ledgerState ?? 'NONE'} reference=${reference} probes_failed=${probeFailures.length} rbac=${catalog}`);
+  lines.push(`  app schema digest: ${digest}`);
+  for (const f of probeFailures) lines.push(`  ${f}`);
+  // An exact INITIAL state tolerates only the flags its pre-G11 schema necessarily produces
+  // (later migrations not recorded, their probe columns and tables absent, the old catalog);
+  // EXACT_G11 tolerates none.
+  const later = ledgerState ? LATER[ledgerState] : null;
+  const tolerated = (flag) => later !== null && (
+    later.migrations.some((m) => flag === `MIGRATION_NOT_RECORDED:${m}` || flag === `SCHEMA_ABSENT:${m}`)
+    || later.tables.some((t) => flag === `UNVERIFIED_RELATION:${t}`)
+    || (ledgerState !== 'EXACT_G11' && flag === 'RBAC_CATALOG:CATALOG_35'));
+  const unique = [...new Set(flags)];
+  const blocking = unique.filter((f) => !tolerated(f));
+  const exact = ledgerState !== null && reference === 'MATCH' && probeFailures.length === 0 && blocking.length === 0
+    && (ledgerState === 'EXACT_G11' ? catalog === 'CATALOG_36' : catalog === 'CATALOG_35' || catalog === 'CATALOG_36');
+  return { lines, flags: unique, state: exact ? ledgerState : 'PARTIAL' };
 }
 
 // client.end() can stall on a dead socket: bounded, and the socket is destroyed on timeout.

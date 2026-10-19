@@ -155,12 +155,13 @@ export function insertedLines(original: string, copy: string): { at: number; lin
   return { at: prefix, lines: b.slice(prefix, b.length - suffix) };
 }
 
-// Migration-9 SHA-256 pin. The AUTHORITATIVE pin is fixed by R3-T (S11) in its
-// own manifest, after review; S1 deliberately carries none. A hash is never
-// considered validated just because it is 64 lowercase hex characters: only an
-// exact comparison against the R3-T pin is. Until then the gate reports
-// PENDING_R3_T_PIN and P21b fails closed.
-export const R3_T_MIGRATION_9_SHA256_PIN: string | null = null;
+// Migration-9 SHA-256 pin. The AUTHORITATIVE pin is fixed by R3-T (U1) in the
+// reviewed LOCAL_TEST payload, scripts/database/local-test-migration-payload.mjs;
+// this literal must equal it (bound by r3-attempts-pg-harness.static H06). A
+// hash is never considered validated just because it is 64 lowercase hex
+// characters: only an exact comparison against this pin is. `null` (no pin)
+// still reports PENDING_R3_T_PIN, and P21b fails closed.
+export const R3_T_MIGRATION_9_SHA256_PIN: string | null = '076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148';
 
 export type PinCheck = { status: 'MATCH' | 'PENDING_R3_T_PIN'; actual: string };
 

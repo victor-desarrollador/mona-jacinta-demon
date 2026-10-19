@@ -6,6 +6,7 @@ import {
   hasPermissionAtLocation,
   isOwner,
   requiresCompanyScope,
+  supervisorLocationIds,
 } from '../../src/modules/rbac/authorization-policy.js';
 
 // Phase 1D.2 — authorization-policy.ts is the ONLY place OWNER's implicit
@@ -247,6 +248,61 @@ describe('authorizedLocationIds (Phase 1D.3.4 read filters)', () => {
   });
 });
 
+// CLIENT-CASH-UX (2026-10-19, branch-aware cash permissions mini-slice):
+// location-filtered sibling of authorizedLocationIds for SUPERVISOR
+// semantics. It defaults to no supervision anywhere and only the accepted
+// contexts qualify; its bounded universe is authoritative.
+describe('supervisorLocationIds (branch-aware supervisor read filter)', () => {
+  it('keeps only effective locations where actsAsSupervisorAtLocation qualifies — a LOCATION-scoped role never supervises', () => {
+    // The same composition guard as authorizedLocationIds, but under the
+    // strict supervisor rule: one assignment must be an ADMIN COMPANY holding
+    // every requested permission (or a valid OWNER COMPANY).
+    // COMPANY holding every requested permission (or a valid OWNER COMPANY).
+    const cashier = { ...seller, roleCode: 'CASHIER' as const, permissions: ['CASH_MOVEMENT_MANAGE'] };
+    expect(supervisorLocationIds({
+      ...ctx([cashier]),
+      effectiveLocationIds: ['A'],
+    }, ['CASH_MOVEMENT_MANAGE'])).toEqual([]);
+  });
+
+  it('a COMPANY-scoped ADMIN holding the grant supervises at every effective location; without it, at none', () => {
+    expect(supervisorLocationIds({
+      ...ctx([adminCompany]),
+      effectiveLocationIds: ['A', 'B'],
+    }, ['SALE_VIEW'])).toEqual(['A', 'B']);
+    expect(supervisorLocationIds({
+      ...ctx([{ ...adminCompany, permissions: ['PRICE_MANAGE'] }]),
+      effectiveLocationIds: ['A', 'B'],
+    }, ['SALE_VIEW'])).toEqual([]);
+  });
+
+  it('uses canonical OWNER COMPANY implicit authority without depending on explicit grants', () => {
+    expect(supervisorLocationIds({
+      ...ctx([owner]),
+      effectiveLocationIds: ['A', 'B'],
+    }, ['CASH_MOVEMENT_MANAGE'])).toEqual(['A', 'B']);
+  });
+
+  it('never fabricates location ids outside the effective universe, deduplicates, and fails closed for malformed owner rows and empty permission lists', () => {
+    // ownerLocation is malformed (LOCATION-scoped OWNER): the isOwner shortcut
+    // must never fire for it, and nothing else qualifies.
+    expect(supervisorLocationIds({
+      ...ctx([ownerLocation]),
+      effectiveLocationIds: ['X', 'X', 'Y'],
+    }, ['CASH_MOVEMENT_MANAGE'])).toEqual([]);
+    // Bounded by the effective list even for an OWNER COMPANY that would
+    // otherwise qualify for any string.
+    expect(supervisorLocationIds({
+      ...ctx([owner]),
+      effectiveLocationIds: ['A'],
+    }, ['CASH_MOVEMENT_MANAGE'])).toEqual(['A']);
+    expect(supervisorLocationIds({
+      ...ctx([owner]),
+      effectiveLocationIds: ['A'],
+    }, [])).toEqual([]);
+  });
+});
+
 describe('hasBranchAccess (Phase 1D.2) — coarse membership only, never a permission decision', () => {
   it('[RED 13] LOCATION A -> true, B -> false', () => {
     expect(hasBranchAccess(ctx([seller]), 'A')).toBe(true);
@@ -285,5 +341,44 @@ describe('hasBranchAccess (Phase 1D.2) — coarse membership only, never a permi
     const mixed = ctx([ownerLocation, seller]); // malformed OWNER@X + valid SELLER@A
     expect(hasBranchAccess(mixed, 'X')).toBe(false); // malformed OWNER@X contributes nothing
     expect(hasBranchAccess(mixed, 'A')).toBe(true); // SELLER@A still grants A normally
+  });
+});
+
+// SECURITY-RBAC-01a — second line of defense: even if a COMPANY assignment of a
+// role other than OWNER/ADMIN reaches the policy (buildAuthorizationContext
+// already drops it, tested in authorization-context-company-scope.test.ts),
+// it contributes zero authority, per assignment, in every check.
+describe('COMPANY scope only for OWNER/ADMIN — policy second defense (SECURITY-RBAC-01a)', () => {
+  const companyOf = (roleCode: 'CASHIER' | 'SELLER' | 'WAREHOUSE') => ({
+    roleId: `r-${roleCode}`, roleCode, scopeKind: 'COMPANY' as const, locationId: null, permissions: ['SALE_CHARGE'],
+  });
+  const cashierAtA = {
+    roleId: 'r-cashier-a', roleCode: 'CASHIER' as const, scopeKind: 'LOCATION' as const, locationId: 'A', permissions: ['SALE_CHARGE'],
+  };
+
+  for (const roleCode of ['CASHIER', 'SELLER', 'WAREHOUSE'] as const) {
+    it(`an invalid ${roleCode} + COMPANY assignment grants no branch access, no located and no global permission`, () => {
+      const invalid = ctx([companyOf(roleCode)]);
+      expect(hasBranchAccess(invalid, 'B')).toBe(false);
+      expect(hasPermissionAtLocation(invalid, 'SALE_CHARGE', 'B')).toBe(false);
+      expect(hasPermission(invalid, 'SALE_CHARGE')).toBe(false);
+    });
+  }
+
+  it('a valid CASHIER @ A keeps A while an invalid CASHIER + COMPANY adds nothing at B', () => {
+    const mixed = ctx([cashierAtA, companyOf('CASHIER')]);
+    expect(hasPermissionAtLocation(mixed, 'SALE_CHARGE', 'A')).toBe(true);
+    expect(hasBranchAccess(mixed, 'A')).toBe(true);
+    expect(hasPermission(mixed, 'SALE_CHARGE')).toBe(true);
+    expect(hasPermissionAtLocation(mixed, 'SALE_CHARGE', 'B')).toBe(false);
+    expect(hasBranchAccess(mixed, 'B')).toBe(false);
+    expect(authorizedLocationIds({ ...mixed, effectiveLocationIds: ['A', 'B'] }, 'SALE_CHARGE')).toEqual(['A']);
+  });
+
+  it('control: valid OWNER and ADMIN COMPANY assignments still cover any location', () => {
+    expect(hasBranchAccess(ctx([owner]), 'B')).toBe(true);
+    expect(hasBranchAccess(ctx([adminCompany]), 'B')).toBe(true);
+    expect(hasPermissionAtLocation(ctx([adminCompany]), 'SALE_VIEW', 'B')).toBe(true);
+    expect(hasPermission(ctx([adminCompany]), 'SALE_VIEW')).toBe(true);
   });
 });

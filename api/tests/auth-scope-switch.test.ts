@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import type { PrismaClient } from '../src/generated/prisma/client.js';
 import { env } from '../src/config/env.js';
 import { createRequireAuth } from '../src/middleware/auth.js';
+import { assertBranchAccess, requirePermission } from '../src/middleware/authorization.js';
+import { PRODUCTION_PERMISSIONS } from '../src/modules/rbac/permissions.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
 import { sendJson } from '../src/shared/json-safe.js';
 
@@ -112,5 +114,51 @@ describe('middleware/auth.ts branchIds resolution (Phase 1C SWITCH)', () => {
       .auth(await token(), { type: 'bearer' });
     expect(response.status).toBe(200);
     expect(response.body.effectiveLocationIds.sort()).toEqual(['active-loc-1', 'active-loc-2']);
+  });
+});
+
+// SECURITY-RBAC-01a: the real per-request path (createRequireAuth →
+// buildAuthorizationContext) feeding requirePermission(..., 'own') and
+// assertBranchAccess. COMPANY is valid only for OWNER/ADMIN; an invalid
+// CASHIER + COMPANY row must not extend the user's valid CASHIER @ loc-a.
+describe('COMPANY scope only for OWNER/ADMIN through requirePermission/assertBranchAccess (SECURITY-RBAC-01a)', () => {
+  function buildGuardedApp(database: PrismaClient) {
+    const app = express();
+    const ok: express.RequestHandler = (_req, res) => { sendJson(res, { ok: true }); };
+    app.get('/charge/:branchId', createRequireAuth(database), requirePermission(PRODUCTION_PERMISSIONS.SALE_CHARGE, {
+      branchScope: 'own', resolveResourceBranch: (req) => String(req.params.branchId),
+    }), ok);
+    app.get('/branch/:branchId', createRequireAuth(database), (req, _res, next) => {
+      assertBranchAccess(req, String(req.params.branchId));
+      next();
+    }, ok);
+    app.use(errorHandler);
+    return app;
+  }
+  const charge = { permission: { code: 'SALE_CHARGE' } };
+  const guardedDatabase = (roleScopes: StubRoleScope[]) => ({
+    user: { findUnique: async () => stubUser([], roleScopes) },
+    location: { findMany: async () => [{ id: 'loc-a' }, { id: 'loc-b' }] },
+  }) as unknown as PrismaClient;
+  const statusOf = async (database: PrismaClient, path: string) =>
+    (await request(buildGuardedApp(database)).get(path).auth(await token(), { type: 'bearer' })).status;
+
+  it('a valid CASHIER @ loc-a plus an invalid CASHIER + COMPANY row is authorized at loc-a only', async () => {
+    const database = guardedDatabase([
+      { roleId: 'r-cashier', role: { code: 'CASHIER', permissions: [charge] }, scopeKind: 'LOCATION', locationId: 'loc-a' },
+      { roleId: 'r-cashier', role: { code: 'CASHIER', permissions: [charge] }, scopeKind: 'COMPANY', locationId: null },
+    ]);
+    expect(await statusOf(database, '/charge/loc-a')).toBe(200);
+    expect(await statusOf(database, '/branch/loc-a')).toBe(200);
+    expect(await statusOf(database, '/charge/loc-b')).toBe(403);
+    expect(await statusOf(database, '/branch/loc-b')).toBe(403);
+  });
+
+  it('control: a valid ADMIN + COMPANY row is authorized at any location', async () => {
+    const database = guardedDatabase([
+      { roleId: 'r-admin', role: { code: 'ADMIN', permissions: [charge] }, scopeKind: 'COMPANY', locationId: null },
+    ]);
+    expect(await statusOf(database, '/charge/loc-b')).toBe(200);
+    expect(await statusOf(database, '/branch/loc-b')).toBe(200);
   });
 });

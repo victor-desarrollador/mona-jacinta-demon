@@ -15,6 +15,8 @@ type Row = Record<string, unknown>;
 const cashier = {
   id: "c1", name: "Cajero", email: "cashier@demo.local", roles: ["CASHIER"], branchIds: ["CEN"],
   permissions: ["sale.charge", "cash.session.open", "cash.session.close"],
+  // CLIENT-CASH-UX (2026-10-19): /auth/me branch-aware cash hints (empty here).
+  cashMovementLocationIds: [], cashSupervisorLocationIds: [],
 };
 
 const openSession = {

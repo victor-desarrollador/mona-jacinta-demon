@@ -9,14 +9,18 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
-  API_DIR, APPROVED_MIGRATION_PAYLOAD, PRISMA_ARGS, buildChildEnv, createRedactor, main, parseCliArgs, readPinned, resolvePrismaCli,
-  verifyMigrationPayload,
+  API_DIR, APPROVED_MIGRATION_PAYLOAD, PRISMA_ARGS, MIGRATE_TOOLING_FILES, buildChildEnv, createRedactor, main, parseCliArgs, readPinned, resolvePrismaCli,
+  stageMigrationRun, verifyMigrationPayload,
 } from './pilot-migrate.mjs';
+import { buildToolingBinding } from './pilot-plan-binding.mjs';
 import { createVerifiedClient, parsePilotUrl, readPrivateUrlFile } from './pilot-marker.mjs';
+import { LEDGER_SQL, MIGRATION_PINS, STATES } from './pilot-migration-states.mjs';
+import { PROJECTION_SQL, buildProjection, projectionDigest } from './app-schema-projection.mjs';
 
 const MARKER = '2b4d6f81-7a9c-4e0b-8d2f-3c5e7a9b1d0f';
 const OTHER = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
@@ -29,8 +33,10 @@ const URL_TEXT = `postgresql://${USER}:${SECRET}@${HOST}:6543/postgres`;
 const LEAKS = [SECRET, HOST, REF, USER, URL_TEXT, `${HOST}:6543`, os.homedir()];
 const HOSTILE_URL = 'postgresql://postgres.hostileref00000000x:hostilepw@dev-hostile.invalid:5432/postgres';
 
-const DRY = ['--target=pilot', '--dry-run', `--marker-id=${MARKER}`];
-const EXECUTE = ['--target=pilot', '--execute', `--marker-id=${MARKER}`, `--confirm-project-ref=${REF}`];
+// G11 cut-over: the initial state is explicit (EXACT_S4 here); --execute carries the plan
+// digest the dry run prints for it (EXECUTE is completed below, once the fixture exists).
+const DRY = ['--target=pilot', '--dry-run', `--marker-id=${MARKER}`, '--expected-initial-state=EXACT_S4'];
+const EXECUTE_BASE = ['--target=pilot', '--execute', `--marker-id=${MARKER}`, `--confirm-project-ref=${REF}`, '--expected-initial-state=EXACT_S4'];
 const FORBIDDEN_SQL = /\b(DROP|TRUNCATE|DELETE|UPDATE|ALTER|GRANT|REVOKE|CREATE|INSERT|COMMIT)\b/i;
 
 function assertNoLeak(text) {
@@ -41,8 +47,13 @@ function assertNoLeak(text) {
 
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'pilot-migrate-test-'));
 process.on('exit', () => rmSync(TMP, { recursive: true, force: true }));
+// G11-ADV-001/002 fixture support: the repo-root TLS trust anchor. Every fake api/
+// tree lives directly under TMP, so the tooling binding reads the CA cert from
+// TMP/scripts/certs (the repo-root layout, scripts/ being the sibling of api/).
+mkdirSync(path.join(TMP, 'scripts', 'certs'), { recursive: true });
+writeFileSync(path.join(TMP, 'scripts', 'certs', 'supabase-prod-ca-2021.crt'), 'FAKE-PILOT-CA\n');
 let fixtureCount = 0;
-function fakeApi({ bin = 'link', version = '7.10.0', pinned = '7.10.0', config = 'file', pkgName = 'prisma' } = {}) {
+function fakeApi({ bin = 'link', version = '7.10.0', pinned = '7.10.0', config = 'file', pkgName = 'prisma', schema = 'mock schema the tooling binding hashes\n' } = {}) {
   const root = path.join(TMP, `api-${fixtureCount++}`);
   const pkg = path.join(root, 'node_modules', 'prisma');
   mkdirSync(path.join(pkg, 'build'), { recursive: true });
@@ -79,9 +90,34 @@ function fakeApi({ bin = 'link', version = '7.10.0', pinned = '7.10.0', config =
     cpSync(path.join(realMigrations, name), path.join(fixtureMigrations, name), { recursive: true });
   }
   cpSync(path.join(realMigrations, 'migration_lock.toml'), path.join(fixtureMigrations, 'migration_lock.toml'));
+  // The api schema lives next to the migrated tree; the tooling binding and the
+  // staging copy both read and hash it.
+  writeFileSync(path.join(root, 'prisma', 'schema.prisma'), schema);
   return root;
 }
 const API = fakeApi();
+
+// Synthetic schema references (the generated ones are exercised by pilot-migrate-g11 and
+// the reference tests); the read-only snapshots below serve these catalogs.
+const rawCatalog = (tables) => ({
+  tables: tables.map((t) => ({ table: t })),
+  columns: tables.map((t) => ({ table: t, column: 'id', type: 'text', not_null: true, default_expr: null, identity: '', generated: '' })),
+  enums: [], types: [], constraints: [], indexes: [], functions: [], triggers: [],
+});
+const RAW_S4 = rawCatalog(['Sale']);
+const RAW_G11 = rawCatalog(['Sale', 'SaleCheckout']);
+const SCHEMA = {
+  references: {
+    EXACT_S4: { digest: projectionDigest(buildProjection(RAW_S4)) },
+    EXACT_G7: { digest: projectionDigest(buildProjection(rawCatalog(['Sale', 'CompanyPricingConfig']))) },
+    EXACT_G11: { digest: projectionDigest(buildProjection(RAW_G11)) },
+  },
+  probes: { EXACT_S4: [], EXACT_G7: [], EXACT_G11: [] },
+};
+const ledgerOf = (state) => STATES[state].map((name) => ({ migration_name: name, checksum: MIGRATION_PINS.find((m) => m.name === name).sha256, finished: true, rolled_back: false }));
+const PHASES = [{ ledger: ledgerOf('EXACT_S4'), raw: RAW_S4 }, { ledger: ledgerOf('EXACT_G11'), raw: RAW_G11 }];
+// G11-ADV-001: the plan binds target+tooling, so PLAN is the digest the tool itself
+// prints at dry-run for THIS fixture; it is derived after run() is defined below.
 
 // --- fake pg client speaking the --check protocol -----------------------------
 
@@ -116,9 +152,22 @@ function secretError(label) {
   return err;
 }
 
-function fakeClient({ state = CANONICAL, authorized = true, connectError, failOn, order, onQuery, onEnd } = {}) {
+function fakeClient({ state = CANONICAL, authorized = true, connectError, failOn, order, onQuery, onEnd, phases = PHASES } = {}) {
   const calls = [];
   const sql = [];
+  // The read-only pre/post snapshots: each BEGIN … READ ONLY opens the next phase.
+  let snapshot = -1;
+  const snapshotReply = (text) => {
+    if (text === 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY') { snapshot += 1; return { rows: [] }; }
+    const db = phases[Math.min(snapshot, phases.length - 1)];
+    if (text.includes("current_setting('transaction_read_only')")) return { rows: [{ read_only: 'on' }] };
+    if (text.startsWith('SELECT marker_id::text AS marker_id')) return { rows: [{ marker_id: MARKER, environment: 'pilot' }] };
+    if (text.includes('to_regclass(\'public."_prisma_migrations"\')')) return { rows: [{ present: true }] };
+    if (text === LEDGER_SQL) return { rows: db.ledger };
+    if (text === PROJECTION_SQL.searchPath) return { rows: [{ search_path: 'pg_catalog, pg_temp' }] };
+    const key = Object.keys(PROJECTION_SQL).find((k) => PROJECTION_SQL[k] === text);
+    return key ? { rows: db.raw[key] } : null;
+  };
   return {
     calls,
     sql,
@@ -133,6 +182,8 @@ function fakeClient({ state = CANONICAL, authorized = true, connectError, failOn
       sql.push(text);
       calls.push(text.trim().split(/\s+/).slice(0, 3).join(' '));
       if (failOn && text.includes(failOn)) throw secretError('query failed');
+      const snap = snapshotReply(text);
+      if (snap) return snap;
       if (text.startsWith('LOCK TABLE') && !state.tableExists) {
         throw Object.assign(new Error(URL_TEXT), { code: state.schemaExists ? '42P01' : '3F000' });
       }
@@ -201,7 +252,9 @@ async function run(argv, opts = {}) {
     spawn: spawner.spawn,
     execPath: '/opt/synthetic/node/bin/node',
     home: '/home/synthetic',
-    tmpdir: '/tmp/synthetic',
+    tmpdir: opts.tmpdir ?? TMP, // a real dir: the staged execution tree is created and removed here
+    moduleDir: opts.moduleDir ?? path.dirname(fileURLToPath(import.meta.url)),
+    schema: opts.schema ?? SCHEMA,
     log: (line) => out.push(line),
     error: (line) => out.push(line),
   };
@@ -210,11 +263,23 @@ async function run(argv, opts = {}) {
   return { code, text: out.join('\n'), out, created, reads, client, spawned: spawner.spawned };
 }
 
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+
+async function dryDigest(opts = {}) {
+  const r = await run(DRY, opts);
+  assert.equal(r.code, 0, `dry-run baseline failed: ${r.text}`);
+  const found = /PLAN_DIGEST=([0-9a-f]{64})/.exec(r.text);
+  assert.ok(found, `the dry run printed no PLAN_DIGEST: ${r.text}`);
+  return found[1];
+}
+const PLAN = await dryDigest();
+const EXECUTE = [...EXECUTE_BASE, `--plan=${PLAN}`];
+
 // --- CLI -------------------------------------------------------------------------
 
 test('parse: the two canonical invocations', () => {
-  assert.deepEqual(parseCliArgs(DRY), { ok: true, mode: 'dry-run', markerId: MARKER, confirmProjectRef: null });
-  assert.deepEqual(parseCliArgs(EXECUTE), { ok: true, mode: 'execute', markerId: MARKER, confirmProjectRef: REF });
+  assert.deepEqual(parseCliArgs(DRY), { ok: true, mode: 'dry-run', markerId: MARKER, confirmProjectRef: null, initialState: 'EXACT_S4', plan: null });
+  assert.deepEqual(parseCliArgs(EXECUTE), { ok: true, mode: 'execute', markerId: MARKER, confirmProjectRef: REF, initialState: 'EXACT_S4', plan: PLAN });
 });
 
 test('M1-M4/M6/M8: every non-canonical CLI fails closed without echoing values', () => {
@@ -303,18 +368,22 @@ test('M38: dry-run opens no client, spawns nothing, and prints the sanitized pla
   assert.equal(r.spawned.length, 0);
   assert.equal(r.reads.length, 1);
   for (const needle of [
-    /target: PILOT/, /private URL file: accepted/, new RegExp(`marker id: ${MARKER}`), /project identity: derivable/,
-    /Prisma CLI: repository-local prisma 7\.10\.0/, /cwd: api\//, /command: prisma migrate deploy --config prisma\.config\.ts/,
+    /target: PILOT/, /private URL file: accepted/, new RegExp(`marker id: ${MARKER}`), /project identity: bound to the plan/,
+    /tooling binding: bound \(\d+ repository artifacts by SHA-256/,
+    /Prisma CLI: repository-local prisma 7\.10\.0/, /command: prisma migrate deploy --config prisma\.config\.ts/,
+    /child cwd: a fresh private staged copy of the approved migration OWN bytes/,
     /identity proof: mandatory during --execute/, /no database connection was opened/i, /no migration was executed/i,
     /explicit OWNER approval/,
   ]) assert.match(r.text, needle);
   assertNoLeak(r.text);
 });
 
-test('dry-run: an underivable project identity is reported (execute would refuse)', async () => {
+test('G11-ADV-001: an underivable project ref fails closed even at dry-run (a plan cannot bind its target)', async () => {
   const r = await run(DRY, { urlText: `postgresql://postgres:${SECRET}@${HOST}:6543/postgres` });
-  assert.equal(r.code, 0);
-  assert.match(r.text, /project identity: NOT derivable/);
+  assert.equal(r.code, 1);
+  assert.match(r.text, /phase=target/);
+  assert.match(r.text, /does not carry a derivable project ref/);
+  assert.equal(r.created.length, 0);
   assertNoLeak(r.text);
 });
 
@@ -373,7 +442,8 @@ test('M9: the URL file is read exactly once; a replacement after the read is nev
   assert.equal(r.code, 0, r.text);
   assert.equal(r.reads.length, 1);
   assert.equal(r.spawned[0].options.env.DATABASE_URL, URL_TEXT);
-  assert.deepEqual(r.created, [parsePilotUrl(URL_TEXT).conn]);
+  // Proof, read-only pre-check and read-only post-check: three clients, all from the one held URL.
+  assert.deepEqual(r.created, Array(3).fill(parsePilotUrl(URL_TEXT).conn));
 });
 
 // --- project ref ------------------------------------------------------------------
@@ -405,8 +475,9 @@ test('M45: identity is proven by the audited --check path before Prisma is spawn
   assert.equal(r.client.sql[0], 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   assert.ok(r.client.sql.includes('LOCK TABLE mona_pilot_guard.database_identity IN ACCESS SHARE MODE'));
   assert.equal(r.client.sql.at(-1), 'ROLLBACK');
-  // M37: the proof connection is closed before the child starts.
-  assert.deepEqual(order, ['proof-end', 'spawn']);
+  // M37: the proof connection AND the read-only pre-check connection are closed before the
+  // child starts; the read-only post-check connection follows it.
+  assert.deepEqual(order, ['proof-end', 'proof-end', 'spawn', 'proof-end']);
 });
 
 test('M5/M25-M28: every failed identity proof stops before Prisma', async () => {
@@ -463,12 +534,12 @@ const HOSTILE_ENV = {
 test('M11-M15/M17-M19/M23/M44: hostile parent env never reaches the proof or Prisma; child env is exactly the allowlist', async () => {
   const r = await run(EXECUTE, { env: HOSTILE_ENV });
   assert.equal(r.code, 0, r.text);
-  assert.deepEqual(r.created, [parsePilotUrl(URL_TEXT).conn]);
+  assert.deepEqual(r.created, Array(3).fill(parsePilotUrl(URL_TEXT).conn));
   const [{ command, args, options }] = r.spawned;
   assert.deepEqual(options.env, {
     PATH: '/opt/synthetic/node/bin:/usr/local/bin:/usr/bin:/bin',
     HOME: '/home/synthetic',
-    TMPDIR: '/tmp/synthetic',
+    TMPDIR: TMP,
     NODE_ENV: 'production',
     DATABASE_URL: URL_TEXT,
     CHECKPOINT_DISABLE: '1',
@@ -495,7 +566,7 @@ test('buildChildEnv: allowlist only, ignores the parent environment entirely', (
   }
 });
 
-test('M39/M40/M42: exactly one argv-array child: node <verified prisma script> migrate deploy --config prisma.config.ts, in api/', async () => {
+test('M39/M40/M42: exactly one argv-array child: node <verified prisma script> migrate deploy --config prisma.config.ts, from the private staged tree', async () => {
   const r = await run(EXECUTE);
   assert.equal(r.spawned.length, 1);
   const [{ command, args, options }] = r.spawned;
@@ -503,7 +574,9 @@ test('M39/M40/M42: exactly one argv-array child: node <verified prisma script> m
   assert.equal(command, '/opt/synthetic/node/bin/node');
   assert.deepEqual(args, [resolved.script, 'migrate', 'deploy', '--config', 'prisma.config.ts']);
   assert.deepEqual([...PRISMA_ARGS], ['migrate', 'deploy', '--config', 'prisma.config.ts']);
-  assert.equal(options.cwd, realpathSync(API));
+  assert.match(options.cwd, /pilot-migrate-stage-/) ;
+  assert.ok(path.dirname(options.cwd).startsWith(TMP), 'the staged root lives under the tooling tmpdir');
+  assert.ok(!options.cwd.includes(path.basename(API)), 'the child never runs from a worktree path');
   assert.ok(options.shell === undefined || options.shell === false);
   assert.ok(!args.some((a) => /seed|reset|push|\bdev\b|--force|--accept-data-loss/.test(a)));
   assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe']);
@@ -528,7 +601,8 @@ test('M32-M34: the failure reason names what actually happened', async () => {
 test('M36: success only on an observed zero exit', async () => {
   const r = await run(EXECUTE, { spawner: fakeSpawn({ code: 0, stdout: ['All migrations have been successfully applied.\n'] }) });
   assert.equal(r.code, 0, r.text);
-  assert.match(r.text, /OK — prisma migrate deploy exited 0/);
+  assert.match(r.text, /OK — the Prisma deploy exited 0 and PILOT is proven EXACT_G11/);
+  assert.match(r.text, /PILOT_MIGRATE_RESULT=EXACT_G11/);
 });
 
 test('M31-M35: spawn failure, nonzero exit, signal, unknown status and error-then-close all fail', async () => {
@@ -632,6 +706,10 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
     '20261002120000_block1_pricing_wholesale',
     '20261006120000_pilot_pricing_v2',
     '20261012120000_cash_session_reconciliation',
+    '20261016120000_r3_proportional_checkout',
+    '20261016130000_r3_checkout_attempts',
+    '20261018120000_cash_movement_withdrawals_expenses',
+    '20261018180000_cash_movement_reversals',
   ]);
   assert.deepEqual([...NAMES].sort(), NAMES);
   assert.equal(new Set(NAMES).size, NAMES.length, 'V11 no duplicate manifest entry');
@@ -641,26 +719,22 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
   assert.ok(Object.isFrozen(APPROVED_MIGRATION_PAYLOAD) && Object.isFrozen(APPROVED_MIGRATION_PAYLOAD.migrations));
 });
 
-test('H1/P27: the synthetic G7 fixture verifies against the pinned digests; the real G9 tree is refused by the operational G7 payload (files only)', () => {
+test('H1/P27: the synthetic G11 fixture and the real reviewed tree both verify against the pinned G11 payload (files only)', () => {
   const fixture = verifyMigrationPayload(fakeApi());
   assert.equal(fixture.ok, true, fixture.reason);
   assert.deepEqual(fixture.migrations.map((m) => [m.name, m.sha256]), APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
   assert.equal(fixture.lock.sha256, APPROVED_MIGRATION_PAYLOAD.lock.sha256);
-  // The owner-authorized R3 migrations live in the reviewed tree but are NOT in the operational G7 payload:
-  // the payload still binds exactly its seven approved migrations and refuses everything else.
   const real = verifyMigrationPayload(API_DIR);
-  assert.equal(real.ok, false);
-  assert.match(real.reason, /does not hold exactly the OWNER-approved migrations/);
+  assert.equal(real.ok, true, real.reason);
+  assert.equal(real.migrations.length, 11);
 });
 
-test('H1/P27b: the real tree differs from the G7 payload by exactly the two reviewed R3 migrations (G8/G9)', () => {
+test('H1/P27b: the real tree is exactly the G11 payload — no extra and no missing migration directory', () => {
   const dirs = readdirSync(path.join(API_DIR, 'prisma', 'migrations'), { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
     .sort();
-  const approved = APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => m.name).sort();
-  const extra = dirs.filter((name) => !approved.includes(name));
-  assert.deepEqual(extra, ['20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts']);
+  assert.deepEqual(dirs, APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => m.name));
 });
 
 test('H1/P1: dry-run validates the payload and prints the names, digests and PASS lines', async () => {
@@ -825,12 +899,13 @@ const EXPECTED_REASON = {
 test('V13/V12: the Pricing V2 pin is the exact reviewed metadata and the manifest stays a literal (never derived from disk)', () => {
   const v2 = APPROVED_MIGRATION_PAYLOAD.migrations[5];
   assert.deepEqual({ ...v2 }, { name: '20261006120000_pilot_pricing_v2', bytes: 3282, sha256: 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12' });
+  // G11: the payload IS the shared literal pin list (pilot-migration-states.mjs, whose test pins
+  // every entry and recomputes the bytes); pilot-migrate re-types no digest and derives nothing.
+  assert.equal(APPROVED_MIGRATION_PAYLOAD.migrations, MIGRATION_PINS);
   const source = readFileSync(new URL('./pilot-migrate.mjs', import.meta.url), 'utf8');
   const block = source.slice(source.indexOf('export const APPROVED_MIGRATION_PAYLOAD'), source.indexOf('const LOCK_FILE'));
-  assert.ok(block.length > 200);
-  assert.doesNotMatch(block, /readdir|readFile|createHash|\bglob(Sync)?\b|\bfs\.|process\.|import\(|require\(|\.map\(|\.filter\(/);
-  const entries = block.match(/Object\.freeze\(\{ name: '\d{14}_[a-z0-9_]+', bytes: \d+, sha256: '[0-9a-f]{64}' \}\)/g) ?? [];
-  assert.equal(entries.length, APPROVED_MIGRATION_PAYLOAD.migrations.length);
+  assert.match(block, /^export const APPROVED_MIGRATION_PAYLOAD = Object\.freeze\(\{ migrations: MIGRATION_PINS, lock: LOCK_PIN \}\);/);
+  assert.doesNotMatch(source, /[0-9a-f]{64}/);
 });
 
 test('CASH-1: the seventh pin is the exact reviewed SQL metadata', () => {
@@ -904,14 +979,17 @@ test('H1/P13-P15: payload changed during or after the identity proof → final v
   const late = {
     'P13 SQL replaced during the proof': (api) => ({ onQuery: once(() => flipByte(sqlOf(api, 0))) }),
     'P14 fifth migration created during the proof': (api) => ({ onQuery: once(() => PAYLOAD_MUTATIONS['P2 fifth migration directory'](api)) }),
-    'P15 lock changed after the proof connection closed': (api) => ({ onEnd: () => flipByte(lockOf(api)) }),
-    'P15 SQL changed after the proof connection closed': (api) => ({ onEnd: () => appendFileSync(sqlOf(api, 2), '-- late\n') }),
+    // once(): exactly one change after the proof closes (a flip on every close would undo itself
+    // at the read-only pre-check's close).
+    'P15 lock changed after the proof connection closed': (api) => ({ onEnd: once(() => flipByte(lockOf(api))) }),
+    'P15 SQL changed after the proof connection closed': (api) => ({ onEnd: once(() => appendFileSync(sqlOf(api, 2), '-- late\n')) }),
   };
   for (const [label, hooks] of Object.entries(late)) {
     const api = fakeApi();
     const r = await run(EXECUTE, { apiDir: api, client: fakeClient(hooks(api)) });
     assert.equal(r.code, 1, label);
-    assert.equal(r.created.length, 1, `${label}: proof should have run`);
+    // The identity proof and the read-only pre-check ran; the final payload proof stopped Prisma.
+    assert.equal(r.created.length, 2, `${label}: proof and pre-check should have run`);
     assert.match(r.text, /canonical PILOT marker verified/, label);
     assert.match(r.text, /phase=payload/, label);
     assert.equal(r.spawned.length, 0, `${label}: prisma spawned after a late payload change`);
@@ -943,11 +1021,12 @@ test('H1/P1/P28: the approved payload still reaches the proof and exactly the un
   const order = [];
   const r = await run(EXECUTE, { order });
   assert.equal(r.code, 0, r.text);
-  assert.deepEqual(order, ['proof-end', 'spawn']);
+  assert.deepEqual(order, ['proof-end', 'proof-end', 'spawn', 'proof-end']);
   const [{ command, args, options }] = r.spawned;
   assert.equal(command, '/opt/synthetic/node/bin/node');
   assert.deepEqual(args, [resolvePrismaCli(API).script, 'migrate', 'deploy', '--config', 'prisma.config.ts']);
-  assert.equal(options.cwd, realpathSync(API));
+  assert.match(options.cwd, /pilot-migrate-stage-/);
+  assert.ok(!options.cwd.includes(path.basename(API)), 'the child runs from the staged tree, never the worktree');
   assert.equal(options.shell, false);
   assert.equal(options.env.DATABASE_URL, URL_TEXT);
 });
@@ -985,4 +1064,209 @@ test('K17: a proof whose ROLLBACK throws synchronously resolves at phase=identit
     assert.equal(r.spawned.length, 0, `${mode}: Prisma must never be spawned`);
     for (const leak of LEAKS) assert.ok(!r.text.includes(leak), `${mode}: leaked ${leak}`);
   }
+});
+
+// --- G11-ADV-001: the reviewed plan is bound to one target and one tooling state -------
+
+const executeWith = (planDigest, markerId = MARKER) => ['--target=pilot', '--execute', `--marker-id=${markerId}`, `--confirm-project-ref=${REF}`, '--expected-initial-state=EXACT_S4', `--plan=${planDigest}`];
+
+test('G11-ADV-001 determinism: consecutive dry runs print the identical PLAN_DIGEST', async () => {
+  assert.equal(await dryDigest(), PLAN);
+});
+
+test('G11-ADV-001: the same plan against another marker id is refused as PLAN_BINDING_MISMATCH before any client or child', async () => {
+  const r = await run(executeWith(PLAN, OTHER));
+  assert.equal(r.code, 1);
+  assert.match(r.text, /phase=plan/);
+  assert.match(r.text, /PLAN_BINDING_MISMATCH/);
+  assert.equal(r.created.length, 0);
+  assert.equal(r.spawned.length, 0);
+  assertNoLeak(r.text);
+});
+
+test('G11-ADV-001: the same plan against another project of the same pooler is refused (target binding)', async () => {
+  // The confirm flag still agrees with the swapped URL's own ref check order does not
+  // matter: the plan check runs first and refuses with PLAN_BINDING_MISMATCH.
+  const r = await run(executeWith(PLAN), { urlText: `postgresql://postgres.${REF_B}:${SECRET}@${HOST}:6543/postgres` });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /phase=plan/);
+  assert.match(r.text, /PLAN_BINDING_MISMATCH/);
+  assert.equal(r.created.length, 0);
+  assert.ok(!r.text.includes(REF_B));
+  assertNoLeak(r.text);
+});
+
+test('G11-ADV-001: the same plan against a different HOST of the same project is refused (host binding)', async () => {
+  // This is the case --confirm-project-ref can never catch: same ref, different host.
+  const r = await run(['--target=pilot', '--execute', `--marker-id=${MARKER}`, `--confirm-project-ref=${REF}`, '--expected-initial-state=EXACT_S4', `--plan=${PLAN}`].map((a) => a), { urlText: `postgresql://${USER}:${SECRET}@aws-1-synthetic.pooler.invalid:6543/postgres` });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /phase=plan/);
+  assert.match(r.text, /PLAN_BINDING_MISMATCH/);
+  assert.equal(r.created.length, 0);
+  assertNoLeak(r.text);
+});
+
+test('G11-ADV-001: the same plan against another database on the same project is refused (database binding)', async () => {
+  const r = await run(executeWith(PLAN), { urlText: `postgresql://${USER}:${SECRET}@${HOST}:6543/pilotdb` });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /phase=plan/);
+  assert.match(r.text, /PLAN_BINDING_MISMATCH/);
+  assert.equal(r.created.length, 0);
+  assertNoLeak(r.text);
+});
+
+test('G11-ADV-001: an api tooling byte changed after the dry run invalidates the plan (PLAN_BINDING_MISMATCH)', async () => {
+  const api = fakeApi();
+  const plan = await dryDigest({ apiDir: api });
+  const configPath = path.join(api, 'prisma.config.ts');
+  const bytes = readFileSync(configPath);
+  bytes[0] ^= 0x01;
+  writeFileSync(configPath, bytes);
+  const r = await run(executeWith(plan), { apiDir: api });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /PLAN_BINDING_MISMATCH/);
+  assert.equal(r.created.length, 0);
+  assert.equal(r.spawned.length, 0);
+});
+
+test('G11-ADV-001: a tooling module byte changed after the dry run invalidates the plan (injected module root)', async () => {
+  // A byte-identical copy of every module-rooted binding entry; the copy stands in for
+  // the real scripts/database directory so the mutation test never touches real bytes.
+  const moduleDir = path.join(TMP, 'module-fixture');
+  mkdirSync(moduleDir, { recursive: true });
+  for (const { path: rel, root } of MIGRATE_TOOLING_FILES) {
+    if (root === 'module') cpSync(path.join(MODULE_DIR, rel), path.join(moduleDir, rel));
+  }
+  const plan = await dryDigest({ moduleDir });
+  const target = path.join(moduleDir, 'pilot-migration-states.mjs');
+  const bytes = readFileSync(target);
+  writeFileSync(target, Buffer.concat([Buffer.from('// tampered\n'), bytes]));
+  const r = await run(executeWith(plan), { moduleDir });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /PLAN_BINDING_MISMATCH/);
+  assert.equal(r.created.length, 0);
+  assert.equal(r.spawned.length, 0);
+});
+
+// --- G11-ADV-002: private staged execution (never re-opens worktree SQL) --------------
+
+test('G11-ADV-002 (TOCTOU): a worktree migration mutated at spawn time cannot reach the child; the staged bytes stay pinned', async () => {
+  const api = fakeApi();
+  const plan = await dryDigest({ apiDir: api });
+  const sqlPath = sqlOf(api, 0);
+  const stagedSeen = [];
+  const spawner = fakeSpawn({
+    onSpawn: ({ options }) => {
+      flipByte(sqlPath); // the worktree mutation the old code would have consumed
+      const stagedSql = readFileSync(path.join(options.cwd, 'prisma', 'migrations', NAMES[0], 'migration.sql'));
+      stagedSeen.push(createHash('sha256').update(stagedSql).digest('hex'));
+    },
+  });
+  const r = await run(executeWith(plan), { apiDir: api, spawner });
+  assert.equal(r.code, 0, r.text);
+  assert.equal(r.spawned.length, 1);
+  assert.deepEqual(stagedSeen, [APPROVED_MIGRATION_PAYLOAD.migrations[0].sha256]);
+});
+
+test('G11-ADV-002: an unusable staging root fails at phase=stage before any child', async () => {
+  const r = await run(EXECUTE, { tmpdir: path.join(TMP, 'no-such-staging-root') });
+  assert.equal(r.code, 1);
+  assert.match(r.text, /phase=stage/);
+  assert.match(r.text, /nothing was applied/);
+  assert.equal(r.spawned.length, 0);
+});
+
+test('G11-ADV-002 (unit): the staged tree is exact; byte mutation, symlink, extra, missing, tampered schema or config are all refused', () => {
+  const api = fakeApi();
+  const binding = buildToolingBinding({ moduleDir: MODULE_DIR, apiDir: api, repoDir: TMP, files: MIGRATE_TOOLING_FILES });
+  const payload = verifyMigrationPayload(api);
+  const stageRoots = [];
+  const stage = () => {
+    const r = stageMigrationRun({ apiDir: api, tmpdir: TMPModuleless(), payload, toolingBinding: binding });
+    if (r.ok) stageRoots.push(r);
+    return r;
+  };
+  const TMPModuleless = () => mkdtempSync(path.join(TMP, 'stage-unit-'));
+
+  const good = stage();
+  assert.ok(good.ok, good.reason ?? 'staging failed');
+  assert.equal(good.verify().ok, true);
+  assert.ok(stageRoots[0].root.startsWith(TMP));
+  try {
+    const stat = statSync(good.root);
+    assert.ok(stat.isDirectory());
+
+    // byte mutation, same size
+    {
+      const staged = stage(); assert.ok(staged.ok);
+      const file = path.join(staged.root, 'prisma', 'migrations', NAMES[0], 'migration.sql');
+      const bytes = readFileSync(file);
+      bytes[0] ^= 0x01;
+      writeFileSync(file, bytes);
+      const v = staged.verify();
+      assert.equal(v.ok, false);
+      assert.match(v.reason, /not the verified copy/);
+    }
+    // symlinked staged file
+    {
+      const staged = stage(); assert.ok(staged.ok);
+      const file = path.join(staged.root, 'prisma', 'migrations', NAMES[0], 'migration.sql');
+      const real = path.join(TMP, 'elsewhere.sql');
+      writeFileSync(real, readFileSync(file));
+      rmSync(file);
+      symlinkSync(real, file);
+      const v = staged.verify();
+      assert.equal(v.ok, false);
+      assert.match(v.reason, /symlink/);
+    }
+    // extra staged migration
+    {
+      const staged = stage(); assert.ok(staged.ok);
+      mkdirSync(path.join(staged.root, 'prisma', 'migrations', '20260101000099_smuggled'));
+      writeFileSync(path.join(staged.root, 'prisma', 'migrations', '20260101000099_smuggled', 'migration.sql'), 'x');
+      const v = staged.verify();
+      assert.equal(v.ok, false);
+      assert.match(v.reason, /not exactly the approved one/);
+    }
+    // missing staged migration
+    {
+      const staged = stage(); assert.ok(staged.ok);
+      rmSync(path.join(staged.root, 'prisma', 'migrations', NAMES[0], 'migration.sql'));
+      const v = staged.verify();
+      assert.equal(v.ok, false);
+    }
+    // tampered staged schema
+    {
+      const staged = stage(); assert.ok(staged.ok);
+      const file = path.join(staged.root, 'prisma', 'schema.prisma');
+      const bytes = readFileSync(file);
+      bytes[0] ^= 0x01;
+      writeFileSync(file, bytes);
+      const v = staged.verify();
+      assert.equal(v.ok, false);
+      assert.match(v.reason, /schema\.prisma/);
+    }
+    // tampered staged config
+    {
+      const staged = stage(); assert.ok(staged.ok);
+      const file = path.join(staged.root, 'prisma.config.ts');
+      const bytes = readFileSync(file);
+      bytes[0] ^= 0x01;
+      writeFileSync(file, bytes);
+      const v = staged.verify();
+      assert.equal(v.ok, false);
+      assert.match(v.reason, /generated one/);
+    }
+    // extra root entry
+    {
+      const staged = stage(); assert.ok(staged.ok);
+      writeFileSync(path.join(staged.root, 'smuggled.txt'), 'x');
+      const v = staged.verify();
+      assert.equal(v.ok, false);
+      assert.match(v.reason, /expected layout/);
+    }
+  } finally {
+    for (const s of stageRoots) s.cleanup();
+  }
+  assert.equal(stageRoots.filter((s) => existsSync(s.root)).length, 0, 'every staging root is removed by cleanup()');
 });

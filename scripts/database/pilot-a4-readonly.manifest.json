@@ -15,6 +15,22 @@
       "sha256": "700723581420dd1ac98fd7e9ac529f0ef210eadcaf87fc868a3ad7d114c2f3b7"
     },
     {
+      "path": "scripts/database/pilot-migration-states.mjs",
+      "sha256": "e9695ac243e22500522fc68ecb1cbe1d0f7cb829c9d353656359ebaa4bcde236"
+    },
+    {
+      "path": "scripts/database/app-schema-projection.mjs",
+      "sha256": "fd1cc0f865608126b873c90c1671c669cabccd4351e7d84d409c21332efd92d3"
+    },
+    {
+      "path": "scripts/database/pilot-schema-references.mjs",
+      "sha256": "374b474a32c04b9106eec3a719d4ef4b8b71975de7f3e07ecb3b96cde2df1246"
+    },
+    {
+      "path": "scripts/database/pilot-rbac-catalog.mjs",
+      "sha256": "3957e3bc4763b09e5753434a58103922005ec110f1d5fa3477fadeceb511216a"
+    },
+    {
       "path": "api/prisma/migrations/20260907015311_init/migration.sql",
       "sha256": "a584edab13a2ae540d694578ffa3b5a622decff04e238a5cf16d3040d295e4cb"
     },
@@ -41,6 +57,22 @@
     {
       "path": "api/prisma/migrations/20261012120000_cash_session_reconciliation/migration.sql",
       "sha256": "d98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f"
+    },
+    {
+      "path": "api/prisma/migrations/20261016120000_r3_proportional_checkout/migration.sql",
+      "sha256": "217e87eb5b156a57a5edcfd73433e1e9558ce59caa019208d9df8c0268f08dc6"
+    },
+    {
+      "path": "api/prisma/migrations/20261016130000_r3_checkout_attempts/migration.sql",
+      "sha256": "076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148"
+    },
+    {
+      "path": "api/prisma/migrations/20261018120000_cash_movement_withdrawals_expenses/migration.sql",
+      "sha256": "e37149442d1fb82ec87877e7b3e1f2e4311b36a9d47d314a3fd1843702c5adf9"
+    },
+    {
+      "path": "api/prisma/migrations/20261018180000_cash_movement_reversals/migration.sql",
+      "sha256": "d638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770"
     }
   ],
   "packages": [

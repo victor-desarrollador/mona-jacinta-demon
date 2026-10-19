@@ -39,6 +39,7 @@ import {
 // their absence is an assertion failure, never a module link error.
 import * as prepareModule from './local-test-prepare.mjs';
 import { APPROVED_MIGRATION_PAYLOAD } from './pilot-migrate.mjs';
+import * as localPayloadModule from './local-test-migration-payload.mjs';
 import * as backupModule from './local-test-backup.mjs';
 
 const SOURCE = readFileSync(new URL('./local-test-prepare.mjs', import.meta.url), 'utf8');
@@ -96,6 +97,12 @@ const fakePayload = () => ({
   migrations: APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => ({ name: m.name, sha256: m.sha256 })),
   lock: { sha256: APPROVED_MIGRATION_PAYLOAD.lock.sha256, provider: APPROVED_MIGRATION_PAYLOAD.lock.provider },
 });
+// U1: the P21 base projection: migrations 1–7 of the synthetic payload plus a synthetic migration 8
+// (the shared payload is G11 now, so the first seven are taken explicitly).
+const P21_MIG8 = { name: '20261016120000_r3_proportional_checkout', sha256: sha('mig8') };
+const fakeP21Payload = () => ({ ok: true, migrations: [...fakePayload().migrations.slice(0, 7), P21_MIG8], lock: fakePayload().lock });
+const P21_STAGE_ROOT = '/synthetic/tmp/mona-local-test-p21-AbC123';
+const P21_STAGED = `${P21_STAGE_ROOT}/prisma/migrations`;
 // Everything the runtime is given, and nothing else: the held URL, the pinned
 // marker and the approved {name, sha256} projection of the verified payload.
 const expectedRuntimeInput = () => ({
@@ -216,6 +223,8 @@ async function run(argv, opts = {}) {
   const loaded = [];
   const hashCalls = {};
   let payloadCalls = 0;
+  let p21PayloadCalls = 0;
+  const stages = [];
   const pick = (list, n) => (list && list.length ? list[Math.min(n, list.length) - 1] : undefined);
   const { runtime, counts } = fakeRuntime(order, opts.runtime);
   const spawner = fakeSpawn(order, opts.spawn);
@@ -233,6 +242,18 @@ async function run(argv, opts = {}) {
       order.push('payload');
       payloadCalls += 1;
       return pick(opts.payloads, payloadCalls) ?? fakePayload();
+    },
+    // U1: the P21 base (migrations 1–8 only) and its private staged copy.
+    verifyP21BasePayload: () => {
+      order.push('p21-payload');
+      p21PayloadCalls += 1;
+      return pick(opts.p21Payloads, p21PayloadCalls) ?? fakeP21Payload();
+    },
+    stageP21Base: (apiDir, tmpdir) => {
+      order.push('stage');
+      stages.push({ apiDir, tmpdir });
+      if (opts.stage) return opts.stage;
+      return { ok: true, root: P21_STAGE_ROOT, migrationsDir: P21_STAGED, cleanup: () => order.push('unstage') };
     },
     hashFile: (file) => {
       const name = path.basename(file);
@@ -301,6 +322,7 @@ async function run(argv, opts = {}) {
     counts,
     spawned: spawner.spawned,
     killed: spawner.killed,
+    stages,
   };
 }
 
@@ -339,7 +361,7 @@ test('A1 exposes the orchestrator seams and the contract constants', () => {
 // Prisma, marker tool, require/createRequire or literal dynamic import.
 test('A2 imports nothing DB-capable, no Prisma, no static tsx and no marker tool; child_process only for the default spawn', () => {
   const specifiers = [...SOURCE.matchAll(/\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1] ?? m[2]);
-  const allowed = ['node:child_process', 'node:crypto', 'node:fs', 'node:os', 'node:path', 'node:string_decoder', 'node:url', './pilot-migrate.mjs', './local-test-witness.mjs', './local-test-safe-error.mjs']; // R4: + the pure evidence helper and the fixed-code error/start-guard helper
+  const allowed = ['node:child_process', 'node:crypto', 'node:fs', 'node:os', 'node:path', 'node:string_decoder', 'node:url', './pilot-migrate.mjs', './local-test-migration-payload.mjs', './local-test-witness.mjs', './local-test-safe-error.mjs']; // R4: + the pure evidence helper and the fixed-code error/start-guard helper; U1: + the LOCAL_TEST payload
   for (const s of specifiers) assert.ok(allowed.includes(s), `unexpected import ${s}`);
   assert.doesNotMatch(SOURCE, /\brequire\s*\(|createRequire/);
   assert.ok(!specifiers.some((s) => s === 'tsx' || s.startsWith('tsx/')), 'tsx must not be imported statically');
@@ -347,10 +369,22 @@ test('A2 imports nothing DB-capable, no Prisma, no static tsx and no marker tool
   assert.doesNotMatch(CODE, /PrismaClient|PrismaPg|@prisma\/|\bnew\s+Pool\b/);
 });
 
-test('A3 migration pins come only from pilot-migrate.mjs: no SHA-256 literal is duplicated here', () => {
-  assert.match(SOURCE, /import\s*\{[^}]*\bAPPROVED_MIGRATION_PAYLOAD\b[^}]*\}\s*from\s*'\.\/pilot-migrate\.mjs'/);
-  assert.match(SOURCE, /import\s*\{[^}]*\bverifyMigrationPayload\b[^}]*\}\s*from\s*'\.\/pilot-migrate\.mjs'/);
+test('A3 migration pins come only from local-test-migration-payload.mjs (G11 = the G7 pins of pilot-migrate.mjs + R3 + cash exits + cash reversals): no SHA-256 literal here', () => {
+  assert.match(SOURCE, /import\s*\{[^}]*\bverifyLocalTestMigrationPayload\b[^}]*\}\s*from\s*'\.\/local-test-migration-payload\.mjs'/);
+  assert.match(SOURCE, /import\s*\{[^}]*\bverifyP21BasePayload\b[^}]*\}\s*from\s*'\.\/local-test-migration-payload\.mjs'/);
+  // U1: the PILOT G7 verifier is no longer the LOCAL_TEST one (it refuses the reviewed eleven-migration tree by design)
+  assert.doesNotMatch(SOURCE, /import\s*\{[^}]*\b(verifyMigrationPayload|APPROVED_MIGRATION_PAYLOAD)\b[^}]*\}\s*from\s*'\.\/pilot-migrate\.mjs'/);
   assert.doesNotMatch(SOURCE, /[0-9a-f]{64}/);
+});
+
+test('A3b U1 the default deps verify the LOCAL_TEST payload G11: the real reviewed tree passes with eleven migrations', () => {
+  assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.verifyMigrationPayload, localPayloadModule.verifyLocalTestMigrationPayload);
+  assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.verifyP21BasePayload, localPayloadModule.verifyP21BasePayload);
+  assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.stageP21Base, localPayloadModule.stageP21BaseMigrations);
+  const real = prepareModule.DEFAULT_PREPARE_DEPS.verifyMigrationPayload(REAL_API_DIR);
+  assert.equal(real.ok, true, real.reason);
+  assert.deepEqual(real.migrations.map((m) => m.name), localPayloadModule.LOCAL_TEST_MIGRATION_PAYLOAD.migrations.map((m) => m.name));
+  assert.equal(real.migrations.length, 11);
 });
 
 test('A4 direct execution is guarded and process.env is read only by the default deps', () => {
@@ -406,10 +440,13 @@ test('A5c dry-run and a plan mismatch never import the runtime or spawn, even wi
   }
 });
 
-// A6 is the only test that reads the REAL repository tree. The reviewed tree holds nine migration directories
-// (the seven G7 payload migrations plus the two R3 ones), so the operational G7 payload MUST refuse it fail-closed
+// A6 is the only test that reads the REAL repository tree. The reviewed tree holds eleven migration directories
+// (the seven G7 payload migrations plus R3 ×2, cash exits and cash reversals), so the operational G7 payload MUST refuse it fail-closed
 // at phase=payload: nothing is planned, no runtime is imported and no child process is started.
-test('A6 the real reviewed tree (nine migration directories) is refused fail-closed at phase=payload by the operational G7 payload', async () => {
+// U1 (R3-T) contract change: the real reviewed tree (eleven migration directories) was refused at phase=payload while
+// LOCAL_TEST used the PILOT G7 payload; it now verifies as the LOCAL_TEST payload G11 (drift is covered by
+// local-test-migration-payload.test.mjs). The dry-run still loads no runtime and starts no process.
+test('A6 U1 the real reviewed tree (eleven migration directories) passes the LOCAL_TEST G11 payload; the dry-run starts nothing', async () => {
   const out = [];
   const loaded = [];
   const spawned = [];
@@ -423,11 +460,10 @@ test('A6 the real reviewed tree (nine migration directories) is refused fail-clo
     spawn: (...args) => { spawned.push(args); throw new Error('no child process may start'); },
   });
   const text = out.join('\n');
-  assert.notEqual(code, 0);
-  assert.match(text, /phase=payload/);
-  assert.match(text, /does not hold exactly the OWNER-approved migrations/);
-  assert.match(text, /nothing was started/);
-  assert.doesNotMatch(text, /plan digest/);
+  assert.equal(code, 0, text);
+  assert.match(text, /migration payload: PASS — exactly 11 approved migrations \(pins: local-test-migration-payload\.mjs\)/);
+  for (const m of localPayloadModule.LOCAL_TEST_MIGRATION_PAYLOAD.migrations) assert.ok(text.includes(`${m.name}  sha256 ${m.sha256}`), m.name);
+  assert.match(text, /plan digest: [0-9a-f]{64}/);
   assert.equal(loaded.length, 0, 'the runtime was reached');
   assert.equal(spawned.length, 0, 'a child process was started');
   assertNoLeak(text);
@@ -602,7 +638,7 @@ test('E1 dry-run lists exactly the pilot-migrate approved migrations, in order',
   const positions = APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => r.text.indexOf(`${m.name}  sha256 ${m.sha256}`));
   assert.ok(positions.every((p) => p >= 0));
   assert.deepEqual([...positions].sort((a, b) => a - b), positions);
-  assert.match(r.text, /pilot-migrate\.mjs/);
+  assert.match(r.text, /pins: local-test-migration-payload\.mjs/);
 });
 
 test('E2 a static payload failure stops every mode before the runtime', async () => {
@@ -1686,7 +1722,7 @@ test('V231-G1 the generic dry-run names the checkpoint action and phases; its ex
   assert.doesNotMatch(r.text, /^  backup evidence:|verify-baseline →|→ verify-baseline/m);
   assert.doesNotMatch(r.text.split('\n').find((l) => l.startsWith('  phases:')), /seed-demo.*seed-demo|verify-baseline/);
   assert.match(r.text, /^  --execute requires --confirm-local-target=\S+ --plan=[0-9a-f]{64}$/m);
-  assert.equal(r.text.split('\n').length, 22 + 2); // V2.3.2: + prepare source, + checkpoint store; + one pin line each for the sixth (Pricing V2) and seventh (CASH-1) approved migrations
+  assert.equal(r.text.split('\n').length, 22 + 2 + 4); // V2.3.2: + prepare source, + checkpoint store; + one pin line each for the sixth (Pricing V2) and seventh (CASH-1) approved migrations; G11: + one pin line each for m8–m11
 });
 
 test('V231-I24 static: one seedDemo call site, behind the transition table; no full-pipeline success line or --stop-after remains', () => {
@@ -2650,4 +2686,158 @@ test('R4-C26 the multiset digest and counts do not depend on the declared count 
 });
 test('R4-C30 an empty or whitespace-only listing is refused', () => {
   for (const text of ['', '   \n', '\n\n']) assert.equal(r4Check(text).ok, false);
+});
+
+// --- U1 (R3-T): the P21 base action — exactly migrations 1–8 on a FRESH LOCAL_TEST, for Suite B ---------------------------
+// `--migration-set=r3-p21-base` selects a separate action with its own plan: FRESH → migrate (a private staged copy of
+// migrations 1–8, verified against the pins, through prisma.local-test-p21.config.ts) → MIGRATED_EMPTY, and stop. No seed,
+// no backfill, no checkpoint. Migration 9 is never applied by this action.
+const P21_SET = '--migration-set=r3-p21-base';
+const P21_DRY = [...DRY, P21_SET];
+const P21_CHECK = [...CHECK, P21_SET];
+const P21_EXECUTE = (plan) => [...EXECUTE(plan), P21_SET];
+const P21_CONFIG_NAME = 'prisma.local-test-p21.config.ts';
+const p21Action = () => prepareModule.PREPARE_ACTIONS?.P21_BASE;
+
+test('U1-P21-A1 the P21 base is its own action with its own Prisma config and a single FRESH → MIGRATED_EMPTY step', () => {
+  assert.equal(p21Action(), 'migrate-r3-p21-base');
+  assert.equal(prepareModule.PRISMA_P21_CONFIG, P21_CONFIG_NAME);
+  assert.deepEqual([...prepareModule.PRISMA_P21_MIGRATE_ARGS], ['migrate', 'deploy', '--config', P21_CONFIG_NAME]);
+  assert.deepEqual(decidePrepareAction('FRESH', p21Action()), { ok: true, phases: ['migrate'] });
+  for (const state of PREPARE_STATES.filter((st) => st !== 'FRESH')) {
+    assert.equal(decidePrepareAction(state, p21Action()).ok, false, state);
+  }
+});
+
+test('U1-P21-A2 parsing: --migration-set=r3-p21-base with --dry-run/--check/--execute; never with the resume, a backup or an authorization', () => {
+  assert.equal(parsePrepareArgs(P21_DRY).action, p21Action());
+  assert.equal(parsePrepareArgs(P21_CHECK).action, p21Action());
+  assert.equal(parsePrepareArgs(P21_EXECUTE(ANY_PLAN)).action, p21Action());
+  for (const argv of [
+    [...DRY, '--migration-set=g9'],
+    [...DRY, '--migration-set='],
+    [...DRY, P21_SET, P21_SET],
+    [...DRY, P21_SET, '--resume-from=POST_BACKFILL', '--backup-evidence=/abs/run'],
+    [...EXECUTE(ANY_PLAN), P21_SET, '--authorization=' + 'a'.repeat(32)],
+  ]) {
+    const r = parsePrepareArgs(argv);
+    assert.equal(r.ok, false, JSON.stringify(argv));
+    assert.ok(!r.error.includes('g9'), 'the rejected value is not echoed');
+  }
+  // the generic action keeps its exact pre-U1 parse shape
+  assert.equal(parsePrepareArgs(DRY).action, undefined);
+});
+
+test('U1-P21-B1 dry-run: the P21 payload (8 migrations), the P21 config and child key, its own digest; nothing is loaded, staged or started', async () => {
+  const r = await run(P21_DRY);
+  assert.equal(r.code, 0, r.text);
+  assert.ok(r.order.includes('p21-payload'));
+  assert.ok(!r.order.includes('payload'), 'the G11 verifier is not the P21 payload source');
+  for (const step of ['stage', 'spawn', 'loadRuntime']) assert.ok(!r.order.includes(step), step);
+  assert.equal(r.loaded.length, 0);
+  for (const m of fakeP21Payload().migrations) assert.ok(r.text.includes(`${m.name}  sha256 ${m.sha256}`), m.name);
+  assert.match(r.text, new RegExp(`exactly ${fakeP21Payload().migrations.length} approved migrations`));
+  assert.match(r.text, /action: migrate-r3-p21-base/);
+  assert.match(r.text, /migration 9 \(20261016130000_r3_checkout_attempts\) is NOT applied/);
+  assert.match(r.text, new RegExp(`config: api/${P21_CONFIG_NAME.replace(/\./g, '\\.')} sha256`));
+  assert.match(r.text, /LOCAL_TEST_P21_MIGRATIONS_DIR/);
+  assert.match(r.text, new RegExp(`--plan=[0-9a-f]{64} ${P21_SET}`));
+  const generic = await planFor();
+  const p21 = await planFor({}, P21_DRY);
+  assert.notEqual(p21, generic);
+  assertNoLeak(r.text);
+});
+
+test('U1-P21-B2 a P21 payload failure stops every P21 mode before the runtime', async () => {
+  for (const argv of [P21_DRY, P21_CHECK, P21_EXECUTE(ANY_PLAN)]) {
+    const r = await run(argv, { p21Payloads: [{ ok: false, reason: 'synthetic drift' }] });
+    assert.equal(r.code, 1);
+    assert.match(r.text, /phase=payload — synthetic drift; nothing was started/);
+    assert.equal(r.loaded.length, 0);
+  }
+});
+
+test('U1-P21-C1 execute from FRESH: re-verify, stage, migrate through the P21 config, unstage, prove, MIGRATED_EMPTY; no seed, no backfill, no checkpoint', async () => {
+  const home = mkdtempSync(path.join(os.tmpdir(), 'mona-u1-p21-home-'));
+  chmodSync(home, 0o700);
+  const plan = await planFor({ home }, P21_DRY);
+  const r = await run(P21_EXECUTE(plan), { home, runtime: { states: ['FRESH', 'MIGRATED_EMPTY'] } });
+  assert.equal(r.code, 0, r.text);
+  assert.deepEqual(r.loaded[0].approvedMigrations, fakeP21Payload().migrations.map(({ name, sha256 }) => ({ name, sha256 })));
+  const tail = r.order.slice(r.order.indexOf('loadRuntime'));
+  assert.deepEqual(tail.filter((x) => ['prove', 'classify', 'p21-payload', `hash:${P21_CONFIG_NAME}`, 'stage', 'spawn', 'unstage', 'seed', 'backfill'].includes(x)),
+    ['prove', 'classify', 'p21-payload', `hash:${P21_CONFIG_NAME}`, 'stage', 'spawn', 'unstage', 'prove', 'classify']);
+  assert.equal(r.spawned.length, 1);
+  assert.deepEqual(r.spawned[0].args, [SCRIPT, 'migrate', 'deploy', '--config', P21_CONFIG_NAME]);
+  assert.equal(r.spawned[0].options.cwd, API);
+  assert.equal(r.spawned[0].options.env.LOCAL_TEST_P21_MIGRATIONS_DIR, P21_STAGED);
+  assert.deepEqual(Object.keys(r.spawned[0].options.env).sort(), [...CHILD_ENV_KEYS, 'LOCAL_TEST_P21_MIGRATIONS_DIR'].sort());
+  assert.deepEqual(r.stages, [{ apiDir: API, tmpdir: TMP }]);
+  assert.equal(r.counts.seed, undefined);
+  assert.equal(r.counts.backfill, undefined);
+  assert.equal(r.counts.verify, undefined);
+  assert.match(r.text, /P21 BASE OK — state MIGRATED_EMPTY with exactly the 8 approved migrations 1–8; migration 9 was NOT applied; no checkpoint was recorded/);
+  assert.equal(existsSync(prepareModule.checkpointStorePath(realpathSync(home))), false, 'no checkpoint store is created');
+  assertNoLeak(r.text);
+});
+
+test('U1-P21-C2 execute refuses every start state other than FRESH before any mutation', async () => {
+  const plan = await planFor({}, P21_DRY);
+  for (const state of ['MIGRATED_EMPTY', 'POST_SEED1', 'POST_BACKFILL', 'EXACT_BASELINE', 'MIGRATION_DRIFT', 'PARTIAL_UNSAFE', 'OPERATIONAL_DATA', 'UNKNOWN']) {
+    const r = await run(P21_EXECUTE(plan), { runtime: { states: [state] } });
+    assert.equal(r.code, 1, state);
+    assert.match(r.text, /phase=classify/, state);
+    for (const step of ['stage', 'spawn', 'seed', 'backfill']) assert.ok(!r.order.includes(step), `${state}: ${step}`);
+  }
+});
+
+test('U1-P21-C3 a staging failure starts nothing; a Prisma failure still removes the staged copy; a wrong post-state fails', async () => {
+  const plan = await planFor({}, P21_DRY);
+  const noStage = await run(P21_EXECUTE(plan), { runtime: { states: ['FRESH'] }, stage: { ok: false, reason: 'synthetic stage failure' } });
+  assert.equal(noStage.code, 1);
+  assert.match(noStage.text, /phase=stage — synthetic stage failure; prisma was NOT started/);
+  assert.ok(!noStage.order.includes('spawn'));
+  const prismaFails = await run(P21_EXECUTE(plan), { runtime: { states: ['FRESH'] }, spawn: { code: 1 } });
+  assert.equal(prismaFails.code, 1);
+  assert.match(prismaFails.text, /phase=prisma/);
+  assert.ok(prismaFails.order.indexOf('unstage') > prismaFails.order.indexOf('spawn'), 'the staged copy is removed after a failed child');
+  const wrongState = await run(P21_EXECUTE(plan), { runtime: { states: ['FRESH', 'MIGRATION_DRIFT'] } });
+  assert.equal(wrongState.code, 1);
+  assert.match(wrongState.text, /after migrate the state is MIGRATION_DRIFT, not MIGRATED_EMPTY/);
+});
+
+test('U1-P21-C4 the P21 payload or config changing after the plan check refuses before staging; a generic plan is not a P21 plan', async () => {
+  const plan = await planFor({}, P21_DRY);
+  const drift = await run(P21_EXECUTE(plan), { runtime: { states: ['FRESH'] }, p21Payloads: [fakeP21Payload(), { ok: false, reason: 'late drift' }] });
+  assert.equal(drift.code, 1);
+  assert.match(drift.text, /phase=payload — late drift; changed after the plan check — prisma was NOT started/);
+  assert.ok(!drift.order.includes('stage'));
+  const cfg = await run(P21_EXECUTE(plan), { runtime: { states: ['FRESH'] }, hashes: { [P21_CONFIG_NAME]: [{ ok: true, sha256: sha('a') }, { ok: true, sha256: sha('b') }] } });
+  assert.equal(cfg.code, 1);
+  assert.ok(!cfg.order.includes('stage'));
+  const generic = await planFor();
+  const mismatch = await run(P21_EXECUTE(generic), { runtime: { states: ['FRESH'] } });
+  assert.equal(mismatch.code, 1);
+  assert.match(mismatch.text, /phase=plan/);
+  assert.equal(mismatch.loaded.length, 0);
+});
+
+test('U1-P21-D1 check: only MIGRATED_EMPTY against the P21 payload passes; nothing is verified, seeded or written', async () => {
+  const ok = await run(P21_CHECK, { runtime: { states: ['MIGRATED_EMPTY'] } });
+  assert.equal(ok.code, 0, ok.text);
+  assert.match(ok.text, /CHECK OK — r3-p21-base: state MIGRATED_EMPTY with exactly migrations 1–8; nothing was changed/);
+  assert.equal(ok.counts.verify, undefined);
+  for (const state of ['FRESH', 'POST_BACKFILL', 'EXACT_BASELINE', 'MIGRATION_DRIFT']) {
+    const r = await run(P21_CHECK, { runtime: { states: [state] } });
+    assert.equal(r.code, 1, state);
+    for (const step of ['stage', 'spawn', 'seed', 'backfill']) assert.ok(!r.order.includes(step), `${state}: ${step}`);
+  }
+});
+
+test('U1-P21-E1 the generic checkpoint action is unchanged by the P21 action: same config, argv, child keys and no staging', async () => {
+  const r = await execute({ runtime: { states: SEQ.FRESH } });
+  assert.equal(r.code, 0, r.text);
+  assert.deepEqual(r.spawned[0].args, [SCRIPT, ...PRISMA_MIGRATE_ARGS]);
+  assert.deepEqual(Object.keys(r.spawned[0].options.env).sort(), [...CHILD_ENV_KEYS].sort());
+  assert.ok(!r.order.includes('stage') && !r.order.includes('p21-payload'));
 });

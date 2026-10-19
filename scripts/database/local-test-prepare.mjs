@@ -18,7 +18,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { pathToFileURL } from 'node:url';
-import { API_DIR, APPROVED_MIGRATION_PAYLOAD, resolvePrismaCli, verifyMigrationPayload } from './pilot-migrate.mjs';
+import { API_DIR, resolvePrismaCli } from './pilot-migrate.mjs';
+import { stageP21BaseMigrations, verifyLocalTestMigrationPayload, verifyP21BasePayload } from './local-test-migration-payload.mjs';
 import {
   PRE_FORMAT,
   PROTECTED_RELATION_NAMES,
@@ -80,7 +81,9 @@ import { runTool } from './local-test-safe-error.mjs';
 //
 // Never: the marker (local-test-marker.mjs owns it), databases, roles, users,
 // passwords, repairs of unknown state. The approved migration pins are the
-// single reviewed set in pilot-migrate.mjs. No URL or password is ever printed.
+// LOCAL_TEST payload G11 of local-test-migration-payload.mjs (the G7 pins of
+// pilot-migrate.mjs + the reviewed R3, cash-exit and cash-reversal migrations); pilot-migrate.mjs itself stays
+// G7 for PILOT. No URL or password is ever printed.
 //
 // GREEN6F loads the reviewed runtime only after static gates and the plan
 // check. Dry runs never import it or start a process.
@@ -91,6 +94,13 @@ export const CONFIRM_LOCAL_TARGET = 'mona_local_test@127.0.0.1:5432/mona_local_t
 export const PRISMA_CONFIG = 'prisma.local-test.config.ts';
 export const COMPANY_DESCRIPTOR = 'scripts/test-company-bootstrap.ts';
 export const PRISMA_MIGRATE_ARGS = Object.freeze(['migrate', 'deploy', '--config', PRISMA_CONFIG]);
+// U1 (R3-T): the P21 base action applies migrations 1–8 only, from a private staged copy
+// (local-test-migration-payload.mjs) that its own config hands to Prisma.
+export const PRISMA_P21_CONFIG = 'prisma.local-test-p21.config.ts';
+export const PRISMA_P21_MIGRATE_ARGS = Object.freeze(['migrate', 'deploy', '--config', PRISMA_P21_CONFIG]);
+export const P21_MIGRATIONS_ENV = 'LOCAL_TEST_P21_MIGRATIONS_DIR';
+export const P21_MIGRATION_SET = 'r3-p21-base';
+const P21_SKIPPED_MIGRATION = '20261016130000_r3_checkout_attempts';
 // v3 (V2.3.2): no V2.2, V2.3 or V2.3.1 plan digest is ever accepted.
 export const PLAN_DOMAIN = 'mona-jacinta-local-test-prepare-plan-v4';
 export const PREPARE_TOOL = 'scripts/database/local-test-prepare.mjs';
@@ -119,6 +129,8 @@ export const PHASE = Object.freeze({
 export const PREPARE_ACTIONS = Object.freeze({
   CHECKPOINT: 'prepare-to-post-backfill',
   RESUME: 'resume-after-verified-backup',
+  // U1: FRESH → migrations 1–8 → MIGRATED_EMPTY, nothing else (Suite B of r3-attempts-schema.pg.test.ts).
+  P21_BASE: 'migrate-r3-p21-base',
 });
 export const CHECKPOINT_STATE = 'POST_BACKFILL';
 export const RESUME_FROM_VALUE = 'POST_BACKFILL';
@@ -133,9 +145,13 @@ const CHECKPOINT_STEPS = Object.freeze({
 const RESUME_STEPS = Object.freeze({
   [CHECKPOINT_STATE]: Object.freeze({ phase: PHASE.SEED, next: 'EXACT_BASELINE' }),
 });
+const P21_BASE_STEPS = Object.freeze({
+  FRESH: Object.freeze({ phase: PHASE.MIGRATE, next: 'MIGRATED_EMPTY' }),
+});
 const ACTION_STEPS = Object.freeze({
   [PREPARE_ACTIONS.CHECKPOINT]: Object.freeze({ steps: CHECKPOINT_STEPS, end: CHECKPOINT_STATE }),
   [PREPARE_ACTIONS.RESUME]: Object.freeze({ steps: RESUME_STEPS, end: 'EXACT_BASELINE' }),
+  [PREPARE_ACTIONS.P21_BASE]: Object.freeze({ steps: P21_BASE_STEPS, end: 'MIGRATED_EMPTY' }),
 });
 // The reviewed orchestration contracts, bound into the plan digests.
 export const PREPARE_PHASES = Object.freeze([
@@ -162,13 +178,24 @@ export const RESUME_PHASES = Object.freeze([
   'protected-transaction(locks, identity, settings, domain, classify, fingerprint==fPre, consume-authorization, seed#2, transformation-verifier, state-change-guard, durable-POST-witness, final-settings, COMMIT)',
   'record-checkpoint-consumed-and-completed(after acknowledged COMMIT only)',
 ]);
+export const P21_BASE_PHASES = Object.freeze([
+  'static-gates(the whole tree is exactly G11; the P21 payload is its first eight migrations)',
+  'load-runtime',
+  'prove-identity',
+  'classify-expect-FRESH',
+  `FRESH: recheck-p21-payload-and-config, stage-migrations-1-8(owner-only, verified copy), ${PHASE.MIGRATE}, remove-staged-copy, prove-identity, classify-expect-MIGRATED_EMPTY`,
+  'stop-at-MIGRATED_EMPTY(no seed, no backfill, no checkpoint)',
+]);
 const ACTION_PHASES = Object.freeze({
   [PREPARE_ACTIONS.CHECKPOINT]: PREPARE_PHASES,
   [PREPARE_ACTIONS.RESUME]: RESUME_PHASES,
+  [PREPARE_ACTIONS.P21_BASE]: P21_BASE_PHASES,
 });
 const ACTION_SUMMARY = Object.freeze({
   [PREPARE_ACTIONS.CHECKPOINT]:
     'ends at state POST_BACKFILL and records a new checkpoint (every current one is superseded before the first mutation); seed #2 and verify-baseline are NOT run (they need a verified backup of this checkpoint and --resume-from=POST_BACKFILL --backup-evidence)',
+  [PREPARE_ACTIONS.P21_BASE]:
+    `requires state FRESH; applies exactly migrations 1–8 and ends at MIGRATED_EMPTY; migration 9 (${P21_SKIPPED_MIGRATION}) is NOT applied; no seed, no backfill and no checkpoint`,
   [PREPARE_ACTIONS.RESUME]:
     'requires state POST_BACKFILL, the verified backup above and a single-use OWNER authorization; seed #2 runs inside ONE protected transaction (locks first, verified against the backup fingerprint, transformation-verified, digest-witnessed durably BEFORE COMMIT); the checkpoint is recorded consumed and completed only after the acknowledged COMMIT; an unknown COMMIT outcome is never retried (--check-outcome)',
 });
@@ -247,6 +274,7 @@ export const CHILD_ENV_KEYS = Object.freeze([
   'PRISMA_HIDE_UPDATE_MESSAGE',
   'TMPDIR',
 ]);
+export const P21_CHILD_ENV_KEYS = Object.freeze([...CHILD_ENV_KEYS, P21_MIGRATIONS_ENV].sort());
 
 const PREFIX = '[db:local-test-prepare]';
 const LOCAL_HOST = '127.0.0.1';
@@ -259,7 +287,8 @@ const MODES = ['dry-run', 'check', 'execute', 'check-outcome', 'reconcile-comple
 const RESUME_FROM_ARG = `resume-from`;
 const BACKUP_EVIDENCE_ARG = `backup-evidence`;
 const AUTHORIZATION_ARG = 'authorization';
-const VALUE_ARGS = ['marker-id', 'confirm-local-target', 'plan', RESUME_FROM_ARG, BACKUP_EVIDENCE_ARG, AUTHORIZATION_ARG];
+const MIGRATION_SET_ARG = 'migration-set';
+const VALUE_ARGS = ['marker-id', 'confirm-local-target', 'plan', RESUME_FROM_ARG, BACKUP_EVIDENCE_ARG, AUTHORIZATION_ARG, MIGRATION_SET_ARG];
 const AUTH_ID = /^[0-9a-f]{32}$/;
 // The digest-only POST witnesses of a backup run: <home>/.local/state/mona-jacinta/local-test-resume-witnesses/<run>/<authId>.post.json
 export const WITNESS_ROOT = Object.freeze(['.local', 'state', 'mona-jacinta', 'local-test-resume-witnesses']);
@@ -302,6 +331,16 @@ export function parsePrepareArgs(argv) {
   if (evidence !== undefined && !path.isAbsolute(evidence)) {
     return { ok: false, error: '--backup-evidence must be an absolute run directory path (value not echoed)' };
   }
+  // U1: the P21 base is its own action: only with --dry-run/--check/--execute, never with the resume, a backup or an
+  // authorization (it migrates a FRESH database and deletes nothing).
+  const migrationSet = values[MIGRATION_SET_ARG];
+  if (migrationSet !== undefined) {
+    if (migrationSet !== P21_MIGRATION_SET) return { ok: false, error: `--${MIGRATION_SET_ARG} accepts only ${P21_MIGRATION_SET} (value not echoed)` };
+    if (!['dry-run', 'check', 'execute'].includes(mode)) return { ok: false, error: `--${MIGRATION_SET_ARG} is accepted only with --dry-run, --check or --execute` };
+    if (resumeFrom !== undefined || evidence !== undefined || authorization !== null) {
+      return { ok: false, error: `--${MIGRATION_SET_ARG}=${P21_MIGRATION_SET} takes no --resume-from, --backup-evidence or --authorization` };
+    }
+  }
   // The read-only outcome verifier and the file-side completion reconciliation (R4): they take the backup run, never a plan,
   // and never --resume-from; reconcile additionally needs the explicit target confirmation and takes no authorization.
   if (mode === 'check-outcome' || mode === 'reconcile-completion') {
@@ -342,6 +381,7 @@ export function parsePrepareArgs(argv) {
   if (mode === 'execute' && resumeFrom !== undefined && authorization === null) {
     return { ok: false, error: '--execute with --resume-from requires --authorization=<authId> created by local-test-authorize-resume.mjs' };
   }
+  if (migrationSet !== undefined) return { ok: true, mode, markerId, confirm, plan, action: PREPARE_ACTIONS.P21_BASE };
   // The generic (checkpoint) action keeps the pre-V2.3 result shape (no `action` key).
   if (resumeFrom !== undefined) return { ok: true, mode, markerId, confirm, plan, action: PREPARE_ACTIONS.RESUME, backupEvidence: evidence, authorization };
   return { ok: true, mode, markerId, confirm, plan };
@@ -954,10 +994,10 @@ export async function verifyResumeEvidence(runDir, { markerId, payload, backupTo
 
 // Exact child invocation: this Node binary runs the repository-local Prisma CLI
 // script with the explicit LOCAL_TEST config; argv array only, never a shell.
-export function buildPrismaMigrationSpec({ execPath, prisma }) {
+export function buildPrismaMigrationSpec({ execPath, prisma, migrateArgs = PRISMA_MIGRATE_ARGS }) {
   return Object.freeze({
     command: execPath,
-    args: Object.freeze([prisma.script, ...PRISMA_MIGRATE_ARGS]),
+    args: Object.freeze([prisma.script, ...migrateArgs]),
     options: Object.freeze({ cwd: prisma.cwd, stdio: Object.freeze(['ignore', 'pipe', 'pipe']), shell: false }),
   });
 }
@@ -999,7 +1039,9 @@ export function decidePrepareAction(state, action = PREPARE_ACTIONS.CHECKPOINT) 
       ok: false,
       reason: action === PREPARE_ACTIONS.RESUME
         ? 'the resume requires state POST_BACKFILL; nothing is run'
-        : 'database state is not a known state before the backup checkpoint; nothing is repaired',
+        : action === PREPARE_ACTIONS.P21_BASE
+          ? 'the P21 base is built only on a FRESH LOCAL_TEST database; nothing is run'
+          : 'database state is not a known state before the backup checkpoint; nothing is repaired',
     };
   }
   const phases = [];
@@ -1022,17 +1064,18 @@ export function preparePhaseList() {
 export function buildPreparePlan({ markerId, prisma, apiDir, configSha256, companySha256, payload, action = PREPARE_ACTIONS.CHECKPOINT, backup = null, prepareSha256 = null }) {
   if (typeof action !== 'string' || !Object.hasOwn(ACTION_PHASES, action)) throw new Error('unknown prepare action');
   if ((action === PREPARE_ACTIONS.RESUME) !== (backup !== null)) throw new Error('a resume plan binds exactly one verified backup');
+  const p21 = action === PREPARE_ACTIONS.P21_BASE;
   return [
     ['target', CONFIRM_LOCAL_TARGET],
     ['markerId', markerId],
     ['prisma', prisma.version, path.relative(apiDir, prisma.script).split(path.sep).join('/')],
     ['cwd', 'api/'],
-    ['argv', ...PRISMA_MIGRATE_ARGS],
-    ['config', PRISMA_CONFIG, configSha256],
+    ['argv', ...(p21 ? PRISMA_P21_MIGRATE_ARGS : PRISMA_MIGRATE_ARGS)],
+    ['config', p21 ? PRISMA_P21_CONFIG : PRISMA_CONFIG, configSha256],
     ['migrations', ...payload.migrations.map((m) => [m.name, m.sha256])],
     ['lock', payload.lock.provider, payload.lock.sha256],
     ['company', COMPANY_DESCRIPTOR, companySha256],
-    ['childEnv', ...CHILD_ENV_KEYS],
+    ['childEnv', ...(p21 ? P21_CHILD_ENV_KEYS : CHILD_ENV_KEYS)],
     ['prepare', PREPARE_TOOL, prepareSha256],
     ['action', action],
     ...(backup
@@ -1231,7 +1274,9 @@ const DEFAULT_DEPS = Object.freeze({
   home: os.userInfo().homedir,
   tmpdir: os.tmpdir(),
   resolvePrismaCli,
-  verifyMigrationPayload,
+  verifyMigrationPayload: verifyLocalTestMigrationPayload,
+  verifyP21BasePayload,
+  stageP21Base: stageP21BaseMigrations,
   hashFile: hashRegularFile,
   hashBinary: hashRegularFile,
   loadRuntime: loadLocalTestRuntime,
@@ -1261,15 +1306,17 @@ export async function staticGates(parsed, deps) {
   }
   const prisma = deps.resolvePrismaCli(deps.apiDir);
   if (!prisma.ok) return { ok: false, phase: 'prisma', detail: prisma.reason };
-  const config = deps.hashFile(path.join(prisma.cwd, PRISMA_CONFIG));
-  if (!config.ok) return { ok: false, phase: 'prisma', detail: `api/${PRISMA_CONFIG} ${config.reason}` };
-  const payload = deps.verifyMigrationPayload(deps.apiDir);
+  const action = parsed.action ?? PREPARE_ACTIONS.CHECKPOINT;
+  const p21 = action === PREPARE_ACTIONS.P21_BASE;
+  const configName = p21 ? PRISMA_P21_CONFIG : PRISMA_CONFIG;
+  const config = deps.hashFile(path.join(prisma.cwd, configName));
+  if (!config.ok) return { ok: false, phase: 'prisma', detail: `api/${configName} ${config.reason}` };
+  const payload = p21 ? deps.verifyP21BasePayload(deps.apiDir) : deps.verifyMigrationPayload(deps.apiDir);
   if (!payload.ok) return { ok: false, phase: 'payload', detail: `${payload.reason}; nothing was started` };
   const company = deps.hashFile(path.join(prisma.cwd, COMPANY_DESCRIPTOR));
   if (!company.ok) return { ok: false, phase: 'company', detail: `api/${COMPANY_DESCRIPTOR} ${company.reason}` };
   const self = deps.hashFile(path.join(deps.repoRoot, PREPARE_TOOL));
   if (!self.ok) return { ok: false, phase: 'prepare', detail: `${PREPARE_TOOL} ${self.reason}; nothing was started` };
-  const action = parsed.action ?? PREPARE_ACTIONS.CHECKPOINT;
   let backup = null;
   if (action === PREPARE_ACTIONS.RESUME) {
     const tool = deps.hashFile(path.join(deps.repoRoot, BACKUP_TOOL));
@@ -1306,8 +1353,8 @@ export async function staticGates(parsed, deps) {
     backup,
     prepareSha256: self.sha256,
   });
-  const spec = buildPrismaMigrationSpec({ execPath: deps.execPath, prisma });
-  return { ok: true, target, prisma, config, payload, company, self, backup, plan, digest: digestPreparePlan(plan), spec, action };
+  const spec = buildPrismaMigrationSpec({ execPath: deps.execPath, prisma, migrateArgs: p21 ? PRISMA_P21_MIGRATE_ARGS : PRISMA_MIGRATE_ARGS });
+  return { ok: true, target, prisma, config, configName, payload, company, self, backup, plan, digest: digestPreparePlan(plan), spec, action };
 }
 
 // The bound backup fields that must be identical when re-verified before seed #2.
@@ -1316,7 +1363,7 @@ const sameBackup = (a, b) => a.run === b.run && a.dump.sha256 === b.dumpSha256 &
   && a.tocSha256 === b.tocSha256 && a.pgRestoreSha256 === b.pgRestoreSha256
   && a.fPre === b.fPre && a.preWitnessSha256 === b.preWitnessSha256 && a.tocMultisetSha256 === b.tocMultisetSha256;
 
-const executeFlag = (s) => (s.backup ? ` --resume-from=${RESUME_FROM_VALUE} --backup-evidence=<the run directory of backup ${s.backup.run}> --authorization=<authId printed by local-test-authorize-resume.mjs for this plan>` : '');
+const executeFlag = (s) => (s.action === PREPARE_ACTIONS.P21_BASE ? ` --${MIGRATION_SET_ARG}=${P21_MIGRATION_SET}` : s.backup ? ` --resume-from=${RESUME_FROM_VALUE} --backup-evidence=<the run directory of backup ${s.backup.run}> --authorization=<authId printed by local-test-authorize-resume.mjs for this plan>` : '');
 
 function dryRunLines(s) {
   const banner = s.backup
@@ -1327,14 +1374,17 @@ function dryRunLines(s) {
     `  target: LOCAL_TEST ${CONFIRM_LOCAL_TARGET} (${URL_VAR} accepted; value not shown)`,
     `  marker id: ${s.target.markerId} (equals ${MARKER_VAR}; proven against the database only by --check/--execute)`,
     `  Prisma CLI: repository-local prisma ${s.prisma.version}, run with this Node binary, cwd api/`,
-    `  command: prisma ${PRISMA_MIGRATE_ARGS.join(' ')}   (argv only, no shell, never --schema; contained: own PID namespace and process group)`,
-    `  config: api/${PRISMA_CONFIG} sha256 ${s.config.sha256}`,
-    `  migration payload: PASS — exactly ${s.payload.migrations.length} approved migrations (pins: pilot-migrate.mjs)`,
+    `  command: prisma ${s.spec.args.slice(1).join(' ')}   (argv only, no shell, never --schema; contained: own PID namespace and process group)`,
+    `  config: api/${s.configName} sha256 ${s.config.sha256}`,
+    `  migration payload: PASS — exactly ${s.payload.migrations.length} approved migrations (pins: local-test-migration-payload.mjs)`,
     ...s.payload.migrations.map((m, i) => `    ${i + 1}. ${m.name}  sha256 ${m.sha256}`),
+    ...(s.action === PREPARE_ACTIONS.P21_BASE
+      ? [`  migration 9 (${P21_SKIPPED_MIGRATION}) is NOT applied: Prisma reads only a private, owner-only staged copy of migrations 1–8 (${P21_MIGRATIONS_ENV}), verified against the pins; the reviewed tree is only read`]
+      : []),
     `  migration_lock.toml: PASS (provider "${s.payload.lock.provider}", sha256 ${s.payload.lock.sha256})`,
     `  TEST Company descriptor: api/${COMPANY_DESCRIPTOR} sha256 ${s.company.sha256}`,
     `  prepare source: ${PREPARE_TOOL} sha256 ${s.self.sha256}`,
-    `  child environment keys: ${CHILD_ENV_KEYS.join(', ')}`,
+    `  child environment keys: ${(s.action === PREPARE_ACTIONS.P21_BASE ? P21_CHILD_ENV_KEYS : CHILD_ENV_KEYS).join(', ')}`,
     `  checkpoint store: ${CHECKPOINT_STORE_LABEL} (owner-only 0700, outside the repository and temporary storage)`,
     ...(s.backup
       ? [
@@ -1405,7 +1455,7 @@ export async function main(argv, overrides = {}) {
     if (!company.ok || company.sha256 !== s.company.sha256) {
       code = fail('company', `api/${COMPANY_DESCRIPTOR} changed after the runtime was loaded; nothing was started`);
     } else {
-      code = await (parsed.mode === 'check' ? checkWith(runtime, fail, deps) : executeWith(runtime, s, fail, deps, parsed));
+      code = await (parsed.mode === 'check' ? checkWith(runtime, fail, deps, s) : executeWith(runtime, s, fail, deps, parsed));
     }
   } catch {
     code = fail('company', `api/${COMPANY_DESCRIPTOR} could not be rechecked after the runtime was loaded; nothing was started`);
@@ -1422,12 +1472,18 @@ export async function main(argv, overrides = {}) {
   return code;
 }
 
-async function checkWith(runtime, fail, deps) {
+async function checkWith(runtime, fail, deps, s) {
   let phase = 'identity';
   try {
     await must(runtime.proveIdentity());
     phase = 'classify';
     const state = await runtime.classify();
+    if (s.action === PREPARE_ACTIONS.P21_BASE) {
+      // classified against the P21 payload: MIGRATED_EMPTY means a ledger of exactly migrations 1–8 and no rows
+      if (state !== 'MIGRATED_EMPTY') return fail('check', `state ${stateLabel(state)}: LOCAL_TEST is not the P21 base (exactly migrations 1–8, no rows); nothing was changed`);
+      deps.log(`${PREFIX} CHECK OK — ${P21_MIGRATION_SET}: state MIGRATED_EMPTY with exactly migrations 1–8; nothing was changed`);
+      return 0;
+    }
     if (state === CHECKPOINT_STATE) {
       return fail('check', `state ${state}: LOCAL_TEST is not prepared; seed #2 requires a verified backup of the current checkpoint and --execute --resume-from=${RESUME_FROM_VALUE} --backup-evidence=<run directory>`);
     }
@@ -1751,14 +1807,29 @@ async function executeWith(runtime, s, fail, deps, parsed) {
       if (step.phase === PHASE.MIGRATE) {
         // Immediately before the child: the approved payload and the planned
         // LOCAL config must still be exactly what the plan bound.
-        const payload = deps.verifyMigrationPayload(deps.apiDir);
+        const p21 = s.action === PREPARE_ACTIONS.P21_BASE;
+        const payload = p21 ? deps.verifyP21BasePayload(deps.apiDir) : deps.verifyMigrationPayload(deps.apiDir);
         if (!payload.ok) return fail('payload', `${payload.reason}; changed after the plan check — prisma was NOT started`);
-        const config = deps.hashFile(path.join(s.prisma.cwd, PRISMA_CONFIG));
+        if (p21 && JSON.stringify(payload.migrations) !== JSON.stringify(s.payload.migrations)) {
+          return fail('payload', 'the P21 payload differs from the one the plan bound — prisma was NOT started');
+        }
+        const config = deps.hashFile(path.join(s.prisma.cwd, s.configName));
         if (!config.ok || config.sha256 !== s.config.sha256) {
-          return fail('config', `api/${PRISMA_CONFIG} changed after the plan check — prisma was NOT started`);
+          return fail('config', `api/${s.configName} changed after the plan check — prisma was NOT started`);
         }
         const env = buildPrismaChildEnv(s.target.url, deps);
-        const result = await runChild(deps, s.spec, env, redact);
+        let staged = null;
+        if (p21) {
+          staged = deps.stageP21Base(deps.apiDir, deps.tmpdir);
+          if (!staged?.ok) return fail('stage', `${staged?.reason ?? 'staging failed'}; prisma was NOT started`);
+          env[P21_MIGRATIONS_ENV] = staged.migrationsDir;
+        }
+        let result;
+        try {
+          result = await runChild(deps, s.spec, env, redact);
+        } finally {
+          staged?.cleanup();
+        }
         if (!result.ok) {
           const applied = result.started === false ? 'nothing was applied' : 'migrations may be partially applied';
           return fail('prisma', `${result.detail}; ${applied}; no later phase was run`);
@@ -1811,6 +1882,10 @@ async function executeWith(runtime, s, fail, deps, parsed) {
         return fail('checkpoint', 'seed #2 ran and strict verification passed, but the completion record could not be written (the checkpoint stays consumed)');
       }
       deps.log(`${PREFIX} RESUME OK — from POST_BACKFILL with verified backup ${s.backup.run} (dump sha256 ${s.backup.dumpSha256}, checkpoint ${s.backup.checkpointId} consumed): seed #2 ran and strict verification passed; state EXACT_BASELINE`);
+      return 0;
+    }
+    if (s.action === PREPARE_ACTIONS.P21_BASE) {
+      deps.log(`${PREFIX} P21 BASE OK — state MIGRATED_EMPTY with exactly the ${s.payload.migrations.length} approved migrations 1–8; migration 9 was NOT applied; no checkpoint was recorded`);
       return 0;
     }
     phase = 'checkpoint';

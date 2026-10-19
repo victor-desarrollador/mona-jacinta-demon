@@ -39,6 +39,7 @@ import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { CHECKOUT_METHODS } from './checkout-canonical.js';
 import { loadReservationView, readCheckoutResult, type ReservationView } from './checkout-attempt-view.js';
 import type { CheckoutResult } from './checkout.service.js';
+import { isExternalReferenceCollision } from './prisma-unique-violation.js';
 import type { CheckoutCloseRequest, CheckoutDeclarationRow } from './dto/checkout-close.dto.js';
 
 const CLOSE_TIMEOUT_MS = 30_000;
@@ -103,16 +104,10 @@ export function isLockNotAvailable(error: unknown): boolean {
 
 // A P2002 for one of the two partial EXTERNAL reference indexes is the SAME
 // domain error as T-C's (409 EXTERNAL_REFERENCE_ALREADY_RECORDED). Detection is
-// by unique target only (the partial index by SQL name, or Prisma's column
-// list); any other P2002 is rethrown. Never a false positive.
-export function isExternalReferenceCollision(error: unknown): boolean {
-  const candidate = error as { code?: string; meta?: { target?: unknown } };
-  if (candidate.code !== 'P2002') return false;
-  const target = candidate.meta?.target;
-  const text = (Array.isArray(target) ? target.join(',') : typeof target === 'string' ? target : '').toLowerCase();
-  return /externalcollection_(transfer|debit)_ref_key/.test(text)
-    || (text.includes('referencekey') && text.includes('branchid'));
-}
+// by the unique constraint only — meta.target or the adapter-pg 7.10 shape
+// (R-1/R-2, prisma-unique-violation.ts, shared with T-C); any other P2002 is
+// rethrown. Never a false positive.
+export { isExternalReferenceCollision };
 
 // The semantic content of a declaration, used ONLY for T-X idempotency (never
 // for pricing). Server-generated ids and declaredAt are excluded on purpose.
@@ -358,6 +353,24 @@ export function createCheckoutCloseService(
       // the third and last lock of T-X: no CashSession, StockReservation or
       // Inventory lock exists in S6.
       await lockClaims(tx, attempt.id);
+
+      // 6b. R-2: an external reference this close would record CHARGED and
+      //     that is ALREADY recorded on the branch is the same 409 as T-C's
+      //     step-5 pre-check, before the first write. A plain read (no lock,
+      //     so the lock order above is unchanged), mirroring the two partial
+      //     unique indexes. Only a fast path: a peer can still commit the
+      //     reference after this read, and the P2002 of the index stays the
+      //     final authority (close()).
+      for (const row of request.declarations) {
+        if (row.outcome !== 'CHARGED' || (row.method !== 'TRANSFER' && row.method !== 'CARD_DEBIT')) continue;
+        const recorded = await tx.externalCollection.findFirst({
+          where: row.method === 'TRANSFER'
+            ? { branchId: sale.branchId, method: 'TRANSFER', institution: row.institution, referenceKey: row.referenceKey! }
+            : { branchId: sale.branchId, method: 'CARD_DEBIT', referenceKey: row.referenceKey! },
+          select: { id: true },
+        });
+        if (recorded) throw referenceAlreadyRecorded();
+      }
 
       // 7. Visibility rule: the first write of a FRESH close, on the sale locked
       //    in step 1. No replay (steps 4–5) ever reaches it.

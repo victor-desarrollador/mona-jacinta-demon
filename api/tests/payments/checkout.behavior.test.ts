@@ -237,9 +237,18 @@ function createCheckoutDb() {
     const error = Object.assign(new Error(`Unique constraint failed on the fields: (${label})`), { code: 'P2002', meta: { target } });
     injectFailure(model, operation, error, when);
   };
+  // R-1/R-2 (R3 PG gate): the shape @prisma/adapter-pg 7.10 really produces —
+  // no meta.target; the constraint is in meta.driverAdapterError.cause.constraint.
+  const injectAdapterUniqueViolation = (model: string, operation: string, constraint: { index: string } | { fields: string[] }, when?: (args: AnyArgs) => boolean) => {
+    const error = Object.assign(new Error('Unique constraint failed'), {
+      code: 'P2002',
+      meta: { modelName: 'ExternalCollection', driverAdapterError: { name: 'DriverAdapterError', cause: { originalCode: '23505', kind: 'UniqueConstraintViolation', constraint } } },
+    });
+    injectFailure(model, operation, error, when);
+  };
 
   return {
-    ...base, client, extra, transactions, checkoutEvents, injectFailure, injectUniqueViolation,
+    ...base, client, extra, transactions, checkoutEvents, injectFailure, injectUniqueViolation, injectAdapterUniqueViolation,
     get attemptTenderReads() { return attemptTenderReads; },
     simulateConcurrentCommit: (apply: () => void) => committedByPeers.push(apply),
     addAllocationBias: (bias: (data: Row) => Row) => allocationBiases.push(bias),
@@ -1231,7 +1240,7 @@ describe('R3-A4.3 S5-C — sealed plan and confirmation replay', () => {
       const t = setup();
       const collection = t.addCollection({
         branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'TR 1', referenceKey: 'TR1',
-        institution: 'GALICIA', status: 'UNAPPLIED', claimAttemptId: String(t.attempt.id),
+        institution: 'GALICIA', status: 'UNAPPLIED', originSaleId: t.saleId, claimAttemptId: String(t.attempt.id),
       });
       t.sealPlan([
         { method: 'TRANSFER', role: 'FIXED', source: 'COLLECTION', amount: 22000n, externalCollectionId: collection.id },
@@ -1533,7 +1542,7 @@ describe('R3-A4.3 S5-D — atomic T-C settlement', () => {
     const t = setup();
     const collection = t.addCollection({
       branchId: BRANCH, method: 'TRANSFER', amount: 44000n, reference: 'TR 2', referenceKey: 'TR2',
-      institution: 'GALICIA', status: 'UNAPPLIED', claimAttemptId: String(t.storedAttempt().id),
+      institution: 'GALICIA', status: 'UNAPPLIED', originSaleId: t.saleId, claimAttemptId: String(t.storedAttempt().id),
     });
     t.sealPlan([
       planTender('CASH', 'BALANCE', 'NEW', null),
@@ -1725,7 +1734,7 @@ describe('R3-A4.3 S5-D — atomic T-C settlement', () => {
     const t = setup();
     const collection = t.addCollection({
       branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'TR 3', referenceKey: 'TR3',
-      institution: 'GALICIA', status: 'UNAPPLIED', claimAttemptId: String(t.storedAttempt().id),
+      institution: 'GALICIA', status: 'UNAPPLIED', originSaleId: t.saleId, claimAttemptId: String(t.storedAttempt().id),
     });
     t.sealPlan([planTender('TRANSFER', 'FIXED', 'COLLECTION', 22000n, collection.id)]);
 
@@ -1871,6 +1880,56 @@ describe('R3-A4.3 S5-D — atomic T-C settlement', () => {
     expect(t.table('stockReservation')[0]).toMatchObject({ status: 'ACTIVE' });
   });
 
+  // R-1/R-2 (R3 PG gate, OWNER 2026-10-18): the same concurrent reference race,
+  // with the P2002 in the real adapter-pg 7.10 shape (no meta.target). T-C keeps
+  // its pre-check; the shared classifier must still recognise the partial index.
+  it('S5D1-AD-01 adapter-shaped P2002 (constraint.index) of the transfer index is the same 409 with its recorded status, full rollback', async () => {
+    const t = setup();
+    t.sealPlan([
+      planTender('CASH', 'BALANCE', 'NEW', null),
+      planTender('TRANSFER', 'FIXED', 'NEW', 22000n),
+    ], { expectedBalanceAmount: 20000n });
+    t.db.simulateConcurrentCommit(() => {
+      t.addCollection({
+        branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'OP 777', referenceKey: 'OP777',
+        institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
+      });
+    });
+    t.db.injectAdapterUniqueViolation('externalCollection', 'create', { index: 'ExternalCollection_transfer_ref_key' });
+    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [
+        sealedTender('CASH', { receivedAmount: 20000n }),
+        sealedTender('TRANSFER', { reference: 'OP 777', referenceKey: 'OP777', institution: 'GALICIA' }),
+      ],
+    })), 409, 'EXTERNAL_REFERENCE_ALREADY_RECORDED');
+    expect(error.details).toEqual({ status: 'UNAPPLIED' });
+    expect(t.counts()).toEqual({ ...noEffects, collections: 1 });
+    expect(t.storedAttempt()).toMatchObject({ status: 'RESERVED', confirmationHash: null, rejectionCode: null });
+  });
+
+  it('S5D1-AD-02 adapter-shaped P2002 (constraint.fields) of the debit index is the same 409', async () => {
+    const t = setup();
+    t.sealPlan([
+      planTender('CASH', 'BALANCE', 'NEW', null),
+      planTender('CARD_DEBIT', 'FIXED', 'NEW', 22000n),
+    ], { expectedBalanceAmount: 20000n });
+    t.db.simulateConcurrentCommit(() => {
+      t.addCollection({
+        branchId: BRANCH, method: 'CARD_DEBIT', amount: 22000n, reference: 'D009', referenceKey: 'D009',
+        institution: null, institutionOther: null, status: 'APPLIED', recordedById: t.ids.seller,
+      });
+    });
+    t.db.injectAdapterUniqueViolation('externalCollection', 'create', { fields: ['"branchId"', '"referenceKey"'] });
+    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [
+        sealedTender('CASH', { receivedAmount: 20000n }),
+        sealedTender('CARD_DEBIT', { reference: 'D009', referenceKey: 'D009' }),
+      ],
+    })), 409, 'EXTERNAL_REFERENCE_ALREADY_RECORDED');
+    expect(error.details).toEqual({ status: 'APPLIED' });
+    expect(t.counts()).toEqual({ ...noEffects, collections: 1 });
+  });
+
   it('S5D1-02 the same collision read from Prisma\'s column-list target is also a 409', async () => {
     const t = setup();
     t.sealPlan([
@@ -1958,6 +2017,42 @@ describe('R3-A4.3 S5-D — atomic T-C settlement', () => {
     expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0, allocations: 0 });
     expect(t.audits('CHECKOUT_RESERVATION_REJECTED')).toHaveLength(1);
     expect(t.storedAttempt().rejectedAt).toBe(rejectedAt);
+  });
+
+  // SECURITY-R3-CROSS-SALE-01 (OWNER): collection.originSaleId must be the
+  // confirming sale. T-C re-checks it on the row it locks, independently of T-R,
+  // so a historical/corrupt claim (EC of sale A claimed by an attempt of sale B)
+  // can never be applied to B: the attempt is terminally REJECTED like any other
+  // non-applicable collection (S5D1-04) and no money moves.
+  it('XS-C01 a collection originated by ANOTHER sale, even claimed by this attempt, terminally rejects: nothing applied, no payment, no success audit', async () => {
+    const t = setup();
+    const otherSaleId = randomUUID();
+    const collection = t.addCollection({
+      branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'OP 556', referenceKey: 'OP556',
+      institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED',
+      originSaleId: otherSaleId, claimAttemptId: String(t.storedAttempt().id),
+    });
+    t.sealPlan([
+      planTender('CASH', 'BALANCE', 'NEW', null),
+      planTender('TRANSFER', 'FIXED', 'COLLECTION', 22000n, String(collection.id)),
+    ], { expectedBalanceAmount: 20000n });
+
+    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [sealedTender('CASH', { receivedAmount: 20000n }), sealedTender('TRANSFER')],
+    })), 409, 'EXTERNAL_COLLECTION_NOT_APPLICABLE');
+    expect(error.details).toMatchObject({ attempt: { status: 'REJECTED' } });
+
+    expect(t.storedAttempt()).toMatchObject({ status: 'REJECTED', rejectionCode: 'EXTERNAL_COLLECTION_NOT_APPLICABLE' });
+    expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0, allocations: 0, cashMovements: 0, stockMovements: 0 });
+    expect(t.db.extra.externalCollection[0]).toMatchObject({
+      status: 'UNAPPLIED', originSaleId: otherSaleId, claimAttemptId: String(t.storedAttempt().id),
+    });
+    expect(t.db.extra.externalCollection[0]!.appliedSaleId).toBeUndefined();
+    expect(t.audits('CHECKOUT_RESERVATION_REJECTED')).toHaveLength(1);
+    for (const action of ['PAYMENT_REGISTERED', 'SALE_CHECKOUT_COMPLETED', 'EXTERNAL_COLLECTION_APPLIED']) {
+      expect(t.audits(action), action).toHaveLength(0);
+    }
+    expect(t.sale()).toMatchObject({ status: 'PENDING_PAYMENT' });
   });
 
   it('S5D1-05 a persisted REJECTED attempt replays its own rejection with zero writes', async () => {

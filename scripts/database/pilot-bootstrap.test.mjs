@@ -579,7 +579,7 @@ test('B17/B39/B40: a fresh PILOT gets exactly the additive rows, in one transact
   assert.equal(r.counters.pgClients.length, 1);
   assert.equal(r.counters.hashes, 6, 'five accounts + one random system-actor secret');
   assert.deepEqual(t.role.map((x) => x.code).sort(), ['ADMIN', 'CASHIER', 'OWNER', 'SELLER', 'WAREHOUSE']);
-  assert.equal(t.permission.length, 35);
+  assert.equal(t.permission.length, 36);
   const expectedGrants = Object.values(CANONICAL.DEFAULT_ROLE_GRANTS).reduce((n, g) => n + g.length, 0);
   assert.equal(t.rolePermission.length, expectedGrants);
   assert.equal((await CANONICAL.verifyProductionRbacCatalog(r.db)).ok, true);

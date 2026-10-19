@@ -43,11 +43,11 @@ const CASH1_TREE_ENTRY = Object.freeze({
   bytes: 390,
   sha256: 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f',
 });
-// R3-A2/A4.3 (2026-10-16): reviewed repository-tree entries. D5H v1's operational
-// ledger contract stays the six independent EXPECTED_PINS above; the two R3
-// migrations are recognized here only so the tree pin does not drift. Neither
-// entry widens D5H_MIGRATIONS, and neither authorizes a D5H backup over an
-// R3-migrated subject.
+// Reviewed repository-tree entries. D5H v1's operational ledger contract stays the
+// six independent EXPECTED_PINS above; every reviewed migration (CASH-1, the two R3
+// migrations, the cash-exit migration 10 and the cash-reversal migration 11) is recognized here only so the tree pin
+// does not drift. None widens D5H_MIGRATIONS, and none authorizes a D5H backup over
+// a subject carrying them.
 const R3_TREE_ENTRIES = Object.freeze([
   Object.freeze({
     name: '20261016120000_r3_proportional_checkout',
@@ -60,7 +60,18 @@ const R3_TREE_ENTRIES = Object.freeze([
     sha256: '076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148',
   }),
 ]);
-const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES]);
+const CASH_MOVEMENT_TREE_ENTRY = Object.freeze({
+  name: '20261018120000_cash_movement_withdrawals_expenses',
+  bytes: 2732,
+  sha256: 'e37149442d1fb82ec87877e7b3e1f2e4311b36a9d47d314a3fd1843702c5adf9',
+});
+const CASH_REVERSAL_TREE_ENTRY = Object.freeze({
+  name: '20261018180000_cash_movement_reversals',
+  bytes: 3366,
+  sha256: 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770',
+});
+const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY]);
+const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10 and the cash-reversal migration 11';
 const REVIEWED_TREE_NAMES = Object.freeze([...EXPECTED_PINS.map(([name]) => name), ...REVIEWED_TREE_ENTRIES.map((e) => e.name)]);
 const NAMES = EXPECTED_PINS.map(([name]) => name);
 const row = (i, patch = {}) => ({ migration_name: EXPECTED_PINS[i][0], checksum: EXPECTED_PINS[i][1], finished: true, rolled_back: false, ...patch });
@@ -76,7 +87,7 @@ const noLeak = (value) => {
 
 function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSync) {
   const onDisk = list(root).filter((name) => name !== 'migration_lock.toml').sort();
-  assert.deepEqual(onDisk, [...REVIEWED_TREE_NAMES].sort(), 'the migrations directory holds exactly the six D5H pins, CASH-1 and the two R3 migrations');
+  assert.deepEqual(onDisk, [...REVIEWED_TREE_NAMES].sort(), REVIEWED_TREE_MESSAGE);
   for (const [name, sha] of EXPECTED_PINS) {
     const bytes = read(path.join(root, name, 'migration.sql'));
     assert.equal(createHash('sha256').update(bytes).digest('hex'), sha, name);
@@ -88,7 +99,7 @@ function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSy
   }
 }
 
-test('D5H v1 keeps six independent pins and verifies the nine-directory tree (no drift)', () => {
+test('D5H v1 keeps six independent pins and verifies the eleven-directory tree (no drift)', () => {
   assert.equal(D5H_MIGRATIONS.length, 6);
   assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
   const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
@@ -109,7 +120,7 @@ test('the reviewed-tree drift guard rejects an unapproved entry, a rename, a mis
     names.map((name) => name === r3Name ? `${r3Name}_renamed` : name),
   ]) {
     assert.throws(() => assertReviewedMigrationTree(root, () => entries), {
-      name: 'AssertionError', message: /the migrations directory holds exactly the six D5H pins, CASH-1 and the two R3 migrations/,
+      name: 'AssertionError', message: new RegExp(REVIEWED_TREE_MESSAGE),
     });
   }
   const changed = (name, transform) => (file) => {
@@ -117,7 +128,7 @@ test('the reviewed-tree drift guard rejects an unapproved entry, a rename, a mis
     if (file !== path.join(root, name, 'migration.sql')) return bytes;
     return transform(bytes);
   };
-  for (const name of [CASH1_TREE_ENTRY.name, r3Name]) {
+  for (const name of [CASH1_TREE_ENTRY.name, r3Name, CASH_MOVEMENT_TREE_ENTRY.name, CASH_REVERSAL_TREE_ENTRY.name]) {
     assert.throws(() => assertReviewedMigrationTree(root, () => names, changed(name, (bytes) => {
       const altered = Buffer.from(bytes);
       altered[0] ^= 1;

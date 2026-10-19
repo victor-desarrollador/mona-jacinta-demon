@@ -15,10 +15,13 @@ import {
 import { checkoutQuoteRequestDto } from './dto/checkout-quote.dto.js';
 import { checkoutReservationDto, checkoutReservationParamsDto } from './dto/checkout-reservation.dto.js';
 import { checkoutCloseDto, checkoutCloseParamsDto } from './dto/checkout-close.dto.js';
+import { checkoutStockRecoveryDto, checkoutStockRecoveryParamsDto } from './dto/checkout-stock-recovery.dto.js';
 import { createCheckoutReservationController } from './checkout-reservation.controller.js';
 import { createCheckoutCloseController } from './checkout-close.controller.js';
+import { createCheckoutStockRecoveryController } from './checkout-stock-recovery.controller.js';
 import type { CheckoutReservationService } from './checkout-reservation.service.js';
 import type { CheckoutCloseService } from './checkout-close.service.js';
+import type { CheckoutStockRecoveryService } from './checkout-stock-recovery.service.js';
 import type { CheckoutService } from './checkout.service.js';
 import type { CheckoutQuoteService } from './checkout-quote.service.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
@@ -28,6 +31,7 @@ export type PaymentsRouterOptions = {
   checkoutQuoteService?: CheckoutQuoteService;
   checkoutReservationService?: CheckoutReservationService;
   checkoutCloseService?: CheckoutCloseService;
+  checkoutStockRecoveryService?: CheckoutStockRecoveryService;
   // R3-A4.3 S-REF: the PROPORTIONAL_EXTERNAL_METHODS_ENABLED gate, injected by
   // app.ts from the validated env. It is consumed ONLY by the quote (to mark
   // TRANSFER/CARD_DEBIT unavailable and hide the recorded candidates) and the
@@ -65,6 +69,10 @@ export function createPaymentsRouter(
     database,
     options.checkoutCloseService ? { service: options.checkoutCloseService } : {},
   );
+  const stockRecovery = createCheckoutStockRecoveryController(
+    database,
+    options.checkoutStockRecoveryService ? { service: options.checkoutStockRecoveryService } : {},
+  );
   // R3-A4.3 S4: the durable charge reservation (T-R) and its reload-safe reads.
   // Same global route gate (SALE_CHARGE); the service re-checks SALE_CHARGE and
   // SALE_COMPLETE (reservation) or SALE_CHARGE (reads) at the sale's persisted
@@ -98,6 +106,18 @@ export function createPaymentsRouter(
     validate(checkoutCloseDto),
     requirePermission(PRODUCTION_PERMISSIONS.SALE_CHARGE),
     close.close,
+  );
+  // R3-A4.3 S7: the supervised stock recovery (T-S) of a RESERVED attempt. Same
+  // global route gate (SALE_CHARGE) as an edge defence only; the service is the
+  // authority: the supervisor role ([SALE_CORRECT_PENDING, SALE_CHARGE]) at the
+  // sale's persisted branch, read under the sale lock. A recovery that changed
+  // the coverage and one that found it already valid are both 200.
+  router.post(
+    '/:saleId/checkout/stock-recovery',
+    validate(checkoutStockRecoveryParamsDto, 'params'),
+    validate(checkoutStockRecoveryDto),
+    requirePermission(PRODUCTION_PERMISSIONS.SALE_CHARGE),
+    stockRecovery.recover,
   );
   // R3-A4.1: the read-only quote the POS consults before confirming a charge.
   // Same global route gate (SALE_CHARGE); the service re-checks it at the sale's

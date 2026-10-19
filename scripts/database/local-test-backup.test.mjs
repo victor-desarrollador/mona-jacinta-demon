@@ -827,7 +827,11 @@ test('HG19 the current generation is pinned to the OWNER-approved payload; a new
   const { APPROVED_MIGRATION_PAYLOAD } = await import('./pilot-migrate.mjs');
   const [g5, g6, g7] = witness.BACKUP_SCHEMA_GENERATIONS;
   assert.deepEqual(witness.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id), ['G1-5', 'G1-6', 'G1-7']);
-  assert.deepEqual(g7.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
+  // G11 cut-over: the approved payload is G11 now; G1-7 stays pinned to its first seven pins and
+  // NO G1-8..G1-11 generation exists yet, so a LOCAL_TEST backup of a G8+ database is refused
+  // (fail-closed) until an OWNER-reviewed generation is added.
+  assert.deepEqual(g7.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.slice(0, 7).map((m) => [m.name, m.sha256]));
+  assert.equal(witness.resolveBackupGeneration(APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256])), null);
   assert.deepEqual(g6.migrations, G6_PAIRS);
   assert.deepEqual(g7.migrations.slice(0, 6), g6.migrations);
   assert.deepEqual(g5.migrations, g6.migrations.slice(0, 5));

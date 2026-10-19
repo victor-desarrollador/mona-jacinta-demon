@@ -3,6 +3,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../generated/prisma/client.js';
 import { logger } from '../shared/logger.js';
 import { env } from './env.js';
+import { requiresDatabaseTls } from './prisma-tls.js';
 
 // api/src/config and api/dist/config both resolve to the existing root CA.
 const ca = readFileSync(
@@ -13,7 +14,9 @@ const ca = readFileSync(
 const adapter = new PrismaPg(
   {
     connectionString: env.DATABASE_URL,
-    ssl: { rejectUnauthorized: true, ca },
+    ssl: requiresDatabaseTls(env.DATABASE_URL)
+      ? { rejectUnauthorized: true, ca }
+      : false,
     connectionTimeoutMillis: 10000,
     max: 5,
   },

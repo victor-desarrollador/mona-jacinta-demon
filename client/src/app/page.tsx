@@ -14,6 +14,15 @@ type User = {
   roles: string[];
   branchIds: string[];
   permissions: string[];
+  // CLIENT-CASH-UX (2026-10-19): branch-aware UI hints computed server-side by
+  // /auth/me (see api/src/modules/auth/user-context.dto.ts). THIS IS NOT
+  // AUTHORIZATION: endpoints keep enforcing hasPermissionAtLocation and the
+  // supervisor rule server-side. The client only decides visibility per
+  // ACTIVE branch: activeBranchId ∈ cashMovementLocationIds → movements
+  // panel/Gasto/Historial; activeBranchId ∈ cashSupervisorLocationIds →
+  // Retiro/Corregir (OWNER, or an ADMIN with COMPANY reach, only).
+  cashMovementLocationIds: string[];
+  cashSupervisorLocationIds: string[];
 };
 
 type Inventory = {
@@ -160,6 +169,40 @@ type CashSession = {
   difference?: string | null;
 };
 
+type CashMovementKind = "WITHDRAWAL" | "EXPENSE";
+// PILOT reversal (migration 11): the append-only correction of a WITHDRAWAL / EXPENSE.
+type CashMovementReversalType = "WITHDRAWAL_REVERSAL" | "EXPENSE_REVERSAL";
+type CashMovementType = "OPENING" | "SALE_INCOME" | "CLOSING" | "MANUAL" | CashMovementKind | CashMovementReversalType;
+
+type CashMovement = {
+  id: string;
+  sessionId: string;
+  type: CashMovementType;
+  amount: string;
+  salePaymentId: string | null;
+  userId: string;
+  reason: string | null;
+  idempotencyKey: string | null;
+  reversesMovementId: string | null;
+  timestamp: string;
+};
+
+type CashMovementIntent = {
+  sessionId: string;
+  kind: CashMovementKind;
+  amount: string;
+  reason: string;
+  idempotencyKey: string;
+};
+
+// A confirmed correction: its key is minted once and reused by every retry.
+type CashReversalIntent = {
+  sessionId: string;
+  movementId: string;
+  reason: string;
+  idempotencyKey: string;
+};
+
 type ApiError = { message?: string; error?: { message?: string } };
 type PaymentIntent = {
   saleId: string;
@@ -262,6 +305,10 @@ const PRICING_MODES = new Set<unknown>(["LIST", "WHOLESALE"]);
 const PRICE_MODES = new Set<unknown>(["CASH", "LIST", "CREDIT_CARD", "DEBIT_CARD", "BANK_TRANSFER", "QR"]);
 const PRICING_MODELS = new Set<unknown>(["FIXED_TOTAL", "PROPORTIONAL_V1"]);
 const PAYMENT_METHODS = new Set<unknown>(["CASH", "TRANSFER", "CARD_DEBIT", "CARD_CREDIT", "QR"]);
+const CASH_MOVEMENT_TYPES = new Set<unknown>([
+  "OPENING", "SALE_INCOME", "CLOSING", "MANUAL", "WITHDRAWAL", "EXPENSE", "WITHDRAWAL_REVERSAL", "EXPENSE_REVERSAL",
+]);
+const CASH_REVERSAL_TYPES = new Set<unknown>(["WITHDRAWAL_REVERSAL", "EXPENSE_REVERSAL"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -340,6 +387,30 @@ function parseSalePayments(body: unknown, saleId: string): SalePayment[] {
   return body.items;
 }
 
+function isCashMovement(value: unknown, sessionId: string): value is CashMovement {
+  if (!isRecord(value)) return false;
+  return isNonEmptyString(value.id)
+    && value.sessionId === sessionId
+    && CASH_MOVEMENT_TYPES.has(value.type)
+    && isCents(value.amount, UNSIGNED_CENTS)
+    && (value.salePaymentId === null || isNonEmptyString(value.salePaymentId))
+    && isNonEmptyString(value.userId)
+    && (value.reason === null || typeof value.reason === "string")
+    && (value.idempotencyKey === null || isNonEmptyString(value.idempotencyKey))
+    // A reversal always names its original; no other movement ever does.
+    && (CASH_REVERSAL_TYPES.has(value.type)
+      ? isNonEmptyString(value.reversesMovementId)
+      : value.reversesMovementId === null || value.reversesMovementId === undefined)
+    && isNonEmptyString(value.timestamp);
+}
+
+function parseCashMovements(body: unknown, sessionId: string): CashMovement[] {
+  if (!Array.isArray(body) || !body.every((movement) => isCashMovement(movement, sessionId))) {
+    throw new InvalidResponseError("Los movimientos de caja recibidos del servidor no son válidos.");
+  }
+  return body.map((movement: CashMovement) => ({ ...movement, reversesMovementId: movement.reversesMovementId ?? null }));
+}
+
 function formatDateTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "fecha no informada" : date.toLocaleString("es-AR");
@@ -377,6 +448,20 @@ function paymentMethodLabel(method: PaymentMethod) {
     QR: "QR",
   };
   return labels[method];
+}
+
+function cashMovementLabel(type: CashMovementType) {
+  const labels: Record<CashMovementType, string> = {
+    OPENING: "Apertura",
+    SALE_INCOME: "Ingreso por venta",
+    CLOSING: "Cierre",
+    MANUAL: "Ajuste anterior",
+    WITHDRAWAL: "Retiro",
+    EXPENSE: "Gasto",
+    WITHDRAWAL_REVERSAL: "Reversión de retiro",
+    EXPENSE_REVERSAL: "Reversión de gasto",
+  };
+  return labels[type];
 }
 
 // Display-only mirror of the server's payment/price-mode compatibility (the
@@ -1178,6 +1263,25 @@ function CashierWorkspace({
   // the server at the register's own location), so it is only requested when
   // the projected permission is present.
   const canViewCashHistory = user.permissions.includes("cash.session.close");
+  // CLIENT-CASH-UX: the panel and its Gasto/Historial apply only at the ACTIVE
+  // branch the server's branch-aware hint covers — never the old global
+  // permission test, which wrongly showed the panel for a branch the grant
+  // does not reach (and hid real BranchSelect state behind a global flag).
+  const canManageCashMovements = user.cashMovementLocationIds.includes(branchId);
+  // Retiro/Corregir are supervisor-only acts; the server 403s anything else,
+  // so the UI must not offer them where the user is not the supervisor.
+  const canSuperviseCashMovements = user.cashSupervisorLocationIds.includes(branchId);
+  const [cashMovements, setCashMovements] = useState<CashMovement[]>([]);
+  const [cashMovementsFailed, setCashMovementsFailed] = useState(false);
+  const [cashMovementKind, setCashMovementKind] = useState<CashMovementKind>("EXPENSE");
+  const [cashMovementAmount, setCashMovementAmount] = useState("");
+  const [cashMovementReason, setCashMovementReason] = useState("");
+  const [cashMovementIntent, setCashMovementIntent] = useState<CashMovementIntent | null>(null);
+  const [cashMovementRetry, setCashMovementRetry] = useState(false);
+  const [cashMovementLoading, setCashMovementLoading] = useState(false);
+  const [cashReversalTarget, setCashReversalTarget] = useState<CashMovement | null>(null);
+  const [cashReversalReason, setCashReversalReason] = useState("");
+  const [cashReversalIntent, setCashReversalIntent] = useState<CashReversalIntent | null>(null);
   const [pendingSales, setPendingSales] = useState<PendingSale[]>([]);
   const [selectedSaleId, setSelectedSaleId] = useState<string | null>(null);
   // R3-A4.2b: registro de intentos del cobro proporcional, por venta. Vive acá
@@ -1372,6 +1476,7 @@ function CashierWorkspace({
   // Only the latest request may write: a late answer for a previously
   // selected branch is dropped (location-bound presentation).
   const cashHistoryRequest = useRef(0);
+  const cashMovementsRequest = useRef(0);
   // CASH-1.1: bumped on every branch change, so an answer that belongs to the
   // previously selected branch (e.g. a slow close) never writes into this one.
   const branchEpoch = useRef(0);
@@ -1394,6 +1499,29 @@ function CashierWorkspace({
       setCashHistoryFailed(true);
     }
   }, [token, branchId, canViewCashHistory]);
+
+  const refreshCashMovements = useCallback(async (sessionId: string) => {
+    const request = ++cashMovementsRequest.current;
+    if (!token || !canManageCashMovements) {
+      setCashMovements([]);
+      setCashMovementsFailed(false);
+      return;
+    }
+    try {
+      const movements = parseCashMovements(
+        await apiRequest<unknown>(`/cash/sessions/${sessionId}/movements`, token),
+        sessionId,
+      );
+      if (request !== cashMovementsRequest.current) return;
+      setCashMovements(movements);
+      setCashMovementsFailed(false);
+    } catch (cause) {
+      if (request !== cashMovementsRequest.current) return;
+      setCashMovements([]);
+      setCashMovementsFailed(true);
+      throw cause;
+    }
+  }, [token, canManageCashMovements]);
 
   // The register and the open session are location-bound too: only the latest
   // read may write them, and never after a branch change. Bumped by every
@@ -1441,6 +1569,16 @@ function CashierWorkspace({
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
+
+  useEffect(() => {
+    if (!cashSession || !canManageCashMovements) {
+      cashMovementsRequest.current += 1;
+      setCashMovements([]);
+      setCashMovementsFailed(false);
+      return;
+    }
+    refreshCashMovements(cashSession.sessionId).catch(() => undefined);
+  }, [cashSession, canManageCashMovements, refreshCashMovements]);
 
   useEffect(() => {
     if (!selectedSaleId) return;
@@ -1582,6 +1720,143 @@ function CashierWorkspace({
       // Only this close's own confirmation is consumed (closed or failed).
       setCloseConfirm((current) => (current === confirm ? null : current));
       if (epoch === branchEpoch.current) setLoading(false);
+    }
+  }
+
+  function requestCashMovement() {
+    if (!cashSession) return;
+    // CLIENT-CASH-UX: only the supervisor of THIS branch may ever enter the
+    // withdrawal circuit; the review step must not mint an intent that can
+    // only end in the server's 403.
+    if (cashMovementKind === "WITHDRAWAL" && !canSuperviseCashMovements) return;
+    const amount = arsToCents(cashMovementAmount);
+    const reason = cashMovementReason.trim();
+    if (!amount || cents(amount) <= ZERO) {
+      setError("Ingresá un importe de movimiento válido.");
+      return;
+    }
+    if (!reason) {
+      setError("Ingresá el motivo del movimiento.");
+      return;
+    }
+    setError("");
+    setNotice("");
+    setCashMovementRetry(false);
+    setCashMovementIntent({
+      sessionId: cashSession.sessionId,
+      kind: cashMovementKind,
+      amount,
+      reason,
+      idempotencyKey: crypto.randomUUID(),
+    });
+  }
+
+  async function submitCashMovement() {
+    const intent = cashMovementIntent;
+    if (!token || !intent) return;
+    if (!cashSession || cashSession.sessionId !== intent.sessionId) {
+      setCashMovementIntent(null);
+      setCashMovementRetry(false);
+      setError("La caja cambió: revisá el movimiento y confirmalo de nuevo.");
+      return;
+    }
+
+    setCashMovementLoading(true);
+    setError("");
+    setNotice("");
+    const epoch = branchEpoch.current;
+    try {
+      const endpoint = intent.kind === "WITHDRAWAL" ? "withdrawals" : "expenses";
+      await apiRequest(`/cash/sessions/${intent.sessionId}/${endpoint}`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          amount: intent.amount,
+          reason: intent.reason,
+          idempotencyKey: intent.idempotencyKey,
+        }),
+      });
+      if (epoch !== branchEpoch.current) return;
+      setCashMovementIntent(null);
+      setCashMovementRetry(false);
+      setCashMovementAmount("");
+      setCashMovementReason("");
+      setNotice(intent.kind === "WITHDRAWAL" ? "Retiro registrado." : "Gasto registrado.");
+      try {
+        await refreshCashMovements(intent.sessionId);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "No se pudieron actualizar los movimientos de caja.");
+      }
+    } catch (cause) {
+      if (epoch !== branchEpoch.current) return;
+      // The same confirmed intent keeps its UUID. This makes an ambiguous
+      // transport failure safe to retry without creating a second exit.
+      setCashMovementRetry(true);
+      setError(cause instanceof Error ? cause.message : "No se pudo registrar el movimiento de caja.");
+    } finally {
+      if (epoch === branchEpoch.current) setCashMovementLoading(false);
+    }
+  }
+
+  function startCashReversal(movement: CashMovement) {
+    setError("");
+    setNotice("");
+    setCashReversalTarget(movement);
+    setCashReversalReason("");
+    setCashReversalIntent(null);
+  }
+
+  function cancelCashReversal() {
+    setCashReversalTarget(null);
+    setCashReversalReason("");
+    setCashReversalIntent(null);
+  }
+
+  async function submitCashReversal() {
+    const target = cashReversalTarget;
+    if (!token || !target) return;
+    if (!cashSession || cashSession.sessionId !== target.sessionId) {
+      cancelCashReversal();
+      setError("La caja cambió: revisá el movimiento y corregilo de nuevo.");
+      return;
+    }
+    // A pending (failed) intent is retried exactly as confirmed; otherwise this
+    // is a NEW intent and gets a NEW key.
+    let intent = cashReversalIntent;
+    if (!intent) {
+      const reason = cashReversalReason.trim();
+      if (!reason) {
+        setError("Ingresá el motivo de la corrección.");
+        return;
+      }
+      intent = { sessionId: target.sessionId, movementId: target.id, reason, idempotencyKey: crypto.randomUUID() };
+    }
+
+    setCashMovementLoading(true);
+    setError("");
+    setNotice("");
+    const epoch = branchEpoch.current;
+    try {
+      // The amount and type are the server's: only the reason and key are sent.
+      await apiRequest(`/cash/sessions/${intent.sessionId}/movements/${intent.movementId}/reversal`, token, {
+        method: "POST",
+        body: JSON.stringify({ reason: intent.reason, idempotencyKey: intent.idempotencyKey }),
+      });
+      if (epoch !== branchEpoch.current) return;
+      cancelCashReversal();
+      setNotice("Corrección registrada.");
+      try {
+        await refreshCashMovements(intent.sessionId);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "No se pudieron actualizar los movimientos de caja.");
+      }
+    } catch (cause) {
+      if (epoch !== branchEpoch.current) return;
+      // The confirmed intent keeps its UUID: an ambiguous transport failure is
+      // safe to retry without a second correction.
+      setCashReversalIntent(intent);
+      setError(cause instanceof Error ? cause.message : "No se pudo registrar la corrección.");
+    } finally {
+      if (epoch === branchEpoch.current) setCashMovementLoading(false);
     }
   }
 
@@ -1766,6 +2041,7 @@ function CashierWorkspace({
     // answers that belong to the previous branch.
     branchEpoch.current += 1;
     cashHistoryRequest.current += 1;
+    cashMovementsRequest.current += 1;
     cashStateRequest.current += 1;
     refreshAllRequest.current += 1;
     // The previous branch's register and session are never shown (nor
@@ -1774,6 +2050,26 @@ function CashierWorkspace({
     setCashSession(null);
     setCashHistory([]);
     setCashHistoryFailed(false);
+    setCashMovements([]);
+    setCashMovementsFailed(false);
+    setCashMovementIntent(null);
+    setCashMovementRetry(false);
+    setCashMovementAmount("");
+    setCashMovementReason("");
+    // CLIENT-CASH-UX (R-2/R-3, branch-aware): the WITHDRAWAL kind itself is
+    // branch-bound supervision state. A non-supervisor branch must never
+    // inherit a Retiro kind selected under another branch's supervisor scope
+    // (which would re-create the show-then-403 pattern through the kind
+    // label and the withdrawal endpoint).
+    setCashMovementKind("EXPENSE");
+    // R-2: a correction belongs to the previous branch's session. The open
+    // dialog, its reason and its confirmed intent are discarded (never sent or
+    // re-keyed here); an in-flight request's late answer is already dropped by
+    // the epoch, so its pending flag is released for the new branch.
+    setCashReversalTarget(null);
+    setCashReversalReason("");
+    setCashReversalIntent(null);
+    setCashMovementLoading(false);
     setCloseResult(null);
     setSelectedSaleId(null);
     setPaymentsBySale({});
@@ -1800,7 +2096,9 @@ function CashierWorkspace({
           <BranchSelect
             value={branchId}
             branchIds={user.branchIds}
-            disabled={loading || paymentLoading || completeLoading}
+            // R-3: like a payment, an in-flight exit or correction pins the
+            // branch, so its intent can never be discarded and re-keyed.
+            disabled={loading || paymentLoading || completeLoading || cashMovementLoading}
             onChange={changeBranch}
           />
         </div>
@@ -1819,6 +2117,37 @@ function CashierWorkspace({
           onConfirmClose={closeCashSession}
           onCancelClose={() => setCloseConfirm(null)}
         />
+
+        {cashSession && canManageCashMovements ? (
+          <CashMovementPanel
+            canSupervise={canSuperviseCashMovements}
+            session={cashSession}
+            movements={cashMovements}
+            movementsFailed={cashMovementsFailed}
+            kind={cashMovementKind}
+            amount={cashMovementAmount}
+            reason={cashMovementReason}
+            loading={cashMovementLoading}
+            intent={cashMovementIntent}
+            retry={cashMovementRetry}
+            onKindChange={setCashMovementKind}
+            onAmountChange={setCashMovementAmount}
+            onReasonChange={setCashMovementReason}
+            onReview={requestCashMovement}
+            onConfirm={submitCashMovement}
+            onCancel={() => {
+              setCashMovementIntent(null);
+              setCashMovementRetry(false);
+            }}
+            reversalTarget={cashReversalTarget}
+            reversalReason={cashReversalReason}
+            reversalPending={cashReversalIntent !== null}
+            onStartReversal={startCashReversal}
+            onReversalReasonChange={setCashReversalReason}
+            onConfirmReversal={submitCashReversal}
+            onCancelReversal={cancelCashReversal}
+          />
+        ) : null}
 
         {error ? <p className="error-banner">{error}</p> : null}
         {notice ? <p className="notice-banner">{notice}</p> : null}
@@ -2477,6 +2806,205 @@ function CashSessionPanel({
           </button>
         </div>
       )}
+    </section>
+  );
+}
+
+function CashMovementPanel({
+  canSupervise,
+  session,
+  movements,
+  movementsFailed,
+  kind,
+  amount,
+  reason,
+  loading,
+  intent,
+  retry,
+  onKindChange,
+  onAmountChange,
+  onReasonChange,
+  onReview,
+  onConfirm,
+  onCancel,
+  reversalTarget,
+  reversalReason,
+  reversalPending,
+  onStartReversal,
+  onReversalReasonChange,
+  onConfirmReversal,
+  onCancelReversal,
+}: {
+  // CLIENT-CASH-UX: branch-aware supervisor hint (activeBranchId ∈ the user's
+  // cashSupervisorLocationIds). Display-only: the API stays authoritative.
+  canSupervise: boolean;
+  session: CashSession;
+  movements: CashMovement[];
+  movementsFailed: boolean;
+  kind: CashMovementKind;
+  amount: string;
+  reason: string;
+  loading: boolean;
+  intent: CashMovementIntent | null;
+  retry: boolean;
+  onKindChange: (kind: CashMovementKind) => void;
+  onAmountChange: (value: string) => void;
+  onReasonChange: (value: string) => void;
+  onReview: () => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+  reversalTarget: CashMovement | null;
+  reversalReason: string;
+  reversalPending: boolean;
+  onStartReversal: (movement: CashMovement) => void;
+  onReversalReasonChange: (value: string) => void;
+  onConfirmReversal: () => void;
+  onCancelReversal: () => void;
+}) {
+  const intentLabel = intent?.kind === "WITHDRAWAL" ? "retiro" : "gasto";
+  // Display-only eligibility (the API stays authoritative): an exit of the open
+  // session that no reversal points at yet — and only where the user acts as
+  // the supervisor (the reversal POST is supervisor-only).
+  const reversedIds = new Set(movements.map((movement) => movement.reversesMovementId).filter((id): id is string => id !== null));
+  const canCorrect = (movement: CashMovement) => canSupervise && session.status === "OPEN"
+    && (movement.type === "WITHDRAWAL" || movement.type === "EXPENSE")
+    && !reversedIds.has(movement.id);
+
+  return (
+    <section className="cash-session open cash-movement-panel">
+      <div>
+        <p className="eyebrow">Sesión actual</p>
+        <h2>Movimientos de caja</h2>
+        <p>Sesión {shortId(session.sessionId)}</p>
+      </div>
+
+      {intent ? (
+        <div className="close-confirm" role="group" aria-label={`Confirmar ${intentLabel}`}>
+          <p className="eyebrow">Confirmación de {intentLabel}</p>
+          <p>Importe <strong>{formatMoney(intent.amount)}</strong></p>
+          <p>Motivo <strong>{intent.reason}</strong></p>
+          {intent.kind === "WITHDRAWAL" ? (
+            <p className="cart-note">Este retiro requiere supervisor (OWNER o ADMIN con alcance COMPANY).</p>
+          ) : null}
+          <button className="primary-button" onClick={onConfirm} disabled={loading}>
+            {retry ? `Reintentar ${intentLabel}` : `Confirmar ${intentLabel}`}
+          </button>
+          <button className="secondary-button" onClick={onCancel} disabled={loading}>
+            Volver
+          </button>
+        </div>
+      ) : (
+        <div className="cash-movement-form">
+          <fieldset className="cash-movement-kinds" disabled={loading}>
+            <legend>Tipo de movimiento</legend>
+            <label>
+              <input
+                type="radio"
+                name="cash-movement-kind"
+                value="EXPENSE"
+                checked={kind === "EXPENSE"}
+                onChange={() => onKindChange("EXPENSE")}
+              />
+              Gasto
+            </label>
+            {canSupervise ? (
+              <label>
+                <input
+                  type="radio"
+                  name="cash-movement-kind"
+                  value="WITHDRAWAL"
+                  checked={kind === "WITHDRAWAL"}
+                  onChange={() => onKindChange("WITHDRAWAL")}
+                />
+                Retiro
+              </label>
+            ) : null}
+          </fieldset>
+          {kind === "WITHDRAWAL" ? (
+            <p className="cart-note">El retiro requiere confirmación de un supervisor (OWNER o ADMIN con alcance COMPANY).</p>
+          ) : null}
+          <label>
+            Importe ARS
+            <input
+              inputMode="decimal"
+              value={amount}
+              onChange={(event) => onAmountChange(event.target.value)}
+              disabled={loading}
+            />
+          </label>
+          <label>
+            Motivo
+            <input
+              value={reason}
+              maxLength={200}
+              onChange={(event) => onReasonChange(event.target.value)}
+              disabled={loading}
+            />
+          </label>
+          <button className="secondary-button" onClick={onReview} disabled={loading}>
+            Revisar {kind === "WITHDRAWAL" ? "retiro" : "gasto"}
+          </button>
+        </div>
+      )}
+
+      {reversalTarget ? (
+        <div className="close-confirm" role="group" aria-label="Corregir movimiento">
+          <p className="eyebrow">Corrección de movimiento</p>
+          <p>Tipo <strong>{cashMovementLabel(reversalTarget.type)}</strong></p>
+          <p>Importe <strong>{formatMoney(reversalTarget.amount)}</strong></p>
+          <p>Motivo original <strong>{reversalTarget.reason}</strong></p>
+          <p className="cart-note">La corrección requiere supervisor (OWNER o ADMIN con alcance COMPANY).</p>
+          <p className="muted">El movimiento original queda visible. Para registrar el importe correcto, cargá un nuevo movimiento después.</p>
+          <label>
+            Motivo de la corrección
+            <input
+              value={reversalReason}
+              maxLength={200}
+              onChange={(event) => onReversalReasonChange(event.target.value)}
+              disabled={loading || reversalPending}
+            />
+          </label>
+          <button className="primary-button" onClick={onConfirmReversal} disabled={loading}>
+            {reversalPending ? "Reintentar corrección" : "Confirmar corrección"}
+          </button>
+          <button className="secondary-button" onClick={onCancelReversal} disabled={loading}>
+            Cancelar
+          </button>
+        </div>
+      ) : null}
+
+      <div className="cash-movement-history">
+        <h3>Movimientos actuales de la sesión</h3>
+        {movementsFailed ? (
+          <p className="muted">No se pudieron cargar los movimientos de caja.</p>
+        ) : movements.length === 0 ? (
+          <p className="muted">Todavía no hay movimientos en esta sesión.</p>
+        ) : (
+          <div className="readonly-items">
+            {movements.map((movement) => (
+              <div className="readonly-item" key={movement.id}>
+                <span>
+                  <strong>{cashMovementLabel(movement.type)}</strong>
+                  <small>{movement.reason ?? formatDateTime(movement.timestamp)}</small>
+                  {movement.reversesMovementId ? <small>Corrige {shortId(movement.reversesMovementId)}</small> : null}
+                  {reversedIds.has(movement.id) ? <small className="status-pill">Corregido</small> : null}
+                </span>
+                <strong>{formatMoney(movement.amount)}</strong>
+                {canCorrect(movement) ? (
+                  <button
+                    className="secondary-button"
+                    onClick={() => onStartReversal(movement)}
+                    disabled={loading || reversalTarget !== null}
+                    aria-label={`Corregir ${movement.reason ?? cashMovementLabel(movement.type)}`}
+                  >
+                    Corregir
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </section>
   );
 }

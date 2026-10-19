@@ -308,7 +308,11 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
     const cases: Array<[(t: ReturnType<typeof setup>) => PlanTenderInput[], string]> = [
       [(t) => plan(t.collection({ claimAttemptId: uuid() })), 'EXTERNAL_COLLECTION_CLAIMED'],
       [(t) => plan(t.collection({ status: 'REFUNDED' })), 'EXTERNAL_COLLECTION_NOT_APPLICABLE'],
+      [(t) => plan(t.collection({ status: 'APPLIED' })), 'EXTERNAL_COLLECTION_NOT_APPLICABLE'],
       [(t) => plan(t.collection({ branchId: uuid(), originSaleId: null })), 'EXTERNAL_COLLECTION_NOT_APPLICABLE'],
+      // SECURITY-R3-CROSS-SALE-01: same branch, method and amount, UNAPPLIED and
+      // unclaimed, but originated by ANOTHER sale.
+      [(t) => plan(t.collection({ originSaleId: uuid() })), 'EXTERNAL_COLLECTION_NOT_APPLICABLE'],
       [(t) => plan(t.collection({ method: 'CARD_DEBIT' })), 'EXTERNAL_COLLECTION_NOT_APPLICABLE'],
       [(t) => plan(t.collection(), 4999n), 'EXTERNAL_COLLECTION_NOT_APPLICABLE'],
       [() => plan({ id: uuid() }), 'EXTERNAL_COLLECTION_NOT_APPLICABLE'],
@@ -322,6 +326,61 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
       expect((await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, req)))?.code, code).toBe(code);
       expect(t.db.writesSince(mark)).toEqual([]);
     }
+  });
+
+  // SECURITY-R3-CROSS-SALE-01 (OWNER): an ExternalCollection is never a generic,
+  // transferable credit — collection.originSaleId must be the reserving sale.
+  // T-R checks it on the LOCKED row, per tender, before any claim.
+  it('XS-R01 a collection originated by ANOTHER sale is NOT_APPLICABLE: no attempt, no tender, no claim, no audit, updatedAt untouched', async () => {
+    const t = setup();
+    const foreign = t.collection({ originSaleId: uuid() });
+    t.db.table('sale')[0]!.updatedAt = new Date(1);
+    const req = t.request([
+      { method: 'CASH', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+      { method: 'TRANSFER', role: 'FIXED', source: 'COLLECTION', amount: 5000n, externalCollectionId: foreign.id as string },
+    ]);
+    const mark = t.db.ops.length;
+    expect((await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, req)))?.code).toBe('EXTERNAL_COLLECTION_NOT_APPLICABLE');
+    expect(t.db.writesSince(mark)).toEqual([]);
+    expect(t.db.table('externalCollection')[0]).toMatchObject({ claimAttemptId: null, status: 'UNAPPLIED' });
+    expect(t.db.table('checkoutAttempt')).toHaveLength(0);
+    expect(t.db.table('checkoutAttemptTender')).toHaveLength(0);
+    expect(t.db.table('auditLog')).toHaveLength(0);
+    expect(t.db.table('sale')[0]!.updatedAt).toEqual(new Date(1));
+  });
+
+  it('XS-R02 a plan mixing the sale\'s own collection with a foreign one is refused as a whole: neither is claimed', async () => {
+    const t = setup();
+    const own = t.collection({ method: 'CARD_DEBIT', amount: 4000n });
+    const foreign = t.collection({ originSaleId: uuid() });
+    const req = t.request([
+      { method: 'CASH', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+      { method: 'TRANSFER', role: 'FIXED', source: 'COLLECTION', amount: 5000n, externalCollectionId: foreign.id as string },
+      { method: 'CARD_DEBIT', role: 'FIXED', source: 'COLLECTION', amount: 4000n, externalCollectionId: own.id as string },
+    ]);
+    const mark = t.db.ops.length;
+    expect((await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, req)))?.code).toBe('EXTERNAL_COLLECTION_NOT_APPLICABLE');
+    expect(t.db.writesSince(mark)).toEqual([]);
+    expect(t.db.table('externalCollection').map((row) => row.claimAttemptId)).toEqual([null, null]);
+  });
+
+  it('XS-R03 control: the sale\'s own collection is still claimed, and the lost-response replay neither re-claims nor creates a second attempt', async () => {
+    const t = setup();
+    const own = t.collection();
+    const req = t.request([
+      { method: 'CASH', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+      { method: 'TRANSFER', role: 'FIXED', source: 'COLLECTION', amount: 5000n, externalCollectionId: own.id as string },
+    ]);
+    const first = await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    const [attempt] = t.db.table('checkoutAttempt');
+    expect(t.db.table('externalCollection')[0]).toMatchObject({ claimAttemptId: attempt!.id, status: 'UNAPPLIED' });
+    const mark = t.db.ops.length;
+    const second = await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    expect(second.replayed).toBe(true);
+    expect(second.view.operationKey).toBe(first.view.operationKey);
+    expect(t.db.writesSince(mark)).toEqual([]);
+    expect(t.db.table('checkoutAttempt')).toHaveLength(1);
+    expect(t.db.table('externalCollection')[0]!.claimAttemptId).toBe(attempt!.id);
   });
 
   it('R14 an audit failure rolls the whole reservation back (attempt, tenders, claim, seal, updatedAt)', async () => {
@@ -339,11 +398,74 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
     expect(t.db.table('sale')[0]!.updatedAt).toEqual(new Date(0));
   });
 
-  it('R15 D2: a recovery body is refused with RECOVERY_RESERVATION_NOT_ENABLED before any transaction', async () => {
+  it('R15 S7-I: a recovery body is no longer refused up front — it takes the T-RR branch (Serializable, under the Sale lock) where a CASHIER is not a supervisor', async () => {
     const t = setup();
     const result = await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, { ...t.cashOnly(), recovery: { reason: 'motivo suficiente', evidence: 'cupón 1' } }));
-    expect(result).toMatchObject({ status: 409, code: 'RECOVERY_RESERVATION_NOT_ENABLED' });
-    expect(t.db.transactions).toHaveLength(0);
+    expect(result).toMatchObject({ status: 403, code: 'FORBIDDEN' });
+    expect(t.db.transactions).toEqual([{ isolationLevel: 'Serializable', timeout: 30_000 }]);
+    expect(t.db.table('checkoutAttempt')).toEqual([]);
+  });
+
+  // R3-A4.3 S7-H (OWNER): T-R and T-RR never replay each other. A recovery
+  // attempt (recoveryReason/recoveryEvidence persisted, write-once by F1 and
+  // whole-or-absent by chk_attempt_recovery) is a supervised reservation; an
+  // ordinary T-R with the same key and the SAME plan must not adopt it.
+  // T-RR does not exist yet (S7-I), so the recovery attempt is the persisted row
+  // an ordinary T-R created, then marked as the recovery a T-RR would persist.
+  const markAsRecovery = (t: ReturnType<typeof setup>) => Object.assign(t.db.table('checkoutAttempt')[0]!, {
+    recoveryReason: 'el cobro externo quedó sin imputar', recoveryEvidence: 'cupón 0042',
+  });
+  const snapshotOf = (t: ReturnType<typeof setup>) => structuredClone({
+    attempts: t.db.table('checkoutAttempt'), tenders: t.db.table('checkoutAttemptTender'), collections: t.db.table('externalCollection'),
+    holds: t.db.table('stockReservation'), sessions: t.db.table('cashSession'), sales: t.db.table('sale'), audits: t.db.table('auditLog'),
+  });
+
+  it('RR-B07 an ordinary T-R never replays a RECOVERY attempt — same sale, same key, same planHash → the generic 409, zero writes, nothing disclosed', async () => {
+    const t = setup();
+    const req = t.cashOnly();
+    await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    markAsRecovery(t);
+    // The persisted plan is exactly the one this ordinary T-R sends.
+    expect(t.db.table('checkoutAttempt')[0]!.planHash).toBe(planHash({ saleId: t.sale.id as string, ...req }));
+    const before = snapshotOf(t);
+    const mark = t.db.ops.length;
+    const result = await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, req));
+    expect(result).toEqual({ status: 409, code: 'RESERVE_KEY_REUSED_WITH_DIFFERENT_PLAN', details: undefined });
+    expect(t.db.writesSince(mark)).toEqual([]);
+    expect(snapshotOf(t)).toEqual(before);
+    // The same generic message as any other key reuse: no reason, evidence or recovery hint.
+    const message = await t.service.reserve(t.asCashier, t.sale.id as string, req).catch((error: AppError) => error.message);
+    expect(message).toBe('La clave de reserva ya fue utilizada con otro contenido.');
+  });
+
+  it('RR-B07b the P2002 re-read path refuses it too: a peer that committed a RECOVERY attempt with this key and plan is never adopted as a replay', async () => {
+    const t = setup();
+    const req = t.cashOnly();
+    t.db.concurrently('checkoutAttempt', 'create', () => {
+      t.db.insert('checkoutAttempt', { saleId: t.sale.id, branchId: t.branch, reserveKey: req.reserveKey, operationKey: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        planHash: planHash({ saleId: t.sale.id as string, ...req }), cashSessionId: t.session.id, balanceMethod: 'CASH', expectedTotal: req.expectedTotal,
+        expectedBalanceAmount: req.expectedBalanceAmount, tenderCount: 1, fullPriceCash: req.expectedTotal, algorithmVersion: 1, planSealed: true,
+        startedById: t.other.id, recoveryReason: 'el cobro externo quedó sin imputar', recoveryEvidence: 'cupón 0042' });
+    });
+    const result = await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, req));
+    // The P2002 is resolved by a fresh re-read, which refuses the recovery attempt.
+    expect(result).toEqual({ status: 409, code: 'RESERVE_KEY_REUSED_WITH_DIFFERENT_PLAN', details: undefined });
+    expect(t.db.table('checkoutAttempt')).toHaveLength(1); // only the peer's
+    expect(t.db.table('auditLog')).toHaveLength(0);
+  });
+
+  it('RR-B07 controls: an ordinary attempt still replays (A); another plan (B) and another sale (C) keep the generic 409', async () => {
+    const t = setup();
+    const req = t.cashOnly();
+    const first = await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    expect(t.db.table('checkoutAttempt')[0]).toMatchObject({ recoveryReason: null, recoveryEvidence: null });
+    const replay = await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    expect(replay).toMatchObject({ replayed: true, view: { operationKey: first.view.operationKey } });
+    expect(await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, { ...req, cashSessionId: uuid() })))
+      .toEqual({ status: 409, code: 'RESERVE_KEY_REUSED_WITH_DIFFERENT_PLAN', details: undefined });
+    const otherSale = t.db.insert('sale', { ...t.sale, id: uuid(), saleNumber: 'B-0003' });
+    expect(await codeOf(t.service.reserve(t.asCashier, otherSale.id as string, req)))
+      .toEqual({ status: 409, code: 'RESERVE_KEY_REUSED_WITH_DIFFERENT_PLAN', details: undefined });
   });
 
   it('R16 transient failures retry up to 3 times, then CONCURRENCY_ERROR; a retry that succeeds writes once', async () => {

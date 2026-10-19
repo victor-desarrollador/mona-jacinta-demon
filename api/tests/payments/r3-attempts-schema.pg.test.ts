@@ -10,7 +10,8 @@
 //     MONA_R3_ATTEMPTS_PG=1 MONA_TEST_DATABASE_TARGET=local
 //     LOCAL_TEST_DATABASE_URL=… LOCAL_TEST_DATABASE_MARKER_ID=…
 //     MONA_R3_PG_SYSTEM_ID=<pg_control_system().system_identifier of THAT cluster>
-//   Suite B (P21a, P21b) — exact ledger of migrations 1–8, no migration 9:
+//   Suite B (P21a, P21b) — exact ledger of migrations 1–8, no migration 9
+//     (built on a FRESH cluster by local-test-prepare.mjs --migration-set=r3-p21-base):
 //     same variables with MONA_R3_P21_PG=1; needs /usr/bin/psql.
 //
 // Writes:
@@ -21,8 +22,8 @@
 //     Sale, SaleCheckout), runs the COMPLETE migration file with psql (its own
 //     BEGIN/COMMIT, no outer transaction), then deletes exactly those ids.
 //   Suite B P21b: runs the instrumented copy with psql; it fails before its
-//     COMMIT. It first requires the authoritative R3-T pin (pending in S11), so
-//     today it FAILS CLOSED by design.
+//     COMMIT. It first requires the authoritative R3-T pin (U1: the LOCAL_TEST
+//     payload pin of local-test-migration-payload.mjs); a mismatch FAILS CLOSED.
 // Credentials never reach argv, a shell or a log line (tests/helpers/r3-psql.ts).
 //
 // P21c, P21d (S9/S11), P54 and P55 (S4–S6 services) are todo, never reported
@@ -1007,9 +1008,9 @@ describe.skipIf(!suiteA)('R3-A4.3 S1 — schema on PostgreSQL (migrations 1–9)
 
 // --- Suite B: P21 atomicity on a cluster with the exact ledger 1–8 ----------------
 const CATALOG_SNAPSHOT_SQL = `
-SELECT 'type' AS k, t.typname || ':' || t.typtype AS v FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public'
+SELECT 'type' AS k, t.typname || ':' || t.typtype::text AS v FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public'
 UNION ALL SELECT 'enum', t.typname || ':' || e.enumlabel || ':' || e.enumsortorder FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public'
-UNION ALL SELECT 'class', c.relname || ':' || c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'
+UNION ALL SELECT 'class', c.relname || ':' || c.relkind::text FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'
 UNION ALL SELECT 'attr', c.relname || '.' || a.attname || ':' || format_type(a.atttypid, a.atttypmod) || ':' || a.attnotnull || ':' || a.atthasdef
   FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped
 UNION ALL SELECT 'attrdef', c.relname || '.' || a.attname || ':' || pg_get_expr(d.adbin, d.adrelid)
@@ -1114,10 +1115,10 @@ describe.skipIf(!suiteB)('R3-A4.3 S1 — P21 migration 9 atomicity (exact ledger
   });
 
   it('P21b instrumented copy (exact R3-T pin required) fails late with the injected error; catalogs and ledger identical to the baseline', async () => {
-    // The pin is authoritative only from R3-T (S11). Until then this FAILS CLOSED:
-    // a well-formed 64-hex hash proves nothing; only the exact pinned bytes do.
+    // The pin is authoritative from R3-T (U1). A mismatch FAILS CLOSED: a
+    // well-formed 64-hex hash proves nothing; only the exact pinned bytes do.
     const pin = checkMigration9Pin(original);
-    expect(pin.status, `P21b requires the authoritative R3-T pin for migration 9 (pending in S11; current sha256 ${pin.actual})`).toBe('MATCH');
+    expect(pin.status, `P21b requires the authoritative R3-T pin for migration 9 (current sha256 ${pin.actual})`).toBe('MATCH');
     const copy = deriveP21bInstrumentedCopy(original);
     expect(insertedLines(original, copy)?.lines).toEqual([P21B_INJECTION]);
     const dir = mkdtempSync(path.join(tmpdir(), 'r3-p21b-'));

@@ -24,6 +24,13 @@ export const PRODUCTION_PERMISSIONS = {
   INVENTORY_MANAGE: 'INVENTORY_MANAGE',
   CASH_SESSION_OPEN: 'CASH_SESSION_OPEN',
   CASH_SESSION_CLOSE: 'CASH_SESSION_CLOSE',
+  // PILOT cash exits (WITHDRAWAL/EXPENSE): register a manual cash movement on
+  // an OPEN session and read its movement history. Additive catalog row per the
+  // frozen matrix's "Adding permissions" rule. Default grants: CASHIER, ADMIN;
+  // OWNER only through its implicit authority. A WITHDRAWAL additionally
+  // requires a supervisor (OWNER / COMPANY-scoped ADMIN) via
+  // actsAsSupervisorAtLocation.
+  CASH_MOVEMENT_MANAGE: 'CASH_MOVEMENT_MANAGE',
   USER_MANAGE: 'USER_MANAGE',
   REPORT_VIEW: 'REPORT_VIEW',
   AUDIT_VIEW: 'AUDIT_VIEW',

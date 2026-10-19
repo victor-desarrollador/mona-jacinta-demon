@@ -7,9 +7,12 @@
 //   - `SELECT … FOR UPDATE` raw queries the service issues, recorded in order;
 //   - `UPDATE "Sale" SET "updatedAt" = now()` (the visibility rule);
 //   - the CheckoutAttempt unique keys (reserveKey, operationKey) and the
-//     partial "one open attempt per sale" index, raising Prisma-shaped P2002;
+//     partial "one open attempt per sale" index, raising the adapter-pg 7.10
+//     shaped P2002 (no meta.target; see p2002Adapter);
 //   - injected failures (`failOn`) and a concurrent peer's committed writes
-//     (`concurrently`), which survive our own rollback.
+//     (`concurrently`), which survive our own rollback;
+//   - (R3-A4.3 S7) Inventory rows and their raw lock by branch + variants,
+//     id ASC, so a stock recovery can be driven like T-C's step 7.
 import { randomUUID } from 'node:crypto';
 
 export type Row = Record<string, unknown>;
@@ -18,7 +21,7 @@ export type Op = { kind: string; model?: string; detail?: unknown };
 const MODELS = [
   'sale', 'saleItem', 'salePayment', 'saleCheckout', 'saleLineAllocation', 'checkoutAttempt', 'checkoutAttemptTender',
   'checkoutAttemptDeclaration', 'externalCollection', 'cashSession', 'cashRegister', 'stockReservation', 'user',
-  'auditLog', 'company', 'companyPricingConfig',
+  'auditLog', 'company', 'companyPricingConfig', 'inventory',
 ] as const;
 export type Model = (typeof MODELS)[number];
 
@@ -74,6 +77,20 @@ export function p2002(target: string | string[], modelName = 'CheckoutAttempt'):
   return Object.assign(new Error('Unique constraint failed'), { code: 'P2002', meta: { modelName, target } });
 }
 
+// R3 PG gate (R-1/R-2): the shape PostgreSQL really produces through
+// @prisma/adapter-pg 7.10 — NO meta.target; the constraint is named in
+// meta.driverAdapterError.cause.constraint ({ index } when PostgreSQL reports the
+// constraint name, else { fields } with PostgreSQL-quoted identifiers).
+export function p2002Adapter(constraint: { index: string } | { fields: string[] }, modelName = 'CheckoutAttempt'): Error {
+  return Object.assign(new Error('Unique constraint failed'), {
+    code: 'P2002',
+    meta: {
+      modelName,
+      driverAdapterError: { name: 'DriverAdapterError', cause: { originalCode: '23505', kind: 'UniqueConstraintViolation', constraint } },
+    },
+  });
+}
+
 export function createCheckoutReservationFakeDb(options: { now?: () => Date } = {}) {
   const now = options.now ?? (() => new Date());
   const tables = Object.fromEntries(MODELS.map((model) => [model, [] as Row[]])) as Record<Model, Row[]>;
@@ -100,10 +117,11 @@ export function createCheckoutReservationFakeDb(options: { now?: () => Date } = 
   function checkAttemptUniques(candidate: Row, self?: Row) {
     for (const other of table('checkoutAttempt')) {
       if (other === self) continue;
-      if (other.reserveKey === candidate.reserveKey) throw p2002(['reserveKey']);
-      if (other.operationKey === candidate.operationKey) throw p2002(['operationKey']);
+      // The real adapter-pg shape, with the real index names (migration 9).
+      if (other.reserveKey === candidate.reserveKey) throw p2002Adapter({ index: 'CheckoutAttempt_reserveKey_key' });
+      if (other.operationKey === candidate.operationKey) throw p2002Adapter({ index: 'CheckoutAttempt_operationKey_key' });
       const open = (row: Row) => (row.status === 'RESERVED' || row.status === 'REJECTED') && row.declaredAt === null;
-      if (other.saleId === candidate.saleId && open(other) && open(candidate)) throw p2002('CheckoutAttempt_one_open_per_sale');
+      if (other.saleId === candidate.saleId && open(other) && open(candidate)) throw p2002Adapter({ index: 'CheckoutAttempt_one_open_per_sale' });
     }
   }
 
@@ -215,6 +233,15 @@ export function createCheckoutReservationFakeDb(options: { now?: () => Date } = 
     if (/FROM "StockReservation"/.test(sql) && /FOR UPDATE/.test(sql)) {
       ops.push({ kind: 'lock', model: 'StockReservation' });
       return clone(sortRows(table('stockReservation').filter((row) => row.saleId === values[0] && row.status === 'ACTIVE'), { id: 'asc' }));
+    }
+    // R3-A4.3 S7: the Inventory lock of the stock writers (branchId + variantId
+    // IN (Prisma.join(…)) ORDER BY id ASC FOR UPDATE); Prisma.join arrives as
+    // ONE Sql value carrying the ids in `.values`.
+    if (/FROM "Inventory" WHERE "branchId" = \? AND "variantId" IN \(\?\) ORDER BY id ASC FOR UPDATE/.test(sql)) {
+      maybeFail('inventory', 'lock');
+      ops.push({ kind: 'lock', model: 'Inventory' });
+      const [branchId, joined] = values as [string, { values: unknown[] }];
+      return clone(sortRows(table('inventory').filter((row) => row.branchId === branchId && joined.values.includes(row.variantId)), { id: 'asc' }));
     }
     throw new Error(`fake db: unexpected raw query: ${sql}`);
   }

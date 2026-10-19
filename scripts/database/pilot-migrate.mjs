@@ -1,15 +1,20 @@
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   closeSync,
   constants as fsConstants,
   fstatSync,
   lstatSync,
+  mkdirSync,
+  mkdtempSync,
   openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   readSync,
   realpathSync,
+  rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -25,12 +30,31 @@ import {
   readPrivateUrlFile,
 } from './pilot-marker.mjs';
 import { PROJECT_REF_PATTERN } from './lib.mjs';
+import {
+  FINAL_STATE, INITIAL_STATES, LEDGER_SQL, LOCK_PIN, MIGRATION_PINS, STATES, pendingFor, requireState,
+} from './pilot-migration-states.mjs';
+import { canonicalJson, projectionDigest, readProjection, runProbes } from './app-schema-projection.mjs';
+import { SCHEMA_REFERENCES, STATE_PROBES } from './pilot-schema-references.mjs';
+import { buildTargetBinding, buildToolingBinding, readLockedFile, toolingFile, validateTargetBinding, validateToolingBinding } from './pilot-plan-binding.mjs';
 
 // OWNER-only guarded `prisma migrate deploy` for PILOT.
 //
-//   node scripts/database/pilot-migrate.mjs --target=pilot --dry-run --marker-id=<uuid>
+//   node scripts/database/pilot-migrate.mjs --target=pilot --dry-run --marker-id=<uuid> \
+//     --expected-initial-state=EXACT_S4|EXACT_G7
 //   node scripts/database/pilot-migrate.mjs --target=pilot --execute --marker-id=<uuid> \
-//     --confirm-project-ref=<ref>
+//     --confirm-project-ref=<ref> --expected-initial-state=EXACT_S4|EXACT_G7 --plan=<dry-run digest>
+//
+// G11 cut-over (OWNER 2026-10-18): the approved repository tree is exactly G11 (the eleven
+// pins of pilot-migration-states.mjs). The initial state is NEVER auto-selected: the OWNER
+// names it (EXACT_S4 or EXACT_G7) after a fresh A4, and --execute requires the plan digest
+// the dry run printed for it. --execute then runs, in order: the identity proof; a READ-ONLY
+// pre-check snapshot (REPEATABLE READ READ ONLY, pinned search_path, same marker) that must
+// show exactly the expected ledger AND the app-owned schema of that state's generated
+// reference (digest + semantic probes); the final payload proof; ONE Prisma deploy; and a
+// READ-ONLY post-check that must show exactly EXACT_G11 (ledger, reference digest, probes).
+// A failed deploy or post-check is reported as RESTORE_REQUIRED: this tool never resolves,
+// never retries and never repairs; the approved rollback before any new G11 write is the
+// full restore of the verified pre-cutover backup.
 //
 // Invariant: Prisma receives exactly the URL string this process read ONCE from
 // the private PILOT file, and that same string's connection was proven, moments
@@ -53,36 +77,38 @@ const PREFIX = '[db:pilot-migrate]';
 const URL_FILE_LABEL = '~/.config/mona-jacinta/pilot-database-url';
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MODES = ['dry-run', 'execute'];
-const VALUE_ARGS = ['target', 'marker-id', 'confirm-project-ref'];
+const VALUE_ARGS = ['target', 'marker-id', 'confirm-project-ref', 'expected-initial-state', 'plan'];
 const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+export const PLAN_FORMAT = 'mona-pilot-migrate-plan/v3';
 
-// OWNER-approved migration payload (H1). Digests were taken from the HEAD a04478c
-// blobs and checked byte-identical to the working tree (no staged/unstaged diff)
-// before pinning. `bytes` is the exact size: a size mismatch fails before reading.
-// Order = Prisma's lexicographic directory order. Never regenerate these from
-// whatever is on disk: a new or changed migration needs a fresh OWNER review.
-// Block 1 (20261002120000_block1_pricing_wholesale) was OWNER-approved from the
-// independently reviewed candidate bytes, re-pinned after the M1 fix (Sale
-// INSERT marker rule) at 10096 B, recomputed before pinning.
-// Pilot Pricing V2 (20261006120000_pilot_pricing_v2) was OWNER-authorized on
-// 2026-10-06 for exactly the reviewed file below (3282 B, additive only, no DML,
-// ProductVariant.price untouched, no invented cashPrice). Pinning does NOT apply it
-// anywhere. Any byte change needs a fresh OWNER review and a new pin.
-// CASH-1 (20261012120000_cash_session_reconciliation) was OWNER-authorized
-// for this offline pin only: 390 reviewed bytes, additive nullable BIGINT
-// columns. Pinning does not apply the migration to any database.
-export const APPROVED_MIGRATION_PAYLOAD = Object.freeze({
-  migrations: Object.freeze([
-    Object.freeze({ name: '20260907015311_init', bytes: 17328, sha256: 'a584edab13a2ae540d694578ffa3b5a622decff04e238a5cf16d3040d295e4cb' }),
-    Object.freeze({ name: '20260912182432_add_company_location', bytes: 1343, sha256: '19c345aa92c79a0a613dc03ea01dcf10e91b5a75fd6f3535076d8d71b6f740af' }),
-    Object.freeze({ name: '20260912191702_add_user_role_scope', bytes: 2356, sha256: '2b415411eddc1212bf60419ce49022cea38d1fc2d12cb08938ad7c953caf7f3a' }),
-    Object.freeze({ name: '20260922210000_d3_initial_stock_and_global_audit', bytes: 482, sha256: '62b3b169e06a48dc2e2a3f81cee11e02a809b2733db2453c5b9eef91c15f77cf' }),
-    Object.freeze({ name: '20261002120000_block1_pricing_wholesale', bytes: 10096, sha256: '45cf8d080e8fa4ec0a8dab9c9e5d4b780eb1642f0a8992d43b57dff655250173' }),
-    Object.freeze({ name: '20261006120000_pilot_pricing_v2', bytes: 3282, sha256: 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12' }),
-    Object.freeze({ name: '20261012120000_cash_session_reconciliation', bytes: 390, sha256: 'd98b7ce082bff6810312866c81c26203146dff03c7a12e5f3bd6a595893fc47f' }),
-  ]),
-  lock: Object.freeze({ bytes: 128, sha256: '99836963713b4f5b269ad49af0ed3d7b0b2e336115c2f92dc9ac683d139d0900', provider: 'postgresql' }),
-});
+// G11-ADV-001: the tooling the plan binds by hash. Every listed artifact's bytes
+// can change what `--execute` does (the runner itself, the shared pin/payload and
+// projection modules, the audited identity-proof client, the TLS trust anchor
+// used by the child, the schema contract the child compiles and the derived-list
+// helper). Changing any of them invalidates every old plan digest.
+export const MIGRATE_TOOLING_FILES = Object.freeze([
+  toolingFile('module', 'pilot-plan-binding.mjs'),
+  toolingFile('module', 'pilot-migrate.mjs'),
+  toolingFile('module', 'pilot-migration-states.mjs'),
+  toolingFile('module', 'app-schema-projection.mjs'),
+  toolingFile('module', 'pilot-schema-references.mjs'),
+  toolingFile('module', 'pilot-marker.mjs'),
+  toolingFile('module', 'lib.mjs'),
+  toolingFile('api', 'prisma.config.ts'),
+  toolingFile('api', 'prisma/schema.prisma'),
+  toolingFile('repo', 'scripts/certs/supabase-prod-ca-2021.crt'),
+]);
+
+// OWNER-approved migration payload. History of the approvals these pins carry: the H1
+// baseline (m1–m4, digests from the HEAD a04478c blobs), Block 1 (m5, re-pinned after the
+// M1 fix at 10096 B), Pilot Pricing V2 (m6, 3282 B, OWNER 2026-10-06), CASH-1 (m7, 390 B),
+// the reviewed R3 proportional checkout and checkout attempts (m8, m9), cash exits (m10)
+// and cash reversals (m11) — G11, OWNER 2026-10-18. The literals live in
+// pilot-migration-states.mjs, the single source every PILOT tool shares; they are never
+// regenerated from disk, and a new or changed migration needs a fresh OWNER review and a
+// new pin there. Pinning applies nothing anywhere.
+export const APPROVED_MIGRATION_PAYLOAD = Object.freeze({ migrations: MIGRATION_PINS, lock: LOCK_PIN });
 const LOCK_FILE = 'migration_lock.toml';
 const MIGRATION_FILE = 'migration.sql';
 const MAX_PAYLOAD_FILE_BYTES = 1024 * 1024;
@@ -209,7 +235,17 @@ export function parseCliArgs(argv) {
   if (mode === 'execute' && (confirmProjectRef === null || !PROJECT_REF_PATTERN.test(confirmProjectRef))) {
     return { ok: false, error: '--execute requires --confirm-project-ref=<20-character lowercase project ref>' };
   }
-  return { ok: true, mode, markerId: values['marker-id'], confirmProjectRef };
+  // The initial state is the OWNER's explicit choice; it is never inferred.
+  const initialState = values['expected-initial-state'];
+  if (!INITIAL_STATES.includes(initialState)) {
+    return { ok: false, error: `--expected-initial-state must be exactly one of ${INITIAL_STATES.join(' | ')}` };
+  }
+  const plan = values.plan ?? null;
+  if (mode === 'dry-run' && plan !== null) return { ok: false, error: '--plan is accepted only with --execute' };
+  if (mode === 'execute' && (plan === null || !HEX64.test(plan))) {
+    return { ok: false, error: '--execute requires --plan=<64-hex plan digest printed by the dry run>' };
+  }
+  return { ok: true, mode, markerId: values['marker-id'], confirmProjectRef, initialState, plan };
 }
 
 // The repository-local Prisma CLI, proven from files only (nothing is executed):
@@ -238,6 +274,268 @@ export function resolvePrismaCli(apiDir) {
   } catch {
     return { ok: false, reason: 'repository-local prisma CLI or api/prisma.config.ts is missing' };
   }
+}
+
+// ---------------- G11-ADV-002: private staged migration execution ----------------
+//
+// Root cause: the reviewed migration bytes were verified and then closed, but
+// Prisma re-opened the worktree's mutable "api/prisma/migrations" paths itself —
+// a verify-then-reopen TOCTOU.
+//
+// Architecture: before the child is ever spawned, the exact approved bytes are
+// read once (the same hardened reads runs at both payload proofs) and copied into
+// a fresh, exclusive, 0700/0600 private staging tree under the process tmpdir
+// (never the repository, never a symlink, no traversal). The staged tree is then
+// verified as an exact copy — every migration sha256 equal to its pin, the lock
+// equal to its pin, the schema and CA cert equal to their tooling-binding
+// digests, the generated config equal to its deterministic text — and verified
+// again immediately before the child starts. The child runs with cwd INSIDE the
+// stage and a config that resolves schema AND migrations from the stage only:
+// Prisma can therefore never consume a worktree migration byte. The stage is
+// removed in a finally, whatever the child's outcome.
+//
+// Documented boundary: the child binary itself stays the verified repository-
+// local prisma CLI (version-pinned by resolvePrismaCli), and the generated stage
+// config imports that one package's `prisma/config` module by a relative path —
+// module CODE from the same pinned package only; no worktree migration SQL is
+// ever opened through it. The stage is not crash-durable by design: it is a
+// private copy created fresh for this one run, never published, never reused.
+
+export const STAGE_DIR_PREFIX = 'pilot-migrate-stage-';
+const STAGE_CA = 'scripts/certs/supabase-prod-ca-2021.crt';
+const STAGE_SCHEMA = 'prisma/schema.prisma';
+
+// The generated config the child loads: byte-equivalent in behaviour to the
+// repository's prisma.config.ts under NODE_ENV=production (loadRepositoryEnv is a
+// no-op then, so its import is dropped) with exactly these deterministic deltas:
+// the `prisma/config` specifier becomes the relative path into the pinned local
+// prisma package, so module resolution works from inside the stage. No other
+// behaviour, no path logic beyond those two constants, nothing secret (the child
+// still receives the URL as DATABASE_URL in its allowlisted env).
+export function buildStagedConfigText(relativeConfigImport) {
+  if (typeof relativeConfigImport !== 'string' || relativeConfigImport === '' || /["\\\n\r\0]/.test(relativeConfigImport)) {
+    throw new Error('the staged config import specifier is not representable');
+  }
+  return `import { fileURLToPath } from 'node:url';
+import { defineConfig, env } from ${JSON.stringify(relativeConfigImport)};
+
+// Generated by pilot-migrate.mjs for one --execute run: a private staged copy.
+// Same semantics as the repository config under NODE_ENV=production (the
+// repository-env import is a no-op there and is therefore dropped here).
+let migrationUrl: URL;
+try {
+  migrationUrl = new URL(env('DATABASE_URL'));
+} catch {
+  throw new Error('DATABASE_URL must be a valid PostgreSQL connection URL');
+}
+if (
+  !['postgres:', 'postgresql:'].includes(migrationUrl.protocol) ||
+  [...migrationUrl.searchParams.keys()].some(
+    (key) => key.startsWith('ssl') || key === 'uselibpqcompat',
+  )
+) {
+  throw new Error('DATABASE_URL must be PostgreSQL without TLS query overrides');
+}
+const caPath = fileURLToPath(
+  new URL('../${STAGE_CA}', import.meta.url),
+);
+migrationUrl.searchParams.set('sslmode', 'require');
+migrationUrl.searchParams.set('sslaccept', 'strict');
+migrationUrl.searchParams.set('sslcert', caPath);
+
+export default defineConfig({
+  schema: '${STAGE_SCHEMA}',
+  datasource: { url: migrationUrl.toString() },
+});
+`;
+}
+
+const STAGE_ROOT_FILES = Object.freeze(['prisma', 'scripts', 'prisma.config.ts']);
+const STAGE_CERT_NAME = 'supabase-prod-ca-2021.crt';
+
+// An exact-tree verifier for the private staging copy: the root holds exactly the
+// three layout entries, nothing else is a symlink anywhere on the walked paths,
+// and every file's bytes hash to its expected digest. Any deviation is fatal
+// before the child starts.
+export function verifyStagedRun(root, expect) {
+  const fail = (reason) => ({ ok: false, reason });
+  try {
+    if (typeof root !== 'string' || !path.isAbsolute(root)) return fail('the staging root is not an absolute path');
+    const rootEntries = readdirSync(root, { withFileTypes: true }).map((e) => e.name).sort();
+    if (rootEntries.join(',') !== [...STAGE_ROOT_FILES].sort().join(',')) return fail('the staging root does not hold exactly the expected layout');
+    for (const name of rootEntries) {
+      if (lstatSync(path.join(root, name)).isSymbolicLink()) return fail(`a staging entry is a symlink: ${name}`);
+    }
+    // prisma.config.ts: regenerated text must match byte for byte.
+    const config = readFileSync(path.join(root, 'prisma.config.ts'));
+    const expectedConfig = Buffer.from(buildStagedConfigText(expect.configImport));
+    if (!config.equals(expectedConfig)) return fail('the staged config is not the generated one');
+    for (const [file, sha] of [[STAGE_SCHEMA, expect.schemaSha256], [STAGE_CA, expect.certSha256]]) {
+      if (lstatSync(path.join(root, file)).isSymbolicLink()) return fail(`a staging entry is a symlink: ${file}`);
+      if (createHash('sha256').update(readFileSync(path.join(root, file))).digest('hex') !== sha) return fail(`a staged file is not the verified copy: ${file}`);
+    }
+    // migrations: exact names, exact bytes, nothing extra, no symlinks.
+    const dir = path.join(root, 'prisma', 'migrations');
+    const entries = readdirSync(dir, { withFileTypes: true }).map((e) => ({ name: e.name, link: e.isSymbolicLink() }));
+    if (entries.some((e) => e.link)) return fail('a staged migration entry is a symlink');
+    const names = entries.map((e) => e.name).sort();
+    const expectedNames = [...expect.migrations.map((m) => m.name), 'migration_lock.toml'].sort();
+    if (names.join(',') !== expectedNames.join(',')) return fail('the staged migration set is not exactly the approved one');
+    for (const m of expect.migrations) {
+      const file = path.join(dir, m.name, 'migration.sql');
+      if (lstatSync(file).isSymbolicLink()) return fail(`a staged migration is a symlink: ${m.name}`);
+      const st = lstatSync(file);
+      if (!st.isFile() || st.size !== m.bytes) return fail(`a staged migration has the wrong shape: ${m.name}`);
+      if (createHash('sha256').update(readFileSync(file)).digest('hex') !== m.sha256) return fail(`a staged migration is not the verified copy: ${m.name}`);
+    }
+    const lock = path.join(dir, 'migration_lock.toml');
+    if (lstatSync(lock).isSymbolicLink()) return fail('the staged migration lock is a symlink');
+    if (createHash('sha256').update(readFileSync(lock)).digest('hex') !== expect.lockSha256) return fail('the staged migration lock is not the verified copy');
+    return { ok: true };
+  } catch {
+    return fail('the staging tree could not be read');
+  }
+}
+
+// Build the private staging tree for one --execute run. Reads every byte through
+// the hardened/locked reads (pinned sizes for payload files, readLockedFile for
+// schema and cert), verifies the copy, and returns a handle with a deterministic
+// verify() (used again immediately before the spawn) and a cleanup() for the
+// finally. Fails closed; nothing is left half-written on failure (the temp dir is
+// removed on any staging error).
+export function stageMigrationRun({ apiDir, tmpdir, payload, toolingBinding }) {
+  const fail = (reason) => ({ ok: false, reason });
+  const byPath = (rel) => toolingBinding.files.find((f) => f.path === rel);
+  const schemaEntry = byPath('prisma/schema.prisma');
+  const certEntry = byPath('scripts/certs/supabase-prod-ca-2021.crt');
+  if (!schemaEntry || !certEntry) return fail('the tooling binding must carry the schema and the CA cert');
+  let root;
+  try {
+    root = mkdtempSync(path.join(tmpdir, STAGE_DIR_PREFIX));
+  } catch {
+    return fail('the staging root could not be created under the process tmpdir');
+  }
+  try {
+    const configImport = path.relative(root, path.join(apiDir, 'node_modules', 'prisma', 'config.js')).split(path.sep).join('/');
+    if (configImport === '' || configImport.startsWith('/')) return fail('the staged config import path is not representable');
+    mkdirSync(path.join(root, 'prisma', 'migrations'), { mode: 0o700, recursive: true });
+    mkdirSync(path.join(root, 'scripts', 'certs'), { mode: 0o700, recursive: true });
+    const put = (rel, bytes) => writeFileSync(path.join(root, rel), bytes, { mode: 0o600, flag: 'wx' });
+    put('prisma.config.ts', Buffer.from(buildStagedConfigText(configImport)));
+    const schema = readLockedFile(path.join(apiDir, 'prisma', 'schema.prisma'));
+    if (!schema.ok) return fail(`the schema could not be read for staging: ${schema.reason}`);
+    put('prisma/schema.prisma', schema.bytes);
+    const cert = readLockedFile(path.resolve(apiDir, '..', STAGE_CA));
+    if (!cert.ok) return fail(`the TLS trust anchor could not be read for staging: ${cert.reason}`);
+    put(STAGE_CA, cert.bytes);
+    const lock = readPinned(path.join(apiDir, 'prisma', 'migrations', 'migration_lock.toml'), APPROVED_MIGRATION_PAYLOAD.lock.bytes);
+    if (!lock.ok || lock.sha256 !== payload.lock.sha256) return fail('the migration lock could not be staged from the verified payload');
+    put('prisma/migrations/migration_lock.toml', lock.bytes);
+    for (const m of APPROVED_MIGRATION_PAYLOAD.migrations) {
+      const one = readPinned(path.join(apiDir, 'prisma', 'migrations', m.name, 'migration.sql'), m.bytes);
+      if (!one.ok || one.sha256 !== m.sha256) return fail(`a migration could not be staged from the verified payload: ${m.name}`);
+      mkdirSync(path.join(root, 'prisma', 'migrations', m.name), { mode: 0o700, recursive: true });
+      put(path.join('prisma', 'migrations', m.name, 'migration.sql'), one.bytes);
+    }
+    chmodSync(root, 0o700);
+    const expect = {
+      configImport,
+      schemaSha256: schemaEntry.sha256,
+      certSha256: certEntry.sha256,
+      lockSha256: payload.lock.sha256,
+      migrations: APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => ({ name: m.name, bytes: m.bytes, sha256: m.sha256 })),
+    };
+    const verify = () => verifyStagedRun(root, expect);
+    const first = verify();
+    if (!first.ok) { try { rmSync(root, { recursive: true, force: true }); } catch { /* leave private temp garbage */ } return fail(first.reason); }
+    return { ok: true, root, expect, verify, cleanup: () => { try { rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ } } };
+  } catch (stageError) {
+    try { rmSync(root, { recursive: true, force: true }); } catch { /* leave private temp garbage */ }
+    const stageCode = stageError && typeof stageError.code === 'string' ? ` (${stageError.code})` : '';
+    return fail(`the staging copy could not be built${stageCode}`);
+  }
+}
+
+// The plan the OWNER approves: one exact target and tooling binding (G11-ADV-001),
+// the initial state, the exact pins to apply, the exact final ledger, the lock, the
+// Prisma version/command and the schema reference digests both states are checked
+// against. Throws when a reference is missing (never planned blind) or when a
+// binding is absent or malformed (never a plan without its binding).
+export function buildPlan({ initialState, payload, prismaVersion, schema, targetBinding, toolingBinding }) {
+  if (!validateTargetBinding(targetBinding)) throw new Error('the plan must carry an exact binding of the target (G11-ADV-001)');
+  if (!validateToolingBinding(toolingBinding)) throw new Error('the plan must carry an exact binding of the tooling (G11-ADV-001)');
+  const initialRef = schema?.references?.[initialState]?.digest;
+  const finalRef = schema?.references?.[FINAL_STATE]?.digest;
+  if (!HEX64.test(String(initialRef)) || !HEX64.test(String(finalRef))) throw new Error('schema reference missing');
+  const sha = new Map(payload.migrations.map((m) => [m.name, m.sha256]));
+  const apply = pendingFor(initialState).map((name) => ({ name, sha256: sha.get(name) }));
+  const plan = {
+    format: PLAN_FORMAT, target: 'pilot', targetBinding, toolingBinding, initialState,
+    initialLedger: [...STATES[initialState]], apply,
+    finalState: FINAL_STATE, finalLedger: payload.migrations.map((m) => ({ name: m.name, sha256: m.sha256 })),
+    lockSha256: payload.lock.sha256, prisma: { version: prismaVersion, args: [...PRISMA_ARGS] },
+    schemaReferences: { [initialState]: initialRef, [FINAL_STATE]: finalRef },
+  };
+  return { plan, digest: createHash('sha256').update(canonicalJson(plan)).digest('hex') };
+}
+
+// The read-only snapshot both checks take: one REPEATABLE READ READ ONLY transaction on a
+// verified client, pinned search_path and timeouts, read-only proven, the same PILOT
+// marker, then the ledger and the app-owned schema projection; always ROLLBACK.
+export const SNAPSHOT_SQL = Object.freeze({
+  begin: 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY',
+  searchPath: 'SET LOCAL search_path = pg_catalog, pg_temp',
+  timeouts: Object.freeze(["SET LOCAL statement_timeout = '120s'", "SET LOCAL lock_timeout = '5s'", "SET LOCAL idle_in_transaction_session_timeout = '300s'"]),
+  readOnly: "SELECT pg_catalog.current_setting('transaction_read_only') AS read_only",
+  marker: 'SELECT marker_id::text AS marker_id, environment FROM ONLY mona_pilot_guard.database_identity',
+  ledgerPresent: "SELECT pg_catalog.to_regclass('public.\"_prisma_migrations\"') IS NOT NULL AS present",
+  rollback: 'ROLLBACK',
+});
+
+async function readSnapshot(deps, conn, markerId) {
+  const fail = (reason) => ({ ok: false, reason });
+  let client;
+  try {
+    client = deps.createClient(conn);
+  } catch {
+    return fail('a read-only client could not be created');
+  }
+  try {
+    await client.connect();
+    const stream = client.connection?.stream;
+    if (stream?.encrypted !== true || stream?.authorized !== true) return fail('verified TLS is required');
+    await client.query(SNAPSHOT_SQL.begin);
+    try {
+      await client.query(SNAPSHOT_SQL.searchPath);
+      for (const sql of SNAPSHOT_SQL.timeouts) await client.query(sql);
+      if ((await client.query(SNAPSHOT_SQL.readOnly)).rows?.[0]?.read_only !== 'on') return fail('the snapshot transaction is not read-only');
+      const marker = (await client.query(SNAPSHOT_SQL.marker)).rows ?? [];
+      if (marker.length !== 1 || marker[0].marker_id !== markerId || marker[0].environment !== 'pilot') return fail('the PILOT marker is not the proven one');
+      const present = (await client.query(SNAPSHOT_SQL.ledgerPresent)).rows?.[0]?.present === true;
+      const ledger = present ? (await client.query(LEDGER_SQL)).rows : [];
+      const projection = await readProjection(client);
+      return { ok: true, ledger, projection };
+    } finally {
+      try { await client.query(SNAPSHOT_SQL.rollback); } catch { /* closed below; nothing was written */ }
+    }
+  } catch (err) {
+    // Fixed texts only: a projection refusal names a rule, never a value; anything else is generic.
+    const message = typeof err?.message === 'string' && err.message.startsWith('projection: ') ? err.message : 'the read-only snapshot could not be read';
+    return fail(message);
+  } finally {
+    try { await client.end(); } catch { /* already closed */ }
+  }
+}
+
+// Exactly `state`: ledger, app-schema reference digest and every probe of that state.
+export function verifySnapshot(snapshot, state, schema) {
+  const ledger = requireState(snapshot.ledger, state);
+  if (!ledger.ok) return { ok: false, reason: ledger.reason, failures: [] };
+  const digest = projectionDigest(snapshot.projection);
+  const failures = runProbes(snapshot.projection, schema.probes[state] ?? []);
+  if (digest !== schema.references[state]?.digest) return { ok: false, reason: `the app schema is not the ${state} reference`, failures, digest };
+  if (failures.length > 0) return { ok: false, reason: `a ${state} semantic probe failed`, failures, digest };
+  return { ok: true, digest, probes: (schema.probes[state] ?? []).length };
 }
 
 // Allowlist, not blocklist: nothing from the invoking shell is inherited. PATH is
@@ -322,6 +620,7 @@ function runChild(deps, command, args, options, redact) {
 
 const defaultDeps = {
   apiDir: API_DIR,
+  moduleDir: path.dirname(fileURLToPath(import.meta.url)),
   urlFile: PILOT_URL_FILE,
   readUrlFile: (file) => readPrivateUrlFile(file),
   env: process.env,
@@ -330,6 +629,7 @@ const defaultDeps = {
   execPath: process.execPath,
   home: os.homedir(),
   tmpdir: os.tmpdir(),
+  schema: { references: SCHEMA_REFERENCES, probes: STATE_PROBES },
   log: (line) => console.log(line),
   error: (line) => console.error(line),
 };
@@ -363,7 +663,34 @@ export async function main(argv, deps = defaultDeps) {
   const payload = verifyMigrationPayload(deps.apiDir);
   if (!payload.ok) return fail('payload', `${payload.reason}; nothing was started`);
   const redact = createRedactor(heldUrl);
-  const derivable = deriveProjectRef(parsedUrl.conn) !== null;
+
+  // G11-ADV-001: the plan binds ONE target (project ref, host, database, marker id)
+  // and ONE tooling state (every artifact whose bytes can change what executes).
+  // A non-derivable project ref cannot be bound → fail closed (dry-run included).
+  const projectRef = deriveProjectRef(parsedUrl.conn);
+  if (projectRef === null) {
+    return fail('target', `${URL_FILE_LABEL} does not carry a derivable project ref; a plan cannot bind its target (nothing was started)`);
+  }
+  let targetBinding;
+  let toolingBinding;
+  try {
+    targetBinding = buildTargetBinding({ environment: 'pilot', projectRef, host: parsedUrl.conn.host, database: parsedUrl.conn.database, markerId: parsed.markerId });
+    toolingBinding = buildToolingBinding({
+      moduleDir: deps.moduleDir,
+      apiDir: deps.apiDir,
+      repoDir: path.dirname(String(deps.apiDir).replace(/\/+$/, '')),
+      files: MIGRATE_TOOLING_FILES,
+    });
+  } catch (error) {
+    return fail('binding', `${error?.message ?? 'the target/tooling binding could not be built'}; nothing was started`);
+  }
+  let planned;
+  try {
+    planned = buildPlan({ initialState: parsed.initialState, payload, prismaVersion: prisma.version, schema: deps.schema, targetBinding, toolingBinding });
+  } catch {
+    return fail('reference', `no generated app-schema reference for ${parsed.initialState} and ${FINAL_STATE} (pilot-schema-references.mjs); nothing was started`);
+  }
+  const pending = planned.plan.apply;
 
   if (parsed.mode === 'dry-run') {
     for (const line of [
@@ -371,26 +698,36 @@ export async function main(argv, deps = defaultDeps) {
       '  target: PILOT',
       `  private URL file: accepted (${URL_FILE_LABEL}; value not shown; read once, never re-read)`,
       `  marker id: ${parsed.markerId} (syntax accepted; proven against the database only during --execute)`,
-      derivable
-        ? '  project identity: derivable from the URL (value not shown); --execute requires --confirm-project-ref to match'
-        : '  project identity: NOT derivable from the URL — --execute will refuse',
+      `  project identity: bound to the plan (project ref, host, database, marker id — values not shown); --execute requires --confirm-project-ref to match`,
+      `  tooling binding: bound (${toolingBinding.files.length} repository artifacts by SHA-256 — values not shown)`,
       `  Prisma CLI: repository-local prisma ${prisma.version} (api/node_modules/.bin/prisma → prisma/build/index.js), run with this Node binary`,
       `  migration payload: PASS — exactly ${APPROVED_MIGRATION_PAYLOAD.migrations.length} OWNER-approved migrations, SHA-256 approval binding active`,
       ...payload.migrations.map((m, i) => `    ${i + 1}. ${m.name}  sha256 ${m.sha256}`),
       `  migration_lock.toml: PASS (provider "${payload.lock.provider}", sha256 ${payload.lock.sha256})`,
+      `  INITIAL_STATE=${parsed.initialState} (explicit; the pre-check refuses any other ledger or schema)`,
+      `    required ledger: exactly ${STATES[parsed.initialState].length} migrations; app schema reference ${planned.plan.schemaReferences[parsed.initialState]}`,
+      `  migrations to apply: ${pending.length}`,
+      ...pending.map((m) => `    + ${m.name}  sha256 ${m.sha256}`),
+      `  FINAL_STATE=${FINAL_STATE} (exactly ${STATES[FINAL_STATE].length} migrations; app schema reference ${planned.plan.schemaReferences[FINAL_STATE]})`,
+      '  post-check: read-only; anything but EXACT_G11 → PILOT_MIGRATE_RESULT=RESTORE_REQUIRED (never resolve, retry or repair)',
+      `  PLAN_DIGEST=${planned.digest}`,
       '  payload is re-verified during --execute: before the identity proof AND again immediately before spawning',
-      '  cwd: api/',
+      '  child cwd: a fresh private staged copy of the approved migration OWN bytes (tooling tmpdir, 0700/0600, exact-tree',
+      '    verified twice; Prisma reads the staged tree only and never re-opens worktree migration SQL); removed after the run',
       `  command: prisma ${PRISMA_ARGS.join(' ')}`,
       '  identity proof: mandatory during --execute — the audited pilot-marker --check (REPEATABLE READ READ ONLY, canonical',
       '    marker, environment=pilot, exact marker id, no TEST marker) on the same held URL, immediately before spawning',
       '  child environment: allowlist only (PATH fixed, HOME, TMPDIR, NODE_ENV=production, DATABASE_URL=held URL,',
       '    CHECKPOINT_DISABLE=1, PRISMA_HIDE_UPDATE_MESSAGE=1); nothing else from this shell is passed',
       '  never run: seed, reset, migrate dev, db push, retries',
-      '  STILL REQUIRED before --execute: explicit OWNER approval naming PILOT',
+      '  STILL REQUIRED before --execute: explicit OWNER approval naming PILOT and this PLAN_DIGEST (--plan=…)',
     ]) deps.log(line);
     return 0;
   }
 
+  if (parsed.plan !== planned.digest) {
+    return fail('plan', 'PLAN_BINDING_MISMATCH: --plan is not the digest of this exact plan binding (target, tooling, payload, states); re-run --dry-run and approve its PLAN_DIGEST; nothing was started');
+  }
   if (deriveProjectRef(parsedUrl.conn) !== parsed.confirmProjectRef) {
     return fail('target', `--confirm-project-ref does not match the project addressed by ${URL_FILE_LABEL} (values not shown)`);
   }
@@ -406,26 +743,66 @@ export async function main(argv, deps = defaultDeps) {
   });
   if (proof !== 0) return fail('identity', 'PILOT identity proof failed; prisma was NOT started');
 
+  // Read-only pre-check: exactly the OWNER-named initial state, ledger AND schema.
+  const pre = await readSnapshot(deps, parsedUrl.conn, parsed.markerId);
+  if (!pre.ok) return fail('precheck', `${pre.reason}; prisma was NOT started`);
+  const preVerdict = verifySnapshot(pre, parsed.initialState, deps.schema);
+  if (!preVerdict.ok) {
+    for (const f of preVerdict.failures) deps.error(`  ${f}`);
+    return fail('precheck', `${preVerdict.reason}; prisma was NOT started`);
+  }
+  deps.log(`${PREFIX} precheck ok — ledger ${parsed.initialState}, app schema ${preVerdict.digest} = reference, probes ${preVerdict.probes}/${preVerdict.probes}`);
+
   // Final payload proof, after the proof connection is closed and immediately
   // before the spawn: a change made during or after the identity proof stops here.
   const final = verifyMigrationPayload(deps.apiDir);
   if (!final.ok) return fail('payload', `${final.reason}; changed after the initial check — prisma was NOT started`);
 
   const env = buildChildEnv(heldUrl, deps);
-  const result = await runChild(
-    deps,
-    deps.execPath,
-    [prisma.script, ...PRISMA_ARGS],
-    { cwd: prisma.cwd, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false },
-    redact,
-  );
-  if (!result.ok) {
-    const state = result.started === false
-      ? 'nothing was applied'
-      : 'migrations may be partially applied — inspect with a read-only status check before any retry';
-    return fail('prisma', `${result.detail}; ${state}`);
+
+  // G11-ADV-002: stage the exact approved bytes into a private tree and let the
+  // child run from there; a worktree change during the run cannot reach the child.
+  const staged = stageMigrationRun({ apiDir: deps.apiDir, tmpdir: deps.tmpdir, payload, toolingBinding });
+  if (!staged.ok) return fail('stage', `${staged.reason}; nothing was applied`);
+  let result;
+  try {
+    const reverify = staged.verify();
+    if (!reverify.ok) return fail('stage', `${reverify.reason}; nothing was applied`);
+    result = await runChild(
+      deps,
+      deps.execPath,
+      [prisma.script, ...PRISMA_ARGS],
+      { cwd: staged.root, env, stdio: ['ignore', 'pipe', 'pipe'], shell: false },
+      redact,
+    );
+  } finally {
+    staged.cleanup();
   }
-  deps.log(`${PREFIX} OK — prisma migrate deploy exited 0 on the proven PILOT target`);
+  const restoreRequired = (phase, detail) => {
+    deps.error(`${PREFIX} RESTORE_REQUIRED — PILOT is not proven ${FINAL_STATE}. The freeze stays in force; never run \`prisma migrate resolve\`,`);
+    deps.error('  never retry and never repair by hand: restore the verified pre-cutover backup (runbook: rollback BEFORE new G11 writes).');
+    deps.log('PILOT_MIGRATE_RESULT=RESTORE_REQUIRED');
+    return fail(phase, detail);
+  };
+  if (!result.ok) {
+    if (result.started === false) return fail('prisma', `${result.detail}; nothing was applied`);
+    // Read-only inspection for the report only; nothing is decided or repaired from it.
+    const seen = await readSnapshot(deps, parsedUrl.conn, parsed.markerId);
+    const ledger = seen.ok ? requireState(seen.ledger, FINAL_STATE) : null;
+    deps.error(`  post-failure ledger: ${seen.ok ? (ledger.ok ? FINAL_STATE : ledger.reason) : seen.reason}`);
+    return restoreRequired('prisma', `${result.detail}; migrations may be partially applied`);
+  }
+  // Read-only post-check: exactly EXACT_G11, ledger AND schema.
+  const post = await readSnapshot(deps, parsedUrl.conn, parsed.markerId);
+  if (!post.ok) return restoreRequired('postcheck', post.reason);
+  const postVerdict = verifySnapshot(post, FINAL_STATE, deps.schema);
+  if (!postVerdict.ok) {
+    for (const f of postVerdict.failures) deps.error(`  ${f}`);
+    return restoreRequired('postcheck', postVerdict.reason);
+  }
+  deps.log(`${PREFIX} postcheck ok — ledger ${FINAL_STATE}, app schema ${postVerdict.digest} = reference, probes ${postVerdict.probes}/${postVerdict.probes}`);
+  deps.log(`${PREFIX} OK — the Prisma deploy exited 0 and PILOT is proven ${FINAL_STATE}`);
+  deps.log(`PILOT_MIGRATE_RESULT=${FINAL_STATE}`);
   return 0;
 }
 

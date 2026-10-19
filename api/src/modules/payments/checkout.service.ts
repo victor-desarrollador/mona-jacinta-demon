@@ -51,6 +51,7 @@ import { evaluateCurrentHoldCoverage } from '../sales/hold-coverage.js';
 import { assertPricingFinalizable } from '../sales/wholesale-authorization.service.js';
 import { finalizePaidSaleInTransaction } from '../sales/sale-finalization.js';
 import { type PriceMode } from '../pricing/pricing.js';
+import { isExternalReferenceCollision } from './prisma-unique-violation.js';
 import {
   PROPORTIONAL_METHODS,
   allocate,
@@ -179,6 +180,7 @@ type LockedCollection = {
   institution: TransferInstitution | null;
   status: string;
   claimAttemptId: string | null;
+  originSaleId: string | null;
 };
 
 type LockedSession = { id: string; status: string; registerId: string; branchId: string };
@@ -708,7 +710,7 @@ export function createCheckoutService(database: PrismaClient) {
       const lockedCollections = new Map<string, LockedCollection>();
       if (collectionIds.length > 0) {
         const locked = await tx.$queryRaw<LockedCollection[]>`
-          SELECT id, "branchId", method, amount, reference, "referenceKey", institution, status, "claimAttemptId"
+          SELECT id, "branchId", method, amount, reference, "referenceKey", institution, status, "claimAttemptId", "originSaleId"
           FROM "ExternalCollection"
           WHERE id IN (${Prisma.join(collectionIds)})
           ORDER BY id ASC
@@ -716,10 +718,14 @@ export function createCheckoutService(database: PrismaClient) {
         `;
         for (const collection of locked) lockedCollections.set(collection.id, collection);
       }
+      // SECURITY-R3-CROSS-SALE-01 (OWNER): only a collection originated by THIS
+      // sale may be applied to it — re-checked here on the locked row,
+      // independently of T-R, so a historical or corrupt cross-sale claim can
+      // never move money between sales.
       for (const tender of planTenders) {
         if (tender.source !== 'COLLECTION') continue;
         const collection = tender.externalCollectionId === null ? undefined : lockedCollections.get(tender.externalCollectionId);
-        if (!collection || collection.branchId !== sale.branchId || collection.method !== tender.method
+        if (!collection || collection.branchId !== sale.branchId || collection.originSaleId !== saleId || collection.method !== tender.method
           || collection.amount !== tender.amount || collection.status !== 'UNAPPLIED'
           || collection.claimAttemptId !== attempt.id) {
           return reject(EXTERNAL_COLLECTION_NOT_APPLICABLE, 'El cobro registrado no se puede aplicar a este intento.');
@@ -1056,17 +1062,11 @@ export function createCheckoutService(database: PrismaClient) {
     // domain error as the in-transaction pre-check (409
     // EXTERNAL_REFERENCE_ALREADY_RECORDED) and stays CORRECTABLE. It arrives here
     // only AFTER the transaction has rolled back, so the attempt stays RESERVED
-    // and no partial settlement can survive. Detection is by unique target: the
-    // partial index by SQL name, or Prisma's column list for it. Any other target
-    // (SaleCheckout.operationKey/saleId, SalePayment, ...) is never converted.
-    const isExternalReferenceCollision = (error: unknown): boolean => {
-      const candidate = error as { code?: string; meta?: { target?: unknown } };
-      if (candidate.code !== 'P2002') return false;
-      const target = candidate.meta?.target;
-      const text = (Array.isArray(target) ? target.join(',') : typeof target === 'string' ? target : '').toLowerCase();
-      return /externalcollection_(transfer|debit)_ref_key/.test(text)
-        || (text.includes('referencekey') && text.includes('branchid'));
-    };
+    // and no partial settlement can survive. Detection is by the unique
+    // constraint (isExternalReferenceCollision, prisma-unique-violation.ts:
+    // meta.target or the adapter-pg 7.10 shape — R-1/R-2): the partial index by
+    // SQL name, or its column list. Any other constraint (SaleCheckout
+    // operationKey/saleId, SalePayment, ...) is never converted.
 
     // Read-only, OUTSIDE the failed transaction and with NO lock: which proposed
     // reference is now recorded, and in which state. `null` = no proposed

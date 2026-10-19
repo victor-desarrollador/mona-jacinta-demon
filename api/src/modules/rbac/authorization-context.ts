@@ -1,3 +1,4 @@
+import { isCompanyScopeRole } from './authorization-policy.js';
 import { productionPermissionValues } from './permissions.js';
 import { resolveEffectiveLocationIds, type LocationLookupDatabase } from './effective-branch-ids.js';
 import { mapUserRoleScopeRows } from './scope-resolver.js';
@@ -70,12 +71,6 @@ export async function buildAuthorizationContext(
     ]),
   ];
 
-  // Phase 1D.2: COMPANY is now a qualifying assignment, not a thrown error.
-  // resolveEffectiveLocationIds expands to every active Location id for a
-  // COMPANY-kind row — display/filter convenience only, never authorization
-  // authority (see effective-branch-ids.ts and Cross-cutting design §C).
-  const effectiveLocationIds = await resolveEffectiveLocationIds(db, mapUserRoleScopeRows(user.roleScopes));
-
   // Fix (review correction): a persisted UserRoleScope row's Role.code must
   // be validated against the canonical Production role catalog
   // (isProductionRoleCode, roles.ts) at runtime, not merely cast. `MANAGER`
@@ -83,8 +78,22 @@ export async function buildAuthorizationContext(
   // ProductionAssignment — a TS type assertion alone cannot enforce this
   // against real, persisted data. Fails closed per row: an invalid row is
   // skipped entirely; it does not affect any other row's assignment.
+  // SECURITY-RBAC-01a: likewise a COMPANY row is valid only for OWNER/ADMIN
+  // (isCompanyScopeRole, authorization-policy.ts — the single definition of
+  // the rule, re-checked there as a second line of defense).
+  const validScopes = user.roleScopes.filter((scope) => isProductionRoleCode(scope.role.code)
+    && (scope.scopeKind !== 'COMPANY' || isCompanyScopeRole(scope.role.code)));
+
+  // Phase 1D.2: COMPANY is now a qualifying assignment, not a thrown error.
+  // resolveEffectiveLocationIds expands to every active Location id for a
+  // COMPANY-kind row — display/filter convenience only, never authorization
+  // authority (see effective-branch-ids.ts and Cross-cutting design §C).
+  // SECURITY-RBAC-01a (F-07): it reads only the rows validated above, so an
+  // invalid or non-Production COMPANY row can never expand it.
+  const effectiveLocationIds = await resolveEffectiveLocationIds(db, mapUserRoleScopeRows(validScopes));
+
   const assignments: Express.ProductionAssignment[] = [];
-  for (const scope of user.roleScopes) {
+  for (const scope of validScopes) {
     const roleCode = scope.role.code;
     if (!isProductionRoleCode(roleCode)) continue;
     assignments.push({

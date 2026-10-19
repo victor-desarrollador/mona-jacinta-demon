@@ -106,12 +106,19 @@ describe('R3-A4.3 S1 — psql invocation never carries credentials in argv', () 
   });
 });
 
-describe('R3-A4.3 S1 — migration-9 SHA pin is pending in R3-T/S11', () => {
+describe('R3-A4.3 U1 (R3-T) — migration-9 SHA pin', () => {
   const text = readMigration(R3_ATTEMPTS_MIGRATION);
 
-  it('H06 S1 carries NO authoritative pin: the R3-T slot is explicitly null', () => {
-    expect(R3_T_MIGRATION_9_SHA256_PIN).toBeNull();
-    expect(checkMigration9Pin(text)).toEqual({ status: 'PENDING_R3_T_PIN', actual: sha256(text) });
+  // G11 keeps the authoritative reviewed literals in pilot-migration-states.mjs;
+  // local-test-migration-payload imports that shared payload instead of retyping it.
+  // The harness carries the same literal, so neither source can move alone.
+  it('H06 the R3-T pin is the exact reviewed migration-9 digest, equal to the LOCAL_TEST payload pin, and the real file MATCHES', () => {
+    expect(R3_T_MIGRATION_9_SHA256_PIN).toBe('076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148');
+    const payloadSource = readFileSync(new URL('../../../scripts/database/pilot-migration-states.mjs', import.meta.url), 'utf8');
+    const pinned = /Object\.freeze\(\{ name: '20261016130000_r3_checkout_attempts', bytes: (\d+), sha256: '([0-9a-f]{64})' \}\)/.exec(payloadSource);
+    expect(pinned?.[2]).toBe(R3_T_MIGRATION_9_SHA256_PIN);
+    expect(Number(pinned?.[1])).toBe(Buffer.byteLength(text, 'utf8'));
+    expect(checkMigration9Pin(text)).toEqual({ status: 'MATCH', actual: sha256(text) });
   });
 
   it('H07 the gate compares the exact bytes: a well-formed but different hash is a mismatch, a malformed pin is refused', () => {

@@ -11,6 +11,10 @@ type PublicUser = {
   roles: string[];
   branchIds: string[];
   permissions: string[];
+  // CLIENT-CASH-UX (2026-10-19): /auth/me branch-aware cash hints; empty here
+  // — this fixture suite carries no effective cash-movement authority.
+  cashMovementLocationIds: string[];
+  cashSupervisorLocationIds: string[];
 };
 
 function buildUser(overrides: Partial<PublicUser> = {}): PublicUser {
@@ -21,6 +25,8 @@ function buildUser(overrides: Partial<PublicUser> = {}): PublicUser {
     roles: [],
     branchIds: ["branch-1"],
     permissions: [],
+    cashMovementLocationIds: [],
+    cashSupervisorLocationIds: [],
     ...overrides,
   };
 }

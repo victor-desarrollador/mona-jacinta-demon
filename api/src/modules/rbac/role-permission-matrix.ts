@@ -36,6 +36,9 @@ export const DEFAULT_ROLE_GRANTS: Record<
     P.INVENTORY_VIEW,
     P.CASH_SESSION_OPEN,
     P.CASH_SESSION_CLOSE,
+    // PILOT cash exits: a cashier may record an EXPENSE and read the movement
+    // history; a WITHDRAWAL needs a supervisor on top (cash.service.ts).
+    P.CASH_MOVEMENT_MANAGE,
     P.TRANSFER_REQUEST,
     P.TRANSFER_VIEW,
     P.TRANSFER_APPROVE,
