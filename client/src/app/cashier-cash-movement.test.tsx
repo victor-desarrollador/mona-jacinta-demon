@@ -246,7 +246,7 @@ describe("branch-aware cash movement visibility (CLIENT-CASH-UX)", () => {
   it("an ADMIN with COMPANY reach sees Retiro and Corregir at an authorized branch", async () => {
     await renderCashier({ actor: "ADMIN_COMPANY" });
     expect(screen.getByRole("radio", { name: "Retiro" })).toBeInTheDocument();
-    expect(within(history()).getByRole("button", { name: /^Corregir/ })).toBeInTheDocument();
+    expect(await within(history()).findByRole("button", { name: /^Corregir/ })).toBeInTheDocument();
   });
 
   it("an ADMIN LOCATION with the grant sees Gasto and history but neither Retiro nor Corregir", async () => {

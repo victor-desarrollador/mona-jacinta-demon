@@ -81,6 +81,14 @@ describe("OperationsPage POS role access (D1)", () => {
     vi.unstubAllGlobals();
   });
 
+  it("login form starts with an empty email (no preloaded demo value)", async () => {
+    vi.stubGlobal("fetch", createFetchRouter(buildUser()));
+    render(<OperationsPage />);
+
+    const email = await screen.findByLabelText("Correo");
+    expect(email).toHaveValue("");
+  });
+
   // D1 TDD Stage 2 — captured RED: a WAREHOUSE-only user has neither
   // SALE_CREATE nor SALE_CHARGE (role-permission-matrix.ts), so it must
   // never reach SellerWorkspace or CashierWorkspace. The pre-D1
