@@ -2669,7 +2669,7 @@ function CashierWorkspace({
             {paymentBlocked && selectedSale?.pricingMode === "WHOLESALE" && !selectedSale.wholesaleConfirmed ? (
               <p className="cart-note">Confirmá la venta mayorista para habilitar el cobro.</p>
             ) : paymentBlocked && selectedSale?.holdState === "EXPIRED" ? (
-              <p className="cart-note">La reserva técnica venció: la venta no admite un primer pago.</p>
+              <p className="cart-note">El stock reservado de esta venta fue liberado: la venta no admite cobros.</p>
             ) : paymentBlocked && selectedSale?.holdState === "COVERAGE_INVALID" ? (
               <p className="cart-note">Las reservas de la venta no son válidas: no admite pagos.</p>
             ) : paymentMethod === "CASH" && !cashSession ? (

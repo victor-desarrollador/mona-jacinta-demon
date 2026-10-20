@@ -5,7 +5,9 @@ import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
 import { resolveSystemActorId } from '../audit/system-actor.service.js';
-import { EXPIRED_HOLD_RELEASE_BATCH_LIMIT, PRE_SEND_RECONCILE_LIMIT, releasableExpiredHoldWhere } from './reservation-holds.js';
+import {
+  EXPIRED_HOLD_RELEASE_BATCH_LIMIT, NORMAL_SALE_HOLD_EXPIRES_BY_CLOCK, PRE_SEND_RECONCILE_LIMIT, releasableExpiredHoldWhere,
+} from './reservation-holds.js';
 import type { CancelSaleInput } from './dto/cancel-sale.dto.js';
 
 type AuthScope = { userId: string; branchIds: string[] };
@@ -166,7 +168,7 @@ export function createCancellationService(database: PrismaClient) {
       const reservations = await tx.$queryRaw<LockedReservation[]>`
         SELECT id, "variantId", "branchId", quantity, status, "expiresAt"
         FROM "StockReservation"
-        WHERE "saleId" = ${saleId} AND status = 'ACTIVE' AND "expiresAt" <= ${options.now}
+        WHERE "saleId" = ${saleId} AND status = 'ACTIVE' AND ${NORMAL_SALE_HOLD_EXPIRES_BY_CLOCK}::boolean AND "expiresAt" <= ${options.now}
         ORDER BY id ASC FOR UPDATE
       `;
       if (reservations.length === 0) return { outcome: 'NOTHING_EXPIRED', saleId };

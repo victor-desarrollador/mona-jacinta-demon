@@ -148,7 +148,8 @@ describe("cashier queue hold states (Pilot P0.1-C)", () => {
     await renderCashier({ queue: [row({ holdState: "EXPIRED", canAcceptPayment: false })], payments: [] });
     await waitFor(() => expect(payButton()).toBeDisabled());
     expect(completeButton()).toBeDisabled();
-    expect(screen.getByText(/reserva técnica venció/i)).toBeInTheDocument();
+    expect(screen.getByText(/stock reservado de esta venta fue liberado/i)).toBeInTheDocument();
+    expect(screen.queryByText(/venció/i)).toBeNull();
   });
 
   it("lets a PAYMENT_PROTECTED sale pay its remaining balance", async () => {

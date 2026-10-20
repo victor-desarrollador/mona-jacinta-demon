@@ -324,9 +324,9 @@ describe('cashier pending-sales queue', () => {
       expect(await row(sale.id)).toMatchObject({ status: 'PENDING_PAYMENT', holdState: 'VALID', canAcceptPayment: true, remainingBalance: '9000000' });
     });
 
-    it('reports EXPIRED for a zero-payment sale whose ACTIVE hold is past expiresAt', async () => {
+    it('reports VALID and chargeable for a zero-payment sale whose ACTIVE hold is past its review date (RED 1)', async () => {
       const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past() });
-      expect(await row(sale.id)).toMatchObject({ holdState: 'EXPIRED', canAcceptPayment: false });
+      expect(await row(sale.id)).toMatchObject({ holdState: 'VALID', canAcceptPayment: true });
     });
 
     it('reports EXPIRED for a zero-payment sale whose hold was already RELEASED', async () => {
@@ -382,9 +382,14 @@ describe('cashier pending-sales queue', () => {
       expect(await row(sale.id)).toMatchObject({ holdState: 'VALID', paymentCount: 0, canCorrect: true, canCancel: true });
     });
 
-    it('offers only cancellation on an EXPIRED zero-payment sale', async () => {
-      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past() });
+    it('offers only cancellation on a zero-payment sale whose hold was RELEASED (no ACTIVE coverage)', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past(), status: 'RELEASED' });
       expect(await row(sale.id)).toMatchObject({ holdState: 'EXPIRED', canCorrect: false, canCancel: true });
+    });
+
+    it('offers correction and cancellation on a zero-payment sale whose ACTIVE hold is past its review date', async () => {
+      const sale = await pending(); await addSnapshot(sale.id); await hold(sale.id, 2n, { expiresAt: past() });
+      expect(await row(sale.id)).toMatchObject({ holdState: 'VALID', canAcceptPayment: true, canCorrect: true, canCancel: true });
     });
 
     it('offers neither once any payment row exists, nor on a PAID sale', async () => {

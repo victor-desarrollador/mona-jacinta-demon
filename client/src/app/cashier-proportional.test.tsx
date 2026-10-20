@@ -590,12 +590,13 @@ describe("R3-A4.2b — intentos", () => {
     expect(screen.queryByTestId("proportional-server-total")).toBeNull();
   });
 
-  it("muestra el vencimiento de la reserva informado por el servidor", async () => {
+  it("no presenta la fecha de la reserva como un vencimiento operativo (OWNER 2026-10-20)", async () => {
     await renderCashier(
       { queue: [proportionalRow()], reservationExpiresAt: "2030-01-01T12:00:00.000Z" },
       "CEN-V-000042",
     );
     await waitFor(() => expect(proportionalTotal()).toHaveTextContent("515,37"));
-    expect(screen.getByTestId("proportional-expiry")).toHaveTextContent(/Reserva técnica/i);
+    expect(screen.queryByTestId("proportional-expiry")).toBeNull();
+    expect(screen.queryByText(/Reserva técnica/i)).toBeNull();
   });
 });

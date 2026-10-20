@@ -249,9 +249,9 @@ describe('product variants read API', () => {
     return variant;
   }
 
-  it('reports effective availability for an expired zero-payment hold and keeps raw reserved', async () => {
+  it('keeps an old zero-payment hold unavailable in the seller catalog: the clock never frees committed stock (OWNER 2026-10-20)', async () => {
     const variant = await heldCatalogSale('REM-NEG-M', new Date(Date.now() - 60 * 60 * 1000));
-    const expected = { branchId: centroId, physical: '1', reserved: '1', available: '1' };
+    const expected = { branchId: centroId, physical: '1', reserved: '1', available: '0' };
     const list = await request(app)
       .get('/api/v1/variants')
       .query({ branchId: centroId, search: 'REM-NEG-M' })

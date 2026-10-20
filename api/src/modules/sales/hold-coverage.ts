@@ -8,13 +8,15 @@
 // Sale's own branch. How expiry applies depends on the lifecycle step and is
 // stated explicitly by the caller — never a bare boolean:
 //   FIRST_PAYMENT     zero SalePayment rows: every current hold must be
-//                     unexpired (expiresAt > now; expiresAt <= now = expired,
-//                     the same boundary as P0.1-A/B1).
+//                     unexpired by the clock — which, for a normal sale, no
+//                     hold ever is (OWNER 2026-10-20, reservation-holds.ts).
 //   PAYMENT_PROTECTED at least one SalePayment row (Policy A): the original
 //                     expiresAt no longer blocks the remaining payment.
 //   PAID_COMPLETION   Sale is PAID: expiresAt no longer blocks completion.
 // Detecting expiry here never releases anything; release stays owned by
 // cancellation.service.ts (P0.1-B1/B2).
+
+import { holdExpiredByClock } from './reservation-holds.js';
 
 export type HoldExpiryPolicy =
   | { kind: 'FIRST_PAYMENT'; now: Date }
@@ -62,8 +64,8 @@ export function evaluateCurrentHoldCoverage(input: {
   }
 
   if (input.policy.kind === 'FIRST_PAYMENT') {
-    const now = input.policy.now.getTime();
-    if (input.activeHolds.some((hold) => hold.expiresAt.getTime() <= now)) return { ok: false, reason: 'EXPIRED' };
+    const { now } = input.policy;
+    if (input.activeHolds.some((hold) => holdExpiredByClock(hold, now))) return { ok: false, reason: 'EXPIRED' };
   }
   return { ok: true, requirements };
 }

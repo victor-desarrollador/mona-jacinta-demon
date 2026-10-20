@@ -550,8 +550,8 @@ describe('R3-A4.3 S7-D — evaluateStockRecovery (DB-free, zero writes)', () => 
     expect(short.t.db.writesSince(short.mark)).toEqual([]);
 
     // physical − reserved = 4 − 4 = 0 looks short, but 2 of the 4 are this
-    // sale's own expired holds: 4 − (4 − 2) = 2 ≥ 2 → recoverable.
-    const own = await evaluate([{ variantId: 'var-1', quantity: 2n, expiresAt: EARLIER }, { variantId: 'var-2', quantity: 1n }], [
+    // sale's own (split) holds: 4 − (4 − 2) = 2 ≥ 2 → recoverable.
+    const own = await evaluate([{ variantId: 'var-1', quantity: 1n }, { variantId: 'var-1', quantity: 1n }, { variantId: 'var-2', quantity: 1n }], [
       { variantId: 'var-1', physical: 4n, reserved: 4n }, { variantId: 'var-2', physical: 5n, reserved: 1n },
     ]);
     expect(own.error).toBeNull();
@@ -648,10 +648,10 @@ describe('R3-A4.3 S7-D — evaluateStockRecovery (DB-free, zero writes)', () => 
     expect(variant(evaluation, 'var-1')).toMatchObject({ ownReserved: 2n, required: 2n, previousReserved: 5n, newReserved: 5n });
   });
 
-  it('TS-B33 an exact single-row coverage with one expired hold is changed:true', async () => {
-    const { error, evaluation } = await evaluate([{ variantId: 'var-1', quantity: 2n, expiresAt: NOW }, EXACT[1]!], STOCKED);
+  it('TS-B33 an exact single-row coverage whose review date has passed is changed:false (the clock is not a recovery trigger)', async () => {
+    const { error, evaluation } = await evaluate([{ variantId: 'var-1', quantity: 2n, expiresAt: NOW }, { ...EXACT[1]!, expiresAt: EARLIER }], STOCKED);
     expect(error).toBeNull();
-    expect(evaluation!.changed).toBe(true);
+    expect(evaluation!.changed).toBe(false);
   });
 
   it('TS-B34 a missing hold for a required variant is changed:true', async () => {
@@ -709,6 +709,9 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   type Inv = { variantId: string; physical: bigint; reserved: bigint };
   const NEW_EXPIRY = new Date(NOW.getTime() + TECHNICAL_HOLD_TTL_MS);
   const EXACT: Hold[] = [{ variantId: 'var-1', quantity: 2n }, { variantId: 'var-2', quantity: 1n }];
+  // OWNER 2026-10-20: the clock no longer ends a hold, so the recoverable
+  // coverage is valid but not one ACTIVE row per variant (var-1's 2 as 1 + 1).
+  const SPLIT: Hold[] = [{ variantId: 'var-1', quantity: 1n }, { variantId: 'var-1', quantity: 1n }, { variantId: 'var-2', quantity: 1n }];
   const STOCKED: Inv[] = [
     { variantId: 'var-1', physical: 10n, reserved: 5n },
     { variantId: 'var-2', physical: 5n, reserved: 1n },
@@ -732,8 +735,8 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   const holdsOf = (t: ReturnType<typeof guardSetup>, status: string) => t.db.table('stockReservation').filter((row) => row.status === status);
   const reservedOf = (t: ReturnType<typeof guardSetup>, variantId: string) => t.db.table('inventory').find((row) => row.variantId === variantId)!.reserved;
 
-  it('TS-B01 an expired exact coverage is released and re-secured: new ACTIVE holds at now + TTL, reserved = newReserved, view VALID, attempt untouched', async () => {
-    const { t, recover, attempt, attemptBefore } = scenario(EXACT.map((hold) => ({ ...hold, expiresAt: EARLIER })), STOCKED);
+  it('TS-B01 a split coverage is released and re-secured: new ACTIVE holds at now + TTL, reserved = newReserved, view VALID, attempt untouched', async () => {
+    const { t, recover, attempt, attemptBefore } = scenario(SPLIT, STOCKED);
     const oldIds = holdsOf(t, 'ACTIVE').map((row) => row.id);
     const result = await recover();
     expect(result.changed).toBe(true);
@@ -828,7 +831,7 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   });
 
   it('TS-B21 a failing audit rolls everything back: old holds ACTIVE again, no new hold, reserved and updatedAt restored, no audit', async () => {
-    const { t, sale, recover } = scenario(EXACT.map((hold) => ({ ...hold, expiresAt: EARLIER })), STOCKED);
+    const { t, sale, recover } = scenario(SPLIT, STOCKED);
     const before = structuredClone({ holds: t.db.table('stockReservation'), inventory: t.db.table('inventory') });
     t.db.failOn('auditLog', 'create', () => new Error('audit down'), false);
     await expect(recover()).rejects.toThrow('audit down');
@@ -839,7 +842,7 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   });
 
   it('TS-B22 changed:true bumps Sale.updatedAt exactly once (to the operation now); changed:false never', async () => {
-    const changed = scenario(EXACT.map((hold) => ({ ...hold, expiresAt: EARLIER })), STOCKED);
+    const changed = scenario(SPLIT, STOCKED);
     const mark = changed.t.db.ops.length;
     await changed.recover();
     const saleWrites = changed.t.db.writesSince(mark).filter((op) => op.model === 'sale' || op.model === 'Sale');
@@ -864,7 +867,7 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   });
 
   it('TS-B28 T-S writes only StockReservation, Inventory, the Sale.updatedAt bump and the audit — never the attempt, tenders, collections, cash or payments', async () => {
-    const { t, recover } = scenario([...EXACT.map((hold) => ({ ...hold, expiresAt: EARLIER })), { variantId: 'var-9', quantity: 1n }], [
+    const { t, recover } = scenario([...SPLIT, { variantId: 'var-9', quantity: 1n }], [
       ...STOCKED, { variantId: 'var-9', physical: 5n, reserved: 1n },
     ]);
     const mark = t.db.ops.length;
@@ -876,7 +879,7 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   });
 
   it('TS-B40 write order: release old ACTIVE → Inventory updates → new ACTIVE holds → Sale.updatedAt → audit, all after the locks', async () => {
-    const { t, recover } = scenario(EXACT.map((hold) => ({ ...hold, expiresAt: EARLIER })), STOCKED);
+    const { t, recover } = scenario(SPLIT, STOCKED);
     const mark = t.db.ops.length;
     await recover();
     expect(t.db.ops.slice(mark).filter((op) => op.kind !== 'begin' && op.kind !== 'commit').map((op) => `${op.kind}:${op.model}`)).toEqual([
@@ -887,7 +890,7 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   });
 
   it('TS-B41 an identical second call right after a recovery is changed:false with zero writes; the attempt keeps its keys', async () => {
-    const { t, recover, attemptBefore } = scenario(EXACT.map((hold) => ({ ...hold, expiresAt: EARLIER })), STOCKED);
+    const { t, recover, attemptBefore } = scenario(SPLIT, STOCKED);
     expect((await recover()).changed).toBe(true);
     const mark = t.db.ops.length;
     const again = await recover();
@@ -903,7 +906,7 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   // Apply guards: the plan must still match the locked rows, or the whole unit
   // fails closed. Driven by applying a plan that no longer matches.
   async function applyStale(mutatePlan: (evaluation: Awaited<ReturnType<typeof evaluateStockRecovery>>) => void) {
-    const { t, sale } = scenario(EXACT.map((hold) => ({ ...hold, expiresAt: EARLIER })), STOCKED);
+    const { t, sale } = scenario(SPLIT, STOCKED);
     const before = structuredClone({ holds: t.db.table('stockReservation'), inventory: t.db.table('inventory') });
     const outcome = await codeOf(inStockRecoveryTransaction(t.db.client as unknown as PrismaClient, async (tx) => {
       const evaluation = await evaluateStockRecovery(tx, { id: sale.id as string, branchId: BRANCH }, NOW);
@@ -930,7 +933,7 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
   });
 
   it('TS-B39 a failure creating the SECOND new hold rolls back the release, the Inventory and the first new hold', async () => {
-    const { t, recover } = scenario(EXACT.map((hold) => ({ ...hold, expiresAt: EARLIER })), STOCKED);
+    const { t, recover } = scenario(SPLIT, STOCKED);
     const before = structuredClone({ holds: t.db.table('stockReservation'), inventory: t.db.table('inventory') });
     const delegate = (t.db.client as unknown as { stockReservation: { create: (args: unknown) => Promise<unknown> } }).stockReservation;
     const original = delegate.create;
@@ -958,9 +961,11 @@ describe('R3-A4.3 S7-E — applyStockRecovery + audit + view (DB-free)', () => {
 // ---------------------------------------------------------------------------
 describe('R3-A4.3 S7-F — T-S retries re-run everything from scratch (DB-free)', () => {
   type Inv = { variantId: string; physical: bigint; reserved: bigint };
+  // A valid coverage that is not one ACTIVE row per variant: recoverable (the clock no longer is).
   const EXPIRED = [
-    { variantId: 'var-1', quantity: 2n, expiresAt: EARLIER },
-    { variantId: 'var-2', quantity: 1n, expiresAt: EARLIER },
+    { variantId: 'var-1', quantity: 1n, expiresAt: LATER },
+    { variantId: 'var-1', quantity: 1n, expiresAt: LATER },
+    { variantId: 'var-2', quantity: 1n, expiresAt: LATER },
   ];
   const STOCKED: Inv[] = [
     { variantId: 'var-1', physical: 10n, reserved: 5n },
@@ -1069,7 +1074,7 @@ describe('R3-A4.3 S7-F — T-S retries re-run everything from scratch (DB-free)'
     short.t.db.failOn('stockReservation', 'updateMany', transientError);
     betweenAttempts(short.t, () => { short.t.db.table('inventory').find((row) => row.variantId === 'var-1')!.reserved = 11n; });
     expect(await codeOf(short.recover())).toMatchObject({ status: 409, code: 'INSUFFICIENT_STOCK' });
-    expect(short.t.db.table('stockReservation').filter((row) => row.status === 'ACTIVE')).toHaveLength(2);
+    expect(short.t.db.table('stockReservation').filter((row) => row.status === 'ACTIVE')).toHaveLength(EXPIRED.length);
     expect(short.t.db.table('auditLog')).toEqual([]);
   });
 
@@ -1112,7 +1117,7 @@ describe('R3-A4.3 S7-F — T-S retries re-run everything from scratch (DB-free)'
     expect(t.db.transactions).toHaveLength(2);
     expect(t.db.table('stockReservation').filter((row) => row.status === 'ACTIVE').map((row) => [row.variantId, row.quantity]).sort())
       .toEqual([['var-1', 2n], ['var-2', 1n]]);
-    expect(t.db.table('stockReservation').filter((row) => row.status === 'RELEASED')).toHaveLength(2);
+    expect(t.db.table('stockReservation').filter((row) => row.status === 'RELEASED')).toHaveLength(EXPIRED.length);
     expect(t.db.table('inventory').map((row) => row.reserved)).toEqual([5n, 1n]);
     expect(t.db.table('auditLog')).toHaveLength(1);
     expect(t.db.table('sale').find((row) => row.id === sale.id)!.updatedAt).toEqual(NOW);

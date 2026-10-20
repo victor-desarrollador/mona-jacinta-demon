@@ -1574,14 +1574,20 @@ describe('R3-A4.3 S5-D — atomic T-C settlement', () => {
   });
 
   // Group 3 — stock
-  it('S5D-03 an expired hold is a CORRECTABLE 409 and the attempt stays RESERVED', async () => {
-    const t = setup({ expiresInMs: -1000 });
+  // OWNER 2026-10-20 (OPTION_B_NON_EXPIRING_COMMITMENT): a normal sale's hold is a
+  // commitment that no clock ends. A hold whose review date (expiresAt) passed
+  // long ago still backs the sale, so the proportional checkout settles it and
+  // the finalizer consumes exactly that hold (RED 3 + RED 4 regression).
+  it('S5D-03 a hold past its review date still settles PAID -> COMPLETED and is consumed once', async () => {
+    const t = setup({ expiresInMs: -24 * 60 * 60 * 1000 });
 
-    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation()), 409, 'STOCK_HOLD_EXPIRED');
+    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation());
 
-    expect(error.details).toMatchObject({ observedStatus: 'RESERVED', stockState: 'EXPIRED' });
-    expect(t.counts()).toEqual(noEffects);
-    expect(t.storedAttempt()).toMatchObject({ status: 'RESERVED', rejectionCode: null });
+    expect(result).toMatchObject({ saleId: t.saleId, status: 'COMPLETED', replayed: false, total: 40000n });
+    expect(t.storedAttempt()).toMatchObject({ status: 'CONFIRMED' });
+    expect(t.table('inventory')[0]).toMatchObject({ physical: 9n, reserved: 0n });
+    expect(t.table('stockReservation')[0]).toMatchObject({ status: 'CONSUMED' });
+    expect(t.audits('SALE_COMPLETED')).toHaveLength(1);
   });
 
   it('S5D-03b a released hold (no ACTIVE coverage left) is a CORRECTABLE 409', async () => {

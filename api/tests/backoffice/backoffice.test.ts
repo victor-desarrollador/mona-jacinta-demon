@@ -335,7 +335,7 @@ describe('backoffice read API', () => {
     expect(row).toMatchObject({ physical: '9', reserved: '4', available: '5' });
   });
 
-  it('reports expiry-aware available while keeping raw reserved for diagnostics (Pilot P0.1-A)', async () => {
+  it('keeps an old zero-payment hold unavailable, like a payment-protected one: the clock never frees committed stock (OWNER 2026-10-20)', async () => {
     const expiresAt = new Date(Date.now() - 60 * 60 * 1000);
     const rows: Record<string, string> = {};
     for (const [sku, partialPayment] of [['REM-NEG-M', false], ['JEA-AZU-42', true]] as const) {
@@ -367,7 +367,7 @@ describe('backoffice read API', () => {
     const response = await get(`/api/v1/backoffice/inventory?branchId=${branches.CEN}`);
     expect(response.status).toBe(200);
     const byId = (id: string) => response.body.items.find((item: { id: string }) => item.id === id);
-    expect(byId(rows['REM-NEG-M']!)).toMatchObject({ physical: '1', reserved: '1', available: '1' });
+    expect(byId(rows['REM-NEG-M']!)).toMatchObject({ physical: '1', reserved: '1', available: '0' });
     expect(byId(rows['JEA-AZU-42']!)).toMatchObject({ physical: '1', reserved: '1', available: '0' });
   });
 

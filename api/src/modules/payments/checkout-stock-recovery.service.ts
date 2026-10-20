@@ -32,7 +32,7 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
-import { TECHNICAL_HOLD_TTL_MS } from '../sales/reservation-holds.js';
+import { holdExpiredByClock, TECHNICAL_HOLD_TTL_MS } from '../sales/reservation-holds.js';
 import { loadReservationView, stockStateOf, type ReservationView } from './checkout-attempt-view.js';
 import type { CheckoutStockRecoveryRequest } from './dto/checkout-stock-recovery.dto.js';
 import { actsAsSupervisorAtLocation } from '../rbac/authorization-policy.js';
@@ -294,7 +294,7 @@ export async function evaluateStockRecovery(tx: Tx, sale: { id: string; branchId
 
   const changed = ownByVariant.size !== requiredByVariant.size
     || [...requiredByVariant].some(([variantId, required]) => ownByVariant.get(variantId) !== required || rowsByVariant.get(variantId) !== 1)
-    || activeReservations.some((hold) => hold.expiresAt.getTime() <= now.getTime());
+    || activeReservations.some((hold) => holdExpiredByClock(hold, now));
 
   return { changed, now, requiredByVariant, ownByVariant, activeReservations, variants };
 }

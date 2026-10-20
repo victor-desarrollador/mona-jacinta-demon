@@ -32,7 +32,6 @@ import { createCheckoutReservationFakeDb, p2002, type Row } from '../helpers/che
 
 const NOW = new Date('2026-10-17T12:00:00.000Z');
 const LATER = new Date(NOW.getTime() + 20 * 60_000);
-const EARLIER = new Date(NOW.getTime() - 60_000);
 const NEW_EXPIRY = new Date(NOW.getTime() + TECHNICAL_HOLD_TTL_MS);
 const PRICING = { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300 };
 const SERVICE_SOURCE = new URL('../../src/modules/payments/checkout-reservation.service.ts', import.meta.url);
@@ -56,7 +55,10 @@ function actor(userId: string, assignments: Assignment[]) {
   } as never;
 }
 
-function setup(options: { externalMethodsEnabled?: boolean; holdsExpireAt?: Date } = {}) {
+// OWNER 2026-10-20: a hold's clock no longer ends it, so a coverage is "recoverable"
+// only when it is not exactly one ACTIVE row per required variant. `splitHold`
+// writes the required 2 as two ACTIVE rows of 1 (valid coverage, changed:true).
+function setup(options: { externalMethodsEnabled?: boolean; splitHold?: boolean } = {}) {
   const db = createCheckoutReservationFakeDb({ now: () => NOW });
   const branch = uuid();
   const owner = db.insert('user', { id: uuid(), name: 'Dueño' });
@@ -74,7 +76,10 @@ function setup(options: { externalMethodsEnabled?: boolean; holdsExpireAt?: Date
     pricingModel: 'PROPORTIONAL_V1', paymentStartedAt: null, wholesaleConfirmedAt: null, wholesaleConfirmedById: null, updatedAt: new Date(0),
   });
   const item = db.insert('saleItem', { saleId: sale.id, variantId: 'v1', sku: 'SKU1', quantity: 2n, baseUnitPrice: 5000n, priceMode: 'CASH', priceBaseType: 'LIST' });
-  const hold = db.insert('stockReservation', { saleId: sale.id, variantId: 'v1', branchId: branch, quantity: 2n, status: 'ACTIVE', expiresAt: options.holdsExpireAt ?? LATER });
+  const hold = db.insert('stockReservation', { saleId: sale.id, variantId: 'v1', branchId: branch, quantity: options.splitHold ? 1n : 2n, status: 'ACTIVE', expiresAt: LATER });
+  const secondHold = options.splitHold
+    ? db.insert('stockReservation', { saleId: sale.id, variantId: 'v1', branchId: branch, quantity: 1n, status: 'ACTIVE', expiresAt: LATER })
+    : null;
   // The sale's own hold of 2 is counted in reserved (an exact coverage by default).
   const inventory = db.insert('inventory', { id: uuid(), variantId: 'v1', branchId: branch, physical: 10n, reserved: 2n });
   const service = createCheckoutReservationService(db.client as unknown as PrismaClient, {
@@ -132,7 +137,7 @@ function setup(options: { externalMethodsEnabled?: boolean; holdsExpireAt?: Date
   }
   return {
     db, service, branch, sale, session, register, request, hashOf, persisted, cashBalance, collection, origin, collect, quote,
-    hold, inventory, pricingConfig, owner, admin,
+    hold, secondHold, inventory, pricingConfig, owner, admin,
     asOwner: actor(owner.id as string, [{ roleCode: 'OWNER', locationId: null, permissions: [] }]),
     asCompanyAdmin: actor(admin.id as string, [{ roleCode: 'ADMIN', locationId: null, permissions: SUPERVISOR }]),
     asLocationAdmin: actor(admin.id as string, [{ roleCode: 'ADMIN', locationId: branch, permissions: [...DEFAULT_ROLE_GRANTS.ADMIN] }]),
@@ -302,7 +307,7 @@ describe('R3-A4.3 S7-I — T-RR branch, RBAC, replay, gate, state (DB-free)', ()
     for (const [label, pay] of paid) {
       const outcomes: unknown[] = [];
       for (const recovery of [RECOVERY, null]) {
-        const t = setup({ holdsExpireAt: EARLIER });
+        const t = setup({ splitHold: true });
         pay(t);
         // loadProportionalLines refuses a line not priced in CASH.
         t.db.table('saleItem')[0]!.priceMode = 'LIST';
@@ -570,7 +575,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
       ['other branch', (t) => { t.register.branchId = uuid(); return {}; }, 'CASH_SESSION_BRANCH_MISMATCH'],
     ];
     for (const [label, patch, code] of cases) {
-      const t = setup({ holdsExpireAt: EARLIER });
+      const t = setup({ splitHold: true });
       const req = t.request(undefined, patch(t));
       const before = state(t);
       const mark = t.db.ops.length;
@@ -595,14 +600,14 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
     expect(actions(t)).toEqual(['CHECKOUT_RESERVED']);
   });
 
-  it('RR-B17 an expired, or sweeper-RELEASED, coverage is recovered: old ACTIVE released, a new ACTIVE at now + TTL, Inventory = newReserved, both audits', async () => {
-    const expired = setup({ holdsExpireAt: EARLIER });
-    expect(await expired.service.reserve(expired.asOwner, expired.sale.id as string, expired.request())).toMatchObject(FRESH);
-    expect(expired.db.table('stockReservation').find((row) => row.id === expired.hold.id)!.status).toBe('RELEASED');
-    const active = expired.db.table('stockReservation').filter((row) => row.status === 'ACTIVE');
-    expect(active.map((row) => [row.variantId, row.quantity, row.branchId, row.expiresAt])).toEqual([['v1', 2n, expired.branch, NEW_EXPIRY]]);
-    expect(expired.db.table('inventory')[0]!.reserved).toBe(2n);
-    expect(actions(expired)).toEqual(['CHECKOUT_RESERVED', 'CHECKOUT_STOCK_RECOVERED']);
+  it('RR-B17 a split, or sweeper-RELEASED, coverage is recovered: old ACTIVE released, a new ACTIVE at now + TTL, Inventory = newReserved, both audits', async () => {
+    const split = setup({ splitHold: true });
+    expect(await split.service.reserve(split.asOwner, split.sale.id as string, split.request())).toMatchObject(FRESH);
+    expect(split.db.table('stockReservation').find((row) => row.id === split.hold.id)!.status).toBe('RELEASED');
+    const active = split.db.table('stockReservation').filter((row) => row.status === 'ACTIVE');
+    expect(active.map((row) => [row.variantId, row.quantity, row.branchId, row.expiresAt])).toEqual([['v1', 2n, split.branch, NEW_EXPIRY]]);
+    expect(split.db.table('inventory')[0]!.reserved).toBe(2n);
+    expect(actions(split)).toEqual(['CHECKOUT_RESERVED', 'CHECKOUT_STOCK_RECOVERED']);
 
     const released = setup();
     released.hold.status = 'RELEASED';
@@ -614,7 +619,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
   });
 
   it('RR-B18 a changed quote is 409 CHECKOUT_QUOTE_CHANGED {total, balance} after the stock evaluation and before ANY write: no stock, attempt, tender, claim, bump or audit', async () => {
-    const t = setup({ holdsExpireAt: EARLIER });
+    const t = setup({ splitHold: true });
     const req = t.request(undefined, { expectedTotal: 9999n });
     const quoted = t.quote(req.tenders);
     const before = state(t);
@@ -639,7 +644,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
   });
 
   it('RR-B20 a claim that matches fewer rows than U_origin is 500 CHECKOUT_STATE_INCONSISTENT and rolls EVERYTHING back (stock, bump, attempt, tenders)', async () => {
-    const t = setup({ holdsExpireAt: EARLIER });
+    const t = setup({ splitHold: true });
     const before = state(t);
     // A peer claims the collection between our lock read and our claim. (The
     // double fires — and drops — every pending hook at the FIRST create of any
@@ -656,7 +661,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
 
   it('RR-B21 a failing CHECKOUT_RESERVED audit, or a failing CHECKOUT_STOCK_RECOVERED audit, rolls everything back', async () => {
     for (const action of ['CHECKOUT_RESERVED', 'CHECKOUT_STOCK_RECOVERED']) {
-      const t = setup({ holdsExpireAt: EARLIER });
+      const t = setup({ splitHold: true });
       auditDown(t, action);
       const before = state(t);
       await expect(t.service.reserve(t.asOwner, t.sale.id as string, t.request())).rejects.toThrow(`audit ${action} down`);
@@ -665,7 +670,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
   });
 
   it('RR-B22 P2002 on reserveKey: re-read in a NEW Serializable transaction (Sale lock, RBAC, T-RR replay) — a matching peer is replayed with its operationKey; any other peer is the generic 409', async () => {
-    const matching = setup({ holdsExpireAt: EARLIER });
+    const matching = setup({ splitHold: true });
     const req = matching.request();
     let peer: Row = {};
     // The peer commits after our replay check, before our attempt INSERT (the
@@ -703,7 +708,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
   });
 
   it('RR-B24k a transient failure AFTER the writes rolls attempt 1 back and the retry commits cleanly: one attempt, one claim set, one bump, no duplicated audit', async () => {
-    const t = setup({ holdsExpireAt: EARLIER });
+    const t = setup({ splitHold: true });
     t.db.failOn('auditLog', 'create', () => Object.assign(new Error('could not serialize'), { code: 'P2034' }));
     expect(await t.service.reserve(t.asOwner, t.sale.id as string, t.request())).toMatchObject(FRESH);
     expect(t.db.transactions).toHaveLength(2);
@@ -718,7 +723,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
   });
 
   it('RR-B26k exact order: Sale → EC → CashSession → SR → Inventory → stock writes → Sale bump → attempt → tenders → claims → seal → audits', async () => {
-    const t = setup({ holdsExpireAt: EARLIER });
+    const t = setup({ splitHold: true });
     const mark = t.db.ops.length;
     await t.service.reserve(t.asOwner, t.sale.id as string, t.request());
     expect(steps(t, mark)).toEqual([
@@ -736,7 +741,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
   });
 
   it('RR-B27k exact audit payloads: CHECKOUT_RESERVED = the T-R payload + recovery/reason/evidence; CHECKOUT_STOCK_RECOVERED = the T-S format on the NEW attempt; the ordinary T-R payload is unchanged', async () => {
-    const t = setup({ holdsExpireAt: EARLIER });
+    const t = setup({ splitHold: true });
     const req = t.request();
     await t.service.reserve(t.asCompanyAdmin, t.sale.id as string, req);
     const attempt = t.db.table('checkoutAttempt')[0]!;
@@ -756,7 +761,10 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
     });
     expect(recovered).toMatchObject({ action: 'CHECKOUT_STOCK_RECOVERED', entityType: 'CheckoutAttempt', entityId: attempt.id, userId: admin, branchId: t.branch });
     expect(recovered!.before).toEqual({
-      reserveKey: req.reserveKey, stockState: 'EXPIRED', released: [{ id: t.hold.id, variantId: 'v1', quantity: '2', expiresAt: EARLIER }],
+      reserveKey: req.reserveKey, stockState: 'VALID',
+      // The audit lists the released holds by id ASC; ids are random UUIDs, so the expectation sorts too.
+      released: [t.hold, t.secondHold!].map((row) => ({ id: row.id as string, variantId: 'v1', quantity: '1', expiresAt: LATER }))
+        .sort((left, right) => (left.id < right.id ? -1 : 1)),
     });
     expect(recovered!.after).toEqual({
       reserveKey: req.reserveKey, reason: RECOVERY.reason, evidence: RECOVERY.evidence,
@@ -792,7 +800,7 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
   });
 
   it('RR-B34 the same T-RR right after its fresh success is replayed: same operationKey, zero writes', async () => {
-    const t = setup({ holdsExpireAt: EARLIER });
+    const t = setup({ splitHold: true });
     const req = t.request();
     const first = await t.service.reserve(t.asOwner, t.sale.id as string, req);
     const mark = t.db.ops.length;

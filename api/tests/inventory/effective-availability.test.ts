@@ -26,7 +26,12 @@ type ReservationStatus = 'ACTIVE' | 'RELEASED' | 'CONSUMED';
 // Pilot P0.1-A: read-side effective availability. A unit held only by an
 // expired, zero-payment technical hold is reported as available; every
 // other hold class stays protected. Reads never write.
-describe('expiry-aware effective availability (Pilot P0.1-A)', () => {
+// SUPERSEDED (OWNER 2026-10-20, OPTION_B_NON_EXPIRING_COMMITMENT): a hold past its review
+// date is still committed stock, so no read reports it as available. This suite proved the
+// opposite (expired zero-payment holds count as available). The new rule is covered
+// DB-free by normal-sale-hold-commitment.test.ts (effectiveAvailability with an old ACTIVE
+// hold = 0) and at the HTTP edge by backoffice.test.ts / variants.test.ts.
+describe.skip('expiry-aware effective availability (Pilot P0.1-A) [SUPERSEDED: holds do not expire by the clock]', () => {
   // Deterministic, injected instant for service-level tests.
   const NOW = new Date('2030-01-01T12:00:00.000Z');
   const HOUR = 60 * 60 * 1000;

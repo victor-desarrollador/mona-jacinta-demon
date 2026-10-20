@@ -131,7 +131,7 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     expect((await db.sale.findUniqueOrThrow({ where: { id: current.id } })).status).toBe('PENDING_PAYMENT'); expect(await db.auditLog.count()).toBe(0);
   });
 
-  it('releases only eligible expired reservations and is repeat-safe', async () => {
+  it('releases nothing by the clock: an old ACTIVE hold of a pending sale stays committed (OWNER 2026-10-20)', async () => {
     // release-expired only touches the caller's own effective locations. The
     // canonical warehouse01 is Production-native WAREHOUSE LOCATION DEP, so
     // this test's reservations live at DEP (branchId/inventoryId are reset
@@ -144,13 +144,13 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
     const paid = await sale(); await reserve(paid.id, 1n); await payment(paid.id, 1n);
     const before = await db.inventory.findUniqueOrThrow({ where: { id: inventoryId } });
     const response = await release(); expect(response.status).toBe(200);
-    expect(response.body.released).toHaveLength(1);
-    expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: expired.id } })).status).toBe('RELEASED');
-    expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: fresh.id } })).status).toBe('ACTIVE');
-    expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: paid.id } })).status).toBe('ACTIVE');
+    expect(response.body.released).toHaveLength(0);
+    for (const held of [expired, fresh, paid]) {
+      expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: held.id } })).status).toBe('ACTIVE');
+    }
     const after = await db.inventory.findUniqueOrThrow({ where: { id: inventoryId } });
-    expect(after.physical).toBe(before.physical); expect(await db.stockMovement.count()).toBe(0); expect(await db.auditLog.count()).toBe(1);
-    expect((await release()).body.released).toHaveLength(0); expect(await db.auditLog.count()).toBe(1);
+    expect(after.physical).toBe(before.physical); expect(after.reserved).toBe(before.reserved);
+    expect(await db.stockMovement.count()).toBe(0); expect(await db.auditLog.count()).toBe(0);
   });
 
   it('requires INVENTORY_MANAGE and preserves stale-role authorization', async () => {

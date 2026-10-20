@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cashierHoldState, evaluateCurrentHoldCoverage } from '../../src/modules/sales/hold-coverage.js';
+import { canAcceptPayment, cashierHoldState, evaluateCurrentHoldCoverage } from '../../src/modules/sales/hold-coverage.js';
 
 // Pilot P0.1-C: pure current-hold coverage rules shared by payment,
 // completion and the cashier queue. No database access.
@@ -26,19 +26,20 @@ describe('current technical-hold coverage (Pilot P0.1-C, pure)', () => {
     }).ok).toBe(true);
   });
 
-  it('treats expiresAt == now as expired and expiresAt > now as valid for a first payment', () => {
-    expect(evaluateCurrentHoldCoverage({ branchId: BRANCH, items: [item('v1', 1n)], activeHolds: [hold('v1', 1n, NOW)], policy: first }))
-      .toEqual({ ok: false, reason: 'EXPIRED' });
-    expect(evaluateCurrentHoldCoverage({ branchId: BRANCH, items: [item('v1', 1n)], activeHolds: [hold('v1', 1n, before)], policy: first }))
-      .toEqual({ ok: false, reason: 'EXPIRED' });
-    expect(evaluateCurrentHoldCoverage({ branchId: BRANCH, items: [item('v1', 1n)], activeHolds: [hold('v1', 1n, new Date(NOW.getTime() + 1))], policy: first }).ok)
-      .toBe(true);
+  // OWNER 2026-10-20 (OPTION_B_NON_EXPIRING_COMMITMENT): a normal sale's hold is
+  // a stock COMMITMENT that lives until the sale is CANCELLED or COMPLETED. The
+  // clock never invalidates it; expiresAt is only a historical review date.
+  it('never lets the clock invalidate a normal sale hold for a first payment', () => {
+    for (const expiresAt of [NOW, before, new Date(NOW.getTime() - 24 * 60 * 60_000), after]) {
+      expect(evaluateCurrentHoldCoverage({ branchId: BRANCH, items: [item('v1', 1n)], activeHolds: [hold('v1', 1n, expiresAt)], policy: first }).ok)
+        .toBe(true);
+    }
   });
 
-  it('rejects a first payment when any one of several holds is expired', () => {
+  it('accepts a first payment when several holds are past their review date', () => {
     expect(evaluateCurrentHoldCoverage({
       branchId: BRANCH, items: [item('v1', 1n), item('v2', 1n)], activeHolds: [hold('v1', 1n), hold('v2', 1n, before)], policy: first,
-    })).toEqual({ ok: false, reason: 'EXPIRED' });
+    }).ok).toBe(true);
   });
 
   it.each([
@@ -72,7 +73,7 @@ describe('current technical-hold coverage (Pilot P0.1-C, pure)', () => {
     }
   });
 
-  it('reports a coverage defect before expiry, so corruption is never disguised as expiry', () => {
+  it('still reports a coverage defect when the hold is past its review date', () => {
     expect(evaluateCurrentHoldCoverage({ branchId: BRANCH, items: [item('v1', 2n)], activeHolds: [hold('v1', 1n, before)], policy: first }))
       .toMatchObject({ ok: false, reason: 'COVERAGE_MISMATCH' });
   });
@@ -84,8 +85,8 @@ describe('current technical-hold coverage (Pilot P0.1-C, pure)', () => {
     // Vitest's JSON-based %j title formatting cannot serialize.
     it.each([
       ['VALID', 'pending, zero payments, unexpired exact hold', { status: 'PENDING_PAYMENT', paymentCount: 0, activeHolds: [hold('v1', 1n)] }],
-      ['EXPIRED', 'pending, zero payments, hold expired before now', { status: 'PENDING_PAYMENT', paymentCount: 0, activeHolds: [hold('v1', 1n, before)] }],
-      ['EXPIRED', 'pending, zero payments, hold expiring exactly at now', { status: 'PENDING_PAYMENT', paymentCount: 0, activeHolds: [hold('v1', 1n, NOW)] }],
+      ['VALID', 'pending, zero payments, exact hold past its review date', { status: 'PENDING_PAYMENT', paymentCount: 0, activeHolds: [hold('v1', 1n, before)] }],
+      ['VALID', 'pending, zero payments, hold whose review date is exactly now', { status: 'PENDING_PAYMENT', paymentCount: 0, activeHolds: [hold('v1', 1n, NOW)] }],
       ['EXPIRED', 'pending, zero payments, no ACTIVE hold left (released)', { status: 'PENDING_PAYMENT', paymentCount: 0, activeHolds: [] }],
       ['PAYMENT_PROTECTED', 'pending, one payment, exact hold past expiry', { status: 'PENDING_PAYMENT', paymentCount: 1, activeHolds: [hold('v1', 1n, before)] }],
       ['PAID', 'paid, exact hold past expiry', { status: 'PAID', paymentCount: 1, activeHolds: [hold('v1', 1n, before)] }],
@@ -94,6 +95,16 @@ describe('current technical-hold coverage (Pilot P0.1-C, pure)', () => {
       ['COVERAGE_INVALID', 'paid, no ACTIVE hold', { status: 'PAID', paymentCount: 1, activeHolds: [] }],
     ] as const)('reports %s for %s', (expected, _label, input) => {
       expect(cashierHoldState({ ...base, ...input, activeHolds: [...input.activeHolds] })).toBe(expected);
+    });
+
+    it('lets the cashier charge a normal sale whose hold is past its review date (RED 1)', () => {
+      const state = cashierHoldState({ ...base, status: 'PENDING_PAYMENT', paymentCount: 0, activeHolds: [hold('v1', 1n, before)] });
+      expect(canAcceptPayment(state)).toBe(true);
+    });
+
+    it('still blocks a normal sale whose hold was RELEASED (no ACTIVE coverage)', () => {
+      const state = cashierHoldState({ ...base, status: 'PENDING_PAYMENT', paymentCount: 0, activeHolds: [] });
+      expect(canAcceptPayment(state)).toBe(false);
     });
 
     it('reports COVERAGE_INVALID for a sale without items', () => {

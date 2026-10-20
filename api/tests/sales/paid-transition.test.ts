@@ -308,22 +308,26 @@ describe('PENDING_PAYMENT to PAID transition', () => {
       expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
     });
 
-    it('rejects a first payment on an expired zero-payment hold with no payment, cash, audit, status or release side effect', async () => {
+    // OWNER 2026-10-20 (OPTION_B_NON_EXPIRING_COMMITMENT): a normal sale's hold is a
+    // commitment the clock never ends; expiresAt is only a review date (RED 2).
+    it('accepts a first payment on a hold whose review date passed long ago, leaving the hold ACTIVE until completion', async () => {
       await openCashSession();
       const sale = await createSale(16500000n, 'PENDING_PAYMENT', { expiresAt: expired() });
-      await expectRejectedWithoutSideEffects(sale.id, {
+      const response = await pay(sale.id, {
         method: 'CASH', amount: '16500000', receivedAmount: '16500000', idempotencyKey: randomUUID(),
-      }, 'RESERVATION_EXPIRED');
+      });
+      expect(response.status).toBe(201);
+      expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
       expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: sale.id } })).status).toBe('ACTIVE');
     });
 
-    it('rejects a first payment after the hold was released by the authoritative expiry release', async () => {
+    it('the authoritative expiry release no longer takes an old hold, so the sale stays payable', async () => {
       const sale = await createSale(16500000n, 'PENDING_PAYMENT', { expiresAt: expired() });
       const released = await createCancellationService(db).releaseExpiredSaleHolds(sale.id, {
         actor: { userId: cashierId, trigger: 'ADMIN' }, now: new Date(),
       });
-      expect(released.outcome).toBe('RELEASED');
-      await expectRejectedWithoutSideEffects(sale.id, transfer(), 'INVALID_RESERVATION');
+      expect(released.outcome).toBe('NOTHING_EXPIRED');
+      expect((await pay(sale.id, transfer())).status).toBe(201);
     });
 
     it.each([
@@ -437,7 +441,9 @@ describe('PENDING_PAYMENT to PAID transition', () => {
     it('never writes a release, reserved decrement or RESERVATION_RELEASED audit from the payment path', async () => {
       const sale = await createSale(16500000n, 'PENDING_PAYMENT', { expiresAt: expired() });
       const before = await sideEffects(sale.id);
-      expect((await pay(sale.id, transfer())).status).toBe(409);
+      // OWNER 2026-10-20: a hold past its review date still backs the sale, so the
+      // payment is accepted — and still never releases or decrements anything.
+      expect((await pay(sale.id, transfer())).status).toBe(201);
       const after = await sideEffects(sale.id);
       expect(after.reservations).toEqual(before.reservations);
       expect(after.inventory).toEqual(before.inventory);
@@ -465,15 +471,14 @@ describe('PENDING_PAYMENT to PAID transition', () => {
       expect(await reserved()).toBe(before);
     });
 
-    it('release first: the hold is RELEASED and the payment is rejected with nothing persisted', async () => {
+    it('release first: the clock takes nothing (even with a future clock), so the payment is accepted', async () => {
       const sale = await createSale(16500000n, 'PENDING_PAYMENT');
       const before = await reserved();
-      expect((await release(sale.id)).outcome).toBe('RELEASED');
-      expect(await reserved()).toBe(before - 1n);
+      expect((await release(sale.id)).outcome).toBe('NOTHING_EXPIRED');
+      expect(await reserved()).toBe(before);
       const response = await pay(sale.id, { method: 'TRANSFER', amount: '16500000', idempotencyKey: randomUUID() });
-      expect(response.status).toBe(409);
-      expect(response.body.error.code).toBe('INVALID_RESERVATION');
-      expect(await db.salePayment.count({ where: { saleId: sale.id } })).toBe(0);
+      expect(response.status).toBe(201);
+      expect(await db.salePayment.count({ where: { saleId: sale.id } })).toBe(1);
     });
 
     it('a genuinely concurrent payment and release end in exactly one consistent outcome', async () => {
@@ -485,18 +490,12 @@ describe('PENDING_PAYMENT to PAID transition', () => {
       ]);
       const payments = await db.salePayment.count({ where: { saleId: sale.id } });
       const hold = await db.stockReservation.findFirstOrThrow({ where: { saleId: sale.id } });
-      if (payment.status === 201) {
-        expect(released.outcome).toBe('PAYMENT_PROTECTED');
-        expect(payments).toBe(1);
-        expect(hold.status).toBe('ACTIVE');
-        expect(await reserved()).toBe(before);
-      } else {
-        expect(payment.status).toBe(409);
-        expect(released.outcome).toBe('RELEASED');
-        expect(payments).toBe(0);
-        expect(hold.status).toBe('RELEASED');
-        expect(await reserved()).toBe(before - 1n);
-      }
+      // The release can never win: whichever order the Sale lock grants, it takes nothing.
+      expect(payment.status).toBe(201);
+      expect(['PAYMENT_PROTECTED', 'NOTHING_EXPIRED']).toContain(released.outcome);
+      expect(payments).toBe(1);
+      expect(hold.status).toBe('ACTIVE');
+      expect(await reserved()).toBe(before);
     });
   });
 

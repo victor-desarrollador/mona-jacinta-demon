@@ -117,7 +117,7 @@ describe('critical operation audit', () => {
     expect(closed.after).toMatchObject({ status: 'CLOSED', closingCash: '4500000', startingCash: '9007199254740993' });
   });
 
-  it('audits cancellation and expired reservation release', async () => {
+  it('audits cancellation and records no clock release of an old hold', async () => {
     const sales = createSalesService(db);
     const cancellation = createCancellationService(db);
     const cancelled = await draft();
@@ -126,13 +126,14 @@ describe('critical operation audit', () => {
     const entry = await audit('SALE_CANCELLED', cancelled.id, adminId);
     expect(entry.before).toEqual({ status: 'PENDING_PAYMENT' });
     expect(entry.after).toMatchObject({ status: 'CANCELLED', reason: 'DUPLICATE_SALE', released: [{ variantId: expect.any(String), quantity: '1' }] });
-    const expired = await draft();
-    await sales.sendToCashier(expired.id, sellerId, [branchId]);
-    await db.stockReservation.updateMany({ where: { saleId: expired.id }, data: { expiresAt: new Date(0) } });
-    await cancellation.releaseExpiredReservations(scope(adminId));
-    const released = await audit('RESERVATION_RELEASED', expired.id, adminId);
-    expect(released.before).toBeNull();
-    expect(released.after).toEqual({ saleId: expired.id, reason: 'EXPIRED', trigger: 'ADMIN', released: [{ variantId: expect.any(String), quantity: '1' }] });
+    // OWNER 2026-10-20: the clock no longer releases a normal sale's hold, so the
+    // manual release finds nothing and writes no RESERVATION_RELEASED audit.
+    const old = await draft();
+    await sales.sendToCashier(old.id, sellerId, [branchId]);
+    await db.stockReservation.updateMany({ where: { saleId: old.id }, data: { expiresAt: new Date(0) } });
+    const result = await cancellation.releaseExpiredReservations(scope(adminId));
+    expect(result.released).toEqual([]);
+    expect(await db.auditLog.count({ where: { action: 'RESERVATION_RELEASED', entityId: old.id } })).toBe(0);
   });
 
   it('normalizes nested before/after using the supplied client and rolls back with business writes', async () => {

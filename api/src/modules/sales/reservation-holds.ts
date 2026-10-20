@@ -7,7 +7,26 @@ import type { Prisma, PrismaClient } from '../../generated/prisma/client.js';
 // cancellation.service.ts. Production V1's StockHold model
 // (docs/production-v1/07-inventory-ledger.md §5) replaces it later.
 
+// OWNER 2026-10-20 (OPTION_B_NON_EXPIRING_COMMITMENT): a normal sale's hold is a
+// stock COMMITMENT (StockReservation ACTIVE + Inventory.reserved) that lives until
+// the sale is CANCELLED or COMPLETED. No clock ends it: expiresAt is only the
+// historical review date stamped when the hold is written (the column stays NOT
+// NULL until a schema change is authorised) and decides nothing about validity.
+// Double-sell protection never relied on the clock — it is the Inventory.reserved
+// counter taken under row locks — so removing the clock keeps it intact. A future
+// deposit hold (Seña) is a separate concept with its own expiry, not this one.
+//
+// The ONE place that states the rule. Every site that used to compare expiresAt
+// with the clock (coverage, queue state, expired-hold discovery, the release
+// itself, stock recovery) asks this module instead of repeating it.
+export const NORMAL_SALE_HOLD_EXPIRES_BY_CLOCK: boolean = false;
+
+// Review date stamped on a new hold (30 minutes). Informational only.
 export const TECHNICAL_HOLD_TTL_MS = 30 * 60 * 1000;
+
+export function holdExpiredByClock(hold: { expiresAt: Date }, now: Date): boolean {
+  return NORMAL_SALE_HOLD_EXPIRES_BY_CLOCK && hold.expiresAt.getTime() <= now.getTime();
+}
 
 // Upper bound of one authoritative reconciliation batch (B1). Lives in this
 // dependency-free module so env validation can bound the sweeper batch size.
@@ -23,15 +42,19 @@ type BranchVariant = { branchId: string; variantId: string };
 
 const pairKey = (branchId: string, variantId: string) => `${branchId}:${variantId}`;
 
-// Releasable = ACTIVE, expired (expiresAt <= now), on a PENDING_PAYMENT sale
-// with zero SalePayment rows. Payment existence, not a monetary sum, is the
-// deliberately conservative Policy A test. Every other ACTIVE row (unexpired,
-// payment-protected, PAID, or an unexpected sale state) stays held. The read
-// projection and the authoritative release discovery share this predicate.
+// Releasable = ACTIVE, expired by the clock (holdExpiredByClock), on a
+// PENDING_PAYMENT sale with zero SalePayment rows. Payment existence, not a
+// monetary sum, is the deliberately conservative Policy A test. Every other
+// ACTIVE row (payment-protected, PAID, or an unexpected sale state) stays held.
+// While normal sale holds do not expire by the clock this selects NOTHING
+// (an empty id set), so neither the sweeper, the pre-send reconciliation, the
+// manual release nor the availability projection can touch a normal sale's
+// commitment. The read projection and the authoritative release discovery share
+// this predicate.
 export function releasableExpiredHoldWhere(now: Date) {
   return {
     status: 'ACTIVE',
-    expiresAt: { lte: now },
+    ...(NORMAL_SALE_HOLD_EXPIRES_BY_CLOCK ? { expiresAt: { lte: now } } : { id: { in: [] as string[] } }),
     sale: { status: 'PENDING_PAYMENT', payments: { none: {} } },
   } satisfies Prisma.StockReservationWhereInput;
 }

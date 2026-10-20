@@ -21,7 +21,12 @@ type Variant = { id: string; productId: string; sku: string; price: bigint };
 // zero-payment technical holds, shared by the manual INVENTORY_MANAGE
 // endpoint (trigger ADMIN, caller is the audit actor) and automation
 // (trigger SYSTEM, the dedicated inactive system actor).
-describe('authoritative expired technical-hold release (Pilot P0.1-B1)', () => {
+// SUPERSEDED (OWNER 2026-10-20, OPTION_B_NON_EXPIRING_COMMITMENT): a normal sale's hold
+// is never released by the clock, so this whole B1/B2 release suite — which proves the
+// release of EXPIRED holds — no longer describes live behavior. The release machinery is
+// kept dormant (reservation-holds.ts NORMAL_SALE_HOLD_EXPIRES_BY_CLOCK) for a future
+// deposit hold. The new behavior is covered by normal-sale-commitment.test.ts.
+describe.skip('authoritative expired technical-hold release (Pilot P0.1-B1) [SUPERSEDED: holds do not expire by the clock]', () => {
   const NOW = new Date('2030-01-01T12:00:00.000Z');
   const HOUR = 60 * 60 * 1000;
   const expired = new Date(NOW.getTime() - HOUR);

@@ -523,12 +523,6 @@ export default function ProportionalChargePanel({
               <span>Saldo ({methodLabel(quote.balance.method)})</span>
               <strong data-testid="proportional-balance">{money.format(quote.balance.amount.toString())}</strong>
             </div>
-            {quote.reservationExpiresAt !== null ? (
-              <div className="total-line" data-testid="proportional-expiry">
-                <span>Reserva técnica</span>
-                <strong>Hasta {money.formatInstant(quote.reservationExpiresAt)}</strong>
-              </div>
-            ) : null}
           </div>
 
           <div className="readonly-items" data-testid="proportional-lines">

@@ -203,13 +203,14 @@ describe('POST /api/v1/sales/:saleId/correct (Pilot P0.2-A)', () => {
       expect(response.status).toBe(404);
     });
 
-    it('rejects an expired hold without refreshing it (RESERVATION_EXPIRED)', async () => {
-      const { sale } = await heldSale([{ variant: remera, quantity: 2n }], { expiresAt: new Date(Date.now() - 1000) });
-      const before = await snapshot(sale.id);
+    it('corrects a hold past its review date and preserves that date (OWNER 2026-10-20: the clock never expires a hold)', async () => {
+      const oldDate = new Date(Date.now() - 1000);
+      const { sale } = await heldSale([{ variant: remera, quantity: 2n }], { expiresAt: oldDate });
       const response = await correct(sale.id, [{ variantId: remera.id, quantity: 1 }]);
-      expect(response.status).toBe(409);
-      expect(response.body.error.code).toBe('RESERVATION_EXPIRED');
-      expect(await snapshot(sale.id)).toEqual(before);
+      expect(response.status).toBe(200);
+      const active = await db.stockReservation.findMany({ where: { saleId: sale.id, status: 'ACTIVE' } });
+      expect(active).toHaveLength(1);
+      expect(active[0]!.expiresAt.getTime()).toBe(oldDate.getTime());
     });
 
     it('rejects a zero-payment sale whose holds were already released (RESERVATION_EXPIRED)', async () => {
@@ -451,21 +452,22 @@ describe('POST /api/v1/sales/:saleId/correct (Pilot P0.2-A)', () => {
       await expectReservedMatchesActiveHolds();
     });
 
-    it('correction vs expiry release: whichever commits first, the counter stays exact', async () => {
+    it('correction vs clock release: the release takes nothing, so the counter stays exact', async () => {
       const { sale, expiresAt } = await heldSale([{ variant: remera, quantity: 2n }]);
       const service = createCancellationService(db);
       const system = await db.user.findFirstOrThrow({ where: { email: 'owner01@demo.local' } });
       const [correction, release] = await Promise.all([
         correct(sale.id, [{ variantId: remera.id, quantity: 4 }]),
-        // A release evaluated just after the ORIGINAL expiry: it still
-        // releases corrected holds, proving correction never extended them.
+        // A release evaluated just after the original review date: the clock
+        // no longer releases a normal sale's hold, whichever commits first.
         service.releaseExpiredSaleHolds(sale.id, {
           actor: { userId: system.id, trigger: 'ADMIN' }, now: new Date(expiresAt.getTime() + 1),
         }),
       ]);
-      expect(release.outcome).toBe('RELEASED');
+      expect(release.outcome).toBe('NOTHING_EXPIRED');
       expect([200, 409]).toContain(correction.status);
-      expect(await db.stockReservation.count({ where: { saleId: sale.id, status: 'ACTIVE' } })).toBe(0);
+      expect(await db.stockReservation.count({ where: { saleId: sale.id, status: 'ACTIVE' } })).toBeGreaterThan(0);
+      await expectExactCoverage(sale.id);
       await expectReservedMatchesActiveHolds();
     });
   });

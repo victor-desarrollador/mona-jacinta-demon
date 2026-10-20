@@ -16,9 +16,9 @@ describe('R3-A4.3 S4 — stockStateOf (read-time, never stored)', () => {
       .toEqual({ stockState: 'VALID', stockExpiresAt: early });
   });
 
-  it('V02 any hold with expiresAt <= now is EXPIRED (same boundary as FIRST_PAYMENT)', () => {
+  it('V02 a hold past its review date is still VALID coverage (OWNER 2026-10-20: the clock never expires it); the date is informational', () => {
     expect(stockStateOf({ branchId: B, items, activeHolds: [hold('v1', 2n, later), hold('v2', 1n, NOW)], now: NOW }))
-      .toEqual({ stockState: 'EXPIRED', stockExpiresAt: NOW });
+      .toEqual({ stockState: 'VALID', stockExpiresAt: NOW });
   });
 
   it('V03 no ACTIVE coverage, or partial coverage, is RELEASED', () => {

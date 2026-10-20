@@ -261,9 +261,13 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
     expect(t.db.table('checkoutAttempt')).toHaveLength(0);
   });
 
-  it('R11 stock (D4): expired → STOCK_HOLD_EXPIRED; released or partial → STOCK_HOLD_RELEASED; defective hold → 500; nothing written', async () => {
-    const expired = setup({ holdsExpireAt: NOW });
-    expect((await codeOf(expired.service.reserve(expired.asCashier, expired.sale.id as string, expired.cashOnly())))?.code).toBe('STOCK_HOLD_EXPIRED');
+  it('R11a a hold past its review date still backs the sale: the reservation is accepted (RED 3, OWNER 2026-10-20)', async () => {
+    const old = setup({ holdsExpireAt: NOW });
+    await old.service.reserve(old.asCashier, old.sale.id as string, old.cashOnly());
+    expect(old.db.table('checkoutAttempt')).toHaveLength(1);
+  });
+
+  it('R11 stock (D4): released or partial → STOCK_HOLD_RELEASED; defective hold → 500; nothing written', async () => {
     const released = setup();
     released.db.table('stockReservation').forEach((hold) => { hold.status = 'RELEASED'; });
     expect((await codeOf(released.service.reserve(released.asCashier, released.sale.id as string, released.cashOnly())))?.code).toBe('STOCK_HOLD_RELEASED');
@@ -273,7 +277,7 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
     const defective = setup();
     defective.db.table('stockReservation')[0]!.branchId = uuid();
     expect(await codeOf(defective.service.reserve(defective.asCashier, defective.sale.id as string, defective.cashOnly()))).toMatchObject({ status: 500, code: 'CHECKOUT_STATE_INCONSISTENT' });
-    for (const t of [expired, released, partial, defective]) {
+    for (const t of [released, partial, defective]) {
       expect(t.db.table('checkoutAttempt')).toHaveLength(0);
       expect(t.db.table('auditLog')).toHaveLength(0);
     }
