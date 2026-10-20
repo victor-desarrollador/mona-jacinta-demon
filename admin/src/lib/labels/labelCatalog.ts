@@ -81,6 +81,12 @@ function isValidPage(response: unknown): response is CatalogPageResponse {
   return Number.isSafeInteger(total) && (total as number) >= 0;
 }
 
+const inconsistent = (reason: string): { ok: false; code: 'FAILED'; cause: Error } => ({
+  ok: false,
+  code: 'FAILED',
+  cause: new Error(`Catálogo inconsistente: ${reason}. Volvé a cargar la pantalla.`),
+});
+
 export async function loadAllProducts(fetchPage: FetchPage, options: LoadOptions = {}): Promise<LoadOutcome> {
   // Options are validated before any request. The limit may not exceed the page
   // size GET /products accepts (max 100).
@@ -114,8 +120,18 @@ export async function loadAllProducts(fetchPage: FetchPage, options: LoadOptions
     if (cancelled()) return { ok: false, code: 'CANCELLED' };
     if (!isValidPage(response)) return { ok: false, code: 'FAILED', cause: new Error('Respuesta de catálogo inválida.') };
 
-    pagesLoaded += 1;
+    // GET /products is offset-paginated over a name ordering with a separate count(): there is
+    // no snapshot. The only pages accepted are the ones the declared total predicts; anything
+    // else (a changed total, a short or oversized page, an unexpected empty page) means the
+    // catalogue moved or the response is wrong, and the load fails instead of passing off a
+    // partial catalogue as complete.
+    if (pagesLoaded > 0 && response.pagination.total !== total) return inconsistent('el total cambió durante la carga');
     total = response.pagination.total;
+    const expected = Math.min(limit as number, Math.max(0, total - pagesLoaded * (limit as number)));
+    if (response.items.length > (limit as number)) return inconsistent('la página superó el límite pedido');
+    if (response.items.length !== expected) return inconsistent('la página no coincide con el total declarado');
+
+    pagesLoaded += 1;
     received += response.items.length;
     for (const product of response.items) {
       if (seen.has(product.id)) {
@@ -125,7 +141,7 @@ export async function loadAllProducts(fetchPage: FetchPage, options: LoadOptions
       seen.add(product.id);
       products.push(product);
     }
-    if (response.items.length === 0 || received >= total) break;
+    if (received >= total) break;
   }
 
   return { ok: true, products, total, truncated: products.length < total, duplicatesDropped, pagesLoaded };
@@ -198,4 +214,49 @@ export function deriveSheetPreview(
   if (plan.sheets.length === 0) return { kind: 'EMPTY' };
   const labelCount = plan.sheets.reduce((sum, sheet) => sum + sheet.placements.length, 0);
   return { kind: 'READY', sheets: plan.sheets, labelCount, sheetCount: plan.sheets.length };
+}
+
+// What the catalogue area of the page says. Error wins over loading, and a valid
+// catalogue without variants is not the same as a search without results.
+export type CatalogNotice = 'LOADING' | 'ERROR' | 'EMPTY_CATALOG' | 'NO_RESULTS' | 'NONE';
+
+export function deriveCatalogNotice(state: {
+  loading: boolean;
+  error: string;
+  variantCount: number;
+  rowCount: number;
+  hasSearch: boolean;
+}): CatalogNotice {
+  if (state.error) return 'ERROR';
+  if (state.loading) return 'LOADING';
+  if (state.variantCount === 0) return 'EMPTY_CATALOG';
+  if (state.rowCount === 0 && state.hasSearch) return 'NO_RESULTS';
+  return 'NONE';
+}
+
+// What the preview area says. A catalogue that is loading or failed never gets
+// instructions or a success line; EMPTY is split into "nothing selected" and
+// "everything selected was excluded".
+export type PreviewNotice =
+  | { kind: 'CATALOG_LOADING' }
+  | { kind: 'CATALOG_ERROR' }
+  | { kind: 'NO_SELECTION' }
+  | { kind: 'ALL_EXCLUDED' }
+  | { kind: 'LAYOUT_INVALID' }
+  | { kind: 'PLAN_ERROR'; code: Extract<SheetPreview, { kind: 'ERROR' }>['code'] }
+  | { kind: 'READY' };
+
+export function derivePreviewNotice(state: {
+  loading: boolean;
+  error: string;
+  selectionCount: number;
+  preview: SheetPreview;
+}): PreviewNotice {
+  if (state.error) return { kind: 'CATALOG_ERROR' };
+  if (state.loading) return { kind: 'CATALOG_LOADING' };
+  const { preview } = state;
+  if (preview.kind === 'LAYOUT_INVALID') return { kind: 'LAYOUT_INVALID' };
+  if (preview.kind === 'ERROR') return { kind: 'PLAN_ERROR', code: preview.code };
+  if (preview.kind === 'READY') return { kind: 'READY' };
+  return state.selectionCount === 0 ? { kind: 'NO_SELECTION' } : { kind: 'ALL_EXCLUDED' };
 }

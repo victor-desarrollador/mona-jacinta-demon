@@ -912,3 +912,181 @@ test('CL-05 catalogue failures never expose data as complete: products are set o
   assert.match(code, /else if \(outcome\.code === 'FAILED'\) \{\s*setError\(/);
   assert.match(code, /\{!loading && !error \? \(/);
 });
+
+// ---- V3.2: behavioural tests that EXECUTE the real Labels.tsx -------------------------------------------
+// There is no React / DOM in this workspace (admin has no installed dependencies), so the page is transpiled
+// with TypeScript and run with a minimal hook stub: useState returns injected values, useMemo computes
+// synchronously, useEffect never runs, and JSX becomes plain objects whose text is collected.
+// WHAT THIS PROVES: the real page code wires result.labels -> deriveSheetPreview -> the message shown, for the
+// injected state. WHAT IT DOES NOT PROVE: real React rendering, effects/loading transitions, event handlers,
+// layout or CSS, accessibility, or that React accepts the tree. It is not a replacement for a browser test.
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import * as catalogRuntime from '../../src/lib/labels/labelCatalog.ts';
+import * as layoutRuntime from '../../src/lib/labels/labelLayout.ts';
+
+async function findTypescript() {
+  const candidates = ['typescript', pathToFileURL(join(dirname(process.execPath), '..', 'lib', 'node_modules', 'typescript', 'lib', 'typescript.js')).href];
+  for (const candidate of candidates) {
+    try { const mod = await import(candidate); return mod.default ?? mod; } catch { /* try the next one */ }
+  }
+  return null;
+}
+const ts = await findTypescript();
+const STATE_ORDER = ['products', 'totalProducts', 'truncated', 'duplicatesDropped', 'loading', 'error', 'blocked', 'search', 'quantities', 'showPrice', 'layoutDraft', 'startSlot'];
+
+function renderPage(over = {}, { source = read(pagePath), catalog = catalogRuntime } = {}) {
+  const hooks = { index: 0, over };
+  const useState = (init) => {
+    const name = STATE_ORDER[hooks.index++];
+    const value = name !== undefined && name in hooks.over ? hooks.over[name] : typeof init === 'function' ? init() : init;
+    return [value, () => {}];
+  };
+  const element = (type, props) => ({ type, props: props ?? {} });
+  const runtime = { jsx: element, jsxs: element, Fragment: 'fragment' };
+  const modules = {
+    react: { useState, useMemo: (fn) => fn(), useEffect: () => {} },
+    'react/jsx-runtime': runtime,
+    '../hooks/useAuth': { useAuth: () => ({ token: 'token', logout: () => {}, user: { id: 'u1', permissions: over.permissions ?? ['report.view'] } }) },
+    '../lib/api': { ApiError: class ApiError extends Error {}, api: {} },
+    '../lib/errors': { errorMessage: (_cause, fallback) => fallback },
+    '../lib/utils': { formatARS: (cents) => `$${cents}`, formatVariant: (color, size) => [color, size].filter(Boolean).join(' / ') || 'Única' },
+    '../lib/labels/labelCatalog.ts': catalog,
+    '../lib/labels/labelData.ts': labelDataModule,
+    '../lib/labels/labelLayout.ts': layoutRuntime,
+  };
+  const js = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX }, fileName: 'Labels.tsx' }).outputText;
+  const exports = {};
+  const load = (specifier) => { if (!(specifier in modules)) throw new Error(`unexpected import ${specifier}`); return modules[specifier]; };
+  new Function('require', 'exports', 'module', js)(load, exports, { exports });
+  const tree = exports.Labels();
+  assert.equal(hooks.index, STATE_ORDER.length, 'the page changed its useState calls: update STATE_ORDER');
+  return textOf(tree);
+}
+function textOf(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join(' ');
+  if (typeof node.type === 'function') return textOf(node.type(node.props));
+  return textOf(node.props.children);
+}
+const clean = (text) => text.replace(/\s+/g, ' ').replace(/ ([.,;:])/g, '$1');
+const pv = (id, over = {}) => ({ id, productId: 'p1', sku: `SKU-${id}`, barcode: `77900${id}`, color: null, size: 'M', price: '100', cashPrice: '9000', isActive: true, ...over });
+const pageProduct = (variants) => ({ id: 'p1', name: 'Remera', slug: 'remera', description: null, category: { id: 'c', name: 'c' }, brand: { id: 'b', name: 'b' }, variants });
+const page = (over) => clean(renderPage({ loading: false, ...over }));
+const skip = ts ? false : 'TypeScript is not resolvable here (admin devDependency): NOT RUN';
+
+test('P-harness the harness really executes Labels.tsx (a gated session sees the gate text)', { skip }, () => {
+  assert.match(page({ permissions: [] }), /Etiquetas no disponibles/);
+  assert.match(page({ products: [pageProduct([pv('1')])], totalProducts: 1 }), /Etiquetas y códigos de barras/);
+});
+
+test('P01 selected variants reach the preview through result.labels -> deriveSheetPreview', { skip }, () => {
+  const text = page({ products: [pageProduct([pv('1'), pv('2')])], totalProducts: 1, quantities: { 1: '2', 2: '3' } });
+  assert.match(text, /5 etiquetas incluidas en 1 hoja\./);
+  assert.match(text, /Hoja 1 de 1/);
+  assert.doesNotMatch(text, /Seleccioná variantes para ver la vista previa/);
+});
+
+test('P01b the quantity of the included labels (not the selection count) drives the preview', { skip }, () => {
+  const text = page({ products: [pageProduct([pv('1'), pv('2')])], totalProducts: 1, quantities: { 1: '15', 2: '0' }, startSlot: '3' });
+  assert.match(text, /15 etiquetas incluidas en 2 hojas\./);
+  assert.match(text, /Hoja 2 de 2/);
+});
+
+test('P02 more than 1000 labels shows the limit error and never a success line', { skip }, () => {
+  const variants = Array.from({ length: 6 }, (_, i) => pv(String(i + 1)));
+  const quantities = Object.fromEntries(variants.map((v) => [v.id, '200']));
+  const text = page({ products: [pageProduct(variants)], totalProducts: 1, quantities });
+  assert.match(text, /máximo provisional de 1000 etiquetas/);
+  assert.match(text, /No se generó ningún plan de hojas/);
+  assert.doesNotMatch(text, /etiquetas incluidas en/);
+  assert.doesNotMatch(text, /Hoja 1 de/);
+});
+
+test('P03 a catalogue error shows the error only: no select-variants instruction, no empty-catalogue or no-results text, no success', { skip }, () => {
+  const text = page({ error: 'No se pudo cargar el catálogo.' });
+  assert.match(text, /No se pudo cargar el catálogo\./);
+  assert.match(text, /La vista previa no está disponible/);
+  assert.doesNotMatch(text, /Seleccioná variantes para ver la vista previa/);
+  assert.doesNotMatch(text, /no tiene variantes/);
+  assert.doesNotMatch(text, /Ninguna variante coincide/);
+  assert.doesNotMatch(text, /etiquetas incluidas en/);
+  assert.doesNotMatch(text, /Catálogo inspeccionado/);
+});
+
+test('P03b while the catalogue loads there are no instructions either', { skip }, () => {
+  const text = page({ loading: true });
+  assert.match(text, /Cargando catálogo/);
+  assert.match(text, /cuando termine de cargar el catálogo/);
+  assert.doesNotMatch(text, /Seleccioná variantes para ver la vista previa/);
+  assert.doesNotMatch(text, /no tiene variantes/);
+  assert.doesNotMatch(text, /Ninguna variante coincide/);
+});
+
+test('P04 a valid catalogue without variants says so, not "no search results"', { skip }, () => {
+  const text = page({ products: [pageProduct([])], totalProducts: 1 });
+  assert.match(text, /no tiene variantes/);
+  assert.doesNotMatch(text, /Ninguna variante coincide/);
+  assert.match(text, /Seleccioná variantes para ver la vista previa/);
+});
+
+test('P04b a search with no match says so; an empty search does not', { skip }, () => {
+  const products = [pageProduct([pv('1')])];
+  const withSearch = page({ products, totalProducts: 1, search: 'zzzz' });
+  assert.match(withSearch, /Ninguna variante coincide con la búsqueda/);
+  assert.doesNotMatch(withSearch, /no tiene variantes/);
+  const without = page({ products, totalProducts: 1 });
+  assert.doesNotMatch(without, /Ninguna variante coincide/);
+  assert.doesNotMatch(without, /no tiene variantes/);
+});
+
+test('P05 selected variants that were all excluded are not "select variants"', { skip }, () => {
+  const text = page({ products: [pageProduct([pv('1', { isActive: false })])], totalProducts: 1, quantities: { 1: '2' } });
+  assert.match(text, /quedaron excluidas; no hay etiquetas para la vista previa/);
+  assert.doesNotMatch(text, /Seleccioná variantes para ver la vista previa/);
+  assert.doesNotMatch(text, /etiquetas incluidas en/);
+});
+
+test('P05b nothing selected is the plain instruction', { skip }, () => {
+  const text = page({ products: [pageProduct([pv('1')])], totalProducts: 1 });
+  assert.match(text, /Seleccioná variantes para ver la vista previa/);
+  assert.doesNotMatch(text, /quedaron excluidas; no hay etiquetas/);
+});
+
+test('P06 the harness detects a page that feeds deriveSheetPreview an empty array (F-08 regression)', { skip }, () => {
+  const state = { products: [pageProduct([pv('1')])], totalProducts: 1, quantities: { 1: '2' } };
+  const source = read(pagePath);
+  assert.match(clean(renderPage({ loading: false, ...state }, { source })), /2 etiquetas incluidas en 1 hoja/);
+  const mutated = source.replace('deriveSheetPreview(result.labels, layout, startSlotNumber)', 'deriveSheetPreview([], layout, startSlotNumber)');
+  assert.notEqual(mutated, source, 'the mutation must apply');
+  assert.doesNotMatch(clean(renderPage({ loading: false, ...state }, { source: mutated })), /2 etiquetas incluidas en 1 hoja/);
+});
+
+test('P07 the page shows a contradicting success line never together with an error banner for the same preview', { skip }, () => {
+  const variants = Array.from({ length: 6 }, (_, i) => pv(String(i + 1)));
+  const over = { products: [pageProduct(variants)], totalProducts: 1, quantities: Object.fromEntries(variants.map((v) => [v.id, '200'])) };
+  const text = page(over);
+  assert.ok(!(/etiquetas incluidas en/.test(text) && /No se generó ningún plan/.test(text)));
+});
+
+test('F-08 (static, V3.2) the page passes result.labels, the layout and the start slot to deriveSheetPreview, and drives its notices from the same preview', () => {
+  const code = pageCode();
+  assert.match(code, /deriveSheetPreview\(\s*result\.labels,\s*layout,\s*startSlotNumber\s*\)/);
+  assert.match(code, /derivePreviewNotice\(\{[^}]*preview: sheetPreview/);
+  assert.match(code, /deriveCatalogNotice\(\{/);
+  assert.ok(!/deriveSheetPreview\(\s*\[/.test(code), 'no literal array may replace result.labels');
+  assert.ok(!/Sin variantes para la búsqueda actual/.test(code), 'the ambiguous empty message is gone');
+});
+
+test('P03c injected stale data (products + selection) during a catalogue error or a reload never shows a success line or sheets', { skip }, () => {
+  const stale = { products: [pageProduct([pv('1')])], totalProducts: 1, quantities: { 1: '2' } };
+  for (const over of [{ error: 'No se pudo cargar el catálogo.' }, { loading: true }]) {
+    const text = page({ ...stale, ...over });
+    assert.doesNotMatch(text, /etiquetas incluidas en/);
+    assert.doesNotMatch(text, /Hoja 1 de/);
+    assert.doesNotMatch(text, /Seleccioná variantes para ver la vista previa/);
+  }
+  assert.match(page({ ...stale, error: 'x' }), /La vista previa no está disponible/);
+  assert.match(page({ ...stale, loading: true }), /cuando termine de cargar el catálogo/);
+});

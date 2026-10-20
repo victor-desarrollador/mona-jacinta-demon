@@ -56,12 +56,15 @@ test('F-08 empty catalog: one request, no products, not truncated', async () => 
   assert.equal(calls.length, 1);
 });
 
-test('F-08 a server that declares more than it returns stops on the empty page and reports truncation', async () => {
+// V3.2: this fixture (declared 300, only 250 served) used to be accepted as a truncated catalogue. A page
+// that is short of what the declared total predicts is now a contradiction: FAILED, no partial data.
+test('F-08 a server that declares more than it returns fails on the unexpected short page (V3.2: was ok/truncated)', async () => {
   const { fetchPage, calls } = server(catalog(250), { declaredTotal: 300 });
   const outcome = await loadAllProducts(fetchPage);
-  assert.equal(outcome.ok, true);
-  assert.deepEqual([outcome.products.length, outcome.total, outcome.truncated, outcome.pagesLoaded], [250, 300, true, 4]);
-  assert.equal(calls.length, 4);
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.code, 'FAILED');
+  assert.ok(!('products' in outcome));
+  assert.equal(calls.length, 3, 'it stops at the first page that contradicts the total');
 });
 
 test('F-08 the page ceiling is enforced and reported as truncation', async () => {
@@ -140,14 +143,25 @@ test('F-09 cancellation after the last page also wins over the result', async ()
   assert.deepEqual(outcome, { ok: false, code: 'CANCELLED' });
 });
 
-test('F-09 a product repeated across pages is kept once (first occurrence) and counted as dropped', async () => {
+// V3.2: the old fixture served 4 items for a declared total of 3 (a page of 2 where 1 was expected), which is
+// now a contradiction. The coherent equivalent declares 4: the repeat is dropped, counted, and the result is
+// flagged incomplete because one product is missing from the catalogue.
+test('F-09 a product repeated across pages is kept once (first occurrence), counted as dropped and flagged incomplete', async () => {
   const [a, b, c] = catalog(3);
   const pages = [[a, b], [b, c]];
-  const outcome = await loadAllProducts(async (page, limit) => ({ items: pages[page - 1] ?? [], pagination: { page, limit, total: 3 } }), { limit: 2 });
+  const outcome = await loadAllProducts(async (page, limit) => ({ items: pages[page - 1] ?? [], pagination: { page, limit, total: 4 } }), { limit: 2 });
   assert.equal(outcome.ok, true);
   assert.deepEqual(outcome.products.map((p) => p.id), ['p1', 'p2', 'p3']);
   assert.equal(outcome.duplicatesDropped, 1);
-  assert.equal(outcome.truncated, false);
+  assert.equal(outcome.truncated, true);
+});
+
+test('F-09 the previous incoherent fixture (4 items for a declared total of 3) is now a failed load', async () => {
+  const [a, b, c] = catalog(3);
+  const pages = [[a, b], [b, c]];
+  const outcome = await loadAllProducts(async (page, limit) => ({ items: pages[page - 1] ?? [], pagination: { page, limit, total: 3 } }), { limit: 2 });
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.code, 'FAILED');
 });
 
 test('F-09 duplicates that hide missing products still report truncation', async () => {
@@ -507,11 +521,22 @@ test('CL-05 pagination.total beyond the safe-integer range is rejected (V3 only 
   }
 });
 
-test('CL-05 pagination.total of Number.MAX_SAFE_INTEGER is a safe integer: accepted, reported as truncated', async () => {
-  const outcome = await loadAllProducts(async () => pageOf([], Number.MAX_SAFE_INTEGER));
+// V3.2: an EMPTY page for a total of MAX_SAFE_INTEGER (the old fixture) contradicts the total and now fails;
+// coherent full pages with that total are still accepted and the catalogue is reported truncated at 50 pages.
+test('CL-05 pagination.total of Number.MAX_SAFE_INTEGER is a safe integer: accepted with full pages, reported as truncated', async () => {
+  let calls = 0;
+  const outcome = await loadAllProducts(async (page, limit) => { calls += 1; return { items: catalog(limit, `q${page}-`), pagination: { page, limit, total: Number.MAX_SAFE_INTEGER } }; });
   assert.equal(outcome.ok, true);
   assert.equal(outcome.total, Number.MAX_SAFE_INTEGER);
   assert.equal(outcome.truncated, true);
+  assert.equal(calls, 50);
+  assert.equal(outcome.products.length, 5000);
+});
+
+test('CL-05 an empty page for a total of MAX_SAFE_INTEGER (old fixture) contradicts the total and fails', async () => {
+  const outcome = await loadAllProducts(async () => pageOf([], Number.MAX_SAFE_INTEGER));
+  assert.equal(outcome.ok, false);
+  assert.equal(outcome.code, 'FAILED');
 });
 
 test('CL-05 pagination.total 0 is a valid empty catalogue; negative, fractional, NaN and non-numbers are rejected', async () => {
@@ -550,4 +575,198 @@ test('CL-05 a catalogue failure on a later page is FAILED and returns no product
   assert.equal(outcome.ok, false);
   assert.equal(outcome.code, 'FAILED');
   assert.ok(!('products' in outcome));
+});
+
+// ---- V3.2 CL-05: the loader only trusts pages that agree with the declared total (L01..L16) ----
+// GET /products is offset-paginated (skip/take over name asc) and total comes from a separate
+// count(): there is no snapshot, so the loader accepts nothing but the page its total predicts.
+const scripted = (pages) => {
+  const calls = [];
+  return { calls, fetchPage: async (page, limit) => { calls.push({ page, limit }); const p = pages[page - 1]; if (!p) throw new Error(`unscripted page ${page}`); return { items: p.items, pagination: { page, limit, total: p.total } }; } };
+};
+const failedWithoutData = (outcome, label) => {
+  assert.equal(outcome.ok, false, label);
+  assert.equal(outcome.code, 'FAILED', label);
+  assert.ok(!('products' in outcome), `${label}: a failed load carries no products`);
+  assert.ok(!('truncated' in outcome), `${label}: a failed load carries no truncated flag`);
+};
+
+test('L01 a page with more items than the limit is rejected (101 items for limit 100)', async () => {
+  const { fetchPage } = scripted([{ items: catalog(101), total: 101 }]);
+  failedWithoutData(await loadAllProducts(fetchPage, { limit: 100 }), 'L01');
+});
+
+test('L02/L03 a total that changes between pages fails the load, in both directions', async () => {
+  const all = catalog(250);
+  for (const [first, second] of [[150, 120], [150, 200], [250, 249], [250, 251]]) {
+    const { fetchPage } = scripted([{ items: all.slice(0, 100), total: first }, { items: all.slice(100, 200), total: second }, { items: all.slice(200, 250), total: second }]);
+    failedWithoutData(await loadAllProducts(fetchPage, { limit: 100 }), `${first}->${second}`);
+  }
+});
+
+test('L04 total 0 with items on the page cannot produce ok / products / total 0 / truncated false', async () => {
+  const { fetchPage } = scripted([{ items: catalog(100), total: 0 }]);
+  failedWithoutData(await loadAllProducts(fetchPage, { limit: 100 }), 'L04');
+});
+
+test('L05 a short non-last page is a contradiction (total 150, page 1 has 50)', async () => {
+  const all = catalog(150);
+  const { fetchPage, calls } = scripted([{ items: all.slice(0, 50), total: 150 }, { items: all.slice(100), total: 150 }]);
+  failedWithoutData(await loadAllProducts(fetchPage, { limit: 100 }), 'L05');
+  assert.equal(calls.length, 1, 'it stops at the first contradiction');
+});
+
+test('L06/L12 an unexpectedly empty page while items are still owed fails the load', async () => {
+  const all = catalog(150);
+  failedWithoutData(await loadAllProducts(scripted([{ items: all.slice(0, 100), total: 150 }, { items: [], total: 150 }]).fetchPage, { limit: 100 }), 'L06');
+  const all101 = catalog(101);
+  failedWithoutData(await loadAllProducts(scripted([{ items: all101.slice(0, 100), total: 101 }, { items: [], total: 101 }]).fetchPage, { limit: 100 }), 'L12');
+});
+
+test('L07 a partial last page is valid: 150 = 100 + 50, untruncated', async () => {
+  const outcome = await loadAllProducts(server(catalog(150)).fetchPage, { limit: 100 });
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.products.length, 150);
+  assert.equal(outcome.total, 150);
+  assert.equal(outcome.truncated, false);
+  assert.equal(outcome.pagesLoaded, 2);
+});
+
+test('L08 an empty catalogue is valid: total 0, no items, one request, not truncated', async () => {
+  const { fetchPage, calls } = server([]);
+  const outcome = await loadAllProducts(fetchPage);
+  assert.equal(outcome.ok, true);
+  assert.deepEqual(outcome.products, []);
+  assert.equal(outcome.total, 0);
+  assert.equal(outcome.truncated, false);
+  assert.equal(calls.length, 1);
+});
+
+test('L09/L16 total equal to the limit is one page; limit + 1 is a full page plus a page of one', async () => {
+  const one = await loadAllProducts(server(catalog(100)).fetchPage, { limit: 100 });
+  assert.equal(one.ok, true); assert.equal(one.pagesLoaded, 1); assert.equal(one.truncated, false);
+  const two = await loadAllProducts(server(catalog(101)).fetchPage, { limit: 100 });
+  assert.equal(two.ok, true); assert.equal(two.pagesLoaded, 2); assert.equal(two.products.length, 101);
+});
+
+test('L10 too many items on the last page are rejected (total 150, page 2 has 60)', async () => {
+  const all = catalog(160);
+  failedWithoutData(await loadAllProducts(scripted([{ items: all.slice(0, 100), total: 150 }, { items: all.slice(100, 160), total: 150 }]).fetchPage, { limit: 100 }), 'L10');
+});
+
+test('L11 the 50-page ceiling still yields a coherent, truncated catalogue (never "complete")', async () => {
+  const { fetchPage, calls } = server(catalog(6000));
+  const outcome = await loadAllProducts(fetchPage, { limit: 100 });
+  assert.equal(outcome.ok, true);
+  assert.equal(calls.length, 50);
+  assert.equal(outcome.products.length, 5000);
+  assert.equal(outcome.total, 6000);
+  assert.equal(outcome.truncated, true);
+});
+
+test('L13 duplicates across coherent pages are dropped and reported, and the result is flagged incomplete', async () => {
+  const all = catalog(150); const dupPage2 = [all[0], ...all.slice(101, 150)];
+  const outcome = await loadAllProducts(scripted([{ items: all.slice(0, 100), total: 150 }, { items: dupPage2, total: 150 }]).fetchPage, { limit: 100 });
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.duplicatesDropped, 1);
+  assert.equal(outcome.products.length, 149);
+  assert.equal(outcome.truncated, true);
+});
+
+test('L15 a limit of 1 follows the same arithmetic', async () => {
+  const outcome = await loadAllProducts(server(catalog(3)).fetchPage, { limit: 1 });
+  assert.equal(outcome.ok, true); assert.equal(outcome.products.length, 3); assert.equal(outcome.pagesLoaded, 3);
+  failedWithoutData(await loadAllProducts(scripted([{ items: catalog(2), total: 3 }]).fetchPage, { limit: 1 }), 'limit 1 with 2 items');
+});
+
+test('L-chain a contradiction after a valid first page never returns the first page as a catalogue', async () => {
+  const all = catalog(300);
+  const outcome = await loadAllProducts(scripted([{ items: all.slice(0, 100), total: 300 }, { items: all.slice(100, 200), total: 300 }, { items: all.slice(200, 250), total: 300 }, { items: [], total: 300 }]).fetchPage, { limit: 100 });
+  failedWithoutData(outcome, 'short last page of a 300 catalogue');
+});
+
+// ---- V3.2 LOW: empty / loading / error states are told apart by pure functions the page uses (U01..U10) ----
+const noticeFns = () => ({ deriveCatalogNotice: catalogModule.deriveCatalogNotice, derivePreviewNotice: catalogModule.derivePreviewNotice });
+const catalogState = (over = {}) => ({ loading: false, error: '', variantCount: 3, rowCount: 3, hasSearch: false, ...over });
+const readyPreview = { kind: 'READY', sheets: [], labelCount: 1, sheetCount: 1 };
+const previewState = (over = {}) => ({ loading: false, error: '', selectionCount: 1, preview: readyPreview, ...over });
+
+test('U-exports the notice functions exist', () => {
+  assert.equal(typeof catalogModule.deriveCatalogNotice, 'function');
+  assert.equal(typeof catalogModule.derivePreviewNotice, 'function');
+});
+
+test('U01/U02/U10 loading, error and the error-over-loading precedence of the catalogue notice', () => {
+  const { deriveCatalogNotice } = noticeFns();
+  assert.equal(deriveCatalogNotice(catalogState({ loading: true, variantCount: 0, rowCount: 0 })), 'LOADING');
+  assert.equal(deriveCatalogNotice(catalogState({ error: 'x', variantCount: 0, rowCount: 0 })), 'ERROR');
+  assert.equal(deriveCatalogNotice(catalogState({ error: 'x', loading: true })), 'ERROR');
+  assert.equal(deriveCatalogNotice(catalogState({ error: 'x', variantCount: 5, rowCount: 5 })), 'ERROR');
+});
+
+test('U03/U04 a loaded catalogue without variants differs from a search without results', () => {
+  const { deriveCatalogNotice } = noticeFns();
+  assert.equal(deriveCatalogNotice(catalogState({ variantCount: 0, rowCount: 0 })), 'EMPTY_CATALOG');
+  assert.equal(deriveCatalogNotice(catalogState({ variantCount: 0, rowCount: 0, hasSearch: true })), 'EMPTY_CATALOG');
+  assert.equal(deriveCatalogNotice(catalogState({ rowCount: 0, hasSearch: true })), 'NO_RESULTS');
+  assert.equal(deriveCatalogNotice(catalogState({ rowCount: 3, hasSearch: true })), 'NONE');
+  assert.equal(deriveCatalogNotice(catalogState()), 'NONE');
+});
+
+test('U01/U02 the preview never gives instructions or success while the catalogue loads or failed', () => {
+  const { derivePreviewNotice } = noticeFns();
+  assert.deepEqual(derivePreviewNotice(previewState({ loading: true, selectionCount: 0, preview: { kind: 'EMPTY' } })), { kind: 'CATALOG_LOADING' });
+  assert.deepEqual(derivePreviewNotice(previewState({ error: 'x', selectionCount: 0, preview: { kind: 'EMPTY' } })), { kind: 'CATALOG_ERROR' });
+  assert.deepEqual(derivePreviewNotice(previewState({ error: 'x' })), { kind: 'CATALOG_ERROR' }, 'a READY preview cannot survive a catalogue error');
+  assert.deepEqual(derivePreviewNotice(previewState({ error: 'x', loading: true })), { kind: 'CATALOG_ERROR' });
+});
+
+test('U05/U06 nothing selected differs from everything selected being excluded', () => {
+  const { derivePreviewNotice } = noticeFns();
+  assert.deepEqual(derivePreviewNotice(previewState({ selectionCount: 0, preview: { kind: 'EMPTY' } })), { kind: 'NO_SELECTION' });
+  assert.deepEqual(derivePreviewNotice(previewState({ selectionCount: 2, preview: { kind: 'EMPTY' } })), { kind: 'ALL_EXCLUDED' });
+});
+
+test('U07/U08/U09 READY, planning errors (with their code) and invalid layout', () => {
+  const { derivePreviewNotice } = noticeFns();
+  assert.deepEqual(derivePreviewNotice(previewState()), { kind: 'READY' });
+  assert.deepEqual(derivePreviewNotice(previewState({ preview: { kind: 'ERROR', code: 'TOTAL_EXCEEDS_LIMIT' } })), { kind: 'PLAN_ERROR', code: 'TOTAL_EXCEEDS_LIMIT' });
+  assert.deepEqual(derivePreviewNotice(previewState({ preview: { kind: 'ERROR', code: 'INVALID_QUANTITY' } })), { kind: 'PLAN_ERROR', code: 'INVALID_QUANTITY' });
+  assert.deepEqual(derivePreviewNotice(previewState({ preview: { kind: 'LAYOUT_INVALID' } })), { kind: 'LAYOUT_INVALID' });
+});
+
+test('U-all every notice kind is distinct and none of them is a success unless READY', () => {
+  const { derivePreviewNotice } = noticeFns();
+  const kinds = [
+    derivePreviewNotice(previewState({ loading: true })), derivePreviewNotice(previewState({ error: 'x' })),
+    derivePreviewNotice(previewState({ selectionCount: 0, preview: { kind: 'EMPTY' } })), derivePreviewNotice(previewState({ selectionCount: 1, preview: { kind: 'EMPTY' } })),
+    derivePreviewNotice(previewState({ preview: { kind: 'ERROR', code: 'TOTAL_EXCEEDS_LIMIT' } })), derivePreviewNotice(previewState({ preview: { kind: 'LAYOUT_INVALID' } })), derivePreviewNotice(previewState()),
+  ].map((n) => n.kind);
+  assert.equal(new Set(kinds).size, kinds.length);
+  assert.equal(kinds.filter((k) => k === 'READY').length, 1);
+});
+
+// ---- V3.2 mutation follow-ups ----
+test('CL-05 (full pages) an unsafe pagination.total is rejected even when the pages look coherent', async () => {
+  for (const total of [2 ** 53, 1e21, Number.MAX_VALUE, Number.MAX_SAFE_INTEGER + 1]) {
+    const outcome = await loadAllProducts(async (page, limit) => ({ items: catalog(limit, `u${page}-`), pagination: { page, limit, total } }));
+    failedWithoutData(outcome, String(total));
+  }
+});
+
+test('L-shrink a catalogue that shrinks mid-load is rejected even when each page is internally consistent', async () => {
+  const all = catalog(250);
+  const { fetchPage } = scripted([{ items: all.slice(0, 100), total: 250 }, { items: all.slice(100, 200), total: 250 }, { items: all.slice(200, 249), total: 249 }]);
+  failedWithoutData(await loadAllProducts(fetchPage, { limit: 100 }), '250 -> 249 on the last page');
+});
+
+test('L-grow a catalogue that grows mid-load is rejected even when each page is internally consistent', async () => {
+  const all = catalog(260);
+  const { fetchPage } = scripted([{ items: all.slice(0, 100), total: 250 }, { items: all.slice(100, 200), total: 250 }, { items: all.slice(200, 260), total: 260 }]);
+  failedWithoutData(await loadAllProducts(fetchPage, { limit: 100 }), '250 -> 260 on the last page');
+});
+
+test('U03/U04 (contract) rows missing without a search while variants exist is NONE, not "no results"', () => {
+  const { deriveCatalogNotice } = noticeFns();
+  assert.equal(deriveCatalogNotice(catalogState({ rowCount: 0, hasSearch: false })), 'NONE');
 });

@@ -3,7 +3,7 @@ import { useAuth } from '../hooks/useAuth';
 import { ApiError, api, type CatalogProduct } from '../lib/api';
 import { errorMessage } from '../lib/errors';
 import { formatARS, formatVariant } from '../lib/utils';
-import { type SheetPreview, deriveSheetPreview, loadAllProducts } from '../lib/labels/labelCatalog.ts';
+import { type SheetPreview, deriveCatalogNotice, derivePreviewNotice, deriveSheetPreview, loadAllProducts } from '../lib/labels/labelCatalog.ts';
 import {
   type ExclusionReason,
   type LabelModel,
@@ -269,6 +269,14 @@ export function Labels() {
     () => deriveSheetPreview(result.labels, layout, startSlotNumber),
     [result.labels, layout, startSlotNumber],
   );
+  const catalogNotice = deriveCatalogNotice({
+    loading,
+    error,
+    variantCount,
+    rowCount: rows.length,
+    hasSearch: search.trim() !== '',
+  });
+  const previewNotice = derivePreviewNotice({ loading, error, selectionCount: selection.length, preview: sheetPreview });
 
   const reasonById = new Map(result.excluded.map(({ variantId, reason }) => [variantId, reason]));
   const duplicateIds = new Set(result.duplicateGroups.flatMap((group) => group.variantIds));
@@ -495,7 +503,10 @@ export function Labels() {
         {rows.length > MAX_ROWS ? (
           <p className="field-hint">Mostrando {MAX_ROWS} de {rows.length} variantes. Refiná la búsqueda.</p>
         ) : null}
-        {!loading && rows.length === 0 ? <p className="muted">Sin variantes para la búsqueda actual.</p> : null}
+        {catalogNotice === 'EMPTY_CATALOG' ? (
+          <p className="muted">El catálogo cargado no tiene variantes activas para etiquetar.</p>
+        ) : null}
+        {catalogNotice === 'NO_RESULTS' ? <p className="muted">Ninguna variante coincide con la búsqueda actual.</p> : null}
       </div>
 
       {result.warnings.length > 0 ? (
@@ -572,21 +583,33 @@ export function Labels() {
 
       <section aria-label="Vista previa">
         <h3>Vista previa</h3>
-        {sheetPreview.kind === 'READY' ? (
+        {previewNotice.kind === 'CATALOG_LOADING' ? (
+          <p className="muted">La vista previa estará disponible cuando termine de cargar el catálogo.</p>
+        ) : null}
+        {previewNotice.kind === 'CATALOG_ERROR' ? (
+          <p className="muted">La vista previa no está disponible: el catálogo no se pudo cargar.</p>
+        ) : null}
+        {previewNotice.kind === 'READY' && sheetPreview.kind === 'READY' ? (
           <p className="field-hint" role="status">
             {sheetPreview.labelCount} etiquetas incluidas en {sheetPreview.sheetCount} {sheetPreview.sheetCount === 1 ? 'hoja' : 'hojas'}.
             {summary.variants > 0 ? ` ${summary.variants} variantes quedaron excluidas (ver el resumen de exclusiones).` : ''}{' '}
             Generar la vista previa no confirma que ninguna impresora haya impreso nada.
           </p>
         ) : null}
-        {sheetPreview.kind === 'ERROR' ? (
-          <p className="error-banner" role="alert">{previewErrorText(sheetPreview.code)}</p>
+        {previewNotice.kind === 'PLAN_ERROR' ? (
+          <p className="error-banner" role="alert">{previewErrorText(previewNotice.code)}</p>
         ) : null}
-        {sheetPreview.kind === 'EMPTY' ? <p className="muted">Seleccioná variantes para ver la vista previa.</p> : null}
-        {sheetPreview.kind === 'LAYOUT_INVALID' ? (
+        {previewNotice.kind === 'NO_SELECTION' ? <p className="muted">Seleccioná variantes para ver la vista previa.</p> : null}
+        {previewNotice.kind === 'ALL_EXCLUDED' ? (
+          <p className="muted">
+            Todas las variantes seleccionadas quedaron excluidas; no hay etiquetas para la vista previa. Revisá el
+            resumen de exclusiones.
+          </p>
+        ) : null}
+        {previewNotice.kind === 'LAYOUT_INVALID' ? (
           <p className="muted">Corregí la configuración de la hoja para ver la vista previa.</p>
         ) : null}
-        {sheetPreview.kind === 'READY'
+        {previewNotice.kind === 'READY' && sheetPreview.kind === 'READY'
           ? sheetPreview.sheets.map((sheet) => (
               <div key={sheet.sheetNumber} style={{ overflowX: 'auto', marginBottom: '1rem' }}>
                 <p className="field-hint">Hoja {sheet.sheetNumber} de {sheetPreview.sheetCount}</p>
