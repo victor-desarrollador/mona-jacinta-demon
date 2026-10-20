@@ -238,8 +238,10 @@ describe.skipIf(!suiteM9)('R3-A4.3 S9 — readiness gate on a real 1–9 cluster
     });
     // G11-ADV-004: a dropped table also takes its bound triggers with it, so the gate
     // names the table AND both pg_trigger bindings that referenced it.
+    // CARD_CREDIT block: the table also carried the credit snapshot columns and its CHECK (m12).
     expect(verdict).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: [
       'CheckoutAttempt', 'trg_checkout_attempt_guard', 'trg_checkout_attempt_commit_check',
+      'CheckoutAttempt.fullPriceCredit', 'CheckoutAttempt.creditAdjustmentBps', 'chk_attempt_credit_snapshot',
     ] });
   }, 30_000);
 
@@ -356,6 +358,31 @@ describe.skipIf(!suiteM9)('R3-A4.3 S9 — readiness gate on a real 1–9 cluster
     });
     expect(verdict).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['CashMovement_sessionId_idempotencyKey_key'] });
   }, 30_000);
+
+  it('S9-PG-18 the CARD_CREDIT migration m12 is part of the gate: its ledger row is required and its catalog objects are probed', async () => {
+    const M12 = '20261021120000_r3_card_credit';
+    const missing = await withRollback(pool, async (client) => {
+      await client.query('DELETE FROM "_prisma_migrations" WHERE "migration_name" = $1', [M12]);
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(missing).toEqual({ reason: 'MIGRATION_MISSING', migrations: [M12], objects: [] });
+    const index = await withRollback(pool, async (client) => {
+      await client.query('DROP INDEX "ExternalCollection_credit_ref_key"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(index).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['ExternalCollection_credit_ref_key'] });
+    const check = await withRollback(pool, async (client) => {
+      await client.query('ALTER TABLE "SaleCheckout" DROP CONSTRAINT "chk_checkout_credit_snapshot"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(check).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['chk_checkout_credit_snapshot'] });
+    const column = await withRollback(pool, async (client) => {
+      await client.query('ALTER TABLE "SaleCheckout" DROP CONSTRAINT "chk_checkout_credit_snapshot"');
+      await client.query('ALTER TABLE "SaleCheckout" DROP COLUMN "creditAdjustmentBps"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(column).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['SaleCheckout.creditAdjustmentBps', 'chk_checkout_credit_snapshot'] });
+  }, 60_000);
 });
 
 describe.skipIf(!suitePre9)('R3-A4.3 S9 — m9-strict rejection on a real 1–8 cluster (disposable LOCAL_TEST)', () => {

@@ -67,7 +67,7 @@ export function safePathChars(p) {
 const SAFE_ABSOLUTE = /^\/[^'"$`\\\n\r\0]*$/;
 
 const STATE_PARAMS = Object.freeze(['expectedState']);
-const EXACT_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7', 'EXACT_G11']);
+const EXACT_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7', 'EXACT_G11', 'EXACT_G12']);
 const BUILDER_KEYS = Object.freeze(['launchSha256', 'manifestSha256', 'nodePath', 'nodeSha256', 'params', 'repoDir', 'tool', 'toolSha256']);
 export function buildOwnerCommand(spec) {
   if (spec === null || typeof spec !== 'object' || Object.keys(spec).sort().join(',') !== BUILDER_KEYS.join(',')) {
@@ -86,8 +86,8 @@ export function buildOwnerCommand(spec) {
     throw new Error(`exactly ${t.params.join(', ')} are accepted as parameters`);
   }
   for (const k of t.params) {
-    // G11 cut-over: the OWNER-named exact state is a closed enum (shell-safe by construction); every other parameter is a path.
-    if (STATE_PARAMS.includes(k)) { if (!EXACT_STATES.includes(params[k])) throw new Error('the expected state must be EXACT_S4, EXACT_G7 or EXACT_G11'); continue; }
+    // G12 cut-over: the OWNER-named exact state is a closed enum (shell-safe by construction); every other parameter is a path.
+    if (STATE_PARAMS.includes(k)) { if (!EXACT_STATES.includes(params[k])) throw new Error(`the expected state must be ${EXACT_STATES.join(', ')}`); continue; }
     if (!safePathChars(params[k])) throw new Error('parameter paths must be absolute, normalized, [A-Za-z0-9/._-] only');
   }
 

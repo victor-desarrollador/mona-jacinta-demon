@@ -16,7 +16,7 @@
     },
     {
       "path": "scripts/database/pilot-migration-states.mjs",
-      "sha256": "e9695ac243e22500522fc68ecb1cbe1d0f7cb829c9d353656359ebaa4bcde236"
+      "sha256": "22bf4b5fb5ce8ca34294cc26a2dfdb0c297e25f0610f74bd0943c54bf75b564c"
     },
     {
       "path": "scripts/database/app-schema-projection.mjs",
@@ -24,7 +24,7 @@
     },
     {
       "path": "scripts/database/pilot-schema-references.mjs",
-      "sha256": "374b474a32c04b9106eec3a719d4ef4b8b71975de7f3e07ecb3b96cde2df1246"
+      "sha256": "560a504faf59b83fc996bc412d5a37165d3060688d913bdfd22b3502fdecc3e6"
     },
     {
       "path": "scripts/database/pilot-rbac-catalog.mjs",
@@ -73,6 +73,10 @@
     {
       "path": "api/prisma/migrations/20261018180000_cash_movement_reversals/migration.sql",
       "sha256": "d638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770"
+    },
+    {
+      "path": "api/prisma/migrations/20261021120000_r3_card_credit/migration.sql",
+      "sha256": "ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be"
     }
   ],
   "packages": [

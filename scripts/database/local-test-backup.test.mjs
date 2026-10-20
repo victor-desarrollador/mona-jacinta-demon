@@ -850,12 +850,14 @@ test('HG18 SCOPE: backup creation and the resume contract require the current 32
 test('HG19 the current generation is pinned to the OWNER-approved payload; a new migration needs a new reviewed generation', async () => {
   const witness = await import('./local-test-witness.mjs');
   const { APPROVED_MIGRATION_PAYLOAD } = await import('./pilot-migrate.mjs');
-  const [g5, g6, g7, g11] = witness.BACKUP_SCHEMA_GENERATIONS;
-  assert.deepEqual(witness.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id), ['G1-5', 'G1-6', 'G1-7', 'G1-11']);
-  // G11 cut-over: the approved payload is G11 and G1-11 is its reviewed generation; G1-5..G1-7 stay
+  const [g5, g6, g7, g11, g12] = witness.BACKUP_SCHEMA_GENERATIONS;
+  assert.deepEqual(witness.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id), ['G1-5', 'G1-6', 'G1-7', 'G1-11', 'G1-12']);
+  // G12 cut-over: the approved payload is G12 and G1-12 is its reviewed generation; G1-5..G1-11 stay
   // pinned to their historical pins and relation sets.
-  assert.deepEqual(g11.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
-  assert.equal(witness.resolveBackupGeneration(APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]))?.id, 'G1-11');
+  assert.deepEqual(g11.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.slice(0, 11).map((m) => [m.name, m.sha256]));
+  assert.deepEqual(g12.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
+  assert.equal(witness.resolveBackupGeneration(APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]))?.id, 'G1-12');
+  assert.equal(witness.resolveBackupGeneration(APPROVED_MIGRATION_PAYLOAD.migrations.slice(0, 11).map((m) => [m.name, m.sha256]))?.id, 'G1-11');
   assert.deepEqual(g7.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.slice(0, 7).map((m) => [m.name, m.sha256]));
   assert.deepEqual(g6.migrations, G6_PAIRS);
   assert.deepEqual(g7.migrations, G7_PAIRS);
@@ -863,6 +865,7 @@ test('HG19 the current generation is pinned to the OWNER-approved payload; a new
   assert.deepEqual(g5.migrations, g6.migrations.slice(0, 5));
   assert.deepEqual(g5.migrations, G5_PAIRS);
   assert.deepEqual([...g11.relations], [...witness.PROTECTED_RELATION_NAMES]);
+  assert.deepEqual([...g12.relations], [...witness.PROTECTED_RELATION_NAMES]);
   assert.deepEqual([...g6.relations], G7_RELATIONS);
   assert.deepEqual([...g7.relations], G7_RELATIONS);
   assert.deepEqual([...g5.relations], G5_RELATIONS);
@@ -870,24 +873,28 @@ test('HG19 the current generation is pinned to the OWNER-approved payload; a new
   assert.equal(g6.relations.length, 26);
   assert.equal(g7.relations.length, 26);
   assert.equal(g11.relations.length, 32);
-  for (const g of [g5, g6, g7, g11]) assert.ok(Object.isFrozen(g) && Object.isFrozen(g.migrations) && Object.isFrozen(g.relations));
+  assert.equal(g12.relations.length, 32);
+  for (const g of [g5, g6, g7, g11, g12]) assert.ok(Object.isFrozen(g) && Object.isFrozen(g.migrations) && Object.isFrozen(g.relations));
   assert.ok(Object.isFrozen(witness.BACKUP_SCHEMA_GENERATIONS) && Object.isFrozen(witness.PROTECTED_RELATION_NAMES));
   assert.equal(witness.resolveBackupGeneration(g5.migrations)?.id, 'G1-5');
   assert.equal(witness.resolveBackupGeneration(g6.migrations)?.id, 'G1-6');
   assert.equal(witness.resolveBackupGeneration(g7.migrations)?.id, 'G1-7');
+  assert.equal(witness.resolveBackupGeneration(g11.migrations)?.id, 'G1-11');
+  assert.equal(witness.resolveBackupGeneration(g12.migrations)?.id, 'G1-12');
   assert.equal(witness.resolveBackupGeneration(undefined), null);
   assert.equal(witness.resolveBackupGeneration('G1-6'), null);
 });
 
 // --- HG-G11. the reviewed G1-11 generation (migrations 1–11, 32 protected relations) ------------------------------
-test('HG21 G1-11 is exactly the 11 migration directories on disk, with SHA-256 recomputed from each migration.sql', async () => {
+test('HG21 G1-11 is the historical 11 migration directories on disk (m1–m11), with SHA-256 recomputed from each migration.sql; m12 is the new twelfth', async () => {
   const witness = await import('./local-test-witness.mjs');
   const g11 = witness.BACKUP_SCHEMA_GENERATIONS.find((g) => g.id === 'G1-11');
   const dir = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
   const onDisk = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()
     .map((name) => [name, createHash('sha256').update(readFileSync(path.join(dir, name, 'migration.sql'))).digest('hex')]);
-  assert.equal(onDisk.length, 11);
-  assert.deepEqual(onDisk, G11_PAIRS);
+  assert.equal(onDisk.length, 12);
+  assert.deepEqual(onDisk.slice(0, 11), G11_PAIRS);
+  assert.deepEqual(onDisk[11], ['20261021120000_r3_card_credit', 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be']);
   assert.deepEqual(g11?.migrations, G11_PAIRS);
   assert.deepEqual(G11_PAIRS.slice(0, 7), G7_PAIRS);
 });

@@ -6,8 +6,8 @@
 // Before any database client exists, in this order: exact arguments; Node v24.20.0
 // with no runtime options; an environment of exactly HOME/PATH/LANG (pg reads PG*
 // variables and NODE_PG_FORCE_NATIVE itself, and NODE_OPTIONS would run code before
-// this file); the manifest (SHA-256 of pilot-marker.mjs, lib.mjs, the CA, the eleven
-// migrations, the four shared G11 cut-over modules and every file of the pinned pg dependency closure, bound to the
+// this file); the manifest (SHA-256 of pilot-marker.mjs, lib.mjs, the CA, the twelve
+// migrations, the four shared G12 state modules and every file of the pinned pg dependency closure, bound to the
 // versions/integrities in package-lock.json); the private files under the passwd
 // home and their parent directories; and the target: a supported Supabase host shape
 // whose project ref digest equals the pinned PILOT digest and is not a forbidden one.
@@ -60,14 +60,16 @@ const REF_DIGESTS = Object.freeze({
 
 export const PACKAGE_CLOSURE = Object.freeze(['pg', 'pg-connection-string', 'pg-pool', 'pg-protocol', 'pg-types', 'pgpass',
   'split2', 'pg-int8', 'postgres-array', 'postgres-bytea', 'postgres-date', 'postgres-interval', 'pg-cloudflare', 'xtend']);
-// G11 cut-over (OWNER 2026-10-18): all eleven reviewed migrations (pilot-migration-states.mjs
-// pins the same list; a test asserts equality).
+// G12 cut-over (OWNER 2026-10-18, extended 2026-10-20): all twelve reviewed migrations
+// (pilot-migration-states.mjs pins the same list; a test asserts equality). m12 adds only
+// columns to existing tables — no new protected relation — so the state object sets are
+// unchanged beyond the ledger prefix.
 export const MIGRATIONS = Object.freeze([
   '20260907015311_init', '20260912182432_add_company_location', '20260912191702_add_user_role_scope',
   '20260922210000_d3_initial_stock_and_global_audit', '20261002120000_block1_pricing_wholesale',
   '20261006120000_pilot_pricing_v2', '20261012120000_cash_session_reconciliation',
   '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
-  '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals',
+  '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals', '20261021120000_r3_card_credit',
 ]);
 // The builtins-only shared cut-over modules. They are pinned by the manifest and imported only
 // AFTER it verified (never statically): states/ledger classifier, app-schema projection,
@@ -97,12 +99,13 @@ const PROBES = Object.freeze({
   '20261018120000_cash_movement_withdrawals_expenses': [['CashMovement', 'reason'], ['CashMovement', 'idempotencyKey']],
   '20261018180000_cash_movement_reversals': [['CashMovement', 'reversesMovementId']],
 });
-// What a pre-G11 state necessarily lacks (and therefore flags): the later migrations, their
+// What a pre-G12 state necessarily lacks (and therefore flags): the later migrations, their
 // tables and their probe columns. Nothing else is tolerated for an exact initial state.
 const LATER = Object.freeze({
   EXACT_S4: Object.freeze({ migrations: MIGRATIONS.slice(4), tables: ['CompanyPricingConfig', ...R3_TABLES] }),
   EXACT_G7: Object.freeze({ migrations: MIGRATIONS.slice(7), tables: [...R3_TABLES] }),
-  EXACT_G11: Object.freeze({ migrations: [], tables: [] }),
+  EXACT_G11: Object.freeze({ migrations: MIGRATIONS.slice(11), tables: [] }),
+  EXACT_G12: Object.freeze({ migrations: [], tables: [] }),
 });
 // Column type contract for every value-bearing read: [column, type schema, typtype, allowed type names].
 // Only built-in pg_catalog base types or the schema's own public enums (built-in enum I/O);
@@ -690,8 +693,8 @@ async function readState(run, repoSha, shared, runShared) {
     lines.push(`  users active/inactive (counts only): ${rows.filter((r) => r.active === true).length}/${rows.filter((r) => r.active === false).length}`);
   }
 
-  // ---- G11 cut-over verdict (same snapshot) ----
-  // The ledger as one of the three exact states, the app-owned schema projection against that
+  // ---- G12 cut-over verdict (same snapshot) ----
+  // The ledger as one of the four exact states, the app-owned schema projection against that
   // state's generated reference, its semantic probes, and the RBAC catalog.
   const ledger = ledgerRows === null || flags.includes('LEDGER_COUNT_MISMATCH') ? null : shared.states.classifyLedger(ledgerRows);
   const ledgerState = ledger?.ok ? ledger.state : null;
@@ -710,18 +713,18 @@ async function readState(run, repoSha, shared, runShared) {
   lines.push(`  cutover: ledger=${ledgerState ?? 'NONE'} reference=${reference} probes_failed=${probeFailures.length} rbac=${catalog}`);
   lines.push(`  app schema digest: ${digest}`);
   for (const f of probeFailures) lines.push(`  ${f}`);
-  // An exact INITIAL state tolerates only the flags its pre-G11 schema necessarily produces
+  // An exact historical state tolerates only the flags its pre-G12 schema necessarily produces
   // (later migrations not recorded, their probe columns and tables absent, the old catalog);
-  // EXACT_G11 tolerates none.
+  // EXACT_G11 tolerates only the missing G12 migration; EXACT_G12 tolerates none.
   const later = ledgerState ? LATER[ledgerState] : null;
   const tolerated = (flag) => later !== null && (
     later.migrations.some((m) => flag === `MIGRATION_NOT_RECORDED:${m}` || flag === `SCHEMA_ABSENT:${m}`)
     || later.tables.some((t) => flag === `UNVERIFIED_RELATION:${t}`)
-    || (ledgerState !== 'EXACT_G11' && flag === 'RBAC_CATALOG:CATALOG_35'));
+    || ((ledgerState === 'EXACT_S4' || ledgerState === 'EXACT_G7') && flag === 'RBAC_CATALOG:CATALOG_35'));
   const unique = [...new Set(flags)];
   const blocking = unique.filter((f) => !tolerated(f));
   const exact = ledgerState !== null && reference === 'MATCH' && probeFailures.length === 0 && blocking.length === 0
-    && (ledgerState === 'EXACT_G11' ? catalog === 'CATALOG_36' : catalog === 'CATALOG_35' || catalog === 'CATALOG_36');
+    && ((ledgerState === 'EXACT_G11' || ledgerState === 'EXACT_G12') ? catalog === 'CATALOG_36' : catalog === 'CATALOG_35' || catalog === 'CATALOG_36');
   return { lines, flags: unique, state: exact ? ledgerState : 'PARTIAL' };
 }
 

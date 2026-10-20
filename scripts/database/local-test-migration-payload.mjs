@@ -1,12 +1,12 @@
-// U1 (R3-T) + PILOT cash exits + cash reversals: the LOCAL_TEST migration payload.
+// U1 (R3-T) + PILOT cash exits + cash reversals + card credit: the LOCAL_TEST migration payload.
 //
-// G11 cut-over (OWNER 2026-10-18): pilot-migrate.mjs approves exactly G11, so the
-// LOCAL_TEST payload IS that shared payload object (the eleven literal pins of
+// G12 cut-over (OWNER 2026-10-18, extended 2026-10-20): pilot-migrate.mjs approves exactly G12, so the
+// LOCAL_TEST payload IS that shared payload object (the twelve literal pins of
 // pilot-migration-states.mjs); nothing is re-typed here. Only the disposable
 // LOCAL_TEST tooling (local-test-prepare.mjs) uses this module; it imports nothing
 // PILOT-capable. The per-group pin lists below are views of the shared pins by name.
 //
-// G8 = the first eight entries of G11 (migrations 1–8): the exact ledger the P21
+// G8 = the first eight entries of G12 (migrations 1–8): the exact ledger the P21
 // suite (r3-attempts-schema.pg.test.ts Suite B) needs before migration 9. It is
 // produced by a private, byte-identical staged copy of migrations 1–8 — the
 // reviewed migration directories are never modified, renamed or moved.
@@ -22,6 +22,7 @@ const pinsNamed = (...names) => Object.freeze(names.map((name) => APPROVED_MIGRA
 export const R3_MIGRATION_PINS = pinsNamed('20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts');
 export const CASH_MOVEMENT_MIGRATION_PINS = pinsNamed('20261018120000_cash_movement_withdrawals_expenses');
 export const CASH_MOVEMENT_REVERSAL_MIGRATION_PINS = pinsNamed('20261018180000_cash_movement_reversals');
+export const CARD_CREDIT_MIGRATION_PINS = pinsNamed('20261021120000_r3_card_credit');
 
 export const LOCAL_TEST_MIGRATION_PAYLOAD = APPROVED_MIGRATION_PAYLOAD;
 

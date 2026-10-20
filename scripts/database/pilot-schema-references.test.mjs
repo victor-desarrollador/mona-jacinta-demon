@@ -16,7 +16,7 @@ const sqlOf = (names) => names.map((n) => readFileSync(path.join(MIG, n, 'migrat
 const ALL = Object.keys(STATES);
 const quoted = (name) => new RegExp(`"${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
 
-test('SR-01 probes exist for exactly the three states and use only known kinds', () => {
+test('SR-01 probes exist for exactly the four states and use only known kinds', () => {
   assert.deepEqual(Object.keys(R.STATE_PROBES), ALL);
   const kinds = new Set(['table', 'absentTable', 'column', 'absentColumn', 'enumLabels', 'absentEnumLabels', 'constraint', 'absentConstraint',
     'index', 'absentIndex', 'function', 'absentFunction', 'trigger', 'absentTrigger']);
@@ -40,7 +40,7 @@ test('SR-02 every positive probe names an object created by a migration of that 
 test('SR-03 every negative probe names an object that only a LATER migration creates', () => {
   for (const state of ALL) {
     const own = sqlOf(STATES[state]);
-    const later = sqlOf(STATES.EXACT_G11.slice(STATES[state].length));
+    const later = sqlOf(STATES.EXACT_G12.slice(STATES[state].length));
     for (const p of R.STATE_PROBES[state].filter((x) => x.kind.startsWith('absent'))) {
       if (p.labels) {
         for (const label of p.labels) { assert.doesNotMatch(own, new RegExp(`ADD VALUE '${label}'`), `${state} ${label}`); assert.match(later, new RegExp(`'${label}'`)); }
@@ -50,7 +50,7 @@ test('SR-03 every negative probe names an object that only a LATER migration cre
       assert.doesNotMatch(own.replace(/--.*$/gm, ''), new RegExp(`(CREATE (UNIQUE )?(TABLE|INDEX|FUNCTION|TRIGGER|CONSTRAINT TRIGGER)|ADD (COLUMN|CONSTRAINT)) (public\\.)?"${p.name}"`), `${state} ${p.name} must not be created by this state`);
     }
   }
-  assert.equal(R.STATE_PROBES.EXACT_G11.filter((p) => p.kind.startsWith('absent')).length, 0, 'G11 is final: nothing later to be absent');
+  assert.equal(R.STATE_PROBES.EXACT_G12.filter((p) => p.kind.startsWith('absent')).length, 0, 'G12 is final: nothing later to be absent');
 });
 
 test('SR-04 G11 probes cover the cut-over critical objects named by the OWNER', () => {
@@ -76,9 +76,14 @@ test('SR-05 the generated references are complete, well-formed and pairwise dist
     assert.match(ref.digest, /^[0-9a-f]{64}$/, state);
     for (const k of ['tables', 'columns', 'enums', 'types', 'constraints', 'indexes', 'functions', 'triggers']) assert.ok(Number.isSafeInteger(ref.summary[k]), `${state} ${k}`);
   }
-  assert.equal(new Set(ALL.map((s) => R.SCHEMA_REFERENCES[s].digest)).size, 3);
+  assert.equal(new Set(ALL.map((s) => R.SCHEMA_REFERENCES[s].digest)).size, 4);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_S4.summary.functions, 0);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_G7.summary.functions, 3);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_G11.summary.functions, 9);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_G11.summary.triggers, 10);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G12.summary.columns, 297);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G12.summary.constraints, 146);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G12.summary.indexes, 128);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G12.summary.functions, 9);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G12.summary.triggers, 10);
 });

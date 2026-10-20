@@ -44,16 +44,16 @@ import { buildTargetBinding, buildToolingBinding, readLockedFile, toolingFile, v
 //   node scripts/database/pilot-migrate.mjs --target=pilot --execute --marker-id=<uuid> \
 //     --confirm-project-ref=<ref> --expected-initial-state=EXACT_S4|EXACT_G7 --plan=<dry-run digest>
 //
-// G11 cut-over (OWNER 2026-10-18): the approved repository tree is exactly G11 (the eleven
+// G12 cut-over (OWNER 2026-10-20): the approved repository tree is exactly G12 (the twelve
 // pins of pilot-migration-states.mjs). The initial state is NEVER auto-selected: the OWNER
 // names it (EXACT_S4 or EXACT_G7) after a fresh A4, and --execute requires the plan digest
 // the dry run printed for it. --execute then runs, in order: the identity proof; a READ-ONLY
 // pre-check snapshot (REPEATABLE READ READ ONLY, pinned search_path, same marker) that must
 // show exactly the expected ledger AND the app-owned schema of that state's generated
 // reference (digest + semantic probes); the final payload proof; ONE Prisma deploy; and a
-// READ-ONLY post-check that must show exactly EXACT_G11 (ledger, reference digest, probes).
+// READ-ONLY post-check that must show exactly FINAL_STATE (ledger, reference digest, probes).
 // A failed deploy or post-check is reported as RESTORE_REQUIRED: this tool never resolves,
-// never retries and never repairs; the approved rollback before any new G11 write is the
+// never retries and never repairs; the approved rollback before any new post-cutover write is the
 // full restore of the verified pre-cutover backup.
 //
 // Invariant: Prisma receives exactly the URL string this process read ONCE from
@@ -709,7 +709,8 @@ export async function main(argv, deps = defaultDeps) {
       `  migrations to apply: ${pending.length}`,
       ...pending.map((m) => `    + ${m.name}  sha256 ${m.sha256}`),
       `  FINAL_STATE=${FINAL_STATE} (exactly ${STATES[FINAL_STATE].length} migrations; app schema reference ${planned.plan.schemaReferences[FINAL_STATE]})`,
-      '  post-check: read-only; anything but EXACT_G11 → PILOT_MIGRATE_RESULT=RESTORE_REQUIRED (never resolve, retry or repair)',
+      `  POST_CHECK_STATE=${FINAL_STATE}`,
+      `  post-check: read-only; anything but ${FINAL_STATE} → PILOT_MIGRATE_RESULT=RESTORE_REQUIRED (never resolve, retry or repair)`,
       `  PLAN_DIGEST=${planned.digest}`,
       '  payload is re-verified during --execute: before the identity proof AND again immediately before spawning',
       '  child cwd: a fresh private staged copy of the approved migration OWN bytes (tooling tmpdir, 0700/0600, exact-tree',
@@ -780,7 +781,7 @@ export async function main(argv, deps = defaultDeps) {
   }
   const restoreRequired = (phase, detail) => {
     deps.error(`${PREFIX} RESTORE_REQUIRED — PILOT is not proven ${FINAL_STATE}. The freeze stays in force; never run \`prisma migrate resolve\`,`);
-    deps.error('  never retry and never repair by hand: restore the verified pre-cutover backup (runbook: rollback BEFORE new G11 writes).');
+    deps.error('  never retry and never repair by hand: restore the verified pre-cutover backup (runbook: rollback BEFORE new post-cutover writes).');
     deps.log('PILOT_MIGRATE_RESULT=RESTORE_REQUIRED');
     return fail(phase, detail);
   };
@@ -792,7 +793,7 @@ export async function main(argv, deps = defaultDeps) {
     deps.error(`  post-failure ledger: ${seen.ok ? (ledger.ok ? FINAL_STATE : ledger.reason) : seen.reason}`);
     return restoreRequired('prisma', `${result.detail}; migrations may be partially applied`);
   }
-  // Read-only post-check: exactly EXACT_G11, ledger AND schema.
+  // Read-only post-check: exactly FINAL_STATE, ledger AND schema.
   const post = await readSnapshot(deps, parsedUrl.conn, parsed.markerId);
   if (!post.ok) return restoreRequired('postcheck', post.reason);
   const postVerdict = verifySnapshot(post, FINAL_STATE, deps.schema);

@@ -81,6 +81,14 @@ test('E09 builder rejects unknown tools, extra/missing keys, unsafe params and m
   assert.throws(() => L.buildOwnerCommand(missing));
 });
 
+test('G12 launch contract: EXACT_G12 is accepted only as a member of the closed exact-state enum', () => {
+  const fx = launchFixture('pilot-backup');
+  const good = { tool: 'pilot-backup', repoDir: fx.repo, nodePath: fx.node, ...fx.digests,
+    params: { outputDir: fx.outDir, expectedState: 'EXACT_G12' } };
+  assert.match(L.buildOwnerCommand(good), /--expected-state=EXACT_G12/);
+  assert.throws(() => L.buildOwnerCommand({ ...good, params: { ...good.params, expectedState: 'EXACT_G13' } }));
+});
+
 test('E10 backup command: wrong tool/manifest/launch/node digest stops the chain; correct digests run with exactly HOME/PATH/LANG', () => {
   const fx = launchFixture('pilot-backup');
   for (const k of ['toolSha256', 'manifestSha256', 'launchSha256', 'nodeSha256']) {

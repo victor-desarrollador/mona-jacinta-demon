@@ -26,6 +26,7 @@ const EXPECTED = [
   ['20261016130000_r3_checkout_attempts', 35290, '076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148'],
   ['20261018120000_cash_movement_withdrawals_expenses', 2732, 'e37149442d1fb82ec87877e7b3e1f2e4311b36a9d47d314a3fd1843702c5adf9'],
   ['20261018180000_cash_movement_reversals', 3366, 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770'],
+  ['20261021120000_r3_card_credit', 11413, 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be'],
 ];
 const NAMES = EXPECTED.map(([name]) => name);
 const okRow = (i, patch = {}) => ({ migration_name: EXPECTED[i][0], checksum: EXPECTED[i][2], finished: true, rolled_back: false, ...patch });
@@ -53,14 +54,15 @@ test('ST-02 the pins equal the bytes on disk, file by file (recomputed, never tr
   assert.equal(sha(readFileSync(path.join(MIGRATIONS_DIR, 'migration_lock.toml'))), states.LOCK_PIN.sha256);
 });
 
-test('ST-03 the three authorizable states are exact prefixes: S4 = 1–4, G7 = 1–7, G11 = 1–11', () => {
-  assert.deepEqual(Object.keys(states.STATES), ['EXACT_S4', 'EXACT_G7', 'EXACT_G11']);
+test('ST-03 the four authorizable states are exact prefixes: S4 = 1–4, G7 = 1–7, G11 = 1–11 (historical), G12 = 1–12 (final)', () => {
+  assert.deepEqual(Object.keys(states.STATES), ['EXACT_S4', 'EXACT_G7', 'EXACT_G11', 'EXACT_G12']);
   assert.deepEqual(states.STATES.EXACT_S4, NAMES.slice(0, 4));
   assert.deepEqual(states.STATES.EXACT_G7, NAMES.slice(0, 7));
-  assert.deepEqual(states.STATES.EXACT_G11, NAMES);
+  assert.deepEqual(states.STATES.EXACT_G11, NAMES.slice(0, 11));
+  assert.deepEqual(states.STATES.EXACT_G12, NAMES);
   assert.deepEqual(states.INITIAL_STATES, ['EXACT_S4', 'EXACT_G7']);
-  assert.equal(states.FINAL_STATE, 'EXACT_G11');
-  assert.ok(Object.isFrozen(states.STATES) && Object.isFrozen(states.STATES.EXACT_G11));
+  assert.equal(states.FINAL_STATE, 'EXACT_G12');
+  assert.ok(Object.isFrozen(states.STATES) && Object.isFrozen(states.STATES.EXACT_G12));
 });
 
 test('ST-04 pendingFor names exactly the migrations an initial state still needs, in order', () => {
@@ -69,11 +71,13 @@ test('ST-04 pendingFor names exactly the migrations an initial state still needs
   for (const bad of ['EXACT_G11', 'S4', 'G7', '', null, undefined, 'EXACT_G9']) assert.throws(() => states.pendingFor(bad), /initial state/);
 });
 
-test('ST-05 exact S4, G7 and G11 classify as such, in any row order', () => {
+test('ST-05 exact S4, G7, G11 and G12 classify as such, in any row order', () => {
   assert.deepEqual(classify(rowsFor(4)), { ok: true, state: 'EXACT_S4' });
   assert.deepEqual(classify(rowsFor(7)), { ok: true, state: 'EXACT_G7' });
   assert.deepEqual(classify(rowsFor(11)), { ok: true, state: 'EXACT_G11' });
+  assert.deepEqual(classify(rowsFor(12)), { ok: true, state: 'EXACT_G12' });
   assert.deepEqual(classify(rowsFor(11).reverse()), { ok: true, state: 'EXACT_G11' });
+  assert.deepEqual(classify(rowsFor(12).reverse()), { ok: true, state: 'EXACT_G12' });
 });
 
 test('ST-06 every other prefix (empty, G1–G3, G5, G6, G8, G9, G10) is not an authorizable state', () => {
@@ -81,7 +85,7 @@ test('ST-06 every other prefix (empty, G1–G3, G5, G6, G8, G9, G10) is not an a
     const r = classify(rowsFor(n));
     assert.equal(r.ok, false, `G${n}`);
     assert.equal(r.state, null);
-    assert.match(r.reason, /not an exact S4, G7 or G11 ledger/);
+    assert.match(r.reason, /not an exact S4, G7, G11 or G12 ledger/);
   }
 });
 
@@ -114,12 +118,20 @@ test('ST-08 dirty rows are refused: unfinished, rolled back, checksum drift, dup
 
 test('ST-09 requireState accepts only the one explicitly expected state (never another valid one)', () => {
   assert.deepEqual(states.requireState(rowsFor(4), 'EXACT_S4'), { ok: true, state: 'EXACT_S4' });
+  assert.deepEqual(states.requireState(rowsFor(12), 'EXACT_G12'), { ok: true, state: 'EXACT_G12' });
+  const g12AsG11 = states.requireState(rowsFor(12), 'EXACT_G11');
+  assert.equal(g12AsG11.ok, false);
+  assert.match(g12AsG11.reason, /ledger is EXACT_G12, expected EXACT_G11/);
+  const g11AsG12 = states.requireState(rowsFor(11), 'EXACT_G12');
+  assert.equal(g11AsG12.ok, false);
+  assert.match(g11AsG12.reason, /ledger is EXACT_G11, expected EXACT_G12/);
   const g7AsS4 = states.requireState(rowsFor(7), 'EXACT_S4');
   assert.equal(g7AsS4.ok, false);
   assert.match(g7AsS4.reason, /ledger is EXACT_G7, expected EXACT_S4/);
   assert.equal(states.requireState(rowsFor(4), 'EXACT_G7').ok, false);
   assert.equal(states.requireState(rowsFor(11), 'EXACT_G7').ok, false);
   assert.equal(states.requireState(rowsFor(9), 'EXACT_G11').ok, false);
+  assert.equal(states.requireState(rowsFor(10), 'EXACT_G12').ok, false);
   for (const bad of ['S4', 'EXACT_G9', '', null]) assert.throws(() => states.requireState(rowsFor(4), bad), /state/);
 });
 

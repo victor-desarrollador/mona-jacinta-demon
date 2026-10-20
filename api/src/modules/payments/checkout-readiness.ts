@@ -6,13 +6,14 @@
 // AFTER the environment is parsed and BEFORE httpServer.listen(). If no feature
 // is on it is a no-op and reads nothing.
 //
-// PILOT G11 cut-over (OWNER 2026-10-18): the gate is G11-STRICT. This release
-// ships the cash movement features (exits, reversals, movement history; open/close
-// read and write the m10/m11 CashMovement columns) unconditionally, so the gate
-// always runs and requires m8, m9, m10 AND m11 exactly, plus a bounded catalog
-// probe of the R3 and cash objects: the API never starts on a database that has
-// m8/m9 but not m10/m11. The contract notes below about "both flags OFF" now
-// describe the injected all-features-off case only.
+// PILOT G11 cut-over (OWNER 2026-10-18), extended by the CARD_CREDIT block to G12:
+// the gate is STRICT. This release ships the cash movement features (exits, reversals,
+// movement history; open/close read and write the m10/m11 CashMovement columns) and the
+// CARD_CREDIT snapshot columns (m12) unconditionally, so the gate always runs and
+// requires m8, m9, m10, m11 AND m12 exactly, plus a bounded catalog probe of the R3,
+// cash and credit objects: the API never starts on a database that has m8/m9 but not
+// m10/m11/m12. The contract notes below about "both flags OFF" now describe the
+// injected all-features-off case only.
 //
 // Contract (OWNER, S9):
 //   - OPTION A: abort startup (no listen) when R3 is on and the database is not
@@ -82,6 +83,23 @@ export const CASH_MIGRATION_PINS: readonly MigrationPin[] = Object.freeze([
 ]);
 // G11 strict: whenever the gate runs, all four post-G7 migrations are required.
 export const G11_MIGRATION_PINS: readonly MigrationPin[] = Object.freeze([...R3_MIGRATION_PINS, ...CASH_MIGRATION_PINS]);
+
+// CARD_CREDIT block (OWNER 2026-10-21): the reviewed bytes of migration 12, the additive
+// CARD_CREDIT migration (credit snapshot columns, widened CHECKs, credit reference index,
+// replaced F1). The code that writes those columns must never run on a database without
+// it, so G12 = G11 + m12 is what the gate requires from now on. Same rule as every pin.
+export const CREDIT_MIGRATION_PINS: readonly MigrationPin[] = Object.freeze([
+  Object.freeze({ name: '20261021120000_r3_card_credit', sha256: 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be' }),
+]);
+export const G12_MIGRATION_PINS: readonly MigrationPin[] = Object.freeze([...G11_MIGRATION_PINS, ...CREDIT_MIGRATION_PINS]);
+
+// The minimal catalog evidence that m12 is really present: the four credit snapshot
+// columns, the two credit snapshot CHECKs (validated) and the credit reference index.
+export const CREDIT_CATALOG_OBJECTS: readonly string[] = Object.freeze([
+  'SaleCheckout.fullPriceCredit', 'SaleCheckout.creditAdjustmentBps',
+  'CheckoutAttempt.fullPriceCredit', 'CheckoutAttempt.creditAdjustmentBps',
+  'chk_checkout_credit_snapshot', 'chk_attempt_credit_snapshot', 'ExternalCollection_credit_ref_key',
+]);
 
 // The minimal catalog evidence that the m10/m11 cash schema is really present: the
 // three CashMovement columns the cash service reads and writes, the four enum labels
@@ -156,6 +174,7 @@ export const READINESS_CATALOG_OBJECTS: readonly string[] = Object.freeze([
   ...R3_CATALOG_OBJECTS,
   ...R3_TRIGGER_BINDINGS.map((binding) => binding.trigger),
   ...CASH_CATALOG_OBJECTS,
+  ...CREDIT_CATALOG_OBJECTS,
 ]);
 
 // Feature dependencies, from the real code: the R3 location selector and external
@@ -174,10 +193,10 @@ export function r3Required(features: R3Features): boolean {
   return features.locationSelectorEnabled || features.externalMethodsEnabled || features.cashMovementsEnabled;
 }
 
-// The required migrations: G11 strict (m8, m9, m10, m11) whenever any feature is on;
+// The required migrations: G12 strict (m8, m9, m10, m11, m12) whenever any feature is on;
 // nothing (and no query) when every feature is off.
 export function requiredR3Migrations(features: R3Features): readonly MigrationPin[] {
-  return r3Required(features) ? G11_MIGRATION_PINS : [];
+  return r3Required(features) ? G12_MIGRATION_PINS : [];
 }
 
 // Derives the features from the already-validated environment. The two R3 flags are
@@ -318,7 +337,7 @@ function checkDef(name: string): string {
 // m10/m11 unique indexes plus the composite FK's column pairs and RESTRICT/RESTRICT
 // SIMPLE actions are all probed, not assumed.
 export function createPrismaR3ReadinessClient(database: Pick<PrismaClient, '$queryRaw'>): R3ReadinessClient {
-  const names = [...G11_MIGRATION_PINS.map((pin) => pin.name)];
+  const names = [...G12_MIGRATION_PINS.map((pin) => pin.name)];
   return {
     async readSnapshot(): Promise<R3ReadinessSnapshot> {
       const ledger = await database.$queryRaw<LedgerRowResult[]>`
@@ -333,6 +352,13 @@ export function createPrismaR3ReadinessClient(database: Pick<PrismaClient, '$que
           to_regclass('public."CheckoutAttempt"') IS NOT NULL AS "CheckoutAttempt",
           to_regclass('public."CheckoutAttemptTender"') IS NOT NULL AS "CheckoutAttemptTender",
           to_regclass('public."CheckoutAttemptDeclaration"') IS NOT NULL AS "CheckoutAttemptDeclaration",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = to_regclass('public."SaleCheckout"') AND a.attname = 'fullPriceCredit' AND NOT a.attisdropped) AS "SaleCheckout.fullPriceCredit",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = to_regclass('public."SaleCheckout"') AND a.attname = 'creditAdjustmentBps' AND NOT a.attisdropped) AS "SaleCheckout.creditAdjustmentBps",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = to_regclass('public."CheckoutAttempt"') AND a.attname = 'fullPriceCredit' AND NOT a.attisdropped) AS "CheckoutAttempt.fullPriceCredit",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = to_regclass('public."CheckoutAttempt"') AND a.attname = 'creditAdjustmentBps' AND NOT a.attisdropped) AS "CheckoutAttempt.creditAdjustmentBps",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = to_regclass('public."SaleCheckout"') AND c.conname = 'chk_checkout_credit_snapshot' AND c.contype = 'c' AND c.convalidated) AS "chk_checkout_credit_snapshot",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = to_regclass('public."CheckoutAttempt"') AND c.conname = 'chk_attempt_credit_snapshot' AND c.contype = 'c' AND c.convalidated) AS "chk_attempt_credit_snapshot",
+          to_regclass('public."ExternalCollection_credit_ref_key"') IS NOT NULL AS "ExternalCollection_credit_ref_key",
           to_regprocedure('public."fn_checkout_attempt_guard"()') IS NOT NULL AS "fn_checkout_attempt_guard",
           to_regprocedure('public."fn_checkout_attempt_tender_guard"()') IS NOT NULL AS "fn_checkout_attempt_tender_guard",
           to_regprocedure('public."fn_checkout_attempt_commit_check"()') IS NOT NULL AS "fn_checkout_attempt_commit_check",

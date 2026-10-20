@@ -44,14 +44,15 @@ const PACKAGES = [
   ['pg-types', '2.2.0'], ['pgpass', '1.0.5'], ['split2', '4.2.0'], ['pg-int8', '1.0.1'], ['postgres-array', '2.0.0'],
   ['postgres-bytea', '1.0.1'], ['postgres-date', '1.0.7'], ['postgres-interval', '1.2.0'], ['pg-cloudflare', '1.4.0'], ['xtend', '4.0.2'],
 ];
-// G11 cut-over: the canonical fixture is a fully migrated G11 PILOT (eleven migrations, the
-// six R3 tables, the G11 app schema, CATALOG_36).
+// G12 cut-over: the canonical fixture is a fully migrated G12 PILOT (twelve migrations, the
+// six R3 tables, the G12 app schema, CATALOG_36). G11 remains a historical exact state.
 const MIGRATIONS = [
   '20260907015311_init', '20260912182432_add_company_location', '20260912191702_add_user_role_scope',
   '20260922210000_d3_initial_stock_and_global_audit', '20261002120000_block1_pricing_wholesale',
   '20261006120000_pilot_pricing_v2', '20261012120000_cash_session_reconciliation',
   '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
   '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals',
+  '20261021120000_r3_card_credit',
 ];
 const R3_TABLES = ['SaleCheckout', 'SaleLineAllocation', 'ExternalCollection', 'CheckoutAttempt', 'CheckoutAttemptTender', 'CheckoutAttemptDeclaration'];
 const TABLES = ['Company', 'CompanyPricingConfig', 'Location', 'Branch', 'User', 'Role', 'Permission', 'RolePermission',
@@ -76,6 +77,7 @@ const RAW = {
   EXACT_S4: rawCatalog(['Sale']),
   EXACT_G7: rawCatalog(['Sale', 'CompanyPricingConfig']),
   EXACT_G11: rawCatalog(['Sale', 'CompanyPricingConfig', 'SaleCheckout']),
+  EXACT_G12: rawCatalog(['Sale', 'CompanyPricingConfig', 'SaleCheckout']),
 };
 const SYN_REFERENCES = {
   SCHEMA_REFERENCES: Object.fromEntries(Object.entries(RAW).map(([s, r]) => [s, { digest: projection.projectionDigest(projection.buildProjection(r)) }])),
@@ -83,6 +85,7 @@ const SYN_REFERENCES = {
     EXACT_S4: [{ kind: 'absentTable', name: 'CompanyPricingConfig' }],
     EXACT_G7: [{ kind: 'table', name: 'CompanyPricingConfig' }, { kind: 'absentTable', name: 'SaleCheckout' }],
     EXACT_G11: [{ kind: 'table', name: 'SaleCheckout' }],
+    EXACT_G12: [{ kind: 'table', name: 'SaleCheckout' }],
   },
 };
 const catalogRows = (def) => {
@@ -248,7 +251,7 @@ function fakeClient(root, o = {}) {
       if (kind === 'lock' && o.lockError) throw Object.assign(new Error('lock'), { code: o.lockError });
       if (kind.startsWith('count:')) return { rows: [{ n: o.countValue?.[kind.slice(6)] ?? (kind === 'count:Sale' ? '3' : kind === 'count:CashSession' ? '1' : kind === 'count:User' ? '6' : '7') }] };
       if (kind === 'projection:searchPath') return { rows: [{ search_path: o.searchPath ?? 'pg_catalog, pg_temp' }] };
-      if (kind.startsWith('projection:')) return { rows: (o.projectionRaw ?? RAW.EXACT_G11)[kind.slice(11)] };
+      if (kind.startsWith('projection:')) return { rows: (o.projectionRaw ?? RAW.EXACT_G12)[kind.slice(11)] };
       if (kind.startsWith('rbac:')) return { rows: (o.rbacRows ?? catalogRows(rbac.CATALOG_36))[kind.slice(5)] };
       return { rows: responses[kind]?.(text) ?? [] };
     },
@@ -581,7 +584,7 @@ test('Z14 error code contained in the password → code=unexpected', async () =>
 });
 
 // ---------- Y27 happy path ----------
-test('Y27 canonical fake → VERIFIED, COMPLETE, read-only statements, clean output', async () => {
+test('Y27 canonical G12 fake → VERIFIED, COMPLETE, read-only statements, clean output', async () => {
   const r = await run();
   assert.equal(r.rc, 0, r.text);
   assert.equal(r.kinds[0], 'begin');
@@ -589,7 +592,7 @@ test('Y27 canonical fake → VERIFIED, COMPLETE, read-only statements, clean out
   assert.ok(!r.kinds.includes('UNKNOWN'));
   const iLock = r.kinds.indexOf('lock'); const iFacts = r.kinds.indexOf('facts'); const iRow = r.kinds.indexOf('markerRows'); const iRel = r.kinds.indexOf('relations');
   assert.ok(iLock < iFacts && iFacts < iRow && iRow < iRel, 'identity must precede operational reads');
-  assert.match(r.text, /A4_IDENTITY=VERIFIED/); assert.match(r.text, /A4_STATE=EXACT_G11/);
+  assert.match(r.text, /A4_IDENTITY=VERIFIED/); assert.match(r.text, /A4_STATE=EXACT_G12/);
   assert.equal(lastLine(r), 'A4_RESULT=VERIFIED');
   assert.deepEqual(leaks(r.text), []);
   assert.match(r.text, /locations: PCEN\/RETAIL_BRANCH\/active=true, PDEP\/CENTRAL_WAREHOUSE\/active=true/);
@@ -737,11 +740,11 @@ for (const [id, types, blocked, flag] of [
     assert.match(r.text, /A4_STATE=PARTIAL/);
   });
 }
-test('W14 canonical types → every value read issued and EXACT_G11', async () => {
+test('W14 canonical types → every value read issued and EXACT_G12', async () => {
   const r = await run();
   assert.ok(r.kinds.includes('columnTypes'));
   for (const k of VALUE_READS) assert.ok(r.kinds.includes(k), k);
-  assert.match(r.text, /A4_STATE=EXACT_G11/);
+  assert.match(r.text, /A4_STATE=EXACT_G12/);
 });
 test('W15 the type contract is read after RELATIONS and before the ledger and every value read', async () => {
   const r = await run();
@@ -1099,11 +1102,10 @@ test('U18 the generated command uses /usr/bin/sha256sum exactly twice (trust loo
   assert.equal(cmd.split('"/usr/bin/sha256sum"').length - 1, 2);
 });
 
-// ---------- G11 cut-over states (OWNER 2026-10-18) ----------
-// A4 names the cut-over state it can PROVE in one read-only snapshot: EXACT_S4, EXACT_G7 or
-// EXACT_G11 (ledger exactly that state, app-schema reference digest, semantic probes, RBAC
-// catalog), else PARTIAL. EXACT_G11 is emitted only with ZERO flags and CATALOG_36; an
-// initial state tolerates only the flags its own (pre-G11) schema necessarily produces.
+// ---------- G12 cut-over states (OWNER 2026-10-20) ----------
+// A4 names the exact state it can PROVE in one read-only snapshot: EXACT_S4, EXACT_G7,
+// EXACT_G11 or EXACT_G12 (ledger, app-schema reference digest, semantic probes and RBAC
+// catalog), else PARTIAL. G11 remains historical/behind; G12 is the final state.
 const ledgerFor = (root, n) => MIGRATIONS.slice(0, n).map((m) => ({ migration_name: m, checksum: sha256(realFs.readFileSync(path.join(root, `api/prisma/migrations/${m}/migration.sql`))), finished: true, rolled_back: false, applied_steps_count: 1 }));
 // A relation the catalog does not have: any kind other than 'r' (the LEFT JOIN's NULL) is unverified.
 const absent = (names) => Object.fromEntries(names.map((n) => [n, 'absent']));
@@ -1113,38 +1115,63 @@ const S4_PROBE_COLUMNS = [...G7_PROBE_COLUMNS, 'Sale.pricingMode', 'Sale.payment
 function stateFake(root, state) {
   if (state === 'EXACT_S4') return { ledger: ledgerFor(root, 4), projectionRaw: RAW.EXACT_S4, kinds: absent(['CompanyPricingConfig', ...R3_TABLES]), absentColumns: S4_PROBE_COLUMNS, rbacRows: catalogRows(rbac.CATALOG_35) };
   if (state === 'EXACT_G7') return { ledger: ledgerFor(root, 7), projectionRaw: RAW.EXACT_G7, kinds: absent(R3_TABLES), absentColumns: G7_PROBE_COLUMNS, rbacRows: catalogRows(rbac.CATALOG_35) };
+  if (state === 'EXACT_G11') return { ledger: ledgerFor(root, 11), projectionRaw: RAW.EXACT_G11, rbacRows: catalogRows(rbac.CATALOG_36) };
+  if (state === 'EXACT_G12') return { ledger: ledgerFor(root, 12), projectionRaw: RAW.EXACT_G12, rbacRows: catalogRows(rbac.CATALOG_36) };
   return {};
 }
 
-test('G11-A01 a canonical G11 PILOT with CATALOG_36 and zero flags → A4_STATE=EXACT_G11', async () => {
+test('G12-A01 a canonical G12 PILOT with CATALOG_36 and zero flags → A4_STATE=EXACT_G12', async () => {
   const r = await run();
   assert.equal(r.rc, 0, r.text);
-  assert.match(r.text, /cutover: ledger=EXACT_G11 reference=MATCH probes_failed=0 rbac=CATALOG_36/);
+  assert.match(r.text, /cutover: ledger=EXACT_G12 reference=MATCH probes_failed=0 rbac=CATALOG_36/);
   assert.match(r.text, /flags: none/);
-  assert.match(r.text, /A4_STATE=EXACT_G11/);
+  assert.match(r.text, /A4_STATE=EXACT_G12/);
   assert.equal(lastLine(r), 'A4_RESULT=VERIFIED');
   for (const k of Object.keys(projection.PROJECTION_SQL)) assert.ok(r.kinds.includes(`projection:${k}`), k);
   for (const k of Object.keys(rbac.CATALOG_SQL)) assert.ok(r.kinds.includes(`rbac:${k}`), k);
   assert.ok(!r.kinds.includes('UNKNOWN'));
 });
 
-test('G11-A02 EXACT_G11 is never emitted with CATALOG_35, a foreign schema, a failed probe, missing references or any flag', async () => {
+test('G12-A02 EXACT_G12 is never emitted with CATALOG_35, a foreign schema, a failed probe, missing references or any flag', async () => {
   const root = buildRoot();
   const cases = {
     'catalog 35': { fake: { rbacRows: catalogRows(rbac.CATALOG_35) } },
     'catalog unclassified': { fake: { rbacRows: { ...catalogRows(rbac.CATALOG_36), grants: [] } } },
-    'G7 schema under a G11 ledger': { fake: { projectionRaw: RAW.EXACT_G7 } },
+    'G7 schema under a G12 ledger': { fake: { projectionRaw: RAW.EXACT_G7 } },
     'one unrelated flag (invalid count)': { fake: { countValue: { Product: 'x' } } },
     'one R3 table unsafe (RLS)': { fake: { rls: { CheckoutAttempt: true } } },
     'no generated references': { references: { SCHEMA_REFERENCES: {}, STATE_PROBES: SYN_REFERENCES.STATE_PROBES } },
-    'probe failure': { references: { ...SYN_REFERENCES, STATE_PROBES: { ...SYN_REFERENCES.STATE_PROBES, EXACT_G11: [{ kind: 'table', name: 'Nope' }] } } },
+    'probe failure': { references: { ...SYN_REFERENCES, STATE_PROBES: { ...SYN_REFERENCES.STATE_PROBES, EXACT_G12: [{ kind: 'table', name: 'Nope' }] } } },
   };
   for (const [label, opts] of Object.entries(cases)) {
     const r = await run({ root, ...opts });
     assert.equal(r.rc, 0, `${label}: ${r.text}`);
-    assert.doesNotMatch(r.text, /A4_STATE=EXACT_G11/, label);
+    assert.doesNotMatch(r.text, /A4_STATE=EXACT_G12/, label);
     assert.match(r.text, /A4_STATE=PARTIAL/, label);
   }
+});
+
+test('G12-A03 G11 is historical/behind and G12 is exact; wrong m12 checksum and an extra migration reject exact state', async () => {
+  const root = buildRoot();
+  const behind = await run({ root, fake: stateFake(root, 'EXACT_G11') });
+  assert.equal(behind.rc, 0, behind.text);
+  assert.match(behind.text, /20261021120000_r3_card_credit: NOT_RECORDED/);
+  assert.match(behind.text, /A4_STATE=EXACT_G11/);
+
+  const exact = await run({ root, fake: stateFake(root, 'EXACT_G12') });
+  assert.equal(exact.rc, 0, exact.text);
+  assert.match(exact.text, /A4_STATE=EXACT_G12/);
+
+  const wrongLedger = ledgerFor(root, 12).map((row, i) => (i === 11 ? { ...row, checksum: 'deadbeef' } : row));
+  const wrong = await run({ root, fake: { ...stateFake(root, 'EXACT_G12'), ledger: wrongLedger } });
+  assert.doesNotMatch(wrong.text, /A4_STATE=EXACT_G12/);
+  assert.match(wrong.text, /A4_STATE=PARTIAL/);
+
+  const extraLedger = [...ledgerFor(root, 12), { migration_name: '20990101000000_evil', checksum: 'c'.repeat(64), finished: true, rolled_back: false, applied_steps_count: 1 }];
+  const extra = await run({ root, fake: { ...stateFake(root, 'EXACT_G12'), ledger: extraLedger } });
+  assert.doesNotMatch(extra.text, /A4_STATE=EXACT_G12/);
+  assert.match(extra.text, /UNKNOWN_MIGRATION/);
+  assert.match(extra.text, /A4_STATE=PARTIAL/);
 });
 
 test('G11-A03 an exact S4 PILOT (old catalog, absent later objects) → A4_STATE=EXACT_S4; the same with one unexpected flag → PARTIAL', async () => {
@@ -1188,8 +1215,8 @@ test('G11-A06 shared modules unavailable → refused before any connection; an u
   assert.match(sp.text, /A4_RESULT=ERROR/);
 });
 
-test('G11-A07 the literal migration list equals the shared pins; the manifest pins the shared modules', () => {
-  assert.deepEqual([...T.MIGRATIONS], [...states.STATES.EXACT_G11]);
+test('G12-A08 the literal migration list equals the final shared pins; the manifest pins the shared modules', () => {
+  assert.deepEqual([...T.MIGRATIONS], [...states.STATES.EXACT_G12]);
   assert.deepEqual(Object.values(T.SHARED_MODULES).sort(), [...SHARED_FILES].sort());
   assert.deepEqual([...T.R3_TABLES], R3_TABLES);
 });

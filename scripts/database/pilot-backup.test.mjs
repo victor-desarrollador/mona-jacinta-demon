@@ -40,7 +40,8 @@ const KEY = '0123456789abcdef'.repeat(4);
 const MIGS = ['20260907015311_init', '20260912182432_add_company_location', '20260912191702_add_user_role_scope',
   '20260922210000_d3_initial_stock_and_global_audit', '20261002120000_block1_pricing_wholesale', '20261006120000_pilot_pricing_v2',
   '20261012120000_cash_session_reconciliation', '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
-  '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals'];
+  '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals',
+  '20261021120000_r3_card_credit'];
 // The ledger checksum of each migration is the pinned SHA-256 of its reviewed migration.sql.
 const MIG_SHA = Object.fromEntries(STATES.MIGRATION_PINS.map((p) => [p.name, p.sha256]));
 const REPO_SHA = new Map(MIGS.map((m) => [`api/prisma/migrations/${m}/migration.sql`, MIG_SHA[m]]));
@@ -49,7 +50,8 @@ const ledgerRow = (m, { checksum = MIG_SHA[m], finished = true, rolledBack = fal
   finished ? '2026-09-27 03:00:00+00' : '\\N', m, '\\N', rolledBack ? '2026-09-27 03:01:00+00' : '\\N', '2026-09-27 02:59:00+00', steps];
 const S4_LEDGER = MIGS.slice(0, 4).map((m) => ledgerRow(m));
 const G7_LEDGER = MIGS.slice(0, 7).map((m) => ledgerRow(m));
-const G11_LEDGER = MIGS.map((m) => ledgerRow(m));
+const G11_LEDGER = MIGS.slice(0, 11).map((m) => ledgerRow(m));
+const G12_LEDGER = MIGS.map((m) => ledgerRow(m));
 const FN_TRG = ['95; 1255 17005 FUNCTION public fn_sale_payment_history() postgres', '96; 1255 17006 FUNCTION public fn_sale_payment_truncate_guard() postgres',
   '97; 1255 17007 FUNCTION public fn_sale_wholesale_frozen_after_payment() postgres',
   '98; 2620 17008 TRIGGER public SalePayment trg_sale_payment_history_before postgres', '99; 2620 17009 TRIGGER public SalePayment trg_sale_payment_history_after postgres',
@@ -74,7 +76,7 @@ const CAT35 = catalogRows(RBAC.CATALOG_35);
 const CAT36 = catalogRows(RBAC.CATALOG_36);
 const COLS = { Role: 'id, code, description', Permission: 'id, code, description', RolePermission: '"roleId", "permissionId"' };
 // Synthetic generated references (the generator needs LOCAL_TEST; only the digest binding is exercised here).
-const SYN_REFS = { SCHEMA_REFERENCES: { EXACT_S4: { digest: '4'.repeat(64) }, EXACT_G7: { digest: '7'.repeat(64) }, EXACT_G11: { digest: 'b'.repeat(64) } } };
+const SYN_REFS = { SCHEMA_REFERENCES: { EXACT_S4: { digest: '4'.repeat(64) }, EXACT_G7: { digest: '7'.repeat(64) }, EXACT_G11: { digest: 'b'.repeat(64) }, EXACT_G12: { digest: 'c'.repeat(64) } } };
 
 function tocText({ dbname = 'postgres', server = '17.4', dumpv = '17.11 (Debian 17.11-0+deb13u1)', tables = [...CORE, LEDGER], dropData = [], extra = [], guard = true } = {}) {
   const lines = [';', '; Archive created at 2026-10-15 01:00:00 UTC', `;     dbname: ${dbname}`, ';     TOC Entries: 99', ';     Compression: gzip',
@@ -152,6 +154,7 @@ const DDL = ['--', '-- PostgreSQL database dump', '--', '', '\\restrict k3y', "S
 // Exact-state pg_restore options: the TOC objects and COPY data of each state (catalog per argument).
 const G7 = (o = {}) => ({ tocOpts: { tables: G7_TABLES, extra: FN_TRG }, data: dataText(G7_TABLES, { ...ROWS, [LEDGER]: G7_LEDGER, ...(o.catalog ?? CAT35) }) });
 const G11 = (o = {}) => ({ tocOpts: { tables: G11_TABLES, extra: [...FN_TRG, ...R3_FN_TRG] }, data: dataText(G11_TABLES, { ...ROWS, [LEDGER]: G11_LEDGER, ...(o.catalog ?? CAT36) }) });
+const G12 = (o = {}) => ({ tocOpts: { tables: G11_TABLES, extra: [...FN_TRG, ...R3_FN_TRG] }, data: dataText(G11_TABLES, { ...ROWS, [LEDGER]: G12_LEDGER, ...(o.catalog ?? CAT36) }) });
 const fakePgRestore = (o = {}) => (kind) => {
   o.hook?.(kind);
   if (kind === 'list') return { status: 0, stdout: o.toc ?? tocText(o.tocOpts) };
@@ -698,12 +701,38 @@ test('G11-B06 shared modules unavailable or malformed → refused at integrity, 
   const r = await run({ verifyManifest: () => ({ ok: false, reason: 'x' }), importShared: async () => { loaded += 1; return { states: STATES, references: SYN_REFS, rbac: RBAC }; } });
   assert.equal(r.rc, 3); assert.equal(loaded, 0, 'never imported before the code manifest verified');
 });
-test('G11-B07 state model literals: per-state table/function/trigger counts and the 11 shared migration pins', () => {
-  assert.deepEqual(T.BACKUP_STATES, ['EXACT_S4', 'EXACT_G7', 'EXACT_G11']);
-  assert.deepEqual(['EXACT_S4', 'EXACT_G7', 'EXACT_G11'].map((k) => [T.STATE_OBJECTS[k].tables.length, T.STATE_OBJECTS[k].functions.length, T.STATE_OBJECTS[k].triggers.length]),
-    [[25, 0, 0], [26, 3, 4], [32, 9, 10]]);
+test('G12-B07 state model literals: historical states plus final G12 and the 12 shared migration pins', () => {
+  assert.deepEqual(T.BACKUP_STATES, ['EXACT_S4', 'EXACT_G7', 'EXACT_G11', 'EXACT_G12']);
+  assert.deepEqual(T.BACKUP_STATES.map((k) => [T.STATE_OBJECTS[k].tables.length, T.STATE_OBJECTS[k].functions.length, T.STATE_OBJECTS[k].triggers.length]),
+    [[25, 0, 0], [26, 3, 4], [32, 9, 10], [32, 9, 10]]);
   assert.deepEqual(T.MIGRATIONS, MIGS); assert.deepEqual(STATES.MIGRATION_PINS.map((p) => p.name), MIGS);
   assert.deepEqual([...T.STATE_OBJECTS.EXACT_G11.tables].sort(), [...G11_TABLES].sort());
+  assert.deepEqual([...T.STATE_OBJECTS.EXACT_G12.tables].sort(), [...G11_TABLES].sort());
+});
+
+test('G12-B11 G11 remains a valid historical backup but is behind G12; G12 is exact final', async () => {
+  const historical = await run({ state: 'EXACT_G11', pgOpts: G11() });
+  assert.equal(historical.rc, 0, historical.text);
+  assert.equal(T.parseDumpManifest(realFs.readFileSync(path.join(historical.out, NAMES.manifest))).manifest.ledgerState, 'EXACT_G11');
+
+  const behind = await run({ state: 'EXACT_G12', pgOpts: G11() });
+  assert.notEqual(behind.rc, 0); assert.deepEqual(finals(behind.listing), []);
+  assert.match(behind.text, /ledger: the ledger is EXACT_G11, expected EXACT_G12/);
+
+  const exact = await run({ state: 'EXACT_G12', pgOpts: G12() });
+  assert.equal(exact.rc, 0, exact.text);
+  const manifest = T.parseDumpManifest(realFs.readFileSync(path.join(exact.out, NAMES.manifest))).manifest;
+  assert.equal(manifest.ledgerState, 'EXACT_G12'); assert.equal(manifest.schemaReferenceDigest, 'c'.repeat(64));
+});
+
+test('G12-B12 wrong m12 checksum and an extra migration are both refused', async () => {
+  const wrong = G12_LEDGER.map((row, i) => (i === 11 ? ledgerRow(MIGS[11], { checksum: 'e'.repeat(64) }) : row));
+  const wrongResult = await run({ state: 'EXACT_G12', pgOpts: { ...G12(), data: dataText(G11_TABLES, { ...ROWS, [LEDGER]: wrong, ...CAT36 }) } });
+  assert.notEqual(wrongResult.rc, 0); assert.deepEqual(finals(wrongResult.listing), []); assert.match(wrongResult.text, /ledger/);
+
+  const extra = [...G12_LEDGER, ledgerRow('20990101000000_evil', { checksum: 'c'.repeat(64) })];
+  const extraResult = await run({ state: 'EXACT_G12', pgOpts: { ...G12(), data: dataText(G11_TABLES, { ...ROWS, [LEDGER]: extra, ...CAT36 }) } });
+  assert.notEqual(extraResult.rc, 0); assert.deepEqual(finals(extraResult.listing), []); assert.match(extraResult.text, /ledger/);
 });
 test('G11-B08 catalogFromCopy locates the catalog columns by the COPY column list and refuses NULLs and missing blocks', () => {
   const text = dataText(undefined, { ...ROWS, ...CAT36 });
@@ -774,7 +803,7 @@ for (const [name, extra] of [
   });
 }
 test('G11-B09 the G11 table/function/trigger sets are exactly what the reviewed migrations create (derived from the SQL, not hand-copied)', () => {
-  const sql = MIGS.map((m) => realFs.readFileSync(path.resolve(HERE, '..', '..', 'api/prisma/migrations', m, 'migration.sql'), 'utf8')).join('\n');
+  const sql = MIGS.slice(0, 11).map((m) => realFs.readFileSync(path.resolve(HERE, '..', '..', 'api/prisma/migrations', m, 'migration.sql'), 'utf8')).join('\n');
   const tables = [...sql.matchAll(/CREATE TABLE "([A-Za-z]+)"/g)].map((x) => x[1]);
   const functions = [...sql.matchAll(/CREATE (?:OR REPLACE )?FUNCTION (?:public\.)?"?([a-z_]+)"?\(\)/g)].map((x) => `${x[1]}()`);
   const triggers = [...sql.matchAll(/CREATE (?:CONSTRAINT )?TRIGGER "?([a-z_]+)"?[\s\S]*?\bON (?:public\.)?"([A-Za-z]+)"/g)].map((x) => `${x[2]} ${x[1]}`);

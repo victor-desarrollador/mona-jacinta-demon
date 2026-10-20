@@ -77,7 +77,7 @@ test('GEN-03 identity: wrong database, TEST guard, marker mismatch/absent/duplic
     assert.ok(!r.text.includes(MID));
   }
 });
-for (const state of ['EXACT_S4', 'EXACT_G7', 'EXACT_G11']) {
+for (const state of ['EXACT_S4', 'EXACT_G7', 'EXACT_G11', 'EXACT_G12']) {
   test(`GEN-04 ${state}: exact ledger + real probes pass → one deterministic reference entry printed, read-only snapshot rolled back`, async () => {
     const r = await run(ARGV(state), { state });
     assert.equal(r.rc, 0, r.text); assert.equal(r.lines.at(-1), 'SCHEMA_REFERENCE_RESULT=PRINTED');

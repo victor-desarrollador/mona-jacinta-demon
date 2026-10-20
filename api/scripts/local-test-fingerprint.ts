@@ -30,8 +30,8 @@ export const DIGEST_SCHEME = 'MONA/V233/STATE-DIGEST/SD1';
 export const PROTECTED_SEARCH_PATH = 'pg_catalog, pg_temp';
 export const DEFAULT_MAX_RELATION_BYTES = 64 * 1024 * 1024; // UNPINNED parameter: pin from real LOCAL_TEST sizes (design SCOPE risk)
 
-// GENERATED from the R3-A4.3 mechanical derivation of the eleven migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
-// by digest in tests/local-test-fingerprint.test.ts AC-150b): 301 columns of the 32 protected relations (31 Prisma models plus
+// GENERATED from the R3-A4.3 mechanical derivation of the twelve migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
+// by digest in tests/local-test-fingerprint.test.ts AC-150b): 305 columns of the 32 protected relations (31 Prisma models plus
 // the Prisma-internal _prisma_migrations), by (relation, attnum). Pinned against schema.prisma and the migration set by
 // tests/local-test-fingerprint.test.ts.
 // Row: relation, attnum, column, field type, live format_type, notNull, hasDefault, enum type, primary-key position.
@@ -119,6 +119,8 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["CheckoutAttempt", 38, "abandonEvidence", "text", "text", 0, 0, null, 0],
   ["CheckoutAttempt", 39, "declaredById", "text", "text", 0, 0, null, 0],
   ["CheckoutAttempt", 40, "declaredAt", "tstz", "timestamp(3) with time zone", 0, 0, null, 0],
+  ["CheckoutAttempt", 41, "fullPriceCredit", "int8", "bigint", 0, 0, null, 0],
+  ["CheckoutAttempt", 42, "creditAdjustmentBps", "int4", "integer", 0, 0, null, 0],
   ["CheckoutAttemptDeclaration", 1, "id", "text", "text", 1, 0, null, 1],
   ["CheckoutAttemptDeclaration", 2, "attemptId", "text", "text", 1, 0, null, 0],
   ["CheckoutAttemptDeclaration", 3, "saleId", "text", "text", 1, 0, null, 0],
@@ -254,6 +256,8 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["SaleCheckout", 20, "algorithmVersion", "int4", "integer", 1, 0, null, 0],
   ["SaleCheckout", 21, "completedAt", "tstz", "timestamp(3) with time zone", 1, 1, null, 0],
   ["SaleCheckout", 22, "attemptStatus", "enum", "public.\"CheckoutAttemptStatus\"", 1, 1, "CheckoutAttemptStatus", 0],
+  ["SaleCheckout", 23, "fullPriceCredit", "int8", "bigint", 0, 0, null, 0],
+  ["SaleCheckout", 24, "creditAdjustmentBps", "int4", "integer", 0, 0, null, 0],
   ["SaleItem", 1, "id", "text", "text", 1, 0, null, 1],
   ["SaleItem", 2, "saleId", "text", "text", 1, 0, null, 0],
   ["SaleItem", 3, "variantId", "text", "text", 1, 0, null, 0],

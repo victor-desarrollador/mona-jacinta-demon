@@ -156,15 +156,15 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(new Set(variants).size).toBe(variants.length);
   });
 
-  it('AC-150 TYPE_CONTRACT_V3 is the 301-column / 32-relation / 3-jsonb / 17-enum contract and equals an independent derivation from schema.prisma', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(301);
+  it('AC-150 TYPE_CONTRACT_V3 is the 305-column / 32-relation / 3-jsonb / 17-enum contract and equals an independent derivation from schema.prisma', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(305);
     expect(PROTECTED_RELATIONS).toHaveLength(32);
     expect(TYPE_CONTRACT_V3.filter((c) => c.type === 'jsonb')).toHaveLength(3);
     expect(ENUM_TYPES).toHaveLength(17);
     expect(PROTECTED_FUNCTION_NAMES).toHaveLength(9);
     const counts: Record<string, number> = {};
     for (const c of TYPE_CONTRACT_V3) counts[c.type] = (counts[c.type] ?? 0) + 1;
-    expect(counts).toEqual({ text: 168, int4: 17, int8: 44, bool: 6, tstz: 33, enum: 30, jsonb: 3 });
+    expect(counts).toEqual({ text: 168, int4: 19, int8: 46, bool: 6, tstz: 33, enum: 30, jsonb: 3 });
     // relations sorted by raw bytes, attnums contiguous from 1, exactly one PK column set per relation
     expect([...PROTECTED_RELATIONS].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))).toEqual([...PROTECTED_RELATIONS]);
     for (const r of PROTECTED_RELATIONS) {
@@ -195,7 +195,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
         checked += 1;
       }
     }
-    expect(checked).toBe(301 - 8); // every contract column except the 8 Prisma-internal _prisma_migrations columns is a schema.prisma field
+    expect(checked).toBe(305 - 8); // every contract column except the 8 Prisma-internal _prisma_migrations columns is a schema.prisma field
   });
 
   it('AC-150b the migrations the contract was derived from are pinned: a new/changed migration must update the contract and its review', () => {
@@ -208,10 +208,10 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
       '20261012120000_cash_session_reconciliation',
       '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
       '20261018120000_cash_movement_withdrawals_expenses',
-      '20261018180000_cash_movement_reversals',
+      '20261018180000_cash_movement_reversals', '20261021120000_r3_card_credit',
     ]);
     const joined = names.map((n) => `${n}:${sha(readFileSync(path.join(dir, n, 'migration.sql')))}`).join('\n');
-    expect(sha(joined)).toBe('ad1aef6e185211510dd7d50c73a6cbdae47623746a2c2064b129c5c776dfffca');
+    expect(sha(joined)).toBe('5d49db5e13c9e5aa241adb2905b6865f439b40a1d2f798f4be8e30863740f197');
   });
 
   it('CASH-1 pins the three physical nullable bigint columns after CashSession.status', () => {
@@ -330,7 +330,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(() => new DigestSink('MID' as never)).toThrow();
   });
 
-  it('AC-144 mutating any single one of the 301 columns changes both digests', () => {
+  it('AC-144 mutating any single one of the 305 columns changes both digests', () => {
     const base = run(buildState());
     let n = 0;
     for (const col of TYPE_CONTRACT_V3) {
@@ -339,7 +339,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
       expect(mutated.POST, `${col.relation}.${col.name} POST`).not.toBe(base.POST);
       n += 1;
     }
-    expect(n).toBe(301);
+    expect(n).toBe(305);
   });
 
   it('AC-145 every header field changes both digests; a wrong search_path or encoding is refused', () => {

@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CASH_CATALOG_OBJECTS, CASH_CHECK_DEFINITIONS, CASH_MIGRATION_PINS, G11_MIGRATION_PINS, R3_CATALOG_OBJECTS, R3_MIGRATION_PINS, R3_TRIGGER_BINDINGS } from '../../src/modules/payments/checkout-readiness.js';
+import { CASH_CATALOG_OBJECTS, CASH_CHECK_DEFINITIONS, CASH_MIGRATION_PINS, CREDIT_MIGRATION_PINS, G11_MIGRATION_PINS, G12_MIGRATION_PINS, R3_CATALOG_OBJECTS, R3_MIGRATION_PINS, R3_TRIGGER_BINDINGS } from '../../src/modules/payments/checkout-readiness.js';
 
 const migrationSql = (name: string) =>
   readFileSync(new URL(`../../prisma/migrations/${name}/migration.sql`, import.meta.url));
@@ -42,6 +42,15 @@ describe('R3-A4.3 S9 — pinned R3 migrations', () => {
     expect(CASH_MIGRATION_PINS.map((pin) => pin.name)).toEqual(['20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals']);
     for (const pin of CASH_MIGRATION_PINS) expect(sha256(migrationSql(pin.name)), pin.name).toBe(pin.sha256);
     expect(G11_MIGRATION_PINS.map((pin) => pin.name)).toEqual([...R3_MIGRATION_PINS, ...CASH_MIGRATION_PINS].map((pin) => pin.name));
+  });
+});
+
+// CARD_CREDIT block: S9 is G12-strict — m12 is pinned the same way and joins m8–m11.
+describe('CARD_CREDIT S9 — pinned migration 12', () => {
+  it('pins exactly the CARD_CREDIT migration with the real migration.sql checksum, and G12 = G11 + m12 in order', () => {
+    expect(CREDIT_MIGRATION_PINS.map((pin) => pin.name)).toEqual(['20261021120000_r3_card_credit']);
+    for (const pin of CREDIT_MIGRATION_PINS) expect(sha256(migrationSql(pin.name)), pin.name).toBe(pin.sha256);
+    expect(G12_MIGRATION_PINS.map((pin) => pin.name)).toEqual([...G11_MIGRATION_PINS, ...CREDIT_MIGRATION_PINS].map((pin) => pin.name));
   });
 });
 
