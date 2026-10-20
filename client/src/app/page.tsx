@@ -2297,7 +2297,14 @@ function CashierWorkspace({
                 </span>
                 <span>
                   <strong>{formatMoney(sale.total)}</strong>
-                  <small>{formatSignedMoney(sale.remainingBalance)} pendiente</small>
+                  {sale.status === "PAID" ? (
+                    <>
+                      <small className="paid-pill">Pagada</small>
+                      <small>Falta finalizar</small>
+                    </>
+                  ) : (
+                    <small>{formatSignedMoney(sale.remainingBalance)} pendiente</small>
+                  )}
                 </span>
               </button>
             ))
@@ -2672,7 +2679,7 @@ function CashierWorkspace({
             )}
 
             <button
-              className="complete-button"
+              className={selectedSale?.status === "PAID" ? "complete-button primary-cta" : "complete-button"}
               onClick={completeSale}
               disabled={!isPaid || selectedStatus === "COMPLETED" || completeLoading || paymentLoading}
             >

@@ -348,3 +348,29 @@ describe("cashier payment UX (Pilot P0.2-C)", () => {
     expect(screen.getByText(/reservas de la venta no son válidas/i)).toBeInTheDocument();
   });
 });
+
+describe("cashier queue: PAID sale awaiting finalization", () => {
+  beforeEach(() => window.localStorage.clear());
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  const card = () => screen.getAllByRole("button").find((element) => element.className.includes("queue-card")) as HTMLElement;
+
+  it("labels a fully paid sale Pagada / Falta finalizar and never as $0,00 pendiente", async () => {
+    await renderCashier({
+      queue: [row({ status: "PAID", holdState: "PAID", canAcceptPayment: false, paymentCount: 1, paidAmount: "1000000", remainingBalance: "0", canCorrect: false, canCancel: false })],
+      payments: [payment("1000000")],
+    });
+    expect(within(card()).getByText("Pagada")).toBeInTheDocument();
+    expect(within(card()).getByText("Falta finalizar")).toBeInTheDocument();
+    expect(within(card()).queryByText(/pendiente/i)).toBeNull();
+    expect(screen.getByRole("button", { name: "Finalizar venta" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Finalizar venta" }).className).toContain("primary-cta");
+  });
+
+  it("keeps showing the pending balance for an unpaid sale", async () => {
+    await renderCashier({ queue: [row()] });
+    expect(within(card()).getByText(/pendiente/i)).toBeInTheDocument();
+    expect(within(card()).queryByText("Falta finalizar")).toBeNull();
+    expect(screen.getByRole("button", { name: "Finalizar venta" }).className).not.toContain("primary-cta");
+  });
+});

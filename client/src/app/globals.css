@@ -888,6 +888,14 @@ select:focus {
   font-size: 11px;
 }
 
+/* .queue-card small would win over .paid-pill: keep the pill legible and compact. */
+.queue-card small.paid-pill {
+  justify-self: end;
+  padding: 3px 9px;
+  color: #fff;
+  font-weight: 900;
+}
+
 .queue-empty,
 .detail-empty {
   display: grid;
@@ -1117,6 +1125,13 @@ select:focus {
   color: #fff;
   font-size: 12px;
   font-weight: 900;
+}
+
+/* A PAID sale only lacks the "Finalizar venta" click: make it the main action. */
+.complete-button.primary-cta {
+  min-height: 52px;
+  font-size: 14px;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.12);
 }
 
 @media (max-width: 980px) {
