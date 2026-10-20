@@ -2540,7 +2540,7 @@ function CashierWorkspace({
           <div>
             <p className="eyebrow">Cobro</p>
             {/* El circuito persistido es la señal: nunca hay dos cobros posibles. */}
-            <h2>{proportionalCircuit ? "Cobro proporcional" : "Registrar pago"}</h2>
+            <h2>{proportionalCircuit ? "Cobro" : "Registrar pago"}</h2>
           </div>
         </div>
 

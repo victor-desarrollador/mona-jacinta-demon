@@ -250,13 +250,21 @@ function createRouter(state: ServerState) {
   });
 }
 
-async function renderCashier(partial: Partial<ServerState> & { queue: QueueRow[] }, heading: string) {
+// Caja arranca en «Pago simple»; estas pruebas ejercitan el constructor de varios
+// medios (el motor proporcional completo), que vive detrás de «Pago combinado».
+function openCombined() {
+  const toggle = screen.queryByRole("button", { name: "Pago combinado" });
+  if (toggle !== null && toggle.getAttribute("aria-pressed") === "false") fireEvent.click(toggle);
+}
+
+async function renderCashier(partial: Partial<ServerState> & { queue: QueueRow[] }, heading: string, combined = true) {
   const state: ServerState = { requests: [], ...partial };
   window.localStorage.setItem(TOKEN_KEY, "test-token");
   vi.stubGlobal("fetch", createRouter(state));
   render(<OperationsPage />);
   expect(await screen.findByText("Ventas pendientes")).toBeInTheDocument();
   await screen.findByRole("heading", { name: heading });
+  if (combined) openCombined();
   return state;
 }
 
@@ -299,7 +307,7 @@ describe("R3-A4.2b — enrutado del circuito", () => {
 
   it("envía una venta PROPORTIONAL_V1 al panel proporcional", async () => {
     await renderCashier({ queue: [proportionalRow()] }, "CEN-V-000042");
-    expect(screen.getByRole("heading", { name: "Cobro proporcional" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Cobro" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Registrar pago" })).toBeNull();
     expect(screen.queryByLabelText("Método")).toBeNull();
     expect(button(/Finalizar venta/)).toBeNull();
@@ -311,7 +319,7 @@ describe("R3-A4.2b — enrutado del circuito", () => {
     expect(screen.getByLabelText("Método")).toBeInTheDocument();
     expect(button(/Registrar pago/)).toBeEnabled();
     expect(button(/Finalizar venta/)).toBeDisabled();
-    expect(screen.queryByRole("heading", { name: "Cobro proporcional" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Cobro" })).toBeNull();
     // Sin cotización ni checkout: el circuito proporcional ni se asoma.
     expect(posted(state, "/checkout/quote")).toHaveLength(0);
     expect(posted(state, `/sales/${FIXED_SALE_ID}/checkout`)).toHaveLength(0);
@@ -546,6 +554,8 @@ describe("R3-A4.2b — intentos", () => {
     // Otra venta, otra cotización, y la cola se refresca por completo.
     fireEvent.click(screen.getByRole("button", { name: /CEN-V-000043/ }));
     await screen.findByRole("heading", { name: "CEN-V-000043" });
+    // Cada venta abre su propio panel, en «Pago simple».
+    openCombined();
     await waitFor(() => expect(proportionalTotal()).toHaveTextContent("100"));
     fireEvent.click(button(/Actualizar/)!);
     // Volver a la primera venta: el intento incierto sigue ahí, con su clave.

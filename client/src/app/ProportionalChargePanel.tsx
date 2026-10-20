@@ -154,6 +154,16 @@ type DraftState = {
   fixed: TenderState[];
 };
 
+type ChargeMode = "SIMPLE" | "COMBINED";
+
+// Etiquetas cortas del pago simple. Crédito se suma acá, y en PROPORTIONAL_METHODS,
+// cuando el motor proporcional lo soporte: hoy no hay un cuarto botón que vaya a fallar.
+const SIMPLE_LABELS: Record<ProportionalMethod, string> = {
+  CASH: "Efectivo",
+  TRANSFER: "Transferencia",
+  CARD_DEBIT: "Débito",
+};
+
 const INITIAL_DRAFT: DraftState = {
   balanceMethod: "CASH",
   balanceReceived: "",
@@ -180,7 +190,9 @@ function tenderDraft(tender: TenderState, money: MoneyTools): FixedTenderDraft {
     // que corresponde es el que exige una.
     reference: tender.reference === "" ? null : tender.reference,
     institution: tender.institution === "" ? null : tender.institution,
-    institutionOther: tender.institutionOther,
+    // Un campo vacío es "sin nombre alternativo": solo «Otra» lo lleva, y el
+    // contrato rechaza una cadena vacía junto a cualquier otra institución.
+    institutionOther: tender.institutionOther === "" ? null : tender.institutionOther,
   };
 }
 
@@ -196,7 +208,7 @@ function toDraft(state: DraftState, money: MoneyTools): CheckoutDraft {
     // El saldo por débito no lleva institución; por transferencia sí.
     if (state.balanceMethod === "TRANSFER") {
       draft.balanceInstitution = state.balanceInstitution === "" ? null : state.balanceInstitution;
-      draft.balanceInstitutionOther = state.balanceInstitutionOther;
+      draft.balanceInstitutionOther = state.balanceInstitutionOther === "" ? null : state.balanceInstitutionOther;
     }
   }
   return draft;
@@ -292,6 +304,11 @@ export default function ProportionalChargePanel({
   const [panelError, setPanelError] = useState("");
   const [serverTotal, setServerTotal] = useState<string | null>(null);
   const [serverBalance, setServerBalance] = useState<string | null>(null);
+  // "Pago simple" / "Pago combinado" es solo un modo de la interfaz sobre el mismo
+  // motor: nunca viaja como medio de pago. Simple = un único medio de saldo y
+  // ningún importe fijo; Combinado = el constructor de varios medios.
+  const [mode, setMode] = useState<ChargeMode>("SIMPLE");
+  const [simpleMethod, setSimpleMethod] = useState<ProportionalMethod | null>(null);
   const nextTenderKey = useRef(1);
   const quoteRequest = useRef(0);
 
@@ -356,6 +373,21 @@ export default function ProportionalChargePanel({
       balanceInstitution: "",
       balanceInstitutionOther: "",
     }));
+  }
+
+  // Cambiar de modo descarta todo lo cargado: no queda un medio, una referencia ni
+  // un importe fijo del modo anterior, y no se cobra nada (solo se vuelve a cotizar).
+  function switchMode(next: ChargeMode) {
+    if (next === mode || submitting) return;
+    setMode(next);
+    setSimpleMethod(null);
+    setDraftState(INITIAL_DRAFT);
+    setPanelError("");
+  }
+
+  function chooseSimpleMethod(method: ProportionalMethod) {
+    setSimpleMethod(method);
+    changeBalanceMethod(method);
   }
 
   function addFixedTender() {
@@ -480,15 +512,41 @@ export default function ProportionalChargePanel({
     await send(attempt, repeat.body);
   }
 
+  // El resumen técnico (total, saldo, medios) es del combinado, o de un intento que ya
+  // se envió; el pago simple muestra solo el total del medio elegido.
+  const showCombined = mode === "COMBINED" || attempt !== null;
+  const simpleReady = mode === "COMBINED" || simpleMethod !== null;
+
   const canConfirm =
     quote !== null && !quoteLoading && blocker === null && cashSession !== null && !chargeBlocked
-    && !submitting && !locked;
+    && !submitting && !locked && simpleReady;
 
   return (
     <section className="proportional-panel" data-testid="proportional-panel">
+      {attempt === null ? (
+        <div className="charge-mode" role="group" aria-label="Tipo de cobro">
+          <button
+            className={mode === "SIMPLE" ? "secondary-button active" : "secondary-button"}
+            aria-pressed={mode === "SIMPLE"}
+            onClick={() => switchMode("SIMPLE")}
+            disabled={submitting}
+          >
+            Pago simple
+          </button>
+          <button
+            className={mode === "COMBINED" ? "secondary-button active" : "secondary-button"}
+            aria-pressed={mode === "COMBINED"}
+            onClick={() => switchMode("COMBINED")}
+            disabled={submitting}
+          >
+            Pago combinado
+          </button>
+        </div>
+      ) : null}
+
       {cashSession === null ? (
         <p className="cart-note" data-testid="proportional-session-note">
-          Abrí caja antes de cobrar: el cobro proporcional exige una sesión de caja abierta.
+          Abrí caja antes de cobrar: el cobro exige una sesión de caja abierta.
         </p>
       ) : null}
 
@@ -514,16 +572,18 @@ export default function ProportionalChargePanel({
 
       {quote !== null && !confirmed ? (
         <>
-          <div className="payment-summary">
-            <div>
-              <span>Total</span>
-              <strong data-testid="proportional-total">{money.format(quote.total.toString())}</strong>
+          {showCombined ? (
+            <div className="payment-summary">
+              <div>
+                <span>Total</span>
+                <strong data-testid="proportional-total">{money.format(quote.total.toString())}</strong>
+              </div>
+              <div>
+                <span>Saldo ({methodLabel(quote.balance.method)})</span>
+                <strong data-testid="proportional-balance">{money.format(quote.balance.amount.toString())}</strong>
+              </div>
             </div>
-            <div>
-              <span>Saldo ({methodLabel(quote.balance.method)})</span>
-              <strong data-testid="proportional-balance">{money.format(quote.balance.amount.toString())}</strong>
-            </div>
-          </div>
+          ) : null}
 
           <div className="readonly-items" data-testid="proportional-lines">
             {quote.lines.map((line) => {
@@ -543,18 +603,20 @@ export default function ProportionalChargePanel({
             })}
           </div>
 
-          <div className="proportional-methods" data-testid="proportional-methods">
-            {PROPORTIONAL_METHODS.map((method) => (
-              <span
-                key={method}
-                className={availability !== null && availability[method].available ? "paid-pill" : "state-pill"}
-                data-method={method}
-              >
-                {methodLabel(method)}
-                {availability !== null && !availability[method].available ? " (sin configuración)" : ""}
-              </span>
-            ))}
-          </div>
+          {showCombined ? (
+            <div className="proportional-methods" data-testid="proportional-methods">
+              {PROPORTIONAL_METHODS.map((method) => (
+                <span
+                  key={method}
+                  className={availability !== null && availability[method].available ? "paid-pill" : "state-pill"}
+                  data-method={method}
+                >
+                  {methodLabel(method)}
+                  {availability !== null && !availability[method].available ? " (sin configuración)" : ""}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </>
       ) : null}
 
@@ -609,6 +671,106 @@ export default function ProportionalChargePanel({
         )
       ) : (
         <>
+          {mode === "SIMPLE" ? (
+            <div className="simple-charge" data-testid="simple-charge">
+              <div className="simple-methods" role="group" aria-label="Medio de pago">
+                {PROPORTIONAL_METHODS.map((method) => {
+                  const price = quote === null ? null : quote.fullPrices[method];
+                  const unavailable = availability !== null && !availability[method].available;
+                  return (
+                    <button
+                      key={method}
+                      className={simpleMethod === method ? "method-button active" : "method-button"}
+                      aria-pressed={simpleMethod === method}
+                      data-method={method}
+                      onClick={() => chooseSimpleMethod(method)}
+                      disabled={submitting || chargeBlocked || unavailable}
+                    >
+                      <span>{SIMPLE_LABELS[method]}</span>
+                      {price !== null ? <strong>{money.format(price.toString())}</strong> : null}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {simpleMethod === null ? (
+                <p className="cart-note">Elegí cómo cobrar.</p>
+              ) : (
+                <>
+                  {quote !== null && quote.balance.method === simpleMethod ? (
+                    <div className="payment-summary">
+                      <div className="total-line">
+                        <span>Total a cobrar</span>
+                        <strong data-testid="simple-total">{money.format(quote.total.toString())}</strong>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {simpleMethod === "CASH" ? (
+                    <label>
+                      Recibido
+                      <input
+                        inputMode="decimal"
+                        aria-label="Recibido"
+                        value={draftState.balanceReceived}
+                        onChange={(event) => setDraftState((state) => ({ ...state, balanceReceived: event.target.value }))}
+                        disabled={submitting}
+                      />
+                    </label>
+                  ) : (
+                    <>
+                      <label>
+                        Referencia
+                        <input
+                          aria-label="Referencia"
+                          value={draftState.balanceReference}
+                          onChange={(event) => setDraftState((state) => ({ ...state, balanceReference: event.target.value }))}
+                          disabled={submitting}
+                        />
+                      </label>
+                      {simpleMethod === "TRANSFER" ? (
+                        <>
+                          <label>
+                            Institución
+                            <select
+                              aria-label="Institución"
+                              value={draftState.balanceInstitution}
+                              onChange={(event) =>
+                                setDraftState((state) => ({
+                                  ...state,
+                                  balanceInstitution: event.target.value as TransferInstitution | "",
+                                }))
+                              }
+                              disabled={submitting}
+                            >
+                              <option value="">Elegí una institución</option>
+                              {TRANSFER_INSTITUTIONS.map((institution) => (
+                                <option key={institution} value={institution}>{institutionLabel(institution)}</option>
+                              ))}
+                            </select>
+                          </label>
+                          {draftState.balanceInstitution === "OTHER" ? (
+                            <label>
+                              Institución alternativa
+                              <input
+                                aria-label="Institución alternativa"
+                                value={draftState.balanceInstitutionOther}
+                                onChange={(event) =>
+                                  setDraftState((state) => ({ ...state, balanceInstitutionOther: event.target.value }))
+                                }
+                                disabled={submitting}
+                              />
+                            </label>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          ) : (
+            <>
           <label>
             Medio de saldo
             <select
@@ -848,6 +1010,9 @@ export default function ProportionalChargePanel({
             Agregar importe fijo
           </button>
 
+            </>
+          )}
+
           {change !== null ? (
             <div className="change-box" data-testid="proportional-change-preview">
               <span>Vuelto estimado</span>
@@ -864,7 +1029,7 @@ export default function ProportionalChargePanel({
 
           {/* Sin cotización vigente no hay un cobro que confirmar: no se ofrece
               un botón que no pueda hacer nada. */}
-          {quote !== null ? (
+          {quote !== null && simpleReady ? (
             <button className="send-button" onClick={() => void confirm()} disabled={!canConfirm}>
               {submitting ? "Cobrando..." : "Cobrar"}
               <span>-&gt;</span>
