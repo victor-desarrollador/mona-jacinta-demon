@@ -131,7 +131,7 @@ describe("cashier money display is exact (H1)", () => {
       payments: [{ id: "p1", saleId: "sale-1", method: "CASH", amount: "99", receivedAmount: null, changeAmount: null, cashSessionId: "cs-1", idempotencyKey: "k1", paidAt: "2030-01-01T10:00:00.000Z" }],
     });
     expect((await screen.findAllByText(/\$\s*0,99/)).length).toBeGreaterThan(0);
-    expect(screen.getByText(/Recibido\s*\$\s*0\s*\|/)).toBeInTheDocument();
+    expect(await screen.findByText(/Recibido\s*\$\s*0\s*\|/)).toBeInTheDocument();
   });
 
   it("M12 shows zero as $ 0", async () => {
@@ -177,9 +177,13 @@ describe("cashier payment prefill is exact (H2)", () => {
 
   it("M10 the change box shows exact centavos", async () => {
     await renderCashier({ queue: [row()] });
-    fireEvent.change(screen.getByRole("textbox", { name: /Recibido ARS/ }), { target: { value: "1300" } });
+    const received = screen.getByRole("textbox", { name: /Recibido ARS/ }) as HTMLInputElement;
+    // The prefill is a passive effect that may not have run yet: typing before it lands
+    // would be overwritten, so wait for it, then type.
+    await waitFor(() => expect(received.value).toBe("1209,40"));
+    fireEvent.change(received, { target: { value: "1300" } });
     const changeBox = screen.getByText("Vuelto").parentElement as HTMLElement;
-    expect(within(changeBox).getByText(/\$\s*90,60/)).toBeInTheDocument();
+    expect(await within(changeBox).findByText(/\$\s*90,60/)).toBeInTheDocument();
   });
 
   it("M13 a non-split TRANSFER still sends the exact server balance", async () => {

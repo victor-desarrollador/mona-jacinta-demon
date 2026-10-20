@@ -637,7 +637,7 @@ function resolvePosAccess(roles: string[]): { canSeller: boolean; canCashier: bo
 
 export default function OperationsPage() {
   const [token, setToken] = useState<string | null>(null);
-  const [email, setEmail] = useState("cashier01@demo.local");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [branchId, setBranchId] = useState("");
