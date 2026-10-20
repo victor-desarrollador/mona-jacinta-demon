@@ -2,6 +2,7 @@ import { RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
 import { api, type Branch, type ExternalCollection } from '../lib/api';
+import { canRefundExternalCollection } from '../lib/auth';
 import { formatARS, formatDateTime, paymentMethodLabel } from '../lib/utils';
 
 const LIMIT = 100;
@@ -27,7 +28,7 @@ function defaultLocalNow(): string {
 }
 
 export function ExternalCollections() {
-  const { token, logout } = useAuth();
+  const { token, user, logout } = useAuth();
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState('');
   const [status, setStatus] = useState('');
@@ -185,7 +186,7 @@ export function ExternalCollections() {
                       : '—'}
                   </td>
                   <td>
-                    {collection.status === 'UNAPPLIED' ? (
+                    {collection.status === 'UNAPPLIED' && canRefundExternalCollection(user, collection.branchId) ? (
                       <button className="icon-button" onClick={() => openRefund(collection)} aria-label="Registrar devolución">
                         <RotateCcw size={17} />
                       </button>

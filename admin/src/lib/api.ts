@@ -5,6 +5,9 @@ export type UserContext = {
   roles: string[];
   branchIds: string[];
   permissions: string[];
+  // UI hint projected by /auth/me: locations where the caller acts as supervisor
+  // (OWNER or COMPANY ADMIN). Visibility only — the backend re-checks every write.
+  cashSupervisorLocationIds?: string[];
 };
 
 export type Branch = {
@@ -166,8 +169,8 @@ export type BackofficeUser = {
   name: string;
   email: string;
   isActive: boolean;
-  roles: Array<{ id: string; code: string; name: string }>;
-  branches: Branch[];
+  // GET /backoffice/users contract: one entry per role scope; `location` is null for COMPANY scope.
+  assignments: Array<{ roleCode: string; scopeKind: 'COMPANY' | 'LOCATION'; location: Branch | null }>;
 };
 
 export type CatalogRef = { id: string; name: string };
@@ -240,6 +243,16 @@ export class ApiError extends Error {
 }
 
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001/api/v1';
+
+// `<input type="date">` gives YYYY-MM-DD. The API compares instants, and a bare date would be
+// read as UTC midnight, so both ends of a range are built in the browser's own time zone:
+// the first and the last millisecond of the selected local day.
+function localDayIso(date: string, hours: number, minutes: number, seconds: number, ms: number): string {
+  const [year, month, day] = date.split('-').map(Number);
+  return new Date(year, month - 1, day, hours, minutes, seconds, ms).toISOString();
+}
+export const startOfDayIso = (date: string) => localDayIso(date, 0, 0, 0, 0);
+export const endOfDayIso = (date: string) => localDayIso(date, 23, 59, 59, 999);
 const UUID = '[0-9a-fA-F-]{36}';
 const allowedBackoffice = [
   /^\/backoffice\/dashboard$/,

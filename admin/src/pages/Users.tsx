@@ -56,8 +56,7 @@ export function Users({ forbidden = false }: { forbidden?: boolean }) {
               <th>Nombre</th>
               <th>Correo</th>
               <th>Estado</th>
-              <th>Roles</th>
-              <th>Sucursales</th>
+              <th>Asignaciones</th>
             </tr>
           </thead>
           <tbody>
@@ -66,10 +65,18 @@ export function Users({ forbidden = false }: { forbidden?: boolean }) {
                 <td>{user.name}</td>
                 <td>{user.email}</td>
                 <td>{user.isActive ? 'Activo' : 'Inactivo'}</td>
-                <td>{user.roles.map((role) => roleLabel(role.code)).join(', ')}</td>
-                <td>{user.branches.map((branch) => branch.code).join(', ')}</td>
+                <td>
+                  {user.assignments.length === 0 ? 'Sin asignaciones' : user.assignments
+                    .map((a) => `${roleLabel(a.roleCode)} · ${a.scopeKind === 'COMPANY' || !a.location ? 'Toda la empresa' : a.location.code}`)
+                    .join(', ')}
+                </td>
               </tr>
             ))}
+            {!loading && !error && users.length === 0 ? (
+              <tr>
+                <td colSpan={4}>Sin usuarios</td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </div>
