@@ -1,4 +1,5 @@
-import { Navigate, Route, Routes } from 'react-router';
+import { Navigate, Route, Routes, useLocation } from 'react-router';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { useAuth } from './hooks/useAuth';
@@ -14,6 +15,7 @@ import { Users } from './pages/Users';
 
 function ProtectedLayout() {
   const { user, loading } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return (
@@ -27,7 +29,7 @@ function ProtectedLayout() {
     );
   }
 
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
   if (!canUseBackoffice(user)) {
     return (
       <main className="screen-center">
@@ -46,6 +48,8 @@ function ProtectedLayout() {
       <div className="content-shell">
         <Header />
         <section className="content">
+          {/* keyed by path: a failing page is contained and navigating away recovers it */}
+          <ErrorBoundary key={location.pathname}>
           <Routes>
             <Route index element={<Dashboard />} />
             <Route path="ventas" element={<SalesHistory />} />
@@ -59,6 +63,7 @@ function ProtectedLayout() {
             />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </ErrorBoundary>
         </section>
       </div>
     </div>
@@ -66,14 +71,25 @@ function ProtectedLayout() {
 }
 
 export function App() {
-  const { user, loading } = useAuth();
+  const { loading, sessionError, retrySession } = useAuth();
+
+  // The routes (and so the requested URL/deep link) stay put while the session is validated or retried.
+  if (sessionError && !loading) {
+    return (
+      <main className="screen-center">
+        <section className="empty-card">
+          <p className="eyebrow">Administración</p>
+          <h1>No se pudo validar la sesión</h1>
+          <p>No hay conexión con el servidor o está con problemas. Tu sesión no se cerró.</p>
+          <button type="button" className="primary-button" onClick={retrySession}>Reintentar</button>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <Routes>
-      <Route
-        path="/login"
-        element={!loading && user ? <Navigate to="/" replace /> : <Login />}
-      />
+      <Route path="/login" element={<Login />} />
       <Route path="/*" element={<ProtectedLayout />} />
     </Routes>
   );
