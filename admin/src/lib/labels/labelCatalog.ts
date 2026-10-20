@@ -13,7 +13,7 @@ export const CATALOG_MAX_PAGES = 50;
 
 export type CatalogPageResponse = {
   items: CatalogProduct[];
-  pagination: { total: number };
+  pagination: { page: number; limit: number; total: number };
 };
 
 export type FetchPage = (page: number, limit: number) => Promise<CatalogPageResponse>;
@@ -77,8 +77,12 @@ function isValidPage(response: unknown): response is CatalogPageResponse {
   if (!Array.isArray(items)) return false;
   if (!items.every(isValidProduct)) return false;
   if (typeof pagination !== 'object' || pagination === null) return false;
-  const total = (pagination as { total?: unknown }).total;
-  return Number.isSafeInteger(total) && (total as number) >= 0;
+  const { page, limit, total } = pagination as { page?: unknown; limit?: unknown; total?: unknown };
+  return (
+    Number.isSafeInteger(page) && (page as number) >= 1 &&
+    Number.isSafeInteger(limit) && (limit as number) >= 1 &&
+    Number.isSafeInteger(total) && (total as number) >= 0
+  );
 }
 
 const inconsistent = (reason: string): { ok: false; code: 'FAILED'; cause: Error } => ({
@@ -125,6 +129,10 @@ export async function loadAllProducts(fetchPage: FetchPage, options: LoadOptions
     // else (a changed total, a short or oversized page, an unexpected empty page) means the
     // catalogue moved or the response is wrong, and the load fails instead of passing off a
     // partial catalogue as complete.
+    // The server echoes the page and the limit it served; a response for another page or another
+    // page size is not the one asked for and its arithmetic cannot be trusted.
+    if (response.pagination.page !== page) return inconsistent('la respuesta corresponde a otra página');
+    if (response.pagination.limit !== limit) return inconsistent('la respuesta usa otro tamaño de página');
     if (pagesLoaded > 0 && response.pagination.total !== total) return inconsistent('el total cambió durante la carga');
     total = response.pagination.total;
     const expected = Math.min(limit as number, Math.max(0, total - pagesLoaded * (limit as number)));

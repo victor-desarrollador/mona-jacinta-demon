@@ -177,13 +177,13 @@ test('F-08 adversarial responses: malformed shapes are FAILED, never a crash', a
     null,
     undefined,
     {},
-    { items: 'x', pagination: { total: 1 } },
+    { items: 'x', pagination: { page: 1, limit: 100, total: 1 } },
     { items: [], pagination: null },
-    { items: [], pagination: { total: Number.NaN } },
-    { items: [], pagination: { total: -1 } },
-    { items: [], pagination: { total: 1.5 } },
-    { items: [null], pagination: { total: 1 } },
-    { items: [{ name: 'sin id' }], pagination: { total: 1 } },
+    { items: [], pagination: { page: 1, limit: 100, total: Number.NaN } },
+    { items: [], pagination: { page: 1, limit: 100, total: -1 } },
+    { items: [], pagination: { page: 1, limit: 100, total: 1.5 } },
+    { items: [null], pagination: { page: 1, limit: 100, total: 1 } },
+    { items: [{ name: 'sin id' }], pagination: { page: 1, limit: 100, total: 1 } },
   ];
   for (const response of bad) {
     const outcome = await loadAllProducts(async () => response);
@@ -544,7 +544,7 @@ test('CL-05 pagination.total 0 is a valid empty catalogue; negative, fractional,
   assert.deepEqual([empty.ok, empty.total, empty.truncated, empty.products.length], [true, 0, false, 0]);
   for (const total of [-1, 1.5, Number.NaN, '5', null, undefined]) {
     // a literal page: pageOf() would turn an undefined total into its default (items.length)
-    const outcome = await loadAllProducts(async () => ({ items: [], pagination: { total } }));
+    const outcome = await loadAllProducts(async () => ({ items: [], pagination: { page: 1, limit: 100, total } }));
     assert.equal(outcome.ok, false, String(total));
   }
 });
@@ -769,4 +769,74 @@ test('L-grow a catalogue that grows mid-load is rejected even when each page is 
 test('U03/U04 (contract) rows missing without a search while variants exist is NONE, not "no results"', () => {
   const { deriveCatalogNotice } = noticeFns();
   assert.equal(deriveCatalogNotice(catalogState({ rowCount: 0, hasSearch: false })), 'NONE');
+});
+
+// ---- V3.3: pagination.page / pagination.limit must be present, safe integers and equal to what was requested (G01..G16) ----
+const echoing = (all, mutate = () => ({})) => {
+  const calls = [];
+  return { calls, fetchPage: async (page, limit) => {
+    calls.push({ page, limit });
+    return { items: all.slice((page - 1) * limit, page * limit), pagination: { page, limit, total: all.length, ...mutate(page, limit) } };
+  } };
+};
+const dropKey = (key) => async (page, limit) => {
+  const pagination = { page, limit, total: 3 }; delete pagination[key];
+  return { items: catalog(3).slice((page - 1) * limit, page * limit), pagination };
+};
+
+test('G01/G02/G12 a response without pagination.page or pagination.limit fails, empty catalogue included', async () => {
+  for (const key of ['page', 'limit']) {
+    failedWithoutData(await loadAllProducts(dropKey(key)), `${key} missing`);
+    const empty = await loadAllProducts(async (page, limit) => { const pagination = { page, limit, total: 0 }; delete pagination[key]; return { items: [], pagination }; });
+    failedWithoutData(empty, `${key} missing on an empty catalogue`);
+  }
+});
+
+test('G03 page and limit of the wrong type (strings, null, objects) fail', async () => {
+  for (const wrong of ['1', '100', null, {}, [], true]) {
+    failedWithoutData(await loadAllProducts(echoing(catalog(3), () => ({ page: wrong })).fetchPage), `page ${JSON.stringify(wrong)}`);
+    failedWithoutData(await loadAllProducts(echoing(catalog(3), () => ({ limit: wrong })).fetchPage), `limit ${JSON.stringify(wrong)}`);
+  }
+});
+
+test('G04/G05 a page or limit that differs from the requested one fails', async () => {
+  failedWithoutData(await loadAllProducts(echoing(catalog(3), (page) => ({ page: page + 1 })).fetchPage), 'page + 1');
+  failedWithoutData(await loadAllProducts(echoing(catalog(3), () => ({ limit: 50 })).fetchPage), 'limit 50 for 100');
+  failedWithoutData(await loadAllProducts(echoing(catalog(3), () => ({ limit: 101 })).fetchPage), 'limit 101 for 100');
+  failedWithoutData(await loadAllProducts(echoing(catalog(3), () => ({ limit: 99 })).fetchPage, { limit: 100 }), 'limit 99 for 100');
+});
+
+test('G06/G07 page and limit that are not safe positive integers fail (0, negatives, fractions, NaN, Infinity, unsafe)', async () => {
+  for (const wrong of [0, -1, 1.5, Number.NaN, Infinity, -Infinity, 2 ** 53, 1e21, Number.MAX_VALUE]) {
+    failedWithoutData(await loadAllProducts(echoing(catalog(3), () => ({ page: wrong })).fetchPage), `page ${wrong}`);
+    failedWithoutData(await loadAllProducts(echoing(catalog(3), () => ({ limit: wrong })).fetchPage), `limit ${wrong}`);
+  }
+});
+
+test('G08/G09 a later page that echoes the wrong page or a changed limit fails the whole load', async () => {
+  const all = catalog(250);
+  failedWithoutData(await loadAllProducts(echoing(all, (page) => (page === 2 ? { page: 1 } : {})).fetchPage), 'page 2 echoes page 1');
+  failedWithoutData(await loadAllProducts(echoing(all, (page) => (page === 2 ? { limit: 50 } : {})).fetchPage), 'limit changes on page 2');
+  failedWithoutData(await loadAllProducts(echoing(all, (page) => (page === 3 ? { page: 2 } : {})).fetchPage), 'page 3 echoes page 2');
+});
+
+test('G10 a server that echoes a 0-based page is rejected', async () => {
+  failedWithoutData(await loadAllProducts(echoing(catalog(150), (page) => ({ page: page - 1 })).fetchPage), '0-based');
+});
+
+test('G11/G13/G14 coherent echoes keep working: empty catalogue, 250 over 3 pages, limits 1 and 50', async () => {
+  const empty = await loadAllProducts(echoing([]).fetchPage);
+  assert.deepEqual([empty.ok, empty.total, empty.truncated, empty.pagesLoaded], [true, 0, false, 1]);
+  const full = await loadAllProducts(echoing(catalog(250)).fetchPage);
+  assert.deepEqual([full.ok, full.products.length, full.truncated, full.pagesLoaded], [true, 250, false, 3]);
+  for (const [limit, size] of [[1, 40], [50, 120]]) { // limit 1 needs <= 50 pages: size 40
+    const out = await loadAllProducts(echoing(catalog(size)).fetchPage, { limit });
+    assert.deepEqual([out.ok, out.products.length, out.truncated, out.pagesLoaded], [true, size, false, Math.ceil(size / limit)], `limit ${limit}`);
+  }
+});
+
+test('G15 a non-object pagination (array, string, number, null) fails', async () => {
+  for (const pagination of [[], 'x', 5, null, undefined]) {
+    failedWithoutData(await loadAllProducts(async () => ({ items: [], pagination })), String(pagination));
+  }
 });

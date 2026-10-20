@@ -276,6 +276,8 @@ export function Labels() {
     rowCount: rows.length,
     hasSearch: search.trim() !== '',
   });
+  // One precedence for every banner: error, then loading, then the settled catalogue.
+  const catalogSettled = catalogNotice !== 'ERROR' && catalogNotice !== 'LOADING';
   const previewNotice = derivePreviewNotice({ loading, error, selectionCount: selection.length, preview: sheetPreview });
 
   const reasonById = new Map(result.excluded.map(({ variantId, reason }) => [variantId, reason]));
@@ -333,20 +335,20 @@ export function Labels() {
         pantalla es un control visual provisional (report.view); los datos los autoriza el servidor.
       </p>
 
-      {error ? <p className="error-banner" role="alert">{error}</p> : null}
-      {loading ? <p className="muted" role="status">Cargando catálogo...</p> : null}
-      {!loading && !error && truncated ? (
+      {catalogNotice === 'ERROR' ? <p className="error-banner" role="alert">{error}</p> : null}
+      {catalogNotice === 'LOADING' ? <p className="muted" role="status">Cargando catálogo...</p> : null}
+      {catalogSettled && truncated ? (
         <p className="error-banner" role="alert">
           Catálogo incompleto: se cargaron {products.length} de {totalProducts} productos. La detección de
           duplicados solo cubre lo cargado.
         </p>
       ) : null}
-      {!loading && !error && duplicatesDropped > 0 ? (
+      {catalogSettled && duplicatesDropped > 0 ? (
         <p className="field-hint" role="status">
           El catálogo cambió mientras se cargaba: se descartaron {duplicatesDropped} productos repetidos.
         </p>
       ) : null}
-      {!loading && !error ? (
+      {catalogSettled ? (
         <p className="field-hint">
           Catálogo inspeccionado: solo productos y variantes activas ({products.length} productos, {variantCount}{' '}
           variantes). La detección de duplicados cubre solo este catálogo y no reemplaza las restricciones de

@@ -910,7 +910,9 @@ test('CL-05 catalogue failures never expose data as complete: products are set o
   assert.equal([...code.matchAll(/setProducts\(outcome\.products\)/g)].length, 1);
   assert.match(code, /if \(outcome\.ok\) \{\s*setProducts\(outcome\.products\)/);
   assert.match(code, /else if \(outcome\.code === 'FAILED'\) \{\s*setError\(/);
-  assert.match(code, /\{!loading && !error \? \(/);
+  // V3.3: the info line is gated by the single precedence (was `!loading && !error`, now catalogSettled)
+  assert.match(code, /\{catalogSettled \? \(/);
+  assert.match(code, /catalogSettled = catalogNotice !== 'ERROR' && catalogNotice !== 'LOADING'/);
 });
 
 // ---- V3.2: behavioural tests that EXECUTE the real Labels.tsx -------------------------------------------
@@ -1089,4 +1091,56 @@ test('P03c injected stale data (products + selection) during a catalogue error o
   }
   assert.match(page({ ...stale, error: 'x' }), /La vista previa no está disponible/);
   assert.match(page({ ...stale, loading: true }), /cuando termine de cargar el catálogo/);
+});
+
+// ---- V3.3: the top banners follow ONE precedence (error > loading > normal), the one of deriveCatalogNotice ----
+test('H01 error and loading injected together show the error only (no active-loading message)', { skip }, () => {
+  const text = page({ error: 'No se pudo cargar el catálogo.', loading: true });
+  assert.match(text, /No se pudo cargar el catálogo\./);
+  assert.doesNotMatch(text, /Cargando catálogo/);
+  assert.doesNotMatch(text, /cuando termine de cargar el catálogo/);
+  assert.match(text, /La vista previa no está disponible/);
+});
+
+test('H02/H03 loading alone and error alone each show only their own message', { skip }, () => {
+  const loadingText = page({ loading: true });
+  assert.match(loadingText, /Cargando catálogo/);
+  assert.doesNotMatch(loadingText, /No se pudo cargar/);
+  const errorText = page({ error: 'No se pudo cargar el catálogo.' });
+  assert.match(errorText, /No se pudo cargar el catálogo\./);
+  assert.doesNotMatch(errorText, /Cargando catálogo/);
+});
+
+test('H04 truncation, duplicates and the inspected line never appear during error or loading, even with stale flags', { skip }, () => {
+  const stale = { products: [pageProduct([pv('1')])], totalProducts: 9, truncated: true, duplicatesDropped: 2 };
+  for (const over of [{ error: 'x' }, { loading: true }, { error: 'x', loading: true }]) {
+    const text = page({ ...stale, ...over });
+    assert.doesNotMatch(text, /Catálogo incompleto/);
+    assert.doesNotMatch(text, /Catálogo inspeccionado/);
+    assert.doesNotMatch(text, /repetid/);
+  }
+});
+
+test('H05 without error or loading the inspected line, truncation and duplicate banners are shown', { skip }, () => {
+  const text = page({ products: [pageProduct([pv('1')])], totalProducts: 9, truncated: true, duplicatesDropped: 2 });
+  assert.match(text, /Catálogo inspeccionado/);
+  assert.match(text, /Catálogo incompleto: se cargaron 1 de 9 productos/);
+  assert.match(text, /se descartaron 2 productos repetidos/);
+  assert.doesNotMatch(text, /Cargando catálogo/);
+});
+
+test('H06 the other states are preserved after the precedence fix', { skip }, () => {
+  assert.match(page({ products: [pageProduct([])], totalProducts: 1 }), /no tiene variantes/);
+  assert.match(page({ products: [pageProduct([pv('1')])], totalProducts: 1, search: 'zzzz' }), /Ninguna variante coincide/);
+  assert.match(page({ products: [pageProduct([pv('1', { isActive: false })])], totalProducts: 1, quantities: { 1: '2' } }), /quedaron excluidas/);
+  assert.match(page({ products: [pageProduct([pv('1')])], totalProducts: 1, quantities: { 1: '2' } }), /2 etiquetas incluidas en 1 hoja/);
+  assert.match(page({ products: [pageProduct([pv('1')])], totalProducts: 1 }), /Seleccioná variantes para ver la vista previa/);
+});
+
+test('H07 (static) the top banners are driven by catalogNotice, not by independent loading / error flags', () => {
+  const code = pageCode();
+  assert.match(code, /catalogNotice === 'ERROR'/);
+  assert.match(code, /catalogNotice === 'LOADING'/);
+  assert.ok(!/\{loading \? <p/.test(code), 'no standalone loading banner');
+  assert.ok(!/\{!loading && !error/.test(code), 'no hand-written loading/error conjunction');
 });
