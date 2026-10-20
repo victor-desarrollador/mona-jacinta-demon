@@ -45,7 +45,7 @@ function auth(userId: string, role: Role, locationId: string | null) {
   } as never;
 }
 
-function setup(options: { pricing?: boolean; holdsExpireAt?: Date } = {}) {
+function setup(options: { pricing?: boolean; holdsExpireAt?: Date; creditBps?: number } = {}) {
   const db = createCheckoutReservationFakeDb({ now: () => NOW });
   const branch = uuid();
   const cashier = db.insert('user', { id: uuid(), name: 'Caja 1' });
@@ -54,7 +54,7 @@ function setup(options: { pricing?: boolean; holdsExpireAt?: Date } = {}) {
   if (options.pricing !== false) {
     db.insert('companyPricingConfig', {
       id: uuid(), companyId: db.table('company')[0]!.id, updatedAt: new Date('2026-10-01T00:00:00Z'), listAdjustmentBps: 0,
-      creditCardAdjustmentBps: 0, debitCardAdjustmentBps: 300, bankTransferAdjustmentBps: 200, qrAdjustmentBps: 0,
+      creditCardAdjustmentBps: options.creditBps ?? 0, debitCardAdjustmentBps: 300, bankTransferAdjustmentBps: 200, qrAdjustmentBps: 0,
     });
   }
   const register = db.insert('cashRegister', { id: uuid(), branchId: branch });
@@ -72,7 +72,7 @@ function setup(options: { pricing?: boolean; holdsExpireAt?: Date } = {}) {
   }
   let next = 0;
   const service = createCheckoutReservationService(db.client as unknown as PrismaClient, { now: () => NOW, operationKey: () => OP_KEYS[next++ % OP_KEYS.length]!, externalMethodsEnabled: true });
-  const pricing = options.pricing === false ? null : { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300 };
+  const pricing = options.pricing === false ? null : { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300, creditCardAdjustmentBps: options.creditBps ?? 0 };
   const lines = items.map((item) => ({ saleItemId: item.id as string, sku: item.sku as string, quantity: item.quantity as bigint, baseUnitPrice: item.baseUnitPrice as bigint }));
   function request(tenders: PlanTenderInput[], patch: Partial<CheckoutReservationRequest> = {}): CheckoutReservationRequest {
     const balance = tenders.find((t) => t.role === 'BALANCE')!.method;
@@ -121,7 +121,7 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
     const [attempt] = t.db.table('checkoutAttempt');
     expect(attempt).toMatchObject({
       saleId: t.sale.id, branchId: t.branch, reserveKey: req.reserveKey, operationKey: OP_KEYS[0], planSealed: true, status: 'RESERVED',
-      startedById: t.cashier.id, planHash: planHash({ saleId: t.sale.id as string, ...req }), tenderCount: 3, algorithmVersion: 1,
+      startedById: t.cashier.id, planHash: planHash({ saleId: t.sale.id as string, ...req }), tenderCount: 3, algorithmVersion: 2,
       expectedTotal: req.expectedTotal, expectedBalanceAmount: req.expectedBalanceAmount, cashSessionId: t.session.id,
       transferAdjustmentBps: 200, debitAdjustmentBps: 300, pricingConfigId: t.db.table('companyPricingConfig')[0]!.id,
     });
@@ -296,12 +296,19 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
     expect(t.db.table('checkoutAttempt')).toHaveLength(0);
     const ok = await t.service.reserve(t.asCashier, t.sale.id as string, req);
     expect(ok.view.plan.fullPrices.TRANSFER).not.toBeNull();
-    expect(t.db.table('checkoutAttempt')[0]).toMatchObject({ fullPriceTransfer: ok.view.plan.fullPrices.TRANSFER, fullPriceDebit: ok.view.plan.fullPrices.CARD_DEBIT });
+    expect(t.db.table('checkoutAttempt')[0]).toMatchObject({
+      fullPriceTransfer: ok.view.plan.fullPrices.TRANSFER, fullPriceDebit: ok.view.plan.fullPrices.CARD_DEBIT,
+      // New attempts seal the credit snapshot (algorithmVersion 2): the company's credit adjustment is 0 bps here.
+      fullPriceCredit: ok.view.plan.fullPrices.CARD_CREDIT, creditAdjustmentBps: 0, algorithmVersion: 2,
+    });
     // No pricing configuration: CASH only; a TRANSFER tender cannot be quoted.
     const bare = setup({ pricing: false });
     const cash = await bare.service.reserve(bare.asCashier, bare.sale.id as string, bare.cashOnly());
-    expect(bare.db.table('checkoutAttempt')[0]).toMatchObject({ pricingConfigId: null, pricingConfigUpdatedAt: null, fullPriceTransfer: null, transferAdjustmentBps: null });
-    expect(cash.view.plan.fullPrices).toMatchObject({ TRANSFER: null, CARD_DEBIT: null });
+    expect(bare.db.table('checkoutAttempt')[0]).toMatchObject({
+      pricingConfigId: null, pricingConfigUpdatedAt: null, fullPriceTransfer: null, transferAdjustmentBps: null,
+      fullPriceCredit: null, creditAdjustmentBps: null,
+    });
+    expect(cash.view.plan.fullPrices).toMatchObject({ TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null });
   });
 
   it('R13 external collections: claimed, not UNAPPLIED, other branch/method/amount, missing, or an origin collection left out → refused before any write', async () => {
@@ -711,5 +718,58 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, T-R)', () => {
       .send(httpBody(externalPlan(t)));
     expect(response.status, JSON.stringify(response.body)).toBe(201);
     expect(t.db.table('checkoutAttempt')[0]).toMatchObject({ status: 'RESERVED', tenderCount: 2 });
+  });
+});
+
+// CARD_CREDIT (OWNER block): T-R seals the credit snapshot (algorithmVersion 2) and plans
+// that carry CARD_CREDIT; the server quote stays the authority.
+describe('CARD_CREDIT — T-R reservation', () => {
+  const credit = (role: 'BALANCE' | 'FIXED', source: 'NEW' | 'COLLECTION' = 'NEW', amount: bigint | null = null, id: string | null = null): PlanTenderInput =>
+    ({ method: 'CARD_CREDIT', role, source, amount, externalCollectionId: id });
+  const cash = (role: 'BALANCE' | 'FIXED', amount: bigint | null = null): PlanTenderInput =>
+    ({ method: 'CASH', role, source: 'NEW', amount, externalCollectionId: null });
+
+  it('RC-1 CASH fixed + CARD_CREDIT balance: the attempt seals the credit price and bps (version 2) and its canonical plan hash', async () => {
+    const t = setup({ creditBps: 1500 });
+    const req = t.request([cash('FIXED', 2000n), credit('BALANCE')]);
+    const result = await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    expect(result.view.plan.balanceMethod).toBe('CARD_CREDIT');
+    expect(result.view.plan.fullPrices.CARD_CREDIT).not.toBeNull();
+    const [attempt] = t.db.table('checkoutAttempt');
+    expect(attempt).toMatchObject({
+      balanceMethod: 'CARD_CREDIT', algorithmVersion: 2, creditAdjustmentBps: 1500, tenderCount: 2,
+      fullPriceCredit: result.view.plan.fullPrices.CARD_CREDIT, planHash: planHash({ saleId: t.sale.id as string, ...req }),
+    });
+    expect(t.db.table('checkoutAttemptTender').map((tender) => [tender.method, tender.role]).sort()).toEqual([['CARD_CREDIT', 'BALANCE'], ['CASH', 'FIXED']]);
+  });
+
+  it('RC-2 the server quote is the authority for a credit plan too: a different total is CHECKOUT_QUOTE_CHANGED, no row', async () => {
+    const t = setup({ creditBps: 1500 });
+    const req = t.request([cash('FIXED', 2000n), credit('BALANCE')]);
+    expect(await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, { ...req, expectedTotal: req.expectedTotal + 100n })))
+      .toMatchObject({ status: 409, code: 'CHECKOUT_QUOTE_CHANGED' });
+    expect(t.db.table('checkoutAttempt')).toHaveLength(0);
+  });
+
+  it('RC-3 a recorded CARD_CREDIT collection is a valid COLLECTION tender and is claimed by the attempt', async () => {
+    const t = setup({ creditBps: 1500 });
+    const ec = t.collection({ method: 'CARD_CREDIT', amount: 4000n });
+    const req = t.request([cash('BALANCE'), credit('FIXED', 'COLLECTION', 4000n, ec.id as string)]);
+    await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    const [attempt] = t.db.table('checkoutAttempt');
+    expect(t.db.table('externalCollection')[0]).toMatchObject({ claimAttemptId: attempt!.id, status: 'UNAPPLIED' });
+    expect(t.db.table('checkoutAttemptTender').find((tender) => tender.method === 'CARD_CREDIT')).toMatchObject({ role: 'FIXED', source: 'COLLECTION', externalCollectionId: ec.id });
+  });
+
+  it('RC-4 without a pricing configuration a credit plan is refused (PRICING_CONFIG_MISSING); a CASH-only attempt seals NULL credit', async () => {
+    const bare = setup({ pricing: false });
+    const cashReq = bare.cashOnly();
+    await bare.service.reserve(bare.asCashier, bare.sale.id as string, cashReq);
+    expect(bare.db.table('checkoutAttempt')[0]).toMatchObject({ algorithmVersion: 2, fullPriceCredit: null, creditAdjustmentBps: null, pricingConfigId: null });
+    const other = setup({ pricing: false });
+    expect(await codeOf(other.service.reserve(other.asCashier, other.sale.id as string, {
+      ...other.cashOnly(), balanceMethod: 'CARD_CREDIT', tenders: [credit('BALANCE')],
+    }))).toMatchObject({ status: 409, code: 'PRICING_CONFIG_MISSING' });
+    expect(other.db.table('checkoutAttempt')).toHaveLength(0);
   });
 });

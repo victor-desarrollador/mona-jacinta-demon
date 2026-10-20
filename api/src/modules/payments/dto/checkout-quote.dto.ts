@@ -7,7 +7,7 @@
 // pricing authority and it validates the business rules on its own.
 //
 // What the edge enforces and what it deliberately leaves to the engine:
-//   * the three R3 methods only (CARD_CREDIT and QR are outside R3: 400 here);
+//   * the four proportional methods only (QR is outside: 400 here);
 //   * 0..2 fixed tenders, integer centavos >= 1, `.strict()` shape;
 //   * duplicate methods, a balance method that is also fixed, coverage and a
 //     sub-peso balance are ENGINE rules (409 with their own stable codes), so
@@ -21,7 +21,7 @@ import type { CheckoutQuoteRequest } from '../checkout-quote.service.js';
 // 19 digits (the width of a signed 64-bit integer).
 const centavosString = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
 
-const quoteMethod = z.enum(['CASH', 'TRANSFER', 'CARD_DEBIT']);
+const quoteMethod = z.enum(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']);
 
 const quoteTenderDto = z
   .object({

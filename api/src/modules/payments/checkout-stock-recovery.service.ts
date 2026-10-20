@@ -53,6 +53,7 @@ export type StockRecoveryAttempt = {
   status: string; planSealed: boolean;
   fullPriceCash: bigint; fullPriceTransfer: bigint | null; fullPriceDebit: bigint | null;
   transferAdjustmentBps: number | null; debitAdjustmentBps: number | null;
+  fullPriceCredit: bigint | null; creditAdjustmentBps: number | null;
 };
 export type StockRecoveryTarget = { sale: StockRecoverySale; attempt: StockRecoveryAttempt };
 
@@ -124,7 +125,8 @@ export async function lockStockRecoveryTarget(
 
   const [attempt] = await tx.$queryRaw<StockRecoveryAttempt[]>`
     SELECT id, "saleId", "branchId", "reserveKey", "operationKey", status, "planSealed",
-           "fullPriceCash", "fullPriceTransfer", "fullPriceDebit", "transferAdjustmentBps", "debitAdjustmentBps"
+           "fullPriceCash", "fullPriceTransfer", "fullPriceDebit", "transferAdjustmentBps", "debitAdjustmentBps",
+           "fullPriceCredit", "creditAdjustmentBps"
     FROM "CheckoutAttempt"
     WHERE "reserveKey" = ${reserveKey} AND "saleId" = ${saleId}
     FOR UPDATE
@@ -142,7 +144,7 @@ export async function lockStockRecoveryTarget(
 }
 
 // Step 6 (OWNER decision S7-C, option 1): the sale's CURRENT lines must still
-// reproduce EVERY sealed full price — cash with 0 bps, and transfer/debit with
+// reproduce EVERY sealed full price — cash with 0 bps, and transfer/debit/credit with
 // the SEALED basis points — through the engine T-C settles with
 // (lineFullPrices, one rounding per unit, BigInt). Never the current pricing
 // configuration, and never just expectedTotal. Read-only; any mismatch, any
@@ -180,10 +182,17 @@ async function assertSealedPlanStillMatchesSale(tx: Tx, sale: StockRecoverySale,
     if (tenders.some((tender) => tender.method !== 'CASH')) throw planInconsistent('La reserva sellada usa un medio externo sin snapshot de precios.');
   }
 
+  // The credit snapshot is a pair, present only on a version-2 attempt that also has the
+  // rest of the snapshot (chk_attempt_credit_snapshot); an attempt sealed before the
+  // CARD_CREDIT block simply has no credit price to reproduce.
+  if ((attempt.fullPriceCredit === null) !== (attempt.creditAdjustmentBps === null)) {
+    throw planInconsistent('La reserva sellada tiene un snapshot de crédito incompleto.');
+  }
   const sealed: Array<[string, number, bigint]> = [['CASH', 0, attempt.fullPriceCash]];
   if (present !== 0) {
     sealed.push(['TRANSFER', attempt.transferAdjustmentBps!, attempt.fullPriceTransfer!]);
     sealed.push(['CARD_DEBIT', attempt.debitAdjustmentBps!, attempt.fullPriceDebit!]);
+    if (attempt.fullPriceCredit !== null) sealed.push(['CARD_CREDIT', attempt.creditAdjustmentBps!, attempt.fullPriceCredit]);
   }
   for (const [method, bps, sealedFullPrice] of sealed) {
     let fullPrice: bigint;

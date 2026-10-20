@@ -14,8 +14,10 @@ const TOKEN_KEY = "mona-jacinta-token";
 const SALE_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
 // Cada medio tiene su propio precio completo (centavos): efectivo 45.000,
-// transferencia 47.500, débito 48.125.
-const PRICES = { CASH: "4500000", TRANSFER: "4750000", CARD_DEBIT: "4812500" } as const;
+// transferencia 47.500, débito 48.125, crédito 51.750.
+const PRICES = { CASH: "4500000", TRANSFER: "4750000", CARD_DEBIT: "4812500", CARD_CREDIT: "5175000" } as const;
+// La lista mayorista (wholesalePrice) con los mismos ajustes: efectivo 30.000, crédito +15% = 34.500.
+const WHOLESALE_PRICES = { CASH: "3000000", TRANSFER: "3300000", CARD_DEBIT: "3150000", CARD_CREDIT: "3450000" } as const;
 
 type Method = keyof typeof PRICES;
 type QuoteRequest = { balanceMethod: Method; tenders: Array<{ method: Method; amount: string }> };
@@ -57,15 +59,16 @@ function row(overrides: Row = {}): Row {
 
 function quoteFor(sale: Row, body: QuoteRequest, state: ServerState) {
   const fixed = body.tenders.reduce((sum, tender) => sum + BigInt(tender.amount), BigInt(0));
-  const total = body.tenders.length === 0 ? PRICES[body.balanceMethod] : PRICES.CASH;
+  const prices = sale.pricingMode === "WHOLESALE" ? WHOLESALE_PRICES : PRICES;
+  const total = body.tenders.length === 0 ? prices[body.balanceMethod] : prices.CASH;
   return {
     saleId: sale.saleId, saleNumber: sale.saleNumber, pricingModel: "PROPORTIONAL_V1",
-    enabledMethods: (["CASH", "TRANSFER", "CARD_DEBIT"] as const).map((method) => (
+    enabledMethods: (["CASH", "TRANSFER", "CARD_DEBIT", "CARD_CREDIT"] as const).map((method) => (
       state.unavailable?.includes(method)
         ? { method, available: false, reason: "PRICING_CONFIG_MISSING" }
         : { method, available: true }
     )),
-    fullPrices: { ...PRICES },
+    fullPrices: { ...prices },
     tenders: body.tenders.map((tender) => ({ method: tender.method, role: "FIXED", amount: tender.amount })),
     balance: { method: body.balanceMethod, amount: (BigInt(total) - fixed).toString() },
     total,
@@ -160,6 +163,7 @@ describe("Caja — tipo de cobro", () => {
     expect(await screen.findByRole("button", { name: /Efectivo.*45\.000/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Transferencia.*47\.500/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Débito.*48\.125/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Crédito.*51\.750/ })).toBeInTheDocument();
     expect(screen.queryByText(/importe fijo/i)).toBeNull();
     expect(screen.queryByText(/medio de saldo/i)).toBeNull();
     expect(screen.queryByText(/cobro proporcional/i)).toBeNull();
@@ -177,12 +181,82 @@ describe("Caja — tipo de cobro", () => {
     expect(button(/^Cobrar/)).toBeNull();
   });
 
-  it("UI-10 no ofrece Crédito mientras el motor proporcional no lo soporta", async () => {
+  it("UI-CREDIT-1 aparece Crédito en Pago simple y como opción dentro de Pago combinado (nunca QR)", async () => {
     await renderCashier();
-    await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
-    expect(screen.queryByRole("button", { name: /Cr[eé]dito/ })).toBeNull();
+    expect(await screen.findByRole("button", { name: /Crédito/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /QR/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
-    expect(screen.queryByRole("option", { name: /Cr[eé]dito/ })).toBeNull();
+    const balance = screen.getByLabelText("Medio de saldo");
+    expect(within(balance).getByRole("option", { name: "Tarjeta de crédito" })).toBeInTheDocument();
+    expect(within(balance).queryByRole("option", { name: /QR/ })).toBeNull();
+    fireEvent.click(button(/Agregar importe fijo/)!);
+    expect(within(screen.getByLabelText("Medio del importe fijo 1")).getByRole("option", { name: "Tarjeta de crédito" })).toBeInTheDocument();
+  });
+
+  it("UI-CREDIT-2 el precio de Crédito sale de quote.fullPrices y se muestra junto al de los otros medios", async () => {
+    await renderCashier();
+    expect(await screen.findByRole("button", { name: /Crédito.*51\.750/ })).toBeInTheDocument();
+    for (const [name, price] of [["Efectivo", "45\\.000"], ["Transferencia", "47\\.500"], ["Débito", "48\\.125"]] as const) {
+      expect(screen.getByRole("button", { name: new RegExp(`${name}.*${price}`) })).toBeInTheDocument();
+    }
+  });
+
+  it("UI-CREDIT-3 Pago simple + Crédito cotiza sin importes fijos, exige solo la referencia (sin institución) y cobra con balanceMethod CARD_CREDIT", async () => {
+    const state = await renderCashier();
+    await chooseSimple(/Crédito.*51\.750/, "51.750");
+    expect(lastQuote(state)).toEqual({ balanceMethod: "CARD_CREDIT", tenders: [] });
+    expect(screen.queryByLabelText("Institución")).toBeNull();
+    expect(screen.queryByLabelText("Recibido")).toBeNull();
+    expect(button(/^Cobrar/)).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Referencia"), { target: { value: "CRD0042" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    fireEvent.click(button(/^Cobrar/)!);
+    await screen.findByTestId("proportional-result");
+    const [body] = checkouts(state).map((request) => request.body as CheckoutBody);
+    expect(body).toMatchObject({ balanceMethod: "CARD_CREDIT", expectedTotal: PRICES.CARD_CREDIT, cashSessionId: SESSION_ID });
+    expect(body!.tenders).toHaveLength(1);
+    expect(body!.tenders[0]).toMatchObject({ method: "CARD_CREDIT", role: "BALANCE", reference: "CRD0042" });
+    expect(body!.tenders[0]).not.toHaveProperty("institution");
+  });
+
+  it("UI-CREDIT-4 Pago combinado permite Crédito: efectivo fijo + saldo en crédito (y crédito fijo con saldo en efectivo)", async () => {
+    const state = await renderCashier();
+    await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
+    fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
+    fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "CARD_CREDIT" } });
+    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "CASH" } });
+    fireEvent.change(screen.getByLabelText("Importe fijo 1"), { target: { value: "100" } });
+    fireEvent.change(screen.getByLabelText("Recibido del importe fijo 1"), { target: { value: "100" } });
+    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "CRD0043" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    expect(lastQuote(state)).toEqual({ balanceMethod: "CARD_CREDIT", tenders: [{ method: "CASH", amount: "10000" }] });
+    expect(screen.queryByLabelText("Institución del saldo")).toBeNull();
+    // Crédito como importe fijo: pide su referencia, sin institución.
+    fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "CASH" } });
+    fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "CARD_CREDIT" } });
+    expect(screen.getByLabelText("Referencia del importe fijo 1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Institución del importe fijo 1")).toBeNull();
+  });
+
+  it("UI-CREDIT-5 un Crédito sin configuración de precios queda deshabilitado y no se ofrece como saldo", async () => {
+    await renderCashier({ unavailable: ["CARD_CREDIT"] });
+    expect(await screen.findByRole("button", { name: /Efectivo.*45\.000/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /Crédito/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
+    expect(within(screen.getByLabelText("Medio de saldo")).getByRole("option", { name: "Tarjeta de crédito" })).toBeDisabled();
+  });
+
+  it("UI-CREDIT-6 mayorista: el precio de Crédito es el que el servidor calcula sobre la lista mayorista", async () => {
+    const state = await renderCashier({ queue: [row({ pricingMode: "WHOLESALE", wholesaleConfirmed: true })] });
+    expect(await screen.findByRole("button", { name: /Crédito.*34\.500/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Efectivo.*30\.000/ })).toBeInTheDocument();
+    await chooseSimple(/Crédito.*34\.500/, "34.500");
+    fireEvent.change(screen.getByLabelText("Referencia"), { target: { value: "CRD0044" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    fireEvent.click(button(/^Cobrar/)!);
+    await screen.findByTestId("proportional-result");
+    expect((checkouts(state)[0]!.body as CheckoutBody).expectedTotal).toBe(WHOLESALE_PRICES.CARD_CREDIT);
   });
 
   it("UI-3 Pago simple + Efectivo cotiza sin importes fijos, pide lo recibido y cobra con balanceMethod CASH", async () => {
@@ -303,8 +377,8 @@ describe("Caja — tipo de cobro", () => {
   it("mayorista: la misma interfaz simple cobra una venta WHOLESALE confirmada con el precio del servidor", async () => {
     const state = await renderCashier({ queue: [row({ pricingMode: "WHOLESALE", wholesaleConfirmed: true })] });
     expect(await screen.findByText("Mayorista confirmada")).toBeInTheDocument();
-    await chooseSimple(/Efectivo.*45\.000/, "45.000");
-    fireEvent.change(screen.getByLabelText("Recibido"), { target: { value: "45000" } });
+    await chooseSimple(/Efectivo.*30\.000/, "30.000");
+    fireEvent.change(screen.getByLabelText("Recibido"), { target: { value: "30000" } });
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
     expect(checkouts(state)).toHaveLength(1);

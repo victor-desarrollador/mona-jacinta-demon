@@ -208,7 +208,7 @@ async function insertAttempt(db: Db, fx: Fx, opts: {
 }
 
 async function insertCollection(db: Db, fx: Fx, opts: {
-  method?: 'TRANSFER' | 'CARD_DEBIT'; amount?: bigint; branch?: string; originSale?: string | null;
+  method?: 'TRANSFER' | 'CARD_DEBIT' | 'CARD_CREDIT'; amount?: bigint; branch?: string; originSale?: string | null;
   originAttempt?: string; recordedBy?: string; status?: string; appliedCheckout?: string; appliedSale?: string;
 } = {}): Promise<string> {
   const id = randomUUID();
@@ -300,10 +300,10 @@ function statusFieldsValid(row: Row): boolean {
 
 // chk_tender_shape.
 function tenderShapeValid(t: { method: string; role: string; source: string; amount: bigint | null; collection: boolean }): boolean {
-  if (!['CASH', 'TRANSFER', 'CARD_DEBIT'].includes(t.method)) return false;
+  if (!['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT'].includes(t.method)) return false;
   if (t.role === 'BALANCE') return t.source === 'NEW' && t.amount === null && !t.collection;
   if (t.source === 'NEW') return t.amount !== null && t.amount > 0n && !t.collection;
-  return ['TRANSFER', 'CARD_DEBIT'].includes(t.method) && t.amount !== null && t.amount > 0n && t.collection;
+  return ['TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT'].includes(t.method) && t.amount !== null && t.amount > 0n && t.collection;
 }
 
 // chk_declaration_shape + chk_declaration_evidence (C1–C5 §2.2).
@@ -416,12 +416,19 @@ describe.skipIf(!suiteA)('R3-A4.3 S1 — schema on PostgreSQL (migrations 1–9)
       ['planHash non-hex', { planHash: 'g'.repeat(64) }, 'chk_attempt_hashes'],
       ['planHash 63 chars (CHAR pads)', { planHash: 'a'.repeat(63) }, 'chk_attempt_hashes'],
       ['confirmationHash non-hex', { status: 'CONFIRMED', planSealed: true, confirmationHash: 'Z'.repeat(64), confirmedById: fx.starter, confirmedAt: now }, 'chk_attempt_hashes'],
-      ...plan('balanceMethod', [['CASH', null], ['TRANSFER', null], ['CARD_DEBIT', null], ['CARD_CREDIT', P], ['QR', P]]),
+      // CARD_CREDIT is a valid plan method since the CARD_CREDIT migration; as the balance of a row WITHOUT a credit
+      // price (this base row has none) it is refused by the credit snapshot CHECK, never by the plan CHECK.
+      ...plan('balanceMethod', [['CASH', null], ['TRANSFER', null], ['CARD_DEBIT', null], ['CARD_CREDIT', 'chk_attempt_credit_snapshot'], ['QR', P]]),
       ...plan('expectedTotal', [[0, P], [1, null]]),
       ...plan('expectedBalanceAmount', [[0, P], [99, P], [100, null], [150, P], [200, null]]),
       ...plan('tenderCount', [[0, P], [1, null], [3, null], [4, P]]),
       ...plan('fullPriceCash', [[0, P], [50, P], [100, null]]),
-      ...plan('algorithmVersion', [[0, P], [2, P]]),
+      // 1 = no credit snapshot (what an N-1 API writes), 2 = the credit snapshot (CARD_CREDIT migration); nothing else.
+      ...plan('algorithmVersion', [[0, P], [1, null], [2, null], [3, P]]),
+      ['v2 with the pricing snapshot but no credit price', { ...snap, algorithmVersion: 2 }, 'chk_attempt_credit_snapshot'],
+      ['v1 with a credit price', { ...snap, fullPriceCredit: 10300, creditAdjustmentBps: 300 }, 'chk_attempt_credit_snapshot'],
+      ['v2 with the whole snapshot incl. credit', { ...snap, algorithmVersion: 2, fullPriceCredit: 10300, creditAdjustmentBps: 300 }, null],
+      ['CARD_CREDIT balance with the whole v2 snapshot', { ...snap, algorithmVersion: 2, fullPriceCredit: 10300, creditAdjustmentBps: 300, balanceMethod: 'CARD_CREDIT' }, null],
       ['snapshot complete', snap, null],
       ...Object.keys(snap).map((k): Case => [`snapshot only ${k}`, { [k]: snap[k] }, S]),
       ...Object.keys(snap).map((k): Case => [`snapshot without ${k}`, { ...snap, [k]: null }, S]),
@@ -470,6 +477,7 @@ describe.skipIf(!suiteA)('R3-A4.3 S1 — schema on PostgreSQL (migrations 1–9)
     const ec: Record<string, string> = {
       TRANSFER: await insertCollection(db, fx, { method: 'TRANSFER', amount: 5000n }),
       CARD_DEBIT: await insertCollection(db, fx, { method: 'CARD_DEBIT', amount: 5000n }),
+      CARD_CREDIT: await insertCollection(db, fx, { method: 'CARD_CREDIT', amount: 5000n }),
     };
     const attempt = await insertAttempt(db, fx, { sale: fx.sale4, seal: false, tenders: [], tenderCount: 1 });
     const matrix = cartesian({
@@ -493,8 +501,8 @@ describe.skipIf(!suiteA)('R3-A4.3 S1 — schema on PostgreSQL (migrations 1–9)
         expect(error?.constraint, show(t)).toBe('chk_tender_shape');
       }
     }
-    // BALANCE NEW ×3 methods, FIXED NEW ×3, FIXED COLLECTION ×2 (amount 5000 only).
-    expect(accepted).toBe(3 + 3 + 2);
+    // BALANCE NEW ×4 methods, FIXED NEW ×4, FIXED COLLECTION ×3 (amount 5000 only).
+    expect(accepted).toBe(4 + 4 + 3);
   });
 
   it('P1d every CheckoutAttemptDeclaration variant matches chk_declaration_shape / chk_declaration_evidence (or the F4 guard for CHARGED)', async () => {

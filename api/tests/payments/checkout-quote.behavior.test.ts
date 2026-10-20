@@ -149,7 +149,7 @@ function createQuoteDb() {
 // ---------------------------------------------------------------------------
 // Fixture
 // ---------------------------------------------------------------------------
-function setup(options: { pricing?: boolean; transferBps?: number; debitBps?: number } = {}) {
+function setup(options: { pricing?: boolean; transferBps?: number; debitBps?: number; creditBps?: number } = {}) {
   const db = createQuoteDb();
   db.insert('company', { name: 'Mona Jacinta', cuit: '00000000000', address: 'Demo', isActive: true, createdAt: new Date() });
   const companyId = db.table('company')[0]!.id as string;
@@ -159,7 +159,7 @@ function setup(options: { pricing?: boolean; transferBps?: number; debitBps?: nu
       listAdjustmentBps: 0,
       bankTransferAdjustmentBps: options.transferBps ?? 1000,
       debitCardAdjustmentBps: options.debitBps ?? 500,
-      creditCardAdjustmentBps: 0,
+      creditCardAdjustmentBps: options.creditBps ?? 0,
       qrAdjustmentBps: 0,
     });
   }
@@ -237,7 +237,7 @@ describe('F — the quote prices the same methods and amounts as the real checko
     const quote = await t.quoteOf(saleId);
     expect(quote).toMatchObject({
       saleId, saleNumber: t.saleRow(saleId).saleNumber, pricingModel: 'PROPORTIONAL_V1',
-      fullPrices: { CASH: 50000n, TRANSFER: 55000n, CARD_DEBIT: 52500n },
+      fullPrices: { CASH: 50000n, TRANSFER: 55000n, CARD_DEBIT: 52500n, CARD_CREDIT: 50000n },
       tenders: [], balance: { method: 'CASH', amount: 50000n }, total: 50000n,
     });
     expect(bySku(quote)).toEqual({ V1: 20000n, V2: 30000n });
@@ -267,6 +267,7 @@ describe('F — the quote prices the same methods and amounts as the real checko
       { method: 'CASH', available: true },
       { method: 'TRANSFER', available: true },
       { method: 'CARD_DEBIT', available: true },
+      { method: 'CARD_CREDIT', available: true },
     ]);
   });
 
@@ -407,7 +408,7 @@ describe('S — the answer carries everything a later checkout request needs', (
     const t = setup();
     const quote = await t.quoteOf(await t.draft());
     expect(Object.keys(quote).sort()).toEqual(RESPONSE_KEYS);
-    expect(Object.keys(quote.fullPrices).sort()).toEqual(['CARD_DEBIT', 'CASH', 'TRANSFER']);
+    expect(Object.keys(quote.fullPrices).sort()).toEqual(['CARD_CREDIT', 'CARD_DEBIT', 'CASH', 'TRANSFER']);
     expect(Object.keys(quote.balance).sort()).toEqual(['amount', 'method']);
   });
 });
@@ -516,8 +517,9 @@ describe('R — a sale that is not quotable is refused with a stable code', () =
       { method: 'CASH', available: true },
       { method: 'TRANSFER', available: false, reason: 'PRICING_CONFIG_MISSING' },
       { method: 'CARD_DEBIT', available: false, reason: 'PRICING_CONFIG_MISSING' },
+      { method: 'CARD_CREDIT', available: false, reason: 'PRICING_CONFIG_MISSING' },
     ]);
-    expect(quote.fullPrices).toEqual({ CASH: 50000n, TRANSFER: null, CARD_DEBIT: null });
+    expect(quote.fullPrices).toEqual({ CASH: 50000n, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null });
     expect(quote.total).toBe(50000n);
     await expectAppError(t.quote(saleId, t.noFixed('TRANSFER')), 409, 'PRICING_CONFIG_MISSING');
   });
@@ -586,7 +588,7 @@ describe('H — HTTP contract of POST /sales/:saleId/checkout/quote', () => {
     // total keeps the fixed centavos: 20037 + 31500 = 51537.
     expect(response.body).toMatchObject({
       saleId, pricingModel: 'PROPORTIONAL_V1',
-      fullPrices: { CASH: '50000', TRANSFER: '55000', CARD_DEBIT: '52500' },
+      fullPrices: { CASH: '50000', TRANSFER: '55000', CARD_DEBIT: '52500', CARD_CREDIT: '50000' },
       tenders: [{ method: 'CASH', role: 'FIXED', amount: '20037' }],
       balance: { method: 'CARD_DEBIT', amount: '31500' },
       total: '51537',
@@ -605,7 +607,6 @@ describe('H — HTTP contract of POST /sales/:saleId/checkout/quote', () => {
       .set('X-Test-User', 'cashier')
       .send(body);
     const bodies = [
-      { balanceMethod: 'CARD_CREDIT', tenders: [] },
       { balanceMethod: 'QR', tenders: [] },
       { balanceMethod: 'CASH', tenders: [{ method: 'CASH', amount: '0' }] },
       { balanceMethod: 'CASH', tenders: [{ method: 'TRANSFER', amount: '1' }, { method: 'CARD_DEBIT', amount: '1' }, { method: 'CASH', amount: '1' }] },
@@ -623,9 +624,10 @@ describe('H — HTTP contract of POST /sales/:saleId/checkout/quote', () => {
       .set('X-Test-User', 'cashier')
       .send({ balanceMethod: 'CASH', tenders: [] });
     expect(badId.status).toBe(400);
-    // CARD_CREDIT and QR are outside R3: enabling them is a code change.
+    // QR is outside the proportional engine: enabling it is a code change. CARD_CREDIT is a valid
+    // proportional method since the CARD_CREDIT block.
     const credit = await post({ balanceMethod: 'CASH', tenders: [{ method: 'CARD_CREDIT', amount: '100' }] });
-    expect(credit.status).toBe(400);
+    expect(credit.status).toBe(200);
     const qr = await post({ balanceMethod: 'CASH', tenders: [{ method: 'QR', amount: '100' }] });
     expect(qr.status).toBe(400);
   });
@@ -698,6 +700,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'CASH', available: true },
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
   });
 
@@ -709,6 +712,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'CASH', available: true },
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
   });
 
@@ -721,6 +725,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'CASH', available: true },
       { method: 'TRANSFER', available: true },
       { method: 'CARD_DEBIT', available: true },
+      { method: 'CARD_CREDIT', available: true },
     ]);
   });
 
@@ -735,6 +740,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'CASH', available: true },
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
   });
 
@@ -788,6 +794,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'CASH', available: true },
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
   });
 
@@ -809,7 +816,70 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'CASH', available: true },
       { method: 'TRANSFER', available: true },
       { method: 'CARD_DEBIT', available: true },
+      { method: 'CARD_CREDIT', available: true },
     ]);
     expect(response.body.unappliedCollections).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CARD_CREDIT (OWNER block): the quote prices Crédito from the credit adjustment of
+// the company configuration, on the same line base as the other methods. Expected
+// values are computed by hand: V1 $200 + V2 $300 (centavos x100 in the store are
+// pesos here, as in the rest of this file); credit +15% -> V1 230, V2 345.
+// ---------------------------------------------------------------------------
+describe('CARD_CREDIT — quote', () => {
+  it('CRED-Q1 retail: fullPrices carries the credit price (cash base + credit bps, one rounding per unit)', async () => {
+    const t = setup({ creditBps: 1500 });
+    const quote = await t.quoteOf(await t.draft());
+    expect(quote.fullPrices).toEqual({ CASH: 50000n, TRANSFER: 55000n, CARD_DEBIT: 52500n, CARD_CREDIT: 57500n });
+  });
+
+  it('CRED-Q2 simple credit (no fixed tenders): total is the credit full price, lines add up', async () => {
+    const t = setup({ creditBps: 1500 });
+    const quote = await t.quote(await t.draft(), t.noFixed('CARD_CREDIT'));
+    expect(quote).toMatchObject({ balance: { method: 'CARD_CREDIT', amount: 57500n }, total: 57500n });
+    expect(bySku(quote)).toEqual({ V1: 23000n, V2: 34500n });
+  });
+
+  it('CRED-Q3 combined: CASH 20.000 fixed + balance CARD_CREDIT', async () => {
+    const t = setup({ creditBps: 1500 });
+    const quote = await t.quote(await t.draft(), { balanceMethod: 'CARD_CREDIT', tenders: [{ method: 'CASH', amount: 20000n }] });
+    // balance = 57.500 * (50.000 - 20.000) / 50.000 = 34.500
+    expect(quote).toMatchObject({ balance: { method: 'CARD_CREDIT', amount: 34500n }, total: 54500n });
+    expect(Object.values(bySku(quote)).reduce((sum, value) => sum + value, 0n)).toBe(54500n);
+  });
+
+  it('CRED-Q4 combined: TRANSFER and CARD_DEBIT fixed against a CARD_CREDIT balance', async () => {
+    const t = setup({ creditBps: 1500 });
+    const saleId = await t.draft();
+    const transfer = await t.quote(saleId, { balanceMethod: 'CARD_CREDIT', tenders: [{ method: 'TRANSFER', amount: 27500n }] });
+    // 57.500 * 27.500 / 55.000 = 28.750 centavos-pesos -> half-up to the whole peso = 28.800
+    expect(transfer).toMatchObject({ balance: { method: 'CARD_CREDIT', amount: 28800n }, total: 56300n });
+    const debit = await t.quote(saleId, { balanceMethod: 'CARD_CREDIT', tenders: [{ method: 'CARD_DEBIT', amount: 26250n }] });
+    expect(debit).toMatchObject({ balance: { method: 'CARD_CREDIT', amount: 28800n }, total: 55050n });
+  });
+
+  it('CRED-Q5 wholesale: credit is priced on the wholesale base lines', async () => {
+    const t = setup({ creditBps: 1500 });
+    const saleId = await t.draft();
+    Object.assign(t.saleRow(saleId), { pricingMode: 'WHOLESALE', wholesaleAuthorizedAt: new Date(), wholesaleConfirmedAt: new Date(), wholesaleConfirmedById: t.ids.cashier });
+    const bases: Record<string, bigint> = { V1: 15000n, V2: 25000n };
+    for (const line of t.linesOf(saleId)) {
+      line.priceBaseType = 'WHOLESALE';
+      line.baseUnitPrice = bases[line.sku as string]!;
+    }
+    const quote = await t.quote(saleId, t.noFixed('CARD_CREDIT'));
+    // 15.000 * 1,15 = 17.250 -> 17.300 ; 25.000 * 1,15 = 28.750 -> 28.800 (half-up per unit, whole peso)
+    expect(quote.fullPrices).toMatchObject({ CASH: 40000n, CARD_CREDIT: 46100n });
+    expect(bySku(quote)).toEqual({ V1: 17300n, V2: 28800n });
+  });
+
+  it('CRED-Q6 without a pricing configuration CARD_CREDIT is unavailable and quoting it fails closed', async () => {
+    const t = setup({ pricing: false });
+    const saleId = await t.draft();
+    const quote = await t.quoteOf(saleId);
+    expect(quote.enabledMethods).toContainEqual({ method: 'CARD_CREDIT', available: false, reason: 'PRICING_CONFIG_MISSING' });
+    await expectAppError(t.quote(saleId, t.noFixed('CARD_CREDIT')), 409, 'PRICING_CONFIG_MISSING');
   });
 });

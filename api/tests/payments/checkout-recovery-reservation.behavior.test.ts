@@ -33,7 +33,7 @@ import { createCheckoutReservationFakeDb, p2002, type Row } from '../helpers/che
 const NOW = new Date('2026-10-17T12:00:00.000Z');
 const LATER = new Date(NOW.getTime() + 20 * 60_000);
 const NEW_EXPIRY = new Date(NOW.getTime() + TECHNICAL_HOLD_TTL_MS);
-const PRICING = { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300 };
+const PRICING = { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300, creditCardAdjustmentBps: 0 };
 const SERVICE_SOURCE = new URL('../../src/modules/payments/checkout-reservation.service.ts', import.meta.url);
 const P = PRODUCTION_PERMISSIONS;
 const uuid = () => randomUUID();
@@ -559,8 +559,9 @@ describe('R3-A4.3 S7-K — the fresh T-RR (DB-free)', () => {
       saleId: t.sale.id, branchId: t.branch, reserveKey: req.reserveKey, planHash: t.hashOf(req), cashSessionId: t.session.id,
       balanceMethod: 'CASH', expectedTotal: req.expectedTotal, expectedBalanceAmount: req.expectedBalanceAmount, tenderCount: 2,
       fullPriceCash: quoted.fullPrices.CASH, fullPriceTransfer: quoted.fullPrices.TRANSFER, fullPriceDebit: quoted.fullPrices.CARD_DEBIT,
+      fullPriceCredit: quoted.fullPrices.CARD_CREDIT, creditAdjustmentBps: 0,
       transferAdjustmentBps: 200, debitAdjustmentBps: 300, pricingConfigId: t.pricingConfig.id, pricingConfigUpdatedAt: t.pricingConfig.updatedAt,
-      algorithmVersion: 1, startedById: userOf(t.asCompanyAdmin), recoveryReason: RECOVERY.reason, recoveryEvidence: RECOVERY.evidence,
+      algorithmVersion: 2, startedById: userOf(t.asCompanyAdmin), recoveryReason: RECOVERY.reason, recoveryEvidence: RECOVERY.evidence,
       status: 'RESERVED', planSealed: true,
     });
     expect(created.operationKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);

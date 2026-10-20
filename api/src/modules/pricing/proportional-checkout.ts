@@ -14,8 +14,9 @@ export const PESO = 100n;
 export const BASIS_POINTS = 10_000n;
 export const MAX_INT8 = 9_223_372_036_854_775_807n;
 
-// Opening policy (§5 of the design): CARD_CREDIT and QR are not part of R3.
-export const PROPORTIONAL_METHODS = ['CASH', 'TRANSFER', 'CARD_DEBIT'] as const;
+// Opening policy (§5 of the design) widened by the CARD_CREDIT block: the four
+// card/cash/transfer methods, in the canonical order. QR is still not part of it.
+export const PROPORTIONAL_METHODS = ['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT'] as const;
 export type ProportionalMethod = (typeof PROPORTIONAL_METHODS)[number];
 
 export type ProportionalLineInput = {
@@ -28,6 +29,9 @@ export type ProportionalLineInput = {
 export type ProportionalPricingSnapshot = {
   bankTransferAdjustmentBps: number;
   debitCardAdjustmentBps: number;
+  // Absent (or null) = CARD_CREDIT is not priceable: a snapshot sealed before the
+  // CARD_CREDIT block (algorithmVersion 1) carries no credit adjustment.
+  creditCardAdjustmentBps?: number | null;
 };
 
 export type ProportionalTenderInput = {
@@ -197,12 +201,16 @@ export function computeProportionalQuote(input: ProportionalQuoteInput): Proport
     }
   }
 
-  const adjustmentsBps: Record<ProportionalMethod, number | null> = { CASH: 0, TRANSFER: null, CARD_DEBIT: null };
+  const adjustmentsBps: Record<ProportionalMethod, number | null> = { CASH: 0, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null };
   if (pricing !== null) {
     assertAdjustmentBps(pricing.bankTransferAdjustmentBps, 'bankTransferAdjustmentBps');
     assertAdjustmentBps(pricing.debitCardAdjustmentBps, 'debitCardAdjustmentBps');
     adjustmentsBps.TRANSFER = pricing.bankTransferAdjustmentBps;
     adjustmentsBps.CARD_DEBIT = pricing.debitCardAdjustmentBps;
+    if (pricing.creditCardAdjustmentBps !== undefined && pricing.creditCardAdjustmentBps !== null) {
+      assertAdjustmentBps(pricing.creditCardAdjustmentBps, 'creditCardAdjustmentBps');
+      adjustmentsBps.CARD_CREDIT = pricing.creditCardAdjustmentBps;
+    }
   }
 
   const fixed = new Map<ProportionalMethod, bigint>();
@@ -230,8 +238,8 @@ export function computeProportionalQuote(input: ProportionalQuoteInput): Proport
   }
 
   // Full price per method: one rounding per unit, lines and method totals bounded.
-  const perLinePrices: Record<ProportionalMethod, bigint[] | null> = { CASH: null, TRANSFER: null, CARD_DEBIT: null };
-  const fullPrices: Record<ProportionalMethod, bigint | null> = { CASH: null, TRANSFER: null, CARD_DEBIT: null };
+  const perLinePrices: Record<ProportionalMethod, bigint[] | null> = { CASH: null, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null };
+  const fullPrices: Record<ProportionalMethod, bigint | null> = { CASH: null, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null };
   for (const method of PROPORTIONAL_METHODS) {
     const bps = adjustmentsBps[method];
     if (bps === null) continue;

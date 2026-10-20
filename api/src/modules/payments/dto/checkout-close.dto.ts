@@ -4,7 +4,7 @@
 // One row per tender of the plan (the service checks the exact set against the
 // sealed plan, and that a COLLECTION tender is declared only NONE):
 //   CASH: NONE, or RETURNED with returnedAmount > 0 and evidence (no RETAINED);
-//   TRANSFER/CARD_DEBIT: NONE, or CHARGED with amount > 0, reference, evidence,
+//   TRANSFER/CARD_DEBIT/CARD_CREDIT: NONE, or CHARGED with amount > 0, reference, evidence,
 //   and the institution for TRANSFER (OTHER with its label).
 // Evidence is optional on NONE because a non-initiator (supervisor) must give
 // it on every row (F4); the service enforces that. Boundary only.
@@ -61,7 +61,7 @@ const declaration = z.object({
     else if (row.institution === 'OTHER' && row.institutionOther === undefined) issue('institutionOther', 'La institución OTHER requiere un nombre.');
     else if (row.institution !== 'OTHER' && row.institutionOther !== undefined) issue('institutionOther', 'institutionOther solo se usa con la institución OTHER.');
   } else if (row.institution !== undefined || row.institutionOther !== undefined) {
-    issue('institution', 'El débito no lleva institución.');
+    issue('institution', row.method === 'CARD_CREDIT' ? 'El crédito no lleva institución.' : 'El débito no lleva institución.');
   }
 });
 

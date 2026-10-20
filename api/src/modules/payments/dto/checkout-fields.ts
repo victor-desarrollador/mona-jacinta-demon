@@ -41,7 +41,7 @@ export const safeBigInt = (value: string | undefined): bigint | null => {
   return BigInt(value);
 };
 
-// PROPORTIONAL_V1 accepts only these three: CARD_CREDIT and QR are refused.
+// PROPORTIONAL_V1 accepts CASH, TRANSFER, CARD_DEBIT and CARD_CREDIT; QR is refused.
 export const checkoutMethod = z.enum(CHECKOUT_METHODS);
 export const tenderRole = z.enum(TENDER_ROLES);
 export const tenderSource = z.enum(TENDER_SOURCES);

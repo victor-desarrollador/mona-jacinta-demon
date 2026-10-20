@@ -34,9 +34,9 @@ const parseMoney = (value: string) => {
   }
 };
 
-// R3 accepts these three methods and nothing else: CARD_CREDIT and QR are
-// rejected at the edge (enabling credit is a code change, never a switch).
-const checkoutMethod = z.enum(['CASH', 'TRANSFER', 'CARD_DEBIT']);
+// R3 accepts these four methods and nothing else: QR is rejected at the edge
+// (enabling another method is a code change, never a switch).
+const checkoutMethod = z.enum(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']);
 const tenderRole = z.enum(['FIXED', 'BALANCE']);
 // Mirrors TransferInstitution (prisma/schema.prisma) and the service's own
 // private institution list.
@@ -181,8 +181,8 @@ export type CheckoutRequestInput = z.output<typeof checkoutRequestDto>;
 // accepted: they come from the sealed plan. Per tender:
 //   CASH: receivedAmount only;
 //   TRANSFER (NEW): reference + institution (+ institutionOther for OTHER);
-//   CARD_DEBIT (NEW): reference, no institution;
-//   COLLECTION tender (TRANSFER/CARD_DEBIT): nothing at all.
+//   CARD_DEBIT / CARD_CREDIT (NEW): reference, no institution;
+//   COLLECTION tender (TRANSFER/CARD_DEBIT/CARD_CREDIT): nothing at all.
 // The service checks the exact method set and NEW/COLLECTION against the plan.
 import type { ConfirmationTenderInput } from '../checkout-canonical.js';
 import { normalizeReferenceKey as canonicalReferenceKey } from '../checkout-canonical.js';
@@ -218,8 +218,10 @@ const confirmationTender = z.object({
     return;
   }
   if (tender.receivedAmount !== undefined) issue('receivedAmount', 'Solo el efectivo lleva importe recibido.');
-  if (tender.method === 'CARD_DEBIT') {
-    if (tender.institution !== undefined || tender.institutionOther !== undefined) issue('institution', 'El débito no lleva institución.');
+  if (tender.method === 'CARD_DEBIT' || tender.method === 'CARD_CREDIT') {
+    if (tender.institution !== undefined || tender.institutionOther !== undefined) {
+      issue('institution', tender.method === 'CARD_CREDIT' ? 'El crédito no lleva institución.' : 'El débito no lleva institución.');
+    }
     return;
   }
   // TRANSFER: a reference and an institution together (NEW), or neither (COLLECTION).

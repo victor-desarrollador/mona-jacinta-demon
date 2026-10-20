@@ -16,7 +16,21 @@
 // Stock recovery and the T-RR justification are not part of any hash.
 import { createHash } from 'node:crypto';
 
-export const CHECKOUT_METHODS = ['CASH', 'TRANSFER', 'CARD_DEBIT'] as const;
+// The tender grammar of mona-checkout-plan/v1 and mona-checkout-confirmation/v1 is
+// unchanged by CARD_CREDIT: one `tender=<METHOD>|...` row per tender, and the method
+// set only grows. A plan without credit therefore keeps its exact historical bytes
+// and hash. Order: CASH, TRANSFER, CARD_DEBIT, CARD_CREDIT.
+export const CHECKOUT_METHODS = ['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT'] as const;
+// A checkout still carries at most two fixed tenders plus the balance.
+export const MAX_CHECKOUT_TENDERS = 3;
+
+// The pricing-snapshot format written by NEW attempts and checkouts. 1 = a snapshot
+// WITHOUT a CARD_CREDIT price (everything written before the CARD_CREDIT block, and
+// what an N-1 API still writes); 2 = the snapshot WITH it. The canonical text/hash
+// grammar above is the same for both; this number only says which columns of the
+// stored row are meaningful (chk_*_credit_snapshot).
+export const CHECKOUT_ALGORITHM_VERSION = 2;
+export const CHECKOUT_ALGORITHM_VERSION_NO_CREDIT = 1;
 export type CheckoutMethod = (typeof CHECKOUT_METHODS)[number];
 export const TENDER_ROLES = ['FIXED', 'BALANCE'] as const;
 export type TenderRole = (typeof TENDER_ROLES)[number];
@@ -130,7 +144,7 @@ const oneOf = <T extends string>(values: readonly T[], value: unknown, field: st
 };
 
 function ordered<T extends { method: CheckoutMethod }>(tenders: readonly T[]): T[] {
-  if (!Array.isArray(tenders) || tenders.length < 1 || tenders.length > CHECKOUT_METHODS.length) {
+  if (!Array.isArray(tenders) || tenders.length < 1 || tenders.length > MAX_CHECKOUT_TENDERS) {
     refuse('a checkout carries 1 to 3 tenders');
   }
   const seen = new Set<string>();
@@ -193,7 +207,9 @@ export function canonicalConfirmationText(input: ConfirmationInput): string {
       }
     } else {
       if (received !== null) refuse('only a CASH tender carries receivedAmount');
-      if (tender.method === 'CARD_DEBIT' && (institution !== null || institutionOther !== null)) refuse('a CARD_DEBIT tender carries no institution');
+      if ((tender.method === 'CARD_DEBIT' || tender.method === 'CARD_CREDIT') && (institution !== null || institutionOther !== null)) {
+        refuse(`a ${tender.method} tender carries no institution`);
+      }
       if (tender.method === 'TRANSFER' && (referenceKey === null) !== (institution === null)) {
         refuse('a TRANSFER tender carries a reference and an institution together (a COLLECTION tender carries neither)');
       }

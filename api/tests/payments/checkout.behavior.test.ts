@@ -374,8 +374,10 @@ function setup(options: SaleOptions = {}) {
     fullPriceCash: 40000n,
     fullPriceTransfer: 44000n,
     fullPriceDebit: 42000n,
+    fullPriceCredit: null,
     transferAdjustmentBps: 1000,
     debitAdjustmentBps: 500,
+    creditAdjustmentBps: null,
     pricingConfigId: pricingConfig.id,
     pricingConfigUpdatedAt: pricingConfig.updatedAt,
     algorithmVersion: 1,
@@ -2792,5 +2794,133 @@ describe('R3 checkout — static contract', () => {
     // one place that names them.
     expect(source).toContain('confirmationHash: requestConfirmationHash');
     expect(source).toContain('rejectedById: userId');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CARD_CREDIT (OWNER block): T-C settles a sealed plan that carries CARD_CREDIT
+// exactly like the other external methods, from the sealed credit snapshot
+// (algorithmVersion 2). The harness company configuration has credit +15%
+// (1500 bps) on the 40000-centavo line: credit full price 46000.
+// ---------------------------------------------------------------------------
+describe('CARD_CREDIT — T-C settlement', () => {
+  const planTender = (
+    method: string, role: string, source: string, amount: bigint | null, externalCollectionId: string | null = null,
+  ) => ({ method, role, source, amount, externalCollectionId });
+  const confirmTender = (
+    method: 'CASH' | 'CARD_CREDIT', fields: Partial<CheckoutConfirmationRequest['tenders'][number]> = {},
+  ): CheckoutConfirmationRequest['tenders'][number] => ({
+    method, receivedAmount: method === 'CASH' ? 12000n : null, reference: null, referenceKey: null, institution: null, institutionOther: null, ...fields,
+  });
+  const CREDIT_SNAPSHOT = { algorithmVersion: 2, fullPriceCredit: 46000n, creditAdjustmentBps: 1500 };
+
+  it('CC-1 CASH fixed + CARD_CREDIT balance settle one referenced credit collection, from the sealed credit price', async () => {
+    const t = setup();
+    // balance = 46.000 * (40.000 - 10.000) / 40.000 = 34.500 ; total = 44.500
+    t.sealPlan([
+      planTender('CASH', 'FIXED', 'NEW', 10000n),
+      planTender('CARD_CREDIT', 'BALANCE', 'NEW', null),
+    ], { ...CREDIT_SNAPSHOT, balanceMethod: 'CARD_CREDIT', expectedBalanceAmount: 34500n });
+
+    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [confirmTender('CASH'), confirmTender('CARD_CREDIT', { reference: 'CRD 0001', referenceKey: 'CRD0001' })],
+    }));
+
+    expect(result).toMatchObject({ status: 'COMPLETED', total: 44500n, changeAmount: 2000n });
+    const credit = t.table('salePayment').find((payment) => payment.method === 'CARD_CREDIT')!;
+    expect(credit).toMatchObject({ amount: 34500n, tenderRole: 'BALANCE', methodFullPrice: 46000n, adjustmentBps: 1500, receivedAmount: null, changeAmount: null });
+    expect(t.table('salePayment').find((payment) => payment.method === 'CASH')).toMatchObject({ amount: 10000n, methodFullPrice: 40000n, adjustmentBps: 0 });
+    expect(credit.externalCollectionId).toBe(t.db.extra.externalCollection[0]!.id);
+    expect(t.db.extra.externalCollection[0]).toMatchObject({
+      method: 'CARD_CREDIT', amount: 34500n, referenceKey: 'CRD0001', institution: null, institutionOther: null, status: 'APPLIED',
+    });
+    // Allocations add up to every payment, and the payments to the sealed total.
+    for (const payment of t.table('salePayment')) {
+      const allocated = t.db.extra.saleLineAllocation
+        .filter((allocation) => allocation.salePaymentId === payment.id)
+        .reduce((sum, allocation) => sum + (allocation.amount as bigint), 0n);
+      expect(allocated).toBe(payment.amount);
+    }
+    expect(t.table('salePayment').reduce((sum, payment) => sum + (payment.amount as bigint), 0n)).toBe(44500n);
+    // The checkout carries the credit snapshot and the format version of its attempt.
+    expect(t.db.extra.saleCheckout[0]).toMatchObject({
+      balanceMethod: 'CARD_CREDIT', fullPriceCredit: 46000n, creditAdjustmentBps: 1500, algorithmVersion: 2,
+    });
+    expect(t.audits('SALE_CHECKOUT_COMPLETED')[0]!.after).toMatchObject({
+      // The audit store writes BigInt as a decimal string.
+      fullPrices: { CARD_CREDIT: '46000' }, adjustments: { credit: 1500 },
+    });
+    expect(t.table('inventory')[0]).toMatchObject({ physical: 9n, reserved: 0n });
+  });
+
+  it('CC-2 simple credit: a single CARD_CREDIT balance tender covers the whole sealed credit price', async () => {
+    const t = setup();
+    t.sealPlan([planTender('CARD_CREDIT', 'BALANCE', 'NEW', null)], { ...CREDIT_SNAPSHOT, balanceMethod: 'CARD_CREDIT', expectedBalanceAmount: 46000n });
+
+    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [confirmTender('CARD_CREDIT', { reference: 'CRD 0002', referenceKey: 'CRD0002' })],
+    }));
+
+    expect(result).toMatchObject({ status: 'COMPLETED', total: 46000n, changeAmount: 0n });
+    expect(t.table('salePayment')).toHaveLength(1);
+    expect(t.table('salePayment')[0]).toMatchObject({ method: 'CARD_CREDIT', amount: 46000n, methodFullPrice: 46000n, adjustmentBps: 1500 });
+  });
+
+  it.each([
+    ['missing reference', {}],
+    ['institution', { reference: 'CRD 0003', referenceKey: 'CRD0003', institution: 'GALICIA' as const }],
+    ['institutionOther', { reference: 'CRD 0003', referenceKey: 'CRD0003', institutionOther: 'Banco X' }],
+    ['institution OTHER with its label', { reference: 'CRD 0003', referenceKey: 'CRD0003', institution: 'OTHER' as const, institutionOther: 'Banco X' }],
+  ])('CC-3 NEW CARD_CREDIT rejects %s (400), like a card debit', async (_label, fields) => {
+    const t = setup();
+    t.sealPlan([planTender('CARD_CREDIT', 'BALANCE', 'NEW', null)], { ...CREDIT_SNAPSHOT, balanceMethod: 'CARD_CREDIT', expectedBalanceAmount: 46000n });
+    await expectAppError(
+      t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({ tenders: [confirmTender('CARD_CREDIT', fields)] })),
+      400,
+      'VALIDATION_ERROR',
+    );
+    expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0 });
+  });
+
+  it('CC-4 an attempt sealed WITHOUT a credit snapshot (algorithmVersion 1) can never settle a CARD_CREDIT tender', async () => {
+    const t = setup();
+    // Version-1 snapshot (fullPriceCredit / creditAdjustmentBps NULL) but a plan that names CARD_CREDIT.
+    t.sealPlan([planTender('CARD_CREDIT', 'BALANCE', 'NEW', null)], { balanceMethod: 'CARD_CREDIT', expectedBalanceAmount: 46000n });
+    await expectAppError(
+      t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+        tenders: [confirmTender('CARD_CREDIT', { reference: 'CRD 0004', referenceKey: 'CRD0004' })],
+      })),
+      500,
+      'CHECKOUT_PLAN_INCONSISTENT',
+    );
+    expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0, collections: 0 });
+  });
+
+  it('CC-5 a historical (version 1, credit-free) attempt still settles and its checkout keeps version 1 with NULL credit', async () => {
+    const t = setup();
+    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation());
+    expect(t.db.extra.saleCheckout[0]).toMatchObject({ algorithmVersion: 1, fullPriceCredit: null, creditAdjustmentBps: null });
+    expect(t.audits('SALE_CHECKOUT_COMPLETED')[0]!.after).toMatchObject({ fullPrices: { CASH: '40000' }, adjustments: { transfer: 1000, debit: 500 } });
+    expect(Object.keys((t.audits('SALE_CHECKOUT_COMPLETED')[0]!.after as { fullPrices: object }).fullPrices)).not.toContain('CARD_CREDIT');
+  });
+
+  it('CC-6 a credit reference already recorded on the branch is refused (own partial unique key, separate from debit)', async () => {
+    const t = setup();
+    t.addCollection({ branchId: BRANCH, method: 'CARD_CREDIT', amount: 100n, referenceKey: 'CRD0005', institution: null, status: 'APPLIED' });
+    t.sealPlan([planTender('CARD_CREDIT', 'BALANCE', 'NEW', null)], { ...CREDIT_SNAPSHOT, balanceMethod: 'CARD_CREDIT', expectedBalanceAmount: 46000n });
+    await expectAppError(
+      t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+        tenders: [confirmTender('CARD_CREDIT', { reference: 'CRD 0005', referenceKey: 'CRD0005' })],
+      })),
+      409,
+      'EXTERNAL_REFERENCE_ALREADY_RECORDED',
+    );
+    // The same reference as a DEBIT is a different namespace: it does not collide.
+    const t2 = setup();
+    t2.addCollection({ branchId: BRANCH, method: 'CARD_DEBIT', amount: 100n, referenceKey: 'CRD0005', institution: null, status: 'APPLIED' });
+    t2.sealPlan([planTender('CARD_CREDIT', 'BALANCE', 'NEW', null)], { ...CREDIT_SNAPSHOT, balanceMethod: 'CARD_CREDIT', expectedBalanceAmount: 46000n });
+    await expect(t2.checkout.checkout(t2.reqs.cashier, t2.ids.cashier, t2.saleId, t2.confirmation({
+      tenders: [confirmTender('CARD_CREDIT', { reference: 'CRD 0005', referenceKey: 'CRD0005' })],
+    }))).resolves.toMatchObject({ status: 'COMPLETED' });
   });
 });

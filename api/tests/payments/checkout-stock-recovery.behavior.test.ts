@@ -167,6 +167,8 @@ function guardSetup() {
       expectedBalanceAmount: full(0), tenderCount: tenders.length, algorithmVersion: 1, planSealed: true, startedById: cashier.id,
       fullPriceCash: full(0), fullPriceTransfer: full(TRANSFER_BPS), fullPriceDebit: full(DEBIT_BPS),
       transferAdjustmentBps: TRANSFER_BPS, debitAdjustmentBps: DEBIT_BPS, pricingConfigId: 'cfg-1', pricingConfigUpdatedAt: NOW,
+      // An attempt sealed before the CARD_CREDIT block (algorithmVersion 1): no credit snapshot.
+      fullPriceCredit: null, creditAdjustmentBps: null,
       ...patch,
     });
     for (const tender of tenders) db.insert('checkoutAttemptTender', { attemptId: row.id, source: 'NEW', amount: null, externalCollectionId: null, ...tender });
@@ -455,6 +457,38 @@ describe('R3-A4.3 S7-C — sealed-plan coherence (DB-free)', () => {
       const outcome = await afterMutation(...args);
       expect(outcome.result, label).toMatchObject({ status: 500, code: 'CHECKOUT_PLAN_INCONSISTENT' });
       expect(outcome.result?.code, label).not.toBe('PRICING_SNAPSHOT_INCONSISTENT');
+      expect(outcome.t.db.writesSince(outcome.mark), label).toEqual([]);
+    }
+  });
+
+  // CARD_CREDIT block: a version-2 attempt seals the credit price and bps next to the others; T-S
+  // must reproduce them from the sale's current lines exactly like the other sealed full prices.
+  const creditSnapshot = (bps: number) => ({
+    algorithmVersion: 2,
+    fullPriceCredit: lineFullPrices(
+      DEFAULT_LINES.map((line, index) => ({ saleItemId: `credit-${index}`, sku: line.variantId, quantity: line.quantity, baseUnitPrice: line.baseUnitPrice })), bps,
+    ).reduce((sum, value) => sum + value, 0n),
+    creditAdjustmentBps: bps,
+  });
+
+  it('TS-B13g a coherent sealed CARD_CREDIT snapshot passes the guard with zero writes and no stock lock', async () => {
+    const tenders = [{ method: 'CASH', role: 'FIXED', amount: 3000n }, { method: 'CARD_CREDIT', role: 'BALANCE' }];
+    const { t, mark, result } = await afterMutation(() => undefined, DEFAULT_LINES, creditSnapshot(1500), tenders);
+    expect(result).toBeNull();
+    expect(t.db.writesSince(mark)).toEqual([]);
+    expect(locksSince(t, mark)).toEqual(['Sale', 'CheckoutAttempt']);
+  });
+
+  it('TS-B13h a CARD_CREDIT snapshot that no longer reproduces (tampered bps) or is incomplete is 500 CHECKOUT_PLAN_INCONSISTENT', async () => {
+    const tenders = [{ method: 'CASH', role: 'FIXED', amount: 3000n }, { method: 'CARD_CREDIT', role: 'BALANCE' }];
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['tampered credit bps', { ...creditSnapshot(1500), creditAdjustmentBps: 2500 }],
+      ['credit price without bps', { ...creditSnapshot(1500), creditAdjustmentBps: null }],
+      ['credit bps without price', { ...creditSnapshot(1500), fullPriceCredit: null }],
+    ];
+    for (const [label, patch] of cases) {
+      const outcome = await afterMutation(() => undefined, DEFAULT_LINES, patch, tenders);
+      expect(outcome.result, label).toMatchObject({ status: 500, code: 'CHECKOUT_PLAN_INCONSISTENT' });
       expect(outcome.t.db.writesSince(outcome.mark), label).toEqual([]);
     }
   });

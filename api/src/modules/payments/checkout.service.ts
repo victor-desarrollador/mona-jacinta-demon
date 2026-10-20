@@ -44,7 +44,9 @@ import { actsAsSupervisorAtLocation, hasPermissionAtLocation } from '../rbac/aut
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
 import type { CheckoutConfirmationRequest } from './dto/checkout.dto.js';
-import { CheckoutCanonicalError, REFERENCE_RAW_MAX, codePoints, confirmationHash, type ConfirmationTenderInput } from './checkout-canonical.js';
+import {
+  CHECKOUT_ALGORITHM_VERSION, CheckoutCanonicalError, REFERENCE_RAW_MAX, codePoints, confirmationHash, type ConfirmationTenderInput,
+} from './checkout-canonical.js';
 import { readCheckoutResult } from './checkout-attempt-view.js';
 import { createAuditLog } from '../../shared/audit.js';
 import { evaluateCurrentHoldCoverage } from '../sales/hold-coverage.js';
@@ -62,7 +64,8 @@ import {
 
 type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
 
-export const CHECKOUT_ALGORITHM_VERSION = 1;
+// Re-exported: the pricing-snapshot format version now lives in checkout-canonical.ts (2 = with CARD_CREDIT).
+export { CHECKOUT_ALGORITHM_VERSION };
 const CHECKOUT_TIMEOUT_MS = 30_000;
 const MAX_ATTEMPTS = 3;
 const TRANSFER_INSTITUTIONS: readonly TransferInstitution[] = ['MACRO', 'BBVA', 'NACION', 'GALICIA', 'MERCADO_PAGO', 'OTHER'];
@@ -153,8 +156,11 @@ type LockedCheckoutAttempt = {
   fullPriceCash: bigint;
   fullPriceTransfer: bigint | null;
   fullPriceDebit: bigint | null;
+  fullPriceCredit: bigint | null;
   transferAdjustmentBps: number | null;
   debitAdjustmentBps: number | null;
+  creditAdjustmentBps: number | null;
+  algorithmVersion: number;
   pricingConfigId: string | null;
   pricingConfigUpdatedAt: Date | null;
   rejectionCode: string | null;
@@ -273,7 +279,7 @@ export function normalizeReferenceKey(reference: string): string {
   return reference.toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
-const METHOD_ORDER: Record<ProportionalMethod, number> = { CASH: 0, TRANSFER: 1, CARD_DEBIT: 2 };
+const METHOD_ORDER: Record<ProportionalMethod, number> = { CASH: 0, TRANSFER: 1, CARD_DEBIT: 2, CARD_CREDIT: 3 };
 
 // requestHash = SHA-256 of a canonical JSON with a fixed key order (design §7).
 // Absent values are the empty string; the tender order never changes the hash.
@@ -371,7 +377,7 @@ export function validateCheckoutRequest(request: CheckoutRequest): void {
         throw validationError('institutionOther solo se usa con la institución OTHER.');
       }
     } else if (tender.institution !== null || tender.institutionOther !== null) {
-      throw validationError('El débito no lleva institución.');
+      throw validationError(tender.method === 'CARD_CREDIT' ? 'El crédito no lleva institución.' : 'El débito no lleva institución.');
     }
   }
   if (balances !== 1) throw validationError('Se requiere exactamente un medio de saldo.');
@@ -453,9 +459,11 @@ export function createCheckoutService(database: PrismaClient) {
         } else if (evidence.institutionOther !== null) {
           throw validationError('institutionOther solo se usa con la institución OTHER.');
         }
-      } else if (sealed.method === 'CARD_DEBIT') {
+      } else if (sealed.method === 'CARD_DEBIT' || sealed.method === 'CARD_CREDIT') {
         if (evidence.referenceKey === null || evidence.institution !== null || evidence.institutionOther !== null) {
-          throw validationError('El débito nuevo requiere referencia y no admite institución.');
+          throw validationError(sealed.method === 'CARD_CREDIT'
+            ? 'El crédito nuevo requiere referencia y no admite institución.'
+            : 'El débito nuevo requiere referencia y no admite institución.');
         }
       } else {
         if (evidence.receivedAmount === null || evidence.referenceKey !== null || evidence.institution !== null || evidence.institutionOther !== null) {
@@ -523,13 +531,15 @@ export function createCheckoutService(database: PrismaClient) {
     planTenders: readonly SealedCheckoutTender[],
     lines: readonly ProportionalLineInput[],
   ): { methods: MethodSettlement[]; total: bigint; adjustments: Record<ProportionalMethod, number> } {
-    const adjustments: Record<ProportionalMethod, number> = { CASH: 0, TRANSFER: 0, CARD_DEBIT: 0 };
+    const adjustments: Record<ProportionalMethod, number> = { CASH: 0, TRANSFER: 0, CARD_DEBIT: 0, CARD_CREDIT: 0 };
     if (attempt.transferAdjustmentBps !== null) adjustments.TRANSFER = attempt.transferAdjustmentBps;
     if (attempt.debitAdjustmentBps !== null) adjustments.CARD_DEBIT = attempt.debitAdjustmentBps;
+    if (attempt.creditAdjustmentBps !== null) adjustments.CARD_CREDIT = attempt.creditAdjustmentBps;
     const sealedFullPrice: Record<ProportionalMethod, bigint | null> = {
       CASH: attempt.fullPriceCash,
       TRANSFER: attempt.fullPriceTransfer,
       CARD_DEBIT: attempt.fullPriceDebit,
+      CARD_CREDIT: attempt.fullPriceCredit,
     };
 
     const amounts = new Map<ProportionalMethod, bigint>();
@@ -556,6 +566,10 @@ export function createCheckoutService(database: PrismaClient) {
       if (!amounts.has(method)) continue;
       if (method !== 'CASH' && (attempt.transferAdjustmentBps === null || attempt.debitAdjustmentBps === null)) {
         throw planInconsistent(`Falta el ajuste sellado de ${method}.`);
+      }
+      // A plan can only carry CARD_CREDIT if it was sealed WITH a credit snapshot.
+      if (method === 'CARD_CREDIT' && (attempt.creditAdjustmentBps === null || attempt.fullPriceCredit === null)) {
+        throw planInconsistent('Falta el ajuste sellado de CARD_CREDIT.');
       }
       const perLine = lineFullPrices(lines, adjustments[method]);
       const fullPrice = perLine.reduce((sum, value) => sum + value, 0n);
@@ -606,7 +620,8 @@ export function createCheckoutService(database: PrismaClient) {
         SELECT id, "saleId", "branchId", "reserveKey", "operationKey", "planHash", "planSealed", status,
                "startedById", "confirmationHash", "cashSessionId", "balanceMethod", "expectedTotal",
                "expectedBalanceAmount", "tenderCount", "fullPriceCash", "fullPriceTransfer", "fullPriceDebit",
-               "transferAdjustmentBps", "debitAdjustmentBps", "pricingConfigId", "pricingConfigUpdatedAt",
+               "fullPriceCredit", "transferAdjustmentBps", "debitAdjustmentBps", "creditAdjustmentBps",
+               "algorithmVersion", "pricingConfigId", "pricingConfigUpdatedAt",
                "rejectionCode", "rejectionDetails", "declaredAt"
         FROM "CheckoutAttempt" WHERE "reserveKey" = ${request.reserveKey} FOR UPDATE
       `;
@@ -850,11 +865,14 @@ export function createCheckoutService(database: PrismaClient) {
           fullPriceCash: attempt.fullPriceCash,
           fullPriceTransfer: attempt.fullPriceTransfer,
           fullPriceDebit: attempt.fullPriceDebit,
+          fullPriceCredit: attempt.fullPriceCredit,
           transferAdjustmentBps: attempt.transferAdjustmentBps,
           debitAdjustmentBps: attempt.debitAdjustmentBps,
+          creditAdjustmentBps: attempt.creditAdjustmentBps,
           pricingConfigId: attempt.pricingConfigId,
           pricingConfigUpdatedAt: attempt.pricingConfigUpdatedAt,
-          algorithmVersion: CHECKOUT_ALGORITHM_VERSION,
+          // The checkout carries the snapshot format of the attempt it settles.
+          algorithmVersion: attempt.algorithmVersion,
           attemptStatus: 'CONFIRMED',
           completedAt: now,
         },
@@ -986,8 +1004,15 @@ export function createCheckoutService(database: PrismaClient) {
         after: {
           checkoutId: checkout.id, requestHash: requestConfirmationHash, total: settlement.total, changeAmount: cashChange,
           balanceMethod: attempt.balanceMethod,
-          fullPrices: { CASH: attempt.fullPriceCash, TRANSFER: attempt.fullPriceTransfer, CARD_DEBIT: attempt.fullPriceDebit },
-          adjustments: { transfer: attempt.transferAdjustmentBps, debit: attempt.debitAdjustmentBps },
+          fullPrices: {
+            CASH: attempt.fullPriceCash, TRANSFER: attempt.fullPriceTransfer, CARD_DEBIT: attempt.fullPriceDebit,
+            // Only a snapshot sealed with a credit price reports one: a credit-free audit keeps its historical shape.
+            ...(attempt.fullPriceCredit === null ? {} : { CARD_CREDIT: attempt.fullPriceCredit }),
+          },
+          adjustments: {
+            transfer: attempt.transferAdjustmentBps, debit: attempt.debitAdjustmentBps,
+            ...(attempt.creditAdjustmentBps === null ? {} : { credit: attempt.creditAdjustmentBps }),
+          },
           methods: settlement.methods.map((method) => ({ method: method.method, role: method.role, amount: method.amount })),
           supervisor: supervisorReason === null ? null : { byId: userId, reason: supervisorReason },
         },

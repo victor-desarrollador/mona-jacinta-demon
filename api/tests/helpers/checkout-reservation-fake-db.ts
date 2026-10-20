@@ -26,8 +26,8 @@ const MODELS = [
 export type Model = (typeof MODELS)[number];
 
 const ATTEMPT_DEFAULTS: Row = {
-  planSealed: false, status: 'RESERVED', fullPriceTransfer: null, fullPriceDebit: null, transferAdjustmentBps: null,
-  debitAdjustmentBps: null, pricingConfigId: null, pricingConfigUpdatedAt: null, recoveryReason: null, recoveryEvidence: null,
+  planSealed: false, status: 'RESERVED', fullPriceTransfer: null, fullPriceDebit: null, fullPriceCredit: null, transferAdjustmentBps: null,
+  debitAdjustmentBps: null, creditAdjustmentBps: null, pricingConfigId: null, pricingConfigUpdatedAt: null, recoveryReason: null, recoveryEvidence: null,
   confirmationHash: null, confirmedById: null, confirmedAt: null, confirmReason: null, confirmEvidence: null,
   rejectionCode: null, rejectionDetails: null, rejectedById: null, rejectedAt: null, abandonedById: null, abandonedAt: null,
   abandonReason: null, abandonEvidence: null, declaredById: null, declaredAt: null,

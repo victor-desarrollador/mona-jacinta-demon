@@ -701,9 +701,12 @@ model SaleNumberCounter {
 // express @@check or partial unique indexes).
 //
 // SQL-only constraints:
-//   chk_checkout_model             pricingModel = 'PROPORTIONAL_V1' AND algorithmVersion = 1
+//   chk_checkout_model             pricingModel = 'PROPORTIONAL_V1' AND algorithmVersion IN (1, 2)
+//                                    (CARD_CREDIT block: 1 = no credit snapshot, 2 = credit snapshot)
 //   chk_checkout_hash              requestHash ~ '^[0-9a-f]{64}$'
-//   chk_checkout_balance_method    balanceMethod IN ('CASH','TRANSFER','CARD_DEBIT')
+//   chk_checkout_balance_method    balanceMethod IN ('CASH','TRANSFER','CARD_DEBIT','CARD_CREDIT')
+//   chk_checkout_credit_snapshot   fullPriceCredit/creditAdjustmentBps: both NULL (version 1) or, in
+//                                    version 2, present exactly when the pricing-config snapshot is
 //   chk_checkout_amounts           total > 0 AND changeAmount >= 0 AND referenceSubtotal > 0
 //                                    AND fullPriceCash > 0 AND fullPriceCash % 100 = 0
 //   chk_checkout_config_snapshot   the pricing-config snapshot is all-or-nothing
@@ -728,8 +731,10 @@ model SaleCheckout {
   fullPriceCash         BigInt
   fullPriceTransfer     BigInt?
   fullPriceDebit        BigInt?
+  fullPriceCredit       BigInt?
   transferAdjustmentBps Int?
   debitAdjustmentBps    Int?
+  creditAdjustmentBps   Int?
   pricingConfigId       String?
   pricingConfigUpdatedAt DateTime?        @db.Timestamptz(3)
   algorithmVersion      Int
@@ -902,8 +907,10 @@ model CheckoutAttempt {
   fullPriceCash          BigInt
   fullPriceTransfer      BigInt?
   fullPriceDebit         BigInt?
+  fullPriceCredit        BigInt?
   transferAdjustmentBps  Int?
   debitAdjustmentBps     Int?
+  creditAdjustmentBps    Int?
   pricingConfigId        String?
   pricingConfigUpdatedAt DateTime?             @db.Timestamptz(3)
   algorithmVersion       Int

@@ -107,6 +107,7 @@ export function createCheckoutQuoteService(
     return {
       bankTransferAdjustmentBps: snapshot.adjustmentsBps.BANK_TRANSFER,
       debitCardAdjustmentBps: snapshot.adjustmentsBps.DEBIT_CARD,
+      creditCardAdjustmentBps: snapshot.adjustmentsBps.CREDIT_CARD,
     };
   }
 

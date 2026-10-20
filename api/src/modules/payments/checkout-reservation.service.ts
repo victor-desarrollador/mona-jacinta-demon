@@ -47,7 +47,7 @@ import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { createPricingService } from '../pricing/pricing.service.js';
 import { computeProportionalQuote, type ProportionalPricingSnapshot } from '../pricing/proportional-checkout.js';
 import { evaluateCurrentHoldCoverage } from '../sales/hold-coverage.js';
-import { planHash } from './checkout-canonical.js';
+import { CHECKOUT_ALGORITHM_VERSION, planHash } from './checkout-canonical.js';
 import { loadReservationView, readCheckoutResult, type ReservationView } from './checkout-attempt-view.js';
 import { loadProportionalLines } from './checkout-sale-snapshot.js';
 import { applyStockRecovery, evaluateStockRecovery, writeCheckoutStockRecoveredAudit } from './checkout-stock-recovery.service.js';
@@ -122,6 +122,7 @@ function enginePricing(snapshot: { id: string | null; adjustmentsBps: Record<str
   return {
     bankTransferAdjustmentBps: snapshot.adjustmentsBps.BANK_TRANSFER!,
     debitCardAdjustmentBps: snapshot.adjustmentsBps.DEBIT_CARD!,
+    creditCardAdjustmentBps: snapshot.adjustmentsBps.CREDIT_CARD!,
   };
 }
 
@@ -315,11 +316,13 @@ export function createCheckoutReservationService(
           // Whole pricing-config snapshot or nothing (chk_attempt_pricing_snapshot).
           fullPriceTransfer: engine === null ? null : quote.fullPrices.TRANSFER,
           fullPriceDebit: engine === null ? null : quote.fullPrices.CARD_DEBIT,
+          fullPriceCredit: engine === null ? null : quote.fullPrices.CARD_CREDIT,
           transferAdjustmentBps: engine?.bankTransferAdjustmentBps ?? null,
           debitAdjustmentBps: engine?.debitCardAdjustmentBps ?? null,
+          creditAdjustmentBps: engine === null ? null : (engine.creditCardAdjustmentBps ?? null),
           pricingConfigId: engine === null ? null : snapshot.id,
           pricingConfigUpdatedAt: engine === null ? null : snapshot.updatedAt,
-          algorithmVersion: 1,
+          algorithmVersion: CHECKOUT_ALGORITHM_VERSION,
           startedById: userId,
         },
       });
@@ -540,11 +543,13 @@ export function createCheckoutReservationService(
           // Whole pricing-config snapshot or nothing (chk_attempt_pricing_snapshot).
           fullPriceTransfer: engine === null ? null : quote.fullPrices.TRANSFER,
           fullPriceDebit: engine === null ? null : quote.fullPrices.CARD_DEBIT,
+          fullPriceCredit: engine === null ? null : quote.fullPrices.CARD_CREDIT,
           transferAdjustmentBps: engine?.bankTransferAdjustmentBps ?? null,
           debitAdjustmentBps: engine?.debitCardAdjustmentBps ?? null,
+          creditAdjustmentBps: engine === null ? null : (engine.creditCardAdjustmentBps ?? null),
           pricingConfigId: engine === null ? null : snapshot.id,
           pricingConfigUpdatedAt: engine === null ? null : snapshot.updatedAt,
-          algorithmVersion: 1,
+          algorithmVersion: CHECKOUT_ALGORITHM_VERSION,
           startedById: userId,
           // Write-once (F1): set at INSERT, never by a later UPDATE.
           recoveryReason: request.recovery!.reason,

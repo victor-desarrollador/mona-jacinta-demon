@@ -37,12 +37,12 @@ export function uniqueViolationText(violation: UniqueViolation): string {
 }
 
 // T-C and T-X: a P2002 of one of the two partial EXTERNAL reference indexes
-// (ExternalCollection_transfer_ref_key / ExternalCollection_debit_ref_key), by
+// (ExternalCollection_transfer_ref_key / _debit_ref_key / _credit_ref_key), by
 // SQL name, or by the column list Prisma reports for them. Never a false positive.
 export function isExternalReferenceCollision(error: unknown): boolean {
   const violation = uniqueViolation(error);
   if (violation === null) return false;
   const text = uniqueViolationText(violation);
-  return /externalcollection_(transfer|debit)_ref_key/.test(text)
+  return /externalcollection_(transfer|debit|credit)_ref_key/.test(text)
     || (text.includes('referencekey') && text.includes('branchid'));
 }

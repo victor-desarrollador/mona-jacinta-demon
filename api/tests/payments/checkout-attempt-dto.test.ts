@@ -103,8 +103,16 @@ describe('R3-A4.3 S2 — reservation DTO (POST /sales/:saleId/checkout/reservati
     expect(accepted).toBe(3 + 3 + 2);
   });
 
-  it('D05 historical methods CARD_CREDIT and QR are refused anywhere in a PROPORTIONAL_V1 reservation', () => {
-    for (const method of ['CARD_CREDIT', 'QR', 'cash', 'OTHER']) {
+  it('D05 CARD_CREDIT is a proportional method (balance, NEW fixed, COLLECTION fixed); QR and unknown methods are refused', () => {
+    ok(checkoutReservationDto, reservation({ balanceMethod: 'CARD_CREDIT', tenders: [
+      { method: 'CARD_CREDIT', role: 'BALANCE', source: 'NEW' },
+      { method: 'CASH', role: 'FIXED', source: 'NEW', amount: '1' },
+    ] }));
+    ok(checkoutReservationDto, withTenders([
+      { method: 'CASH', role: 'BALANCE', source: 'NEW' },
+      { method: 'CARD_CREDIT', role: 'FIXED', source: 'COLLECTION', amount: '50000', externalCollectionId: COLLECTION },
+    ]));
+    for (const method of ['QR', 'cash', 'OTHER']) {
       ko(checkoutReservationDto, reservation({ balanceMethod: method }), method);
       ko(checkoutReservationDto, withTenders([{ method: 'CASH', role: 'BALANCE', source: 'NEW' }, { method, role: 'FIXED', source: 'NEW', amount: '1' }]), method);
     }
@@ -213,7 +221,12 @@ describe('R3-A4.3 S2 — confirmation DTO (POST /sales/:saleId/checkout)', () =>
     ko(checkoutConfirmationDto, confirmation({ tenders: [] }), 'empty');
     ko(checkoutConfirmationDto, confirmation({ tenders: [{ method: 'CASH', receivedAmount: '1' }, { method: 'CASH', receivedAmount: '2' }] }), 'duplicate');
     ko(checkoutConfirmationDto, confirmation({ tenders: [{ method: 'CASH', receivedAmount: '1' }, { method: 'TRANSFER' }, { method: 'CARD_DEBIT' }, { method: 'TRANSFER' }] }), 'four');
-    for (const method of ['CARD_CREDIT', 'QR']) ko(checkoutConfirmationDto, confTender({ method }), method);
+    ko(checkoutConfirmationDto, confTender({ method: 'QR' }), 'QR');
+    // CARD_CREDIT: a reference (NEW) or none (COLLECTION), never an institution.
+    ok(checkoutConfirmationDto, confTender({ method: 'CARD_CREDIT', reference: 'CRD 0001' }));
+    ok(checkoutConfirmationDto, confTender({ method: 'CARD_CREDIT' }));
+    ko(checkoutConfirmationDto, confTender({ method: 'CARD_CREDIT', reference: 'CRD 0001', institution: 'BBVA' }), 'credit with institution');
+    ko(checkoutConfirmationDto, confTender({ method: 'CARD_CREDIT', receivedAmount: '1' }), 'credit with receivedAmount');
     for (const bad of BAD_MONEY) ko(checkoutConfirmationDto, confTender({ method: 'CASH', receivedAmount: bad }), 'receivedAmount');
     expect(checkoutConfirmationDto.parse(confTender({ method: 'CASH', receivedAmount: MAX })).tenders[0]!.receivedAmount).toBe(9223372036854775807n);
     for (const bad of BAD_UUIDS) {
@@ -264,11 +277,11 @@ describe('R3-A4.3 S2 — close/declaration DTO (POST …/reservations/:reserveKe
     for (const bad of BAD_UUIDS) ko(checkoutCloseParamsDto, { saleId: SALE, reserveKey: bad }, 'reserveKey');
   });
 
-  it('D21 outcome × method matrix: CASH only NONE|RETURNED, TRANSFER/CARD_DEBIT only NONE|CHARGED', () => {
+  it('D21 outcome × method matrix: CASH only NONE|RETURNED, TRANSFER/CARD_DEBIT/CARD_CREDIT only NONE|CHARGED', () => {
     const rows: Record<string, Json> = {
       NONE: {}, RETURNED: { returnedAmount: '1', evidence: 'recibo 1' }, CHARGED: { amount: '1', reference: 'op 777', evidence: 'comprobante 1' },
     };
-    for (const method of ['CASH', 'TRANSFER', 'CARD_DEBIT']) for (const outcome of ['NONE', 'RETURNED', 'CHARGED', 'RETAINED']) {
+    for (const method of ['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']) for (const outcome of ['NONE', 'RETURNED', 'CHARGED', 'RETAINED']) {
       const row: Json = { method, outcome, ...(rows[outcome] ?? {}), ...(outcome === 'CHARGED' && method === 'TRANSFER' ? { institution: 'BBVA' } : {}) };
       const expected = method === 'CASH' ? ['NONE', 'RETURNED'].includes(outcome) : ['NONE', 'CHARGED'].includes(outcome);
       expect(checkoutCloseDto.safeParse(close([row])).success, `${method} ${outcome}`).toBe(expected);
@@ -290,6 +303,7 @@ describe('R3-A4.3 S2 — close/declaration DTO (POST …/reservations/:reserveKe
     }
     ko(checkoutCloseDto, close([charged('TRANSFER', { institution: undefined })]), 'TRANSFER CHARGED without institution');
     ko(checkoutCloseDto, close([charged('CARD_DEBIT', { institution: 'BBVA' })]), 'CARD_DEBIT CHARGED with institution');
+    ko(checkoutCloseDto, close([charged('CARD_CREDIT', { institution: 'BBVA' })]), 'CARD_CREDIT CHARGED with institution');
     ko(checkoutCloseDto, close([charged('TRANSFER', { institution: 'BBVA', institutionOther: 'X' })]), 'label without OTHER');
     ok(checkoutCloseDto, close([charged('TRANSFER', { institution: 'OTHER', institutionOther: ' Cooperativa Ñandú ' })]));
     ko(checkoutCloseDto, close([charged('TRANSFER', { institution: 'OTHER' })]), 'OTHER without label');
@@ -303,7 +317,7 @@ describe('R3-A4.3 S2 — close/declaration DTO (POST …/reservations/:reserveKe
   it('D23 1..3 rows, no repeated method; supervisor justification; unknown fields refused', () => {
     ko(checkoutCloseDto, close([]), 'empty');
     ko(checkoutCloseDto, close([{ method: 'CASH', outcome: 'NONE' }, { method: 'CASH', outcome: 'NONE' }]), 'duplicate');
-    ko(checkoutCloseDto, close([{ method: 'CARD_CREDIT', outcome: 'NONE' }]), 'CARD_CREDIT');
+    ok(checkoutCloseDto, close([{ method: 'CARD_CREDIT', outcome: 'NONE' }]));
     ko(checkoutCloseDto, close([{ method: 'QR', outcome: 'NONE' }]), 'QR');
     expect(checkoutCloseDto.parse(close([{ method: 'CASH', outcome: 'NONE', evidence: 'ok1' }], { supervisor: { reason, evidence: 'cupón 1' } })).supervisor).toEqual({ reason, evidence: 'cupón 1' });
     ko(checkoutCloseDto, close([{ method: 'CASH', outcome: 'NONE' }], { supervisor: { reason: 'corto', evidence: 'ok1' } }), 'short reason');

@@ -95,6 +95,7 @@ const METHOD_LABELS: Record<ProportionalMethod, string> = {
   CASH: "Efectivo",
   TRANSFER: "Transferencia",
   CARD_DEBIT: "Tarjeta de débito",
+  CARD_CREDIT: "Tarjeta de crédito",
 };
 
 const INSTITUTION_LABELS: Record<TransferInstitution, string> = {
@@ -127,7 +128,7 @@ function institutionLabel(institution: TransferInstitution): string {
 }
 
 function isProportional(method: PaymentMethod): method is ProportionalMethod {
-  return method === "CASH" || method === "TRANSFER" || method === "CARD_DEBIT";
+  return method === "CASH" || method === "TRANSFER" || method === "CARD_DEBIT" || method === "CARD_CREDIT";
 }
 
 function centavosOrRaw(money: MoneyTools, input: string): string {
@@ -156,12 +157,12 @@ type DraftState = {
 
 type ChargeMode = "SIMPLE" | "COMBINED";
 
-// Etiquetas cortas del pago simple. Crédito se suma acá, y en PROPORTIONAL_METHODS,
-// cuando el motor proporcional lo soporte: hoy no hay un cuarto botón que vaya a fallar.
+// Etiquetas cortas del pago simple.
 const SIMPLE_LABELS: Record<ProportionalMethod, string> = {
   CASH: "Efectivo",
   TRANSFER: "Transferencia",
   CARD_DEBIT: "Débito",
+  CARD_CREDIT: "Crédito",
 };
 
 const INITIAL_DRAFT: DraftState = {

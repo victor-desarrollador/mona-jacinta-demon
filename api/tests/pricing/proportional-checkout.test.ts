@@ -130,7 +130,7 @@ describe('roundPeso — half-up to the whole peso', () => {
 describe('R3 §2 — the four approved commercial cases', () => {
   it('C1: $20.000 CASH fixed, balance TRANSFER', () => {
     const result = quote({ tenders: [{ method: 'CASH', amount: p(20000) }], balanceMethod: 'TRANSFER' });
-    expect(result.fullPrices).toEqual({ CASH: p(40000), TRANSFER: p(44000), CARD_DEBIT: p(42000) });
+    expect(result.fullPrices).toEqual({ CASH: p(40000), TRANSFER: p(44000), CARD_DEBIT: p(42000), CARD_CREDIT: null });
     expect(result.balance).toEqual({ method: 'TRANSFER', amount: p(22000) });
     expect(result.total).toBe(p(42000));
     expect(methodTotal(result, 'CASH')).toBe(p(20000));
@@ -192,7 +192,7 @@ describe('R3 §3 — multiple garments and quantities (worked example)', () => {
 
   it('reconciles exactly per method and per line', () => {
     const result = build(lines);
-    expect(result.fullPrices).toEqual({ CASH: 3_769_200n, TRANSFER: 4_146_200n, CARD_DEBIT: 3_957_600n });
+    expect(result.fullPrices).toEqual({ CASH: 3_769_200n, TRANSFER: 4_146_200n, CARD_DEBIT: 3_957_600n, CARD_CREDIT: null });
     expect(result.balance.amount).toBe(2_165_200n);
     expect(result.total).toBe(3_942_955n);
     expect(methodTotal(result, 'CASH')).toBe(1_000_000n);
@@ -464,7 +464,7 @@ describe('R3 §2 — BigInt limits and overflow', () => {
       ],
       balanceMethod: 'CARD_DEBIT',
     });
-    expect(result.fullPrices).toEqual({ CASH: 1_000_000_000n, TRANSFER: 1_000_000_000n, CARD_DEBIT: 1_000_000_000n });
+    expect(result.fullPrices).toEqual({ CASH: 1_000_000_000n, TRANSFER: 1_000_000_000n, CARD_DEBIT: 1_000_000_000n, CARD_CREDIT: null });
     expect(result.total).toBe(1_000_000_002n);
   });
 
@@ -548,8 +548,8 @@ describe('R3 §2 — BigInt limits and overflow', () => {
 });
 
 describe('R3 §2 — invalid inputs fail closed', () => {
-  it('exposes exactly CASH, TRANSFER and CARD_DEBIT', () => {
-    expect(PROPORTIONAL_METHODS).toEqual(['CASH', 'TRANSFER', 'CARD_DEBIT']);
+  it('exposes exactly CASH, TRANSFER, CARD_DEBIT and CARD_CREDIT', () => {
+    expect(PROPORTIONAL_METHODS).toEqual(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']);
   });
 
   it('rejects an empty or inconsistent sale', () => {
@@ -565,9 +565,8 @@ describe('R3 §2 — invalid inputs fail closed', () => {
   });
 
   it('rejects an unsupported method', () => {
-    const credit = 'CARD_CREDIT' as unknown as ProportionalMethod;
     const qr = 'QR' as unknown as ProportionalMethod;
-    expectCode(() => quote({ balanceMethod: credit }), 'PAYMENT_METHOD_NOT_ENABLED');
+    expectCode(() => quote({ balanceMethod: qr }), 'PAYMENT_METHOD_NOT_ENABLED');
     expectCode(() => quote({ tenders: [{ method: qr, amount: p(1000) }], balanceMethod: 'CASH' }), 'PAYMENT_METHOD_NOT_ENABLED');
   });
 
@@ -578,7 +577,7 @@ describe('R3 §2 — invalid inputs fail closed', () => {
       'PRICING_CONFIG_MISSING',
     );
     const cashOnly = quote({ pricing: null, balanceMethod: 'CASH' });
-    expect(cashOnly.fullPrices).toEqual({ CASH: p(40000), TRANSFER: null, CARD_DEBIT: null });
+    expect(cashOnly.fullPrices).toEqual({ CASH: p(40000), TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null });
     expect(cashOnly.total).toBe(p(40000));
   });
 
