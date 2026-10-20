@@ -813,6 +813,16 @@ export default function OperationsPage() {
   );
 }
 
+const CATALOG_PAGE_SIZE = 100;
+
+type VariantPage = { items: Variant[]; pagination?: { page: number; limit: number; total: number } };
+
+function catalogQuery(branchId: string, search: string, page: number) {
+  const query = new URLSearchParams({ branchId, limit: String(CATALOG_PAGE_SIZE), page: String(page) });
+  if (search.trim()) query.set("search", search.trim());
+  return query.toString();
+}
+
 function SellerWorkspace({
   token,
   user,
@@ -829,6 +839,9 @@ function SellerWorkspace({
   const [sentSale, setSentSale] = useState<Sale | null>(null);
   const [search, setSearch] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogLoadingMore, setCatalogLoadingMore] = useState(false);
+  const [catalogPage, setCatalogPage] = useState(1);
+  const [catalogTotal, setCatalogTotal] = useState(0);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
   // Block 1: the wholesale code lives only in this input until submitted;
@@ -836,29 +849,77 @@ function SellerWorkspace({
   const [wholesaleOpen, setWholesaleOpen] = useState(false);
   const [wholesaleCode, setWholesaleCode] = useState("");
 
+  // GET /variants answers at most CATALOG_PAGE_SIZE items per request, so the
+  // catalog is walked page by page. `catalogEpoch` identifies the current
+  // branch+search list: an answer that belongs to an older epoch is dropped.
+  const catalogEpoch = useRef(0);
+  const catalogAbort = useRef<AbortController | null>(null);
+
   useEffect(() => {
     if (!token || !branchId) return;
 
+    const epoch = ++catalogEpoch.current;
     const controller = new AbortController();
-    const query = new URLSearchParams({ branchId, limit: "100" });
-    if (search.trim()) query.set("search", search.trim());
+    catalogAbort.current?.abort();
+    catalogAbort.current = controller;
 
+    setVariants([]);
+    setCatalogPage(1);
+    setCatalogTotal(0);
     setCatalogLoading(true);
+    setCatalogLoadingMore(false);
     setError("");
 
-    apiRequest<{ items: Variant[] }>(`/variants?${query.toString()}`, token, {
+    apiRequest<VariantPage>(`/variants?${catalogQuery(branchId, search, 1)}`, token, {
       signal: controller.signal,
     })
-      .then(({ items }) => setVariants(items))
+      .then(({ items, pagination }) => {
+        if (catalogEpoch.current !== epoch) return;
+        setVariants(items);
+        setCatalogTotal(pagination?.total ?? items.length);
+      })
       .catch((cause: Error) => {
-        if (cause.name !== "AbortError") setError(cause.message);
+        if (cause.name !== "AbortError" && catalogEpoch.current === epoch) setError(cause.message);
       })
       .finally(() => {
-        if (!controller.signal.aborted) setCatalogLoading(false);
+        if (catalogEpoch.current === epoch) setCatalogLoading(false);
       });
 
     return () => controller.abort();
   }, [token, branchId, search]);
+
+  const catalogHasMore = variants.length > 0 && catalogPage * CATALOG_PAGE_SIZE < catalogTotal;
+
+  function loadMoreCatalog() {
+    if (!token || !branchId || catalogLoading || catalogLoadingMore || !catalogHasMore) return;
+
+    const epoch = catalogEpoch.current;
+    const nextPage = catalogPage + 1;
+    const controller = new AbortController();
+    catalogAbort.current = controller;
+
+    setCatalogLoadingMore(true);
+    setError("");
+
+    apiRequest<VariantPage>(`/variants?${catalogQuery(branchId, search, nextPage)}`, token, {
+      signal: controller.signal,
+    })
+      .then(({ items, pagination }) => {
+        if (catalogEpoch.current !== epoch) return;
+        setVariants((current) => {
+          const known = new Set(current.map((variant) => variant.id));
+          return [...current, ...items.filter((variant) => !known.has(variant.id))];
+        });
+        setCatalogPage(nextPage);
+        setCatalogTotal(pagination?.total ?? 0);
+      })
+      .catch((cause: Error) => {
+        if (cause.name !== "AbortError" && catalogEpoch.current === epoch) setError(cause.message);
+      })
+      .finally(() => {
+        if (catalogEpoch.current === epoch) setCatalogLoadingMore(false);
+      });
+  }
 
   const saleItemCount = useMemo(
     () => sale?.items.reduce((sum, item) => sum + toQuantity(item.quantity), 0) ?? 0,
@@ -1059,7 +1120,7 @@ function SellerWorkspace({
 
         <div className="branch-context">
           <strong>{selectedBranchLabel}</strong>
-          <span>{variants.length} variantes visibles para esta sucursal</span>
+          <span>{`${variants.length} de ${Math.max(catalogTotal, variants.length)} variantes visibles para esta sucursal`}</span>
         </div>
 
         {error ? <p className="error-banner">{error}</p> : null}
@@ -1142,6 +1203,17 @@ function SellerWorkspace({
                 })
               )}
             </div>
+            {catalogHasMore ? (
+              <div className="catalog-more">
+                <button
+                  className="secondary-button"
+                  onClick={loadMoreCatalog}
+                  disabled={catalogLoadingMore}
+                >
+                  {catalogLoadingMore ? "Cargando..." : "Cargar más"}
+                </button>
+              </div>
+            ) : null}
           </>
         )}
       </section>
