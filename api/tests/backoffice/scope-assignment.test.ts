@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
@@ -590,5 +591,679 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
       expect(res.status).toBe(400);
       expect(await db.userRoleScope.findMany({ where: { userId: target.id } })).toEqual(before);
     });
+  });
+
+  // SEC-A (MJ-ADMIN-ADM-02-SEC-A-IMPLEMENT-01, owner-approved 2026-10-17).
+  // The three approved policies under test:
+  //   1. a NEW LOCATION assignment over an inactive Location is rejected
+  //      with 400 LOCATION_INACTIVE (nonexistent ids keep the FK 409 path);
+  //   2. exactly one AuditLog row per EFFECTIVE mutation, written inside
+  //      the mutation's own transaction (authenticated actor, branchId
+  //      null, before/after scope-shape snapshots, never credentials);
+  //   3. an idempotent revoke that removes zero rows writes no AuditLog.
+  describe('SEC-A: F-01 transactional audit + F-02 inactive locations', () => {
+    let app: ReturnType<typeof createApp>;
+
+    beforeAll(() => {
+      app = createApp(db);
+    });
+
+    async function createInactiveLocation(): Promise<string> {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      await db.location.update({ where: { id: branch.id }, data: { isActive: false } });
+      return branch.id;
+    }
+
+    function auditRows(targetId: string) {
+      return db.auditLog.findMany({
+        where: { entityId: targetId, entityType: 'UserRoleScope' },
+      });
+    }
+
+    async function ownerCaller(email: string) {
+      const owner = await createOwnerUser(email);
+      const ctx = ownerCtx(owner.id, (await findRole('OWNER')).id);
+      return { owner, ctx };
+    }
+
+    async function freshTarget(name: string) {
+      return db.user.create({ data: { name, email: `${name}@test.local`, passwordHash: 'x' } });
+    }
+
+    it('F-01: an effective assign writes exactly one AuditLog row in the same transaction (actor, branchId null, USER_SCOPE_ASSIGNED, before null, after snapshot)', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { owner, ctx } = await ownerCaller('sec-a-owner-1@test.local');
+      const target = await freshTarget('sec-a-1');
+
+      await service.assign(ctx, target.id, {
+        roleCode: 'SELLER',
+        scopeKind: 'LOCATION',
+        locationIds: [branch.id],
+      });
+
+      const rows = await auditRows(target.id);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        userId: owner.id,
+        branchId: null,
+        action: 'USER_SCOPE_ASSIGNED',
+        entityType: 'UserRoleScope',
+        entityId: target.id,
+      });
+      expect(rows[0]!.before).toBeNull();
+      expect(rows[0]!.after).toMatchObject({
+        roleCode: 'SELLER',
+        scopeKind: 'LOCATION',
+        locationIds: [branch.id],
+      });
+      // Snapshot hygiene: the audit row carries the scope shape only — never credentials.
+      expect(JSON.stringify(rows)).not.toContain('passwordHash');
+    });
+
+    it('F-01: a replacement captures the previous assignment shape as the before snapshot', async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const { ctx } = await ownerCaller('sec-a-owner-2@test.local');
+      const target = await freshTarget('sec-a-2');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchA.id] });
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchB.id] });
+
+      const rows = await auditRows(target.id);
+      expect(rows).toHaveLength(2);
+      const initial = rows.find((row) => row.action === 'USER_SCOPE_ASSIGNED' && row.before === null);
+      const replacement = rows.find((row) => row.action === 'USER_SCOPE_ASSIGNED' && row.before !== null);
+      expect(initial).toBeDefined();
+      expect(replacement).toBeDefined();
+      expect(replacement!.before).toMatchObject({
+        roleCode: 'SELLER',
+        scopeKind: 'LOCATION',
+        locationIds: [branchA.id],
+      });
+      expect(replacement!.after).toMatchObject({
+        roleCode: 'SELLER',
+        scopeKind: 'LOCATION',
+        locationIds: [branchB.id],
+      });
+    });
+
+    it('F-01: an effective revoke writes exactly one AuditLog row with the removed shape as before and after null', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { owner, ctx } = await ownerCaller('sec-a-owner-3@test.local');
+      const target = await freshTarget('sec-a-3');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      await service.revoke(ctx, target.id, 'SELLER');
+
+      const rows = await auditRows(target.id);
+      expect(rows).toHaveLength(2);
+      const revoked = rows.find((row) => row.action === 'USER_SCOPE_REVOKED');
+      expect(revoked).toBeDefined();
+      expect(revoked).toMatchObject({
+        userId: owner.id,
+        branchId: null,
+        entityId: target.id,
+      });
+      expect(revoked!.before).toMatchObject({
+        roleCode: 'SELLER',
+        scopeKind: 'LOCATION',
+        locationIds: [branch.id],
+      });
+      expect(revoked!.after).toBeNull();
+    });
+
+    it('F-01 policy 3: an idempotent revoke that removes zero rows writes no AuditLog', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { ctx } = await ownerCaller('sec-a-owner-4@test.local');
+      const target = await freshTarget('sec-a-4');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      const result = await service.revoke(ctx, target.id, 'WAREHOUSE');
+
+      expect(result).toMatchObject({ userId: target.id, roleCode: 'WAREHOUSE', revoked: true });
+      const rows = await auditRows(target.id);
+      expect(rows).toHaveLength(1); // the assign only — the zero-row revoke audited nothing
+      expect(rows[0]!.action).toBe('USER_SCOPE_ASSIGNED');
+    });
+
+    it('F-02: a LOCATION assignment over an inactive Location is rejected with LOCATION_INACTIVE, with zero mutation and zero audit', async () => {
+      const inactiveId = await createInactiveLocation();
+      const { ctx } = await ownerCaller('sec-a-owner-5@test.local');
+      const target = await freshTarget('sec-a-5');
+
+      await expect(
+        service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [inactiveId] }),
+      ).rejects.toThrow(/inactiv/i);
+
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id } })).toHaveLength(0);
+      expect(await auditRows(target.id)).toHaveLength(0);
+    });
+
+    it('F-02: a mixed active+inactive locationIds assign is rejected atomically and the prior assignment survives', async () => {
+      const activeBranch = await createBranch(db);
+      await ensureTestLocation(db, activeBranch.id);
+      const inactiveId = await createInactiveLocation();
+      const { ctx } = await ownerCaller('sec-a-owner-6@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-6');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [activeBranch.id] });
+      await expect(
+        service.assign(ctx, target.id, {
+          roleCode: 'SELLER',
+          scopeKind: 'LOCATION',
+          locationIds: [activeBranch.id, inactiveId],
+        }),
+      ).rejects.toThrow(/inactiv/i);
+
+      const sellerRows = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(sellerRows).toHaveLength(1);
+      expect(sellerRows[0]!.locationId).toBe(activeBranch.id);
+      expect(await auditRows(target.id)).toHaveLength(1); // only the first assign audited
+    });
+
+    it('SEC-A keeps the FK semantics: a nonexistent Location still fails with no partial state and no audit row (atomic rollback)', async () => {
+      const { ctx } = await ownerCaller('sec-a-owner-7@test.local');
+      const target = await freshTarget('sec-a-7');
+
+      await expect(
+        service.assign(ctx, target.id, {
+          roleCode: 'SELLER',
+          scopeKind: 'LOCATION',
+          locationIds: ['00000000-0000-4000-9999-000000000003'],
+        }),
+      ).rejects.toThrow();
+
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id } })).toHaveLength(0);
+      expect(await auditRows(target.id)).toHaveLength(0);
+    });
+
+    it('F-01: COMPANY assign/revoke audits carry locationIds null and branchId null, never an arbitrary Location', async () => {
+      const { ctx } = await ownerCaller('sec-a-owner-8@test.local');
+      const target = await freshTarget('sec-a-8');
+
+      await service.assign(ctx, target.id, { roleCode: 'ADMIN', scopeKind: 'COMPANY' });
+      await service.revoke(ctx, target.id, 'ADMIN');
+
+      const rows = await auditRows(target.id);
+      expect(rows).toHaveLength(2);
+      const assigned = rows.find((row) => row.action === 'USER_SCOPE_ASSIGNED');
+      const revoked = rows.find((row) => row.action === 'USER_SCOPE_REVOKED');
+      expect(assigned).toBeDefined();
+      expect(assigned!.branchId).toBeNull();
+      expect(assigned!.after).toMatchObject({ roleCode: 'ADMIN', scopeKind: 'COMPANY', locationIds: null });
+      expect(revoked).toBeDefined();
+      expect(revoked!.branchId).toBeNull();
+      expect(revoked!.before).toMatchObject({ roleCode: 'ADMIN', scopeKind: 'COMPANY', locationIds: null });
+      expect(revoked!.after).toBeNull();
+    });
+
+    it('HTTP F-02: POST with an inactive location returns 400 LOCATION_INACTIVE and writes nothing', async () => {
+      const inactiveId = await createInactiveLocation();
+      const admin = await createCompanyAdmin('sec-a-http-admin-1@test.local');
+      const target = await freshTarget('sec-a-h1');
+
+      const res = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [inactiveId] });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatchObject({ code: 'LOCATION_INACTIVE' });
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id } })).toHaveLength(0);
+      expect(await auditRows(target.id)).toHaveLength(0);
+    });
+
+    it('HTTP F-01: a successful POST audits the authenticated caller; a held-role DELETE audits the revoke; a repeated idempotent DELETE adds no further audit row', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const admin = await createCompanyAdmin('sec-a-http-admin-2@test.local');
+      const target = await freshTarget('sec-a-h2');
+
+      const assignRes = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      expect(assignRes.status).toBeLessThan(300);
+
+      const warehouseRes = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'WAREHOUSE', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      expect(warehouseRes.status).toBeLessThan(300);
+
+      const firstDelete = await request(app)
+        .delete(`/api/v1/backoffice/users/${target.id}/scope/WAREHOUSE`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
+      expect(firstDelete.status).toBeLessThan(300);
+
+      const secondDelete = await request(app)
+        .delete(`/api/v1/backoffice/users/${target.id}/scope/WAREHOUSE`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
+      expect(secondDelete.status).toBeLessThan(300);
+      expect(secondDelete.body).toMatchObject({ revoked: true });
+
+      const rows = await auditRows(target.id);
+      expect(rows).toHaveLength(3); // SELLER assign + WAREHOUSE assign + the effective WAREHOUSE revoke; the idempotent DELETE audited nothing
+      expect([...rows.map((row) => row.action)].sort()).toEqual([
+        'USER_SCOPE_ASSIGNED',
+        'USER_SCOPE_ASSIGNED',
+        'USER_SCOPE_REVOKED',
+      ]);
+      expect(rows.every((row) => row.userId === admin.id)).toBe(true);
+      expect(rows.every((row) => row.branchId === null)).toBe(true);
+    });
+
+    // ---------------------------------------------------------------------
+    // SEC-A REVIEW-FIXES (MJ-ADMIN-ADM-02-SEC-A-REVIEW-FIXES-01, owner-
+    // approved 2026-10-17). Approved policies H-04/H-05/H-06 + the Location
+    // `FOR SHARE` serialization. Each case states its expected classification
+    // (RED before the fix / GREEN-guard) as a comment BEFORE its assertions.
+    // No pre-existing assertion above was modified or weakened.
+    // ---------------------------------------------------------------------
+
+    // A UUID that is structurally valid (v4 shape) but matches no Location
+    // row: proves the FK path (P2003 -> 409) is untouched by the new guard.
+    const MISSING_LOCATION_ID = '00000000-0000-4000-8000-0000000000ff';
+    // A valid UUID matching no User: makes the AuditLog userId FK fail, which
+    // rolls the whole mutation transaction back.
+    const MISSING_ACTOR_ID = '00000000-0000-4000-8000-0000000000aa';
+
+    it('REVIEW-FIX H-05 (was RED): a logically identical SELLER@A re-assign is a no-op — same physical row, no rewrite, no second AuditLog', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-01@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-01');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      const firstRows = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(firstRows).toHaveLength(1);
+
+      const res = await service.assign(ctx, target.id, {
+        roleCode: 'SELLER',
+        scopeKind: 'LOCATION',
+        locationIds: [branch.id],
+      });
+
+      expect(res).toEqual({ userId: target.id, roleCode: 'SELLER', scopeKind: 'LOCATION' });
+      const after = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(after).toHaveLength(1);
+      // A rewrite (delete+create) would mint a new row id; identity proves none happened.
+      expect(after[0]!.id).toBe(firstRows[0]!.id);
+      expect(await auditRows(target.id)).toHaveLength(1); // the first assign only
+    });
+
+    it('REVIEW-FIX H-05 (was RED): SELLER@[A,B] then SELLER@[B,A] is logically identical — input order neither rewrites rows nor audits', async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-02@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-02');
+
+      await service.assign(ctx, target.id, {
+        roleCode: 'SELLER',
+        scopeKind: 'LOCATION',
+        locationIds: [branchA.id, branchB.id],
+      });
+      const firstIds = (await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } }))
+        .map((row) => row.id)
+        .sort();
+
+      await service.assign(ctx, target.id, {
+        roleCode: 'SELLER',
+        scopeKind: 'LOCATION',
+        locationIds: [branchB.id, branchA.id],
+      });
+
+      const afterIds = (await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } }))
+        .map((row) => row.id)
+        .sort();
+      expect(afterIds).toEqual(firstIds);
+      expect(await auditRows(target.id)).toHaveLength(1);
+    });
+
+    it('REVIEW-FIX H-05 (was RED): an identical COMPANY re-assign is a no-op with a single AuditLog', async () => {
+      const { ctx } = await ownerCaller('sec-a-rf-owner-03@test.local');
+      const adminRole = await findRole('ADMIN');
+      const target = await freshTarget('sec-a-rf-03');
+
+      await service.assign(ctx, target.id, { roleCode: 'ADMIN', scopeKind: 'COMPANY' });
+      await service.assign(ctx, target.id, { roleCode: 'ADMIN', scopeKind: 'COMPANY' });
+
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id, roleId: adminRole.id } })).toHaveLength(1);
+      expect(await auditRows(target.id)).toHaveLength(1);
+    });
+
+    it('REVIEW-FIX H-05 (GREEN-guard): A->B is NOT logically identical — it stays an effective, audited replacement', async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-04@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-04');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchA.id] });
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchB.id] });
+
+      const rows = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.locationId).toBe(branchB.id);
+      expect(await auditRows(target.id)).toHaveLength(2);
+    });
+
+    it('REVIEW-FIX H-05 (GREEN-guard): a duplicated-id request is NOT logically identical — it still fails on the unique index', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-05@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-05');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+
+      const err = await service
+        .assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id, branch.id] })
+        .then(() => null, (error) => error as { code?: string });
+      expect(err?.code).toBe('P2002'); // unique-index violation: the multiset differs from the prior single row
+
+      const rows = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.locationId).toBe(branch.id);
+      expect(await auditRows(target.id)).toHaveLength(1);
+    });
+
+    it('REVIEW-FIX H-06 (was RED): an anomalous COMPANY+LOCATION state fails closed on assign with no mutation and no audit', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-06@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-06');
+      // The DB permits this shape (per-kind unique indexes + a per-row CHECK).
+      await db.userRoleScope.create({
+        data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'COMPANY', locationId: null },
+      });
+      await db.userRoleScope.create({
+        data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branch.id },
+      });
+      const before = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+
+      const err = await service
+        .assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] })
+        .then(() => null, (error) => error as { code?: string; status?: number });
+
+      expect(err?.code).toBe('SCOPE_STATE_INCONSISTENT');
+      expect(err?.status).toBe(409);
+      const after = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(after.map((row) => row.id).sort()).toEqual(before.map((row) => row.id).sort());
+      expect(await auditRows(target.id)).toHaveLength(0);
+    });
+
+    it('REVIEW-FIX H-06 (was RED): the same anomalous state fails closed on revoke with no delete and no audit', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-07@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-07');
+      await db.userRoleScope.create({
+        data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'COMPANY', locationId: null },
+      });
+      await db.userRoleScope.create({
+        data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branch.id },
+      });
+
+      const err = await service
+        .revoke(ctx, target.id, 'SELLER')
+        .then(() => null, (error) => error as { code?: string; status?: number });
+
+      expect(err?.code).toBe('SCOPE_STATE_INCONSISTENT');
+      expect(err?.status).toBe(409);
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } })).toHaveLength(2);
+      expect(await auditRows(target.id)).toHaveLength(0);
+    });
+
+    it('REVIEW-FIX H-06: the anomalous state also surfaces through HTTP as 409 SCOPE_STATE_INCONSISTENT, leaving both rows intact', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const admin = await createCompanyAdmin('sec-a-rf-http-admin-06@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-06h');
+      await db.userRoleScope.create({
+        data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'COMPANY', locationId: null },
+      });
+      await db.userRoleScope.create({
+        data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branch.id },
+      });
+
+      const res = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatchObject({ code: 'SCOPE_STATE_INCONSISTENT' });
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } })).toHaveLength(2);
+      expect(await auditRows(target.id)).toHaveLength(0);
+    });
+
+    it('REVIEW-FIX (was RED): a failing AuditLog rolls back the whole transaction — new assign, replacement and revoke all revert', async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const ownerRoleId = (await findRole('OWNER')).id;
+      const brokenCtx = ownerCtx(MISSING_ACTOR_ID, ownerRoleId); // valid OWNER caller, no User row -> AuditLog FK P2003
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-08');
+
+      // (1) NEW assign: the scope row is created, the audit fails, the whole tx rolls back.
+      const newErr = await service
+        .assign(brokenCtx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchA.id] })
+        .then(() => null, (error) => error as { code?: string });
+      expect(newErr?.code).toBe('P2003');
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } })).toHaveLength(0);
+      expect(await auditRows(target.id)).toHaveLength(0);
+
+      // Establish a real assignment, then a failing REPLACEMENT must leave it intact.
+      const { ctx } = await ownerCaller('sec-a-rf-owner-08@test.local');
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchA.id] });
+      const replaceErr = await service
+        .assign(brokenCtx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchB.id] })
+        .then(() => null, (error) => error as { code?: string });
+      expect(replaceErr?.code).toBe('P2003');
+      const afterReplace = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(afterReplace).toHaveLength(1);
+      expect(afterReplace[0]!.locationId).toBe(branchA.id); // the delete+recreate reverted
+      expect(await auditRows(target.id)).toHaveLength(1); // only the successful assign
+
+      // (3) REVOKE: the delete lands, the audit fails, the delete rolls back.
+      const revokeErr = await service
+        .revoke(brokenCtx, target.id, 'SELLER')
+        .then(() => null, (error) => error as { code?: string });
+      expect(revokeErr?.code).toBe('P2003');
+      const afterRevoke = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(afterRevoke).toHaveLength(1);
+      expect(afterRevoke[0]!.locationId).toBe(branchA.id);
+      expect(await auditRows(target.id)).toHaveLength(1);
+    });
+
+    it('REVIEW-FIX (GREEN-guard): a nonexistent Location fails precisely — service P2003, HTTP 409 DATABASE_CONFLICT, no partial state', async () => {
+      const { ctx } = await ownerCaller('sec-a-rf-owner-09@test.local');
+      const target = await freshTarget('sec-a-rf-09');
+
+      const err = await service
+        .assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [MISSING_LOCATION_ID] })
+        .then(() => null, (error) => error as { code?: string });
+      expect(err?.code).toBe('P2003');
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id } })).toHaveLength(0);
+      expect(await auditRows(target.id)).toHaveLength(0);
+
+      const admin = await createCompanyAdmin('sec-a-rf-http-admin-09@test.local');
+      const httpTarget = await freshTarget('sec-a-rf-09h');
+      const res = await request(app)
+        .post(`/api/v1/backoffice/users/${httpTarget.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [MISSING_LOCATION_ID] });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatchObject({ code: 'DATABASE_CONFLICT' });
+      expect(await db.userRoleScope.findMany({ where: { userId: httpTarget.id } })).toHaveLength(0);
+    });
+
+    it('REVIEW-FIX (GREEN-guard): assign/revoke snapshots are exactly the scope shape, carrying no sensitive fields', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-10@test.local');
+      const target = await freshTarget('sec-a-rf-10');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      await service.revoke(ctx, target.id, 'SELLER');
+
+      const rows = await auditRows(target.id);
+      expect(rows).toHaveLength(2);
+      const assigned = rows.find((row) => row.action === 'USER_SCOPE_ASSIGNED')!;
+      const revoked = rows.find((row) => row.action === 'USER_SCOPE_REVOKED')!;
+      expect(assigned.before).toBeNull();
+      expect(assigned.after).toEqual({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      expect(revoked.before).toEqual({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      expect(revoked.after).toBeNull();
+
+      const serialized = JSON.stringify(rows);
+      for (const sensitive of ['passwordHash', 'password', 'token', 'secret']) {
+        expect(serialized).not.toContain(sensitive);
+      }
+    });
+
+    it('REVIEW-FIX (GREEN-guard): revoking a held role twice removes rows once and audits once', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-11@test.local');
+      const sellerRole = await findRole('SELLER');
+      const target = await freshTarget('sec-a-rf-11');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      const first = await service.revoke(ctx, target.id, 'SELLER');
+      const second = await service.revoke(ctx, target.id, 'SELLER');
+
+      expect(first).toEqual({ userId: target.id, roleCode: 'SELLER', revoked: true });
+      expect(second).toEqual({ userId: target.id, roleCode: 'SELLER', revoked: true });
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } })).toHaveLength(0);
+      expect(await auditRows(target.id)).toHaveLength(2); // assign + the one EFFECTIVE revoke
+    });
+
+    it('REVIEW-FIX H-04 (was RED): an assignment on a Location deactivated afterwards is preserved; a NEW assignment to it is refused; cleanup revoke still works', async () => {
+      const branchA = await createBranch(db);
+      const branchB = await createBranch(db);
+      await ensureTestLocation(db, branchA.id);
+      await ensureTestLocation(db, branchB.id);
+      const { ctx } = await ownerCaller('sec-a-rf-owner-12@test.local');
+      const sellerRole = await findRole('SELLER');
+      const cashierRole = await findRole('CASHIER');
+      const target = await freshTarget('sec-a-rf-12');
+
+      await service.assign(ctx, target.id, { roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branchA.id] });
+      const historicalBefore = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      await db.location.update({ where: { id: branchA.id }, data: { isActive: false } }); // deactivated AFTER the fact
+
+      // An unrelated assignment must not disturb the historical one.
+      await service.assign(ctx, target.id, { roleCode: 'WAREHOUSE', scopeKind: 'LOCATION', locationIds: [branchB.id] });
+      const historicalAfter = await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      expect(historicalAfter.map((row) => row.id)).toEqual(historicalBefore.map((row) => row.id));
+      expect(historicalAfter[0]!.locationId).toBe(branchA.id);
+
+      // A NEW assignment targeting the now-inactive Location is refused.
+      const err = await service
+        .assign(ctx, target.id, { roleCode: 'CASHIER', scopeKind: 'LOCATION', locationIds: [branchA.id] })
+        .then(() => null, (error) => error as { code?: string });
+      expect(err?.code).toBe('LOCATION_INACTIVE');
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id, roleId: cashierRole.id } })).toHaveLength(0);
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } })).toHaveLength(1);
+
+      // Cleanup of the historical assignment remains available.
+      await service.revoke(ctx, target.id, 'SELLER');
+      expect(await db.userRoleScope.findMany({ where: { userId: target.id, roleId: sellerRole.id } })).toHaveLength(0);
+    });
+
+    it('REVIEW-FIX (GREEN-guard): the HTTP response contracts are unchanged — exact assign and revoke bodies', async () => {
+      const branch = await createBranch(db);
+      await ensureTestLocation(db, branch.id);
+      const admin = await createCompanyAdmin('sec-a-rf-http-admin-13@test.local');
+      const target = await freshTarget('sec-a-rf-13');
+
+      const assigned = await request(app)
+        .post(`/api/v1/backoffice/users/${target.id}/scope`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`)
+        .send({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationIds: [branch.id] });
+      expect(assigned.status).toBe(200);
+      expect(assigned.body).toEqual({ userId: target.id, roleCode: 'SELLER', scopeKind: 'LOCATION' });
+
+      const revoked = await request(app)
+        .delete(`/api/v1/backoffice/users/${target.id}/scope/SELLER`)
+        .set('Authorization', `Bearer ${await getAuthToken(admin)}`);
+      expect(revoked.status).toBe(200);
+      expect(revoked.body).toEqual({ userId: target.id, roleCode: 'SELLER', revoked: true });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SEC-A deadlock-fix (MJ-ADMIN-ADM-02-SEC-A-DEADLOCK-FIX-01, owner-approved
+// 2026-10-17; approved alternative "C1": the target lock changes from
+// `FOR UPDATE` to `FOR NO KEY UPDATE`).
+//
+// The mutual-administration deadlock (A modifies B while B modifies A) can only
+// be reproduced with TWO independent PostgreSQL connections driving two
+// concurrent transactions. This single-connection Prisma harness cannot express
+// it, so no deadlock reproduction is asserted here and none is claimed to pass;
+// the adversarial matrix to be executed against LOCAL_TEST later (with expected
+// classifications recorded before execution) is:
+//
+//   #   scenario                                       expected
+//   1   A modifies B while B modifies A (LOCATION)     pre-fix 40P01; post-fix both commit
+//   2   A modifies B while B modifies A (COMPANY)      pre-fix 40P01; post-fix both commit
+//   3   assign(A->B) concurrent with revoke(B->A)      pre-fix 40P01; post-fix both commit
+//   4   A->B concurrent with C->B (one shared target)  both commit, serialized on User(B)
+//   5   A->B concurrent with C->D (independent)        both commit, never serialized
+//   6   A->B(LOCATION) concurrent with deactivate L    both commit, serialized (FOR SHARE vs UPDATE)
+//   7   three-administrator cycle A->B->C->A           pre-fix 40P01; post-fix all commit
+//   8   two operations on the SAME target              both commit, serialized
+//   9   AuditLog FK records the correct actor          unchanged: actor = authenticated caller
+//   10  AuditLog writer error                          full rollback (covered above)
+//   11  Location locks still block deactivation        unchanged (FOR SHARE)
+//   12  self-assignment prohibition                    unchanged (403 before any lock)
+//
+// Scenarios 9-12 are already covered by the REVIEW-FIX cases above. What can be
+// asserted here WITHOUT opening a connection is the lock MODE itself, which is
+// the entire content of the C1 fix; the guard below is DB-free (no client is
+// created in this describe) and protects the choice against regression.
+describe('scope-assignment.service target lock mode (SEC-A deadlock-fix C1)', () => {
+  it('locks the target User row with FOR NO KEY UPDATE (not FOR UPDATE), keeps Location FOR SHARE, and takes User before Location', () => {
+    const source = readFileSync(
+      new URL('../../src/modules/backoffice/scope-assignment.service.ts', import.meta.url),
+      'utf8',
+    );
+
+    // The C1 change: exactly the target-lock statement uses FOR NO KEY UPDATE.
+    expect(source).toContain('"User" WHERE id = ${targetUserId} FOR NO KEY UPDATE');
+    // The deadlock-prone mode must not be reintroduced on the target row.
+    expect(source).not.toContain('"User" WHERE id = ${targetUserId} FOR UPDATE');
+    // The Location guard stays on FOR SHARE, ordered for deterministic locking.
+    expect(source).toContain('FROM "Location" WHERE id IN (${Prisma.join(ids)}) ORDER BY id FOR SHARE');
+
+    // Acquisition-order invariant: the User lock statement must precede the
+    // Location lock statement in the source (User -> Location -> writes).
+    const userLock = source.indexOf('"User" WHERE id = ${targetUserId} FOR NO KEY UPDATE');
+    const locationLock = source.indexOf('FROM "Location" WHERE id IN');
+    expect(userLock).toBeGreaterThan(-1);
+    expect(locationLock).toBeGreaterThan(-1);
+    expect(userLock).toBeLessThan(locationLock);
   });
 });
