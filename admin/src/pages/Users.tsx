@@ -4,6 +4,16 @@ import { useAuth } from '../hooks/useAuth';
 import { ApiError, api, type BackofficeUser } from '../lib/api';
 import { roleLabel } from '../lib/utils';
 
+const productionRoleCodes = new Set(['OWNER', 'ADMIN', 'CASHIER', 'SELLER', 'WAREHOUSE']);
+
+// A LOCATION assignment without its location must never read as company-wide,
+// and an unrecognized role code is not echoed as if it were a valid role.
+function assignmentLabel(assignment: BackofficeUser['assignments'][number]) {
+  const role = productionRoleCodes.has(assignment.roleCode) ? roleLabel(assignment.roleCode) : 'Rol desconocido';
+  if (assignment.scopeKind === 'COMPANY') return `${role} · Toda la empresa`;
+  return `${role} · ${assignment.location?.code ?? 'Alcance inválido'}`;
+}
+
 export function Users({ forbidden = false }: { forbidden?: boolean }) {
   const { token, logout } = useAuth();
   const [users, setUsers] = useState<BackofficeUser[]>([]);
@@ -66,9 +76,7 @@ export function Users({ forbidden = false }: { forbidden?: boolean }) {
                 <td>{user.email}</td>
                 <td>{user.isActive ? 'Activo' : 'Inactivo'}</td>
                 <td>
-                  {user.assignments.length === 0 ? 'Sin asignaciones' : user.assignments
-                    .map((a) => `${roleLabel(a.roleCode)} · ${a.scopeKind === 'COMPANY' || !a.location ? 'Toda la empresa' : a.location.code}`)
-                    .join(', ')}
+                  {user.assignments.length === 0 ? 'Sin asignaciones' : user.assignments.map(assignmentLabel).join(', ')}
                 </td>
               </tr>
             ))}
