@@ -44,7 +44,7 @@ import { buildTargetBinding, buildToolingBinding, readLockedFile, toolingFile, v
 //   node scripts/database/pilot-migrate.mjs --target=pilot --execute --marker-id=<uuid> \
 //     --confirm-project-ref=<ref> --expected-initial-state=EXACT_S4|EXACT_G7 --plan=<dry-run digest>
 //
-// G12 cut-over (OWNER 2026-10-20): the approved repository tree is exactly G12 (the twelve
+// G13 cut-over (OWNER 2026-10-21): the approved repository tree is exactly G13 (the thirteen
 // pins of pilot-migration-states.mjs). The initial state is NEVER auto-selected: the OWNER
 // names it (EXACT_S4 or EXACT_G7) after a fresh A4, and --execute requires the plan digest
 // the dry run printed for it. --execute then runs, in order: the identity proof; a READ-ONLY

@@ -30,8 +30,8 @@ export const DIGEST_SCHEME = 'MONA/V233/STATE-DIGEST/SD1';
 export const PROTECTED_SEARCH_PATH = 'pg_catalog, pg_temp';
 export const DEFAULT_MAX_RELATION_BYTES = 64 * 1024 * 1024; // UNPINNED parameter: pin from real LOCAL_TEST sizes (design SCOPE risk)
 
-// GENERATED from the R3-A4.3 mechanical derivation of the twelve migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
-// by digest in tests/local-test-fingerprint.test.ts AC-150b): 305 columns of the 32 protected relations (31 Prisma models plus
+// GENERATED from the R3-A4.3 mechanical derivation of the thirteen migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
+// by digest in tests/local-test-fingerprint.test.ts AC-150b): 308 columns of the 32 protected relations (31 Prisma models plus
 // the Prisma-internal _prisma_migrations), by (relation, attnum). Pinned against schema.prisma and the migration set by
 // tests/local-test-fingerprint.test.ts.
 // Row: relation, attnum, column, field type, live format_type, notNull, hasDefault, enum type, primary-key position.
@@ -311,6 +311,9 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["StockMovement", 6, "userId", "text", "text", 1, 0, null, 0],
   ["StockMovement", 7, "branchId", "text", "text", 1, 0, null, 0],
   ["StockMovement", 8, "timestamp", "tstz", "timestamp(3) with time zone", 1, 1, null, 0],
+  ["StockMovement", 9, "reason", "enum", "public.\"StockAdjustmentReason\"", 0, 0, "StockAdjustmentReason", 0],
+  ["StockMovement", 10, "note", "text", "text", 0, 0, null, 0],
+  ["StockMovement", 11, "idempotencyKey", "text", "text", 0, 0, null, 0],
   ["StockReservation", 1, "id", "text", "text", 1, 0, null, 1],
   ["StockReservation", 2, "saleId", "text", "text", 1, 0, null, 0],
   ["StockReservation", 3, "variantId", "text", "text", 1, 0, null, 0],
@@ -366,7 +369,8 @@ export const ENUM_TYPES: readonly Readonly<{ name: string; labels: readonly stri
   ["SalePricingModel", ["FIXED_TOTAL","PROPORTIONAL_V1"]],
   ["SaleStatus", ["DRAFT","PENDING_PAYMENT","PAID","COMPLETED","CANCELLED"]],
   ["ScopeKind", ["LOCATION","COMPANY"]],
-  ["StockMovementType", ["SALE","INITIAL_STOCK"]],
+  ["StockAdjustmentReason", ["DAMAGED","LOST","LOAD_ERROR","SURPLUS","OTHER"]],
+  ["StockMovementType", ["SALE","INITIAL_STOCK","ADJUSTMENT"]],
   ["StockReservationStatus", ["ACTIVE","RELEASED","CONSUMED"]],
   ["TransferInstitution", ["MACRO","BBVA","NACION","GALICIA","MERCADO_PAGO","OTHER"]],
 ].map(([name, labels]) => Object.freeze({ name: name as string, labels: Object.freeze(labels as string[]) })));

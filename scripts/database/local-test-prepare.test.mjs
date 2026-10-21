@@ -377,14 +377,14 @@ test('A3 migration pins come only from local-test-migration-payload.mjs (G11 = t
   assert.doesNotMatch(SOURCE, /[0-9a-f]{64}/);
 });
 
-test('A3b U1 the default deps verify the LOCAL_TEST payload G12: the real reviewed tree passes with twelve migrations', () => {
+test('A3b U1 the default deps verify the LOCAL_TEST payload G13: the real reviewed tree passes with thirteen migrations', () => {
   assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.verifyMigrationPayload, localPayloadModule.verifyLocalTestMigrationPayload);
   assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.verifyP21BasePayload, localPayloadModule.verifyP21BasePayload);
   assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.stageP21Base, localPayloadModule.stageP21BaseMigrations);
   const real = prepareModule.DEFAULT_PREPARE_DEPS.verifyMigrationPayload(REAL_API_DIR);
   assert.equal(real.ok, true, real.reason);
   assert.deepEqual(real.migrations.map((m) => m.name), localPayloadModule.LOCAL_TEST_MIGRATION_PAYLOAD.migrations.map((m) => m.name));
-  assert.equal(real.migrations.length, 12);
+  assert.equal(real.migrations.length, 13);
 });
 
 test('A4 direct execution is guarded and process.env is read only by the default deps', () => {
@@ -446,7 +446,7 @@ test('A5c dry-run and a plan mismatch never import the runtime or spawn, even wi
 // U1 (R3-T) contract change: the real reviewed tree (eleven migration directories) was refused at phase=payload while
 // LOCAL_TEST used the PILOT G7 payload; it now verifies as the LOCAL_TEST payload G11 (drift is covered by
 // local-test-migration-payload.test.mjs). The dry-run still loads no runtime and starts no process.
-test('A6 U1 the real reviewed tree (twelve migration directories) passes the LOCAL_TEST G12 payload; the dry-run starts nothing', async () => {
+test('A6 U1 the real reviewed tree (thirteen migration directories) passes the LOCAL_TEST G13 payload; the dry-run starts nothing', async () => {
   const out = [];
   const loaded = [];
   const spawned = [];
@@ -461,7 +461,7 @@ test('A6 U1 the real reviewed tree (twelve migration directories) passes the LOC
   });
   const text = out.join('\n');
   assert.equal(code, 0, text);
-  assert.match(text, /migration payload: PASS — exactly 12 approved migrations \(pins: local-test-migration-payload\.mjs\)/);
+  assert.match(text, /migration payload: PASS — exactly 13 approved migrations \(pins: local-test-migration-payload\.mjs\)/);
   for (const m of localPayloadModule.LOCAL_TEST_MIGRATION_PAYLOAD.migrations) assert.ok(text.includes(`${m.name}  sha256 ${m.sha256}`), m.name);
   assert.match(text, /plan digest: [0-9a-f]{64}/);
   assert.equal(loaded.length, 0, 'the runtime was reached');
@@ -1725,7 +1725,7 @@ test('V231-G1 the generic dry-run names the checkpoint action and phases; its ex
   assert.doesNotMatch(r.text, /^  backup evidence:|verify-baseline →|→ verify-baseline/m);
   assert.doesNotMatch(r.text.split('\n').find((l) => l.startsWith('  phases:')), /seed-demo.*seed-demo|verify-baseline/);
   assert.match(r.text, /^  --execute requires --confirm-local-target=\S+ --plan=[0-9a-f]{64}$/m);
-  assert.equal(r.text.split('\n').length, 22 + 2 + 5); // V2.3.2: + prepare source, + checkpoint store; + one pin line each for the sixth (Pricing V2) and seventh (CASH-1) approved migrations; G11: + one pin line each for m8–m11; G12: + one pin line for m12
+  assert.equal(r.text.split('\n').length, 22 + 2 + 6); // V2.3.2: + prepare source, + checkpoint store; + one pin line each for the sixth (Pricing V2) and seventh (CASH-1) approved migrations; G11: + one pin line each for m8–m11; G12: + one pin line for m12; G13: + one pin line for m13
 });
 
 test('V231-I24 static: one seedDemo call site, behind the transition table; no full-pipeline success line or --stop-after remains', () => {

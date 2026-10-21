@@ -13,7 +13,7 @@
     },
     {
       "path": "scripts/database/pilot-launch-command.mjs",
-      "sha256": "16fcc41e2f57b77f1322d66d64b924f75825ad5b4374bf656d8ad4d1e11592ba"
+      "sha256": "d66beb758caf35fde266d8e016054c2f94098453ad0e6f9b4fd3f0829bf92989"
     },
     {
       "path": "scripts/certs/supabase-prod-ca-2021.crt",
@@ -21,7 +21,7 @@
     },
     {
       "path": "scripts/database/pilot-migration-states.mjs",
-      "sha256": "22bf4b5fb5ce8ca34294cc26a2dfdb0c297e25f0610f74bd0943c54bf75b564c"
+      "sha256": "b9f714631fcae786b4f7b164074c0a15dc1facc4d8bc726946be0af9ff6ab930"
     },
     {
       "path": "scripts/database/app-schema-projection.mjs",
@@ -29,7 +29,7 @@
     },
     {
       "path": "scripts/database/pilot-schema-references.mjs",
-      "sha256": "560a504faf59b83fc996bc412d5a37165d3060688d913bdfd22b3502fdecc3e6"
+      "sha256": "4719439a83251b2a2cb9a04d48868a1d36fa4cceea047b88574644d7ac3470c3"
     },
     {
       "path": "scripts/database/pilot-rbac-catalog.mjs",
@@ -82,6 +82,10 @@
     {
       "path": "api/prisma/migrations/20261021120000_r3_card_credit/migration.sql",
       "sha256": "ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be"
+    },
+    {
+      "path": "api/prisma/migrations/20261021130000_warehouse_stock_adjustment/migration.sql",
+      "sha256": "819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0"
     }
   ],
   "packages": [
