@@ -263,6 +263,77 @@ describe('split payments', () => {
     expect((await db.sale.findUniqueOrThrow({ where: { id: transferSale.id } })).status).toBe('PENDING_PAYMENT');
   });
 
+  // System V2 P0-A DB gate (PostgreSQL): the cash-only rule of the legacy path,
+  // its replay compatibility and its atomicity, proved on real constraints.
+  it('P0-A: a refused non-cash intent leaves no payment, cash movement or audit and does not consume its key', async () => {
+    const session = await openCashSession();
+    const sale = await createSale(10n);
+    const key = randomUUID();
+    const before = {
+      payments: await db.salePayment.count(),
+      movements: await db.cashMovement.count(),
+      audits: await db.auditLog.count(),
+    };
+    for (const method of ['TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT', 'QR']) {
+      const refused = await pay(sale.id, { method, amount: '10', idempotencyKey: key });
+      expect(refused.status, method).toBe(409);
+      expect(refused.body.error.code, method).toBe('NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT');
+    }
+    expect(await db.salePayment.count()).toBe(before.payments);
+    expect(await db.cashMovement.count()).toBe(before.movements);
+    expect(await db.auditLog.count()).toBe(before.audits);
+    expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PENDING_PAYMENT');
+
+    // The same key is still free for a valid cash payment.
+    const cash = await pay(sale.id, { method: 'CASH', amount: '10', receivedAmount: '10', idempotencyKey: key });
+    expect(cash.status).toBe(201);
+    const movement = await db.cashMovement.findFirstOrThrow({ where: { type: 'SALE_INCOME' } });
+    expect(movement).toMatchObject({ sessionId: session.id, amount: 10n });
+  });
+
+  it('P0-A: a historical non-cash payment still replays with 200, and a different payload keeps its 409', async () => {
+    await openCashSession();
+    const sale = await createSale(10n);
+    const key = randomUUID();
+    // A row written by the legacy path before the cash-only rule existed.
+    const historical = await db.salePayment.create({ data: { saleId: sale.id, method: 'TRANSFER', amount: 10n, idempotencyKey: key } });
+    const before = { payments: await db.salePayment.count(), movements: await db.cashMovement.count(), audits: await db.auditLog.count() };
+
+    const replay = await pay(sale.id, { method: 'TRANSFER', amount: '10', idempotencyKey: key });
+    expect(replay.status).toBe(200);
+    expect(replay.body.id).toBe(historical.id);
+    expect(replay.body.amount).toBe('10');
+
+    const mismatch = await pay(sale.id, { method: 'QR', amount: '10', idempotencyKey: key });
+    expect(mismatch.status).toBe(409);
+    expect(mismatch.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD');
+
+    expect({ payments: await db.salePayment.count(), movements: await db.cashMovement.count(), audits: await db.auditLog.count() }).toEqual(before);
+  });
+
+  it('P0-A: a successful cash payment writes the exact SALE_INCOME and the session closes reconciled', async () => {
+    // Opened through the API so the session carries its OPENING movement, as in production.
+    const register = await db.cashRegister.findFirstOrThrow({ where: { branchId } });
+    const opened = await request(app).post('/api/v1/cash/sessions/open')
+      .set('Authorization', `Bearer ${token}`).send({ registerId: register.id, startingCash: '0' });
+    expect(opened.status).toBe(201);
+    const session = { id: opened.body.sessionId as string };
+    const sale = await createSale(6500000n);
+    const paid = await pay(sale.id, { method: 'CASH', amount: '6500000', receivedAmount: '7000000', idempotencyKey: randomUUID() });
+    expect(paid.status).toBe(201);
+    expect(paid.body.changeAmount).toBe('500000');
+    const incomes = await db.cashMovement.findMany({ where: { sessionId: session.id, type: 'SALE_INCOME' } });
+    expect(incomes).toHaveLength(1);
+    expect(incomes[0]).toMatchObject({ amount: 6500000n, salePaymentId: paid.body.id });
+    expect(await db.auditLog.count({ where: { action: 'PAYMENT_REGISTERED', entityId: paid.body.id } })).toBe(1);
+
+    const closed = await request(app).post(`/api/v1/cash/sessions/${session.id}/close`)
+      .set('Authorization', `Bearer ${token}`).send({ closingCash: '6500000' });
+    expect(closed.status).toBe(200);
+    expect(closed.body.expectedCash).toBe('6500000');
+    expect(closed.body.difference).toBe('0');
+  });
+
   it('serializes concurrent different intents against the Sale row', async () => {
     await openCashSession();
     const sale = await createSale(10n);
