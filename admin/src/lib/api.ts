@@ -18,6 +18,14 @@ export type Branch = {
   pointOfSaleNumber?: number;
 };
 
+// GET /backoffice/branches: Branch + its Location. type/isActive are null only
+// when the Location row is missing (locationConsistency 'missing_location').
+export type BranchListItem = Branch & {
+  type: 'RETAIL_BRANCH' | 'CENTRAL_WAREHOUSE' | null;
+  isActive: boolean | null;
+  locationConsistency: 'consistent' | 'missing_location';
+};
+
 export type DashboardSummary = {
   salesToday: number;
   pendingSalesCount: number;
@@ -351,7 +359,7 @@ export const api = {
   dashboard: (token: string, onUnauthorized: () => void) =>
     request<DashboardSummary>('/backoffice/dashboard', { token, onUnauthorized }),
   branches: (token: string, onUnauthorized: () => void) =>
-    request<{ items: Branch[] }>('/backoffice/branches', { token, onUnauthorized }),
+    request<{ items: BranchListItem[] }>('/backoffice/branches', { token, onUnauthorized }),
   sales: (token: string, params: URLSearchParams, onUnauthorized: () => void) => {
     const query = params.toString();
     return request<{ items: SaleSummary[]; pagination: { limit: number; offset: number } }>(

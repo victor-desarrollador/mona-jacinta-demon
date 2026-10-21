@@ -264,6 +264,31 @@ describe('backoffice read API', () => {
     expect((await request(app).get(`/api/v1/backoffice/sales/${saleB.id}`).set('Authorization', `Bearer ${multiToken}`)).status).toBe(403);
   });
 
+  it('GET /branches returns only the authorized Locations with their type and state', async () => {
+    const scoped = await get('/api/v1/backoffice/branches');
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.items).toHaveLength(1);
+    expect(scoped.body.items[0]).toMatchObject({
+      id: branches.CEN,
+      code: 'CEN',
+      type: 'RETAIL_BRANCH',
+      isActive: true,
+      locationConsistency: 'consistent',
+    });
+  });
+
+  it('GET /branches binds several authorized ids and keeps the code ordering', async () => {
+    const response = await get('/api/v1/backoffice/branches', 'admin@demo.local');
+    expect(response.status).toBe(200);
+    const codes = response.body.items.map((item: { code: string }) => item.code);
+    expect(codes.length).toBeGreaterThan(1);
+    expect(codes).toEqual([...codes].sort());
+    for (const item of response.body.items) {
+      expect(item.locationConsistency).toBe('consistent');
+      expect(['RETAIL_BRANCH', 'CENTRAL_WAREHOUSE']).toContain(item.type);
+    }
+  });
+
   it('allows ADMIN to read global authorized data', async () => {
     await createPendingSale(branches.CEN);
     await createPendingSale(branches.YB);

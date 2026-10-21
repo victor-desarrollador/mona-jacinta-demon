@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from '../../generated/prisma/client.js';
+import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { authorizedLocationIds } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
@@ -289,13 +289,37 @@ export function createBackofficeService(database: BackofficeDatabase) {
     };
   }
 
+  // Branch and Location share the same id (Phase 1A dual-write), so one
+  // statement reads both for a consistent snapshot. Type and state come from
+  // Location as stored; a Branch with no Location row is reported as
+  // `missing_location` with null type/state rather than guessed.
   async function branches(req: RequestLike) {
+    const branchIds = scopeBranches(req);
+    if (branchIds.length === 0) return { items: [] };
+
+    const rows = await database.$queryRaw<
+      Array<{
+        id: string;
+        name: string;
+        code: string;
+        address: string | null;
+        pointOfSaleNumber: number | null;
+        type: 'RETAIL_BRANCH' | 'CENTRAL_WAREHOUSE' | null;
+        isActive: boolean | null;
+      }>
+    >`
+      SELECT b.id, b.name, b.code, b.address, b."pointOfSaleNumber", l.type, l."isActive"
+      FROM "Branch" b
+      LEFT JOIN "Location" l ON l.id = b.id
+      WHERE b.id IN (${Prisma.join(branchIds)})
+      ORDER BY b.code ASC, b.id ASC
+    `;
+
     return {
-      items: await database.branch.findMany({
-        where: { id: { in: scopeBranches(req) } },
-        orderBy: [{ code: 'asc' }, { id: 'asc' }],
-        select: { ...branchSelect, address: true, pointOfSaleNumber: true },
-      }),
+      items: rows.map((row) => ({
+        ...row,
+        locationConsistency: row.type === null ? ('missing_location' as const) : ('consistent' as const),
+      })),
     };
   }
 

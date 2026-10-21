@@ -94,16 +94,27 @@ describe('backoffice inventory read location scope (DB-free)', () => {
   });
 
   it('filters the branch selector to REPORT_VIEW-qualified locations', async () => {
-    const db = database();
-    const service = createBackofficeService(db as never);
+    const queryRaw = vi.fn().mockResolvedValue([
+      { id: 'loc-a', name: 'Centro', code: 'CEN', address: 'Dir', pointOfSaleNumber: 1, type: 'RETAIL_BRANCH', isActive: true },
+    ]);
+    const service = createBackofficeService({ $queryRaw: queryRaw } as never);
 
     await expect(service.branches(req() as never)).resolves.toEqual({
-      items: [{ id: 'loc-a', name: 'Centro', code: 'CEN' }],
+      items: [
+        {
+          id: 'loc-a',
+          name: 'Centro',
+          code: 'CEN',
+          address: 'Dir',
+          pointOfSaleNumber: 1,
+          type: 'RETAIL_BRANCH',
+          isActive: true,
+          locationConsistency: 'consistent',
+        },
+      ],
     });
-    expect(db.branch.findMany).toHaveBeenCalledWith({
-      where: { id: { in: ['loc-a'] } },
-      orderBy: [{ code: 'asc' }, { id: 'asc' }],
-      select: { id: true, name: true, code: true, address: true, pointOfSaleNumber: true },
-    });
+    // Only loc-a is REPORT_VIEW-qualified; loc-b (INVENTORY_MANAGE only) is never queried.
+    const [, ids] = queryRaw.mock.calls[0]! as [unknown, { values: string[] }];
+    expect(ids.values).toEqual(['loc-a']);
   });
 });

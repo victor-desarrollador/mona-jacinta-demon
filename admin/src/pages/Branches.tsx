@@ -1,11 +1,11 @@
 import { MapPin } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { api, type Branch } from '../lib/api';
+import { api, type BranchListItem } from '../lib/api';
 
 export function Branches() {
   const { token, logout } = useAuth();
-  const [branches, setBranches] = useState<Branch[]>([]);
+  const [branches, setBranches] = useState<BranchListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -39,6 +39,16 @@ export function Branches() {
               <span>{branch.code}</span>
               <span>Punto {branch.pointOfSaleNumber ?? '-'}</span>
             </div>
+            {branch.locationConsistency === 'missing_location' ? (
+              <span className="status-badge pending_payment">Inconsistente: Location faltante</span>
+            ) : (
+              <div>
+                <span>{branch.type === 'CENTRAL_WAREHOUSE' ? 'Depósito Central' : 'Local'}</span>
+                <span className={`status-badge ${branch.isActive ? 'completed' : 'cancelled'}`}>
+                  {branch.isActive ? 'Activo' : 'Inactivo'}
+                </span>
+              </div>
+            )}
           </article>
         ))}
       </div>
