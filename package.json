@@ -8,7 +8,9 @@
     "db:restore": "node scripts/database/restore.mjs",
     "demo:reset": "npm --prefix api run db:reset",
     "demo:seed": "npm --prefix api run db:seed",
-    "deps:check": "dependency-cruiser --config dependency-cruiser.config.cjs api/src api/tests api/scripts client/src admin/src scripts/database",
+    "deps:check": "dependency-cruiser --config dependency-cruiser.config.cjs --ignore-known .dependency-cruiser-known-violations.json api/src api/tests api/scripts client/src admin/src scripts/database",
+    "deps:baseline": "dependency-cruiser --config dependency-cruiser.config.cjs --output-type baseline api/src api/tests api/scripts client/src admin/src scripts/database > .dependency-cruiser-known-violations.json",
+    "deps:modules": "dependency-cruiser --config dependency-cruiser.config.cjs --collapse \"^api/src/modules/[^/]+\" --output-type json api/src | node scripts/dev/module-cycles.mjs",
     "tooling:nodb": "node scripts/dev/safe-nodb-run.mjs",
     "tooling:scope-guard": "node scripts/dev/repo-scope-guard.mjs"
   },

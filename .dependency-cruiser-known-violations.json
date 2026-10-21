@@ -1,0 +1,1305 @@
+[
+  {
+    "type": "cycle",
+    "from": "api/src/modules/payments/checkout-attempt-view.ts",
+    "to": "api/src/modules/payments/checkout.service.ts",
+    "unresolvedTo": "./checkout.service.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "error",
+      "name": "no-circular-internal"
+    },
+    "cycle": [
+      {
+        "name": "api/src/modules/payments/checkout.service.ts",
+        "dependencyTypes": [
+          "local",
+          "type-only",
+          "import"
+        ]
+      },
+      {
+        "name": "api/src/modules/payments/checkout-attempt-view.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "cycle",
+    "from": "api/src/modules/payments/checkout.service.ts",
+    "to": "api/src/modules/payments/dto/checkout.dto.ts",
+    "unresolvedTo": "./dto/checkout.dto.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "error",
+      "name": "no-circular-internal"
+    },
+    "cycle": [
+      {
+        "name": "api/src/modules/payments/dto/checkout.dto.ts",
+        "dependencyTypes": [
+          "local",
+          "type-only",
+          "import"
+        ]
+      },
+      {
+        "name": "api/src/modules/payments/checkout.service.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/audit/audit.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/auth/auth.service.ts",
+    "to": "api/src/modules/rbac/authorization-context.ts",
+    "unresolvedTo": "../rbac/authorization-context.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/auth/user-context.dto.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/auth/user-context.dto.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/auth/user-context.dto.ts",
+    "to": "api/src/modules/rbac/roles.ts",
+    "unresolvedTo": "../rbac/roles.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/backoffice/backoffice.controller.ts",
+    "to": "api/src/modules/rbac/roles.ts",
+    "unresolvedTo": "../rbac/roles.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/backoffice/backoffice.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/backoffice/backoffice.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/backoffice/backoffice.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/backoffice/backoffice.service.ts",
+    "to": "api/src/modules/sales/reservation-holds.ts",
+    "unresolvedTo": "../sales/reservation-holds.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/backoffice/scope-assignment.dto.ts",
+    "to": "api/src/modules/rbac/roles.ts",
+    "unresolvedTo": "../rbac/roles.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/backoffice/scope-assignment.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/backoffice/scope-assignment.service.ts",
+    "to": "api/src/modules/rbac/roles.ts",
+    "unresolvedTo": "../rbac/roles.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/cash/cash.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/cash/cash.service.ts",
+    "to": "api/src/modules/payments/prisma-unique-violation.ts",
+    "unresolvedTo": "../payments/prisma-unique-violation.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/cash/cash.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/cash/cash.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/inventory/inventory-adjustment.service.ts",
+    "to": "api/src/modules/payments/prisma-unique-violation.ts",
+    "unresolvedTo": "../payments/prisma-unique-violation.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/inventory/inventory-adjustment.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/inventory/inventory-adjustment.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/inventory/inventory.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/inventory/inventory.service.ts",
+    "to": "api/src/modules/sales/reservation-holds.ts",
+    "unresolvedTo": "../sales/reservation-holds.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-attempt-view.ts",
+    "to": "api/src/modules/sales/hold-coverage.ts",
+    "unresolvedTo": "../sales/hold-coverage.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-attempts-recent.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-attempts-recent.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-attempts-recent.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-close.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-close.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-quote.service.ts",
+    "to": "api/src/modules/pricing/pricing.service.ts",
+    "unresolvedTo": "../pricing/pricing.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-quote.service.ts",
+    "to": "api/src/modules/pricing/pricing.ts",
+    "unresolvedTo": "../pricing/pricing.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-quote.service.ts",
+    "to": "api/src/modules/pricing/proportional-checkout.ts",
+    "unresolvedTo": "../pricing/proportional-checkout.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-quote.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-quote.service.ts",
+    "to": "api/src/modules/sales/wholesale-authorization.service.ts",
+    "unresolvedTo": "../sales/wholesale-authorization.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-reservation.service.ts",
+    "to": "api/src/modules/pricing/pricing.service.ts",
+    "unresolvedTo": "../pricing/pricing.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-reservation.service.ts",
+    "to": "api/src/modules/pricing/proportional-checkout.ts",
+    "unresolvedTo": "../pricing/proportional-checkout.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-reservation.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-reservation.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-reservation.service.ts",
+    "to": "api/src/modules/sales/hold-coverage.ts",
+    "unresolvedTo": "../sales/hold-coverage.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-sale-snapshot.ts",
+    "to": "api/src/modules/pricing/proportional-checkout.ts",
+    "unresolvedTo": "../pricing/proportional-checkout.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-sale-snapshot.ts",
+    "to": "api/src/modules/sales/wholesale-authorization.service.ts",
+    "unresolvedTo": "../sales/wholesale-authorization.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-stock-recovery.service.ts",
+    "to": "api/src/modules/pricing/proportional-checkout.ts",
+    "unresolvedTo": "../pricing/proportional-checkout.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-stock-recovery.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-stock-recovery.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout-stock-recovery.service.ts",
+    "to": "api/src/modules/sales/reservation-holds.ts",
+    "unresolvedTo": "../sales/reservation-holds.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout.service.ts",
+    "to": "api/src/modules/pricing/pricing.ts",
+    "unresolvedTo": "../pricing/pricing.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout.service.ts",
+    "to": "api/src/modules/pricing/proportional-checkout.ts",
+    "unresolvedTo": "../pricing/proportional-checkout.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout.service.ts",
+    "to": "api/src/modules/sales/hold-coverage.ts",
+    "unresolvedTo": "../sales/hold-coverage.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout.service.ts",
+    "to": "api/src/modules/sales/sale-finalization.ts",
+    "unresolvedTo": "../sales/sale-finalization.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/checkout.service.ts",
+    "to": "api/src/modules/sales/wholesale-authorization.service.ts",
+    "unresolvedTo": "../sales/wholesale-authorization.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/external-collections.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/external-collections.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/payments.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/payments.service.ts",
+    "to": "api/src/modules/pricing/pricing.ts",
+    "unresolvedTo": "../pricing/pricing.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/payments.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/payments.service.ts",
+    "to": "api/src/modules/sales/hold-coverage.ts",
+    "unresolvedTo": "../sales/hold-coverage.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/payments/payments.service.ts",
+    "to": "api/src/modules/sales/wholesale-authorization.service.ts",
+    "unresolvedTo": "../sales/wholesale-authorization.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/pricing/pricing.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/products/products.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/products/products.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/products/products.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/products/products.service.ts",
+    "to": "api/src/modules/sales/reservation-holds.ts",
+    "unresolvedTo": "../sales/reservation-holds.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/cancellation.controller.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/cancellation.controller.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/cancellation.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/cancellation.service.ts",
+    "to": "api/src/modules/audit/system-actor.service.ts",
+    "unresolvedTo": "../audit/system-actor.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/cancellation.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/cancellation.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/pending-correction.service.ts",
+    "to": "api/src/modules/pricing/pricing.service.ts",
+    "unresolvedTo": "../pricing/pricing.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/pending-correction.service.ts",
+    "to": "api/src/modules/pricing/pricing.ts",
+    "unresolvedTo": "../pricing/pricing.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/pending-correction.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sale-finalization.ts",
+    "to": "api/src/modules/pricing/pricing.ts",
+    "unresolvedTo": "../pricing/pricing.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sale-finalization.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sale-finalization.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.controller.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.controller.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.routes.ts",
+    "to": "api/src/modules/pricing/pricing.dto.ts",
+    "unresolvedTo": "../pricing/pricing.dto.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.routes.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.service.ts",
+    "to": "api/src/modules/inventory/inventory.service.ts",
+    "unresolvedTo": "../inventory/inventory.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.service.ts",
+    "to": "api/src/modules/pricing/pricing.service.ts",
+    "unresolvedTo": "../pricing/pricing.service.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.service.ts",
+    "to": "api/src/modules/pricing/pricing.ts",
+    "unresolvedTo": "../pricing/pricing.js",
+    "dependencyTypes": [
+      "local",
+      "type-only",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.service.ts",
+    "to": "api/src/modules/rbac/authorization-policy.ts",
+    "unresolvedTo": "../rbac/authorization-policy.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/sales.service.ts",
+    "to": "api/src/modules/rbac/permissions.ts",
+    "unresolvedTo": "../rbac/permissions.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/wholesale-authorization.service.ts",
+    "to": "api/src/modules/auth/password.ts",
+    "unresolvedTo": "../auth/password.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/sales/wholesale-authorization.service.ts",
+    "to": "api/src/modules/pricing/pricing.ts",
+    "unresolvedTo": "../pricing/pricing.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "modules-via-public-index"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/auth/auth.controller.ts",
+    "to": "api/src/config/prisma.ts",
+    "unresolvedTo": "../../config/prisma.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "routes-controllers-not-prisma-runtime"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "api/src/modules/products/products.controller.ts",
+    "to": "api/src/config/prisma.ts",
+    "unresolvedTo": "../../config/prisma.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "warn",
+      "name": "routes-controllers-not-prisma-runtime"
+    }
+  }
+]

@@ -37,6 +37,7 @@ function scopeBranches(req: RequestLike, branchId?: string) {
 
 function todayBounds(now = new Date()) {
   const start = new Date(now);
+  // eslint-disable-next-line no-restricted-syntax -- legacy server-time-zone day bound; replaced by the operating-time primitive in P0-C.
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
   end.setDate(end.getDate() + 1);

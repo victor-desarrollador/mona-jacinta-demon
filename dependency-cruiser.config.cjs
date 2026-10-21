@@ -126,6 +126,60 @@ module.exports = {
         path: '^scripts/database/pilot-catalog-bootstrap[.]mjs$',
       },
     },
+
+    // ---------------------------------------------------------------------
+    // System V2 architecture guards (severity: warn).
+    //
+    // These stop NEW architectural debt without turning the existing debt
+    // into CI failures: every violation that already existed when the guards
+    // were added is recorded in .dependency-cruiser-known-violations.json and
+    // is ignored by `npm run deps:check` (--ignore-known). A violation that
+    // is NOT in that baseline is reported as a warning. Regenerate the
+    // baseline with `npm run deps:baseline` in the same commit that removes
+    // (or knowingly accepts) a legacy violation.
+    // Module-level cycles cannot be expressed as a dependency-cruiser rule
+    // (the cycle flag is computed before folders are collapsed); they are
+    // reported by scripts/dev/module-cycles.mjs (`npm run deps:modules`).
+    // ---------------------------------------------------------------------
+    {
+      name: 'shared-not-to-modules',
+      severity: 'warn',
+      comment: 'api/src/shared is the base layer: it must not depend on a domain module.',
+      from: {
+        path: '^api/src/shared/',
+      },
+      to: {
+        path: '^api/src/modules/',
+      },
+    },
+
+    {
+      name: 'modules-via-public-index',
+      severity: 'warn',
+      comment:
+        'A domain module consumes another module only through its index.ts (its public surface), never through its internals.',
+      from: {
+        path: '^api/src/modules/([^/]+)/',
+      },
+      to: {
+        path: '^api/src/modules/[^/]+/',
+        pathNot: ['^api/src/modules/$1/', '^api/src/modules/[^/]+/index[.]ts$'],
+      },
+    },
+
+    {
+      name: 'routes-controllers-not-prisma-runtime',
+      severity: 'warn',
+      comment:
+        'Routes and controllers delegate to services: they may use Prisma types but must not import the Prisma runtime or client.',
+      from: {
+        path: '^api/src/modules/[^/]+/(?:[^/]+[.]routes|[^/]+[.]controller)[.]ts$',
+      },
+      to: {
+        path: ['^api/src/generated/', '^api/src/config/prisma[.]ts$'],
+        dependencyTypesNot: ['type-only'],
+      },
+    },
   ],
 
   options: {
