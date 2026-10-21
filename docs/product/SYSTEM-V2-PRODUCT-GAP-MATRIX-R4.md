@@ -109,7 +109,8 @@ Distribución por PRIORITY (IDs):
   `listAdjustmentBps`, `creditCardAdjustmentBps`, `debitCardAdjustmentBps`,
   `bankTransferAdjustmentBps`, `qrAdjustmentBps`. Solo ADMIN/OWNER los modifican y un cambio
   afecta solo operaciones futuras.
-- **Cambio**: plazo 15 días; ticket obligatorio en flujo normal; sin ticket requiere PIN
+- **Cambio**: plazo inicial de 15 días (ADMIN/OWNER pueden modificar la cantidad de días, con
+  auditoría; CASHIER/SELLER no); ticket obligatorio en flujo normal; sin ticket requiere PIN
   ADMIN/OWNER + motivo; siempre vinculado a la venta original; se permite entre sucursales;
   valor reconocido = importe efectivamente pagado por la línea original
   (`EXCHANGE_VALUE_SOURCE=ACTUAL_PAID_AMOUNT`). Nueva prenda más cara: se cobra la diferencia.
@@ -140,6 +141,17 @@ Distribución por PRIORITY (IDs):
 - **Transferencia PENDING_REVIEW, descuentos, clientes mínimos, gastos caja vs. administración**:
   según R3, sin cambios.
 
+**Decisiones OWNER posteriores a la primera publicación de R4** (sincronizadas en este
+documento; en el PRD V2 son OR-006, OR-050 y OR-051):
+
+- **Plazo de cambio:** 15 días como valor inicial; ADMIN/OWNER pueden modificar la cantidad de
+  días mediante la configuración comercial, con auditoría; CASHIER y SELLER no pueden (dominios 12 y 40).
+- **Caja chica:** detalle o motivo obligatorio; comprobante opcional (dominio 34).
+- **Ajustes grandes de stock:** un ajuste común usa el permiso operativo normal; un ajuste cuyo
+  impacto supera el umbral configurado exige autorización supervisada ADMIN/OWNER, motivo y
+  auditoría. El umbral lo configura ADMIN/OWNER y su valor inicial es **TBD** (no se inventa un
+  importe); hasta que se defina e implemente, los ajustes operan como hoy (dominio 17).
+
 ### 3.2 Capacidad transversal: autorización por PIN ADMIN/OWNER
 
 Es una capacidad compartida, no un dominio nuevo. Lo que la matriz exige de ella:
@@ -151,7 +163,7 @@ Es una capacidad compartida, no un dominio nuevo. Lo que la matriz exige de ella
 - Cada autorización genera **notificación/visibilidad** en el sistema (bandeja de alertas ADMIN/OWNER, dominio 28).
 - No se define aquí la criptografía, el almacenamiento ni el protocolo del PIN: son diseño del Blueprint.
 
-Consumidores en esta matriz: 11 Anulación, 12 Cambios (sin ticket), 13 Descuentos, 19
+Consumidores en esta matriz: 11 Anulación, 12 Cambios (sin ticket o fuera de plazo), 13 Descuentos, 17 Ajustes de stock sobre el umbral, 19
 Transferencias (autorización de despacho), 32/33a Seña (voucher), 40 Configuración.
 `AUTHORIZATION_MECHANISM=PIN_ADMIN_OWNER`.
 
@@ -325,14 +337,14 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 12 · Cambios · MISSING · P0
 - CURRENT: no existe. `EXCHANGE_MANAGE` está declarado y otorgado a CASHIER sin implementación (`api/src/modules/rbac/permissions.ts:44`, `role-permission-matrix.ts:47`).
-- TARGET: cambio vinculado siempre a la venta original encontrada en el sistema. Plazo 15 días. Con ticket lo procesa CASHIER; sin ticket exige PIN ADMIN/OWNER + motivo. Se permite en otra sucursal. Valor reconocido = importe efectivamente pagado por la línea original (`ACTUAL_PAID_AMOUNT`). Nueva prenda más cara: se cobra la diferencia (checkout proporcional); igual valor: cambio directo; más barata: no se devuelve la diferencia y no se crea StoreCredit.
+- TARGET: cambio vinculado siempre a la venta original encontrada en el sistema. Plazo inicial de 15 días, modificable por ADMIN/OWNER (dominio 40). Con ticket lo procesa CASHIER; sin ticket exige PIN ADMIN/OWNER + motivo. Se permite en otra sucursal. Valor reconocido = importe efectivamente pagado por la línea original (`ACTUAL_PAID_AMOUNT`). Nueva prenda más cara: se cobra la diferencia (checkout proporcional); igual valor: cambio directo; más barata: no se devuelve la diferencia y no se crea StoreCredit.
 - GAP: todo.
 - BUSINESS_RISK: en ropa los cambios son diarios; hoy obligan a ajustes manuales y caja informal.
 - TECHNICAL_RISK: alto (valor pagado por línea con pago mixto, stock de dos líneas, cobro de diferencia, multi-sucursal).
-- DEPENDENCIES: 11, 16, 5, 38 (ticket identifica la venta), 27, autorización PIN (3.2).
+- DEPENDENCIES: 11, 16, 5, 38 (ticket identifica la venta), 27, 40 (plazo configurable), autorización PIN (3.2).
 - OPEN_SOURCE_PATTERN: Medusa Exchange/Swap (vinculado a la orden original, con diferencia); Saleor returns.
 - DECISION: ADAPT.
-- ACCEPTANCE_CRITERIA: un cambio referencia venta y líneas originales; no se devuelve más de lo vendido; fuera de 15 días o sin ticket exige autorización; la diferencia a favor del local se cobra con medio trazable; no se genera crédito ni reintegro por diferencia a favor del cliente.
+- ACCEPTANCE_CRITERIA: un cambio referencia venta y líneas originales; no se devuelve más de lo vendido; fuera del plazo vigente (inicialmente 15 días) o sin ticket exige autorización; el cambio de plazo solo lo hace ADMIN/OWNER y queda auditado; la diferencia a favor del local se cobra con medio trazable; no se genera crédito ni reintegro por diferencia a favor del cliente.
 - EVIDENCE: `api/src/modules/rbac/permissions.ts:44`, `role-permission-matrix.ts:47`.
 
 #### 32 · Seña · MISSING · P1
@@ -473,14 +485,14 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 17 · Ajustes manuales · COMPLETE · P2
 - CURRENT: motivo (`StockAdjustmentReason`), nota, idempotencia, `INVENTORY_MANAGE` en el local, AuditLog y suite PG.
-- TARGET: aprobación de supervisor para ajustes grandes (opcional).
-- GAP: umbral con aprobación.
-- BUSINESS_RISK: los ajustes pueden tapar robos.
+- TARGET: ajuste común → permiso operativo correspondiente. Ajuste cuyo impacto supera el umbral configurado → autorización supervisada ADMIN/OWNER obligatoria, motivo obligatorio y auditoría obligatoria. El umbral es configurable por ADMIN/OWNER y su valor inicial es TBD (no se inventa un importe). La funcionalidad existente sigue operando como hoy hasta que el parámetro se defina e implemente.
+- GAP: parámetro de umbral (dominio 40) y regla de autorización supervisada para ajustes sobre el umbral; hoy todo ajuste de quien tiene permiso se aplica sin supervisor.
+- BUSINESS_RISK: los ajustes pueden tapar robos; sin umbral, un ajuste grande no exige supervisión.
 - TECHNICAL_RISK: bajo.
-- DEPENDENCIES: 16.
+- DEPENDENCIES: 16, 29, 40 (umbral configurable), autorización PIN (3.2).
 - OPEN_SOURCE_PATTERN: InvenTree adjustments.
 - DECISION: ADAPT.
-- ACCEPTANCE_CRITERIA: un ajuste sobre el umbral exige supervisor.
+- ACCEPTANCE_CRITERIA: un ajuste común no exige autorización adicional; un ajuste sobre el umbral es imposible sin autorización ADMIN/OWNER y motivo, y su auditoría registra al autorizador; el umbral solo lo modifican ADMIN/OWNER, con auditoría; mientras el umbral no esté definido, los ajustes se comportan como hoy.
 - EVIDENCE: `api/src/modules/inventory/inventory-adjustment.service.ts`, `api/tests/inventory/inventory-adjustment.pg.test.ts`.
 
 #### 18 · Warehouse · PARTIAL · P1
@@ -758,11 +770,11 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 40 · Configuración · PARTIAL · P1
 - CURRENT: en la DB solo `CompanyPricingConfig` (incluye `qrAdjustmentBps`). Lo demás está en el env: locales con checkout proporcional, medios externos, hash del código mayorista y sweeper.
-- TARGET: configuración operativa en DB, auditada, editable solo por ADMIN/OWNER: bps de cada medio (incluido QR), **límite global de deuda de empleado** (BigInt centavos, inicial `30000000n`), **monto mínimo de Seña**, **plazo de cambios (15 días)**, locales/medios del checkout.
-- GAP: pasar locales proporcionales y medios a DB; agregar límite de empleado, mínimo de Seña y plazo de cambio.
+- TARGET: configuración operativa en DB, auditada, editable solo por ADMIN/OWNER: bps de cada medio (incluido QR), **límite global de deuda de empleado** (BigInt centavos, inicial `30000000n`), **monto mínimo de Seña**, **plazo de cambios** (inicialmente 15 días, modificable por ADMIN/OWNER), **umbral de ajuste de stock** que exige autorización (valor TBD), **umbral de diferencia de caja** (valor TBD), locales/medios del checkout. CASHIER y SELLER no modifican ninguno de estos parámetros.
+- GAP: pasar locales proporcionales y medios a DB; agregar límite de empleado, mínimo de Seña, plazo de cambio y los umbrales de ajuste de stock y de diferencia de caja.
 - BUSINESS_RISK: cambiar un local de modo requiere redeploy; los valores de negocio no pueden quedar hardcodeados.
 - TECHNICAL_RISK: bajo.
-- DEPENDENCIES: 27, 29.
+- DEPENDENCIES: 27, 29, 12, 17.
 - OPEN_SOURCE_PATTERN: —
 - DECISION: ADAPT.
 - ACCEPTANCE_CRITERIA: cada cambio de configuración queda auditado con autor; ningún valor de negocio listado está hardcodeado.
@@ -886,13 +898,15 @@ No queda ninguna decisión OWNER de modelo abierta. Las decisiones A–I de R3 e
 3. Monto mínimo inicial de Seña.
 4. Resultado de la consulta de solo lectura a PILOT sobre filas `CashMovement.MANUAL`
    (hecho, no decisión; define si 9 sube a P0). No se ejecutó en este bloque.
+5. Umbral de ajuste de stock que exige autorización ADMIN/OWNER: **TBD**.
+6. Umbral de diferencia de caja que exige aprobación: **TBD**.
 
 ### Puntos de diseño para el Blueprint (derivables; no son decisiones OWNER)
 
 - Cómo se calcula el "importe pagado por la línea" con pago mixto (la base existe en `SaleLineAllocation`).
 - Cómo se arrastra el valor pagado de una venta anulada sin reintegro hacia la operación de cambio, sin crear un instrumento de saldo.
 - Protocolo, almacenamiento y bloqueo del PIN ADMIN/OWNER.
-- Origen del plazo de 15 días (fecha de la venta original, hora local Argentina).
+- Origen del cómputo del plazo de cambio (fecha de la venta original, hora local Argentina).
 - Cambio sobre una línea que ya fue cambiada (encadenamiento).
 
 ---
