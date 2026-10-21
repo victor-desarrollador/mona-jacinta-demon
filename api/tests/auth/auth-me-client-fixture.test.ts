@@ -14,13 +14,14 @@ import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matr
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'client', 'src', 'app', 'test-fixtures', 'auth-me.json');
 
-type Actor = { roleCode: 'OWNER' | 'ADMIN' | 'CASHIER' | 'SELLER'; scopeKind: 'COMPANY' | 'LOCATION' };
+type Actor = { roleCode: 'OWNER' | 'ADMIN' | 'CASHIER' | 'SELLER' | 'WAREHOUSE'; scopeKind: 'COMPANY' | 'LOCATION' };
 const ACTORS: Record<string, Actor> = {
   OWNER: { roleCode: 'OWNER', scopeKind: 'COMPANY' },
   ADMIN_COMPANY: { roleCode: 'ADMIN', scopeKind: 'COMPANY' },
   ADMIN_LOCATION: { roleCode: 'ADMIN', scopeKind: 'LOCATION' },
   CASHIER: { roleCode: 'CASHIER', scopeKind: 'LOCATION' },
   SELLER: { roleCode: 'SELLER', scopeKind: 'LOCATION' },
+  WAREHOUSE: { roleCode: 'WAREHOUSE', scopeKind: 'LOCATION' },
 };
 
 function projected({ roleCode, scopeKind }: Actor) {
@@ -45,13 +46,14 @@ function projected({ roleCode, scopeKind }: Actor) {
     permissions: dto.permissions,
     cashMovementLocationIds: dto.cashMovementLocationIds,
     cashSupervisorLocationIds: dto.cashSupervisorLocationIds,
+    inventoryManageLocationIds: dto.inventoryManageLocationIds,
   };
 }
 
 describe('client /auth/me fixture = the real public projection', () => {
   it('AMF-01 every canonical actor in the client fixture equals toPublicUserContext output', () => {
     const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, {
-      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[];
+      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[];
     }>;
     expect(Object.keys(fixture).sort()).toEqual(Object.keys(ACTORS).sort());
     for (const [name, actor] of Object.entries(ACTORS)) {
@@ -68,7 +70,7 @@ describe('client /auth/me fixture = the real public projection', () => {
   // as Prisma returns them -> buildAuthorizationContext -> toPublicUserContext.
   it('AMF-03 resolveUserContext over persisted role-scope rows returns exactly the fixture for every actor', async () => {
     const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, {
-      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[];
+      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[];
     }>;
     for (const [name, { roleCode, scopeKind }] of Object.entries(ACTORS)) {
       const location = scopeKind === 'LOCATION';
@@ -89,6 +91,7 @@ describe('client /auth/me fixture = the real public projection', () => {
         permissions: dto.permissions,
         cashMovementLocationIds: dto.cashMovementLocationIds,
         cashSupervisorLocationIds: dto.cashSupervisorLocationIds,
+        inventoryManageLocationIds: dto.inventoryManageLocationIds,
       }, name).toEqual(fixture[name]);
     }
   });
@@ -108,5 +111,14 @@ describe('client /auth/me fixture = the real public projection', () => {
     }
     expect(projected(ACTORS.SELLER!).cashMovementLocationIds).toEqual([]);
     expect(projected(ACTORS.SELLER!).cashSupervisorLocationIds).toEqual([]);
+  });
+
+  // WAREHOUSE-MVP: the Depósito gate is the branch-aware inventoryManageLocationIds
+  // hint, never the role name and never the global `inventory.manage` alone.
+  it('AMF-05 the inventory hint reaches OWNER, both ADMIN scopes and WAREHOUSE, and never SELLER or CASHIER', () => {
+    for (const name of ['OWNER', 'ADMIN_COMPANY', 'ADMIN_LOCATION', 'WAREHOUSE']) {
+      expect(projected(ACTORS[name]!).inventoryManageLocationIds, name).toContain('branch-1');
+    }
+    for (const name of ['SELLER', 'CASHIER']) expect(projected(ACTORS[name]!).inventoryManageLocationIds, name).toEqual([]);
   });
 });

@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { catalogCashPrice } from "./catalog-price";
 import ProportionalChargePanel, { CodedApiError } from "./ProportionalChargePanel";
+import WarehouseWorkspace from "./WarehouseWorkspace";
 import type { CheckoutAttempt } from "./checkout-quote";
 
 type User = {
@@ -23,6 +24,10 @@ type User = {
   // Retiro/Corregir (OWNER, or an ADMIN with COMPANY reach, only).
   cashMovementLocationIds: string[];
   cashSupervisorLocationIds: string[];
+  // WAREHOUSE-MVP: same kind of hint for the Depósito module — the branches where
+  // INVENTORY_MANAGE is effective. Absent on an API that predates it. The
+  // endpoints stay authoritative; the client never derives it from the role.
+  inventoryManageLocationIds?: string[];
 };
 
 type Inventory = {
@@ -607,32 +612,44 @@ async function apiRequestCoded(
   return body;
 }
 
-type PosMode = "seller" | "cashier" | null;
+type PosMode = "seller" | "cashier" | "warehouse" | null;
 
 // D1 (Phase 1 Global Closeout): single, shared POS access policy — owns
 // canSeller/canCashier/initialMode for BOTH the restored-session (/auth/me)
 // path and the fresh-login path, so the two can never drift. A WAREHOUSE-only
-// user (no SALE_CREATE/SALE_CHARGE — role-permission-matrix.ts) must resolve
-// to `initialMode: null`, never the old unconditional "seller" fallback.
-// OWNER/ADMIN are deliberately privileged (both workspaces, seller default)
-// per the frozen POS access policy; legacy MANAGER never participates here —
-// only current Production role codes reach `user.roles` (see
-// user-context.dto.ts's D1 projection from context.assignments).
-function resolvePosAccess(roles: string[]): { canSeller: boolean; canCashier: boolean; initialMode: PosMode } {
+// user (no SALE_CREATE/SALE_CHARGE — role-permission-matrix.ts) must never
+// reach the sale or cash workspaces. OWNER/ADMIN are deliberately privileged
+// (both workspaces, seller default) per the frozen POS access policy; legacy
+// MANAGER never participates here — only current Production role codes reach
+// `user.roles` (see user-context.dto.ts's D1 projection from context.assignments).
+//
+// WAREHOUSE-MVP: Depósito is gated by the branch-aware hint
+// user.inventoryManageLocationIds (INVENTORY_MANAGE effective at a location),
+// NOT by a role name: a pure WAREHOUSE starts there, OWNER/ADMIN/CASHIER/SELLER
+// keep their own default and only get the extra tab when the hint is non-empty.
+function resolvePosAccess(user: Pick<User, "roles" | "inventoryManageLocationIds">): {
+  canSeller: boolean;
+  canCashier: boolean;
+  canWarehouse: boolean;
+  initialMode: PosMode;
+} {
+  const roles = user.roles;
   const isPrivileged = roles.includes("OWNER") || roles.includes("ADMIN");
   const hasCashier = roles.includes("CASHIER");
   const hasSeller = roles.includes("SELLER");
 
   const canSeller = isPrivileged || hasSeller;
   const canCashier = isPrivileged || hasCashier;
+  const canWarehouse = (user.inventoryManageLocationIds ?? []).length > 0;
 
   let initialMode: PosMode;
   if (isPrivileged) initialMode = "seller";
   else if (hasCashier) initialMode = "cashier";
   else if (hasSeller) initialMode = "seller";
+  else if (canWarehouse) initialMode = "warehouse";
   else initialMode = null;
 
-  return { canSeller, canCashier, initialMode };
+  return { canSeller, canCashier, canWarehouse, initialMode };
 }
 
 export default function OperationsPage() {
@@ -658,7 +675,7 @@ export default function OperationsPage() {
       .then(({ user: currentUser }) => {
         setUser(currentUser);
         setBranchId(currentUser.branchIds[0] ?? "");
-        setMode(resolvePosAccess(currentUser.roles).initialMode);
+        setMode(resolvePosAccess(currentUser).initialMode);
       })
       .catch(() => {
         window.localStorage.removeItem(TOKEN_KEY);
@@ -681,7 +698,7 @@ export default function OperationsPage() {
       setToken(result.accessToken);
       setUser(result.user);
       setBranchId(result.user.branchIds[0] ?? "");
-      setMode(resolvePosAccess(result.user.roles).initialMode);
+      setMode(resolvePosAccess(result.user).initialMode);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo iniciar sesión.");
     } finally {
@@ -696,6 +713,12 @@ export default function OperationsPage() {
     setBranchId("");
     setMode(null);
     setError("");
+  }
+
+  // The API answered 401 mid-operation: end the session and say why on the login screen.
+  function sessionExpired() {
+    logout();
+    setError("Tu sesión expiró. Ingresá nuevamente.");
   }
 
   if (authLoading) {
@@ -751,7 +774,7 @@ export default function OperationsPage() {
     );
   }
 
-  const { canSeller, canCashier } = resolvePosAccess(user.roles);
+  const { canSeller, canCashier, canWarehouse } = resolvePosAccess(user);
 
   return (
     <main className="pos-shell">
@@ -781,6 +804,14 @@ export default function OperationsPage() {
               Venta
             </button>
           ) : null}
+          {canWarehouse ? (
+            <button
+              className={mode === "warehouse" ? "mode-tab active" : "mode-tab"}
+              onClick={() => setMode("warehouse")}
+            >
+              Depósito
+            </button>
+          ) : null}
         </div>
 
         <div className="user-menu">
@@ -803,6 +834,13 @@ export default function OperationsPage() {
         />
       ) : mode === "seller" ? (
         <SellerWorkspace token={token} user={user} branchId={branchId} onBranchChange={setBranchId} />
+      ) : mode === "warehouse" ? (
+        <WarehouseWorkspace
+          token={token}
+          userId={user.id}
+          branchIds={user.inventoryManageLocationIds ?? []}
+          onSessionExpired={sessionExpired}
+        />
       ) : (
         <section className="empty-card">
           <h1>Sin acceso al punto de venta</h1>

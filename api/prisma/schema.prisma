@@ -22,6 +22,17 @@ enum StockMovementType {
   SALE
   // D3: additive initial stock load (docs/production-v1/07-inventory-ledger.md §4).
   INITIAL_STOCK
+  // WAREHOUSE-MVP: manual stock adjustment (reason + idempotency key required).
+  ADJUSTMENT
+}
+
+// WAREHOUSE-MVP: why a manual adjustment was made (StockMovement.reason).
+enum StockAdjustmentReason {
+  DAMAGED
+  LOST
+  LOAD_ERROR
+  SURPLUS
+  OTHER
 }
 
 enum StockReservationStatus {
@@ -424,12 +435,19 @@ model StockMovement {
   saleId        String?
   userId        String
   branchId      String
+  // WAREHOUSE-MVP: only ADJUSTMENT rows carry these (SQL CHECKs in the
+  // stock_adjustment migration). SALE / INITIAL_STOCK rows keep them NULL.
+  reason         StockAdjustmentReason?
+  note           String?
+  idempotencyKey String?
   timestamp     DateTime          @default(now()) @db.Timestamptz(3)
   inventory     Inventory         @relation(fields: [inventoryId], references: [id], onDelete: Restrict)
   sale          Sale?             @relation(fields: [saleId], references: [id], onDelete: Restrict)
   user          User              @relation(fields: [userId], references: [id], onDelete: Restrict)
   branch        Branch            @relation(fields: [branchId], references: [id], onDelete: Restrict)
 
+  // NULL keys are distinct in PostgreSQL: historical rows never conflict.
+  @@unique([userId, idempotencyKey])
   @@index([inventoryId, timestamp])
   @@index([saleId])
   @@index([userId])

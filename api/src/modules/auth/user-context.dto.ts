@@ -46,6 +46,10 @@ export type PublicUserContext = {
   permissions: string[];
   cashMovementLocationIds: string[];
   cashSupervisorLocationIds: string[];
+  // WAREHOUSE-MVP: where INVENTORY_MANAGE is EFFECTIVE (same bounded semantics as
+  // cashMovementLocationIds). UI hint for the Depósito module only; GET
+  // /inventory/stock and POST /inventory/adjustments enforce it server-side.
+  inventoryManageLocationIds: string[];
 };
 
 type LegacyBranchRoleRow = { role: { code: string } };
@@ -147,5 +151,6 @@ export function toPublicUserContext(
     // LOCATION ADMIN is a manager there, never a supervisor.
     cashMovementLocationIds: authorizedLocationIds(context, PRODUCTION_PERMISSIONS.CASH_MOVEMENT_MANAGE),
     cashSupervisorLocationIds: supervisorLocationIds(context, [PRODUCTION_PERMISSIONS.CASH_MOVEMENT_MANAGE]),
+    inventoryManageLocationIds: authorizedLocationIds(context, PRODUCTION_PERMISSIONS.INVENTORY_MANAGE),
   };
 }

@@ -29,6 +29,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
       permissions: ['report.view'],
       cashMovementLocationIds: [],
       cashSupervisorLocationIds: [],
+      inventoryManageLocationIds: [],
     });
   });
 
@@ -134,7 +135,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
     );
     expect(company.permissions).toEqual(d3Codes);
     expect(Object.keys(company).sort()).toEqual([
-      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'name', 'permissions', 'roles',
+      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles',
     ]);
 
     const location = toPublicUserContext(
@@ -355,7 +356,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
       expect(dto.cashMovementLocationIds).toEqual(['loc-1']);
       expect(dto.cashSupervisorLocationIds).toEqual([]);
       expect(Object.keys(dto).sort()).toEqual([
-        'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'name', 'permissions', 'roles',
+        'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles',
       ]);
     });
   });
@@ -369,7 +370,48 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
     expect(dto).not.toHaveProperty('legacyPermissions');
     expect(dto).not.toHaveProperty('effectiveLocationIds');
     expect(Object.keys(dto).sort()).toEqual([
-      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'name', 'permissions', 'roles',
+      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles',
     ]);
+  });
+
+  // WAREHOUSE-MVP: a third additive, server-computed UI HINT. inventoryManageLocationIds
+  // lists the locations where INVENTORY_MANAGE is EFFECTIVE (authorizedLocationIds'
+  // bounded semantics: same-assignment pairing over the effective location universe).
+  // Visibility only: POST /inventory/adjustments and GET /inventory/stock keep
+  // enforcing hasPermissionAtLocation server-side.
+  describe('inventory manage location hint (WAREHOUSE-MVP, INV-HINT-01..05)', () => {
+    const IM = 'INVENTORY_MANAGE';
+    const hintFor = (effectiveLocationIds: string[], assignments: Express.ProductionAssignment[]) => toPublicUserContext(
+      { id: 'u', name: 'U', email: 'u@test.local', branchRoles: [] },
+      { effectiveLocationIds, assignments },
+    ).inventoryManageLocationIds;
+
+    it('INV-HINT-01 a WAREHOUSE at A plus a SELLER at B projects exactly [A]', () => {
+      expect(hintFor(['A', 'B'], [
+        assignment({ roleId: 'r-w', roleCode: 'WAREHOUSE', locationId: 'A', permissions: [...DEFAULT_ROLE_GRANTS.WAREHOUSE] }),
+        assignment({ roleId: 'r-s', roleCode: 'SELLER', locationId: 'B', permissions: [...DEFAULT_ROLE_GRANTS.SELLER] }),
+      ])).toEqual(['A']);
+    });
+
+    it('INV-HINT-02 a COMPANY ADMIN and a COMPANY OWNER project every effectively valid branch', () => {
+      expect(hintFor(['A', 'B'], [assignment({ roleId: 'r-a', roleCode: 'ADMIN', scopeKind: 'COMPANY', locationId: null, permissions: [...DEFAULT_ROLE_GRANTS.ADMIN] })])).toEqual(['A', 'B']);
+      expect(hintFor(['A', 'B'], [assignment({ roleId: 'r-o', roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] })])).toEqual(['A', 'B']);
+    });
+
+    it('INV-HINT-03 a SELLER or CASHIER (no INVENTORY_MANAGE) projects nothing', () => {
+      expect(hintFor(['A'], [assignment({ roleId: 'r-s', roleCode: 'SELLER', locationId: 'A', permissions: [...DEFAULT_ROLE_GRANTS.SELLER] })])).toEqual([]);
+      expect(hintFor(['A'], [assignment({ roleId: 'r-c', roleCode: 'CASHIER', locationId: 'A', permissions: [...DEFAULT_ROLE_GRANTS.CASHIER] })])).toEqual([]);
+    });
+
+    it('INV-HINT-04 a grant at A never composes with a location of a different assignment', () => {
+      expect(hintFor(['A', 'B'], [
+        assignment({ roleId: 'r-x', roleCode: 'WAREHOUSE', locationId: 'A', permissions: [IM] }),
+        assignment({ roleId: 'r-y', roleCode: 'CASHIER', locationId: 'B', permissions: ['SALE_VIEW'] }),
+      ])).toEqual(['A']);
+    });
+
+    it('INV-HINT-05 a location outside the effective universe is never fabricated', () => {
+      expect(hintFor([], [assignment({ roleId: 'r-w', roleCode: 'WAREHOUSE', locationId: 'A', permissions: [IM] })])).toEqual([]);
+    });
   });
 });

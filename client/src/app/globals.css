@@ -1309,3 +1309,134 @@ select:focus {
 .split-toggle input {
   width: auto;
 }
+
+/* WAREHOUSE-MVP: Depósito (stock list + manual adjustment dialog) */
+.warehouse-workspace {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 30px 36px 54px;
+}
+
+.warehouse-workspace .search-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.warehouse-workspace .search-box label {
+  flex-basis: 100%;
+}
+
+.warehouse-workspace .search-box input {
+  flex: 1;
+}
+
+.warehouse-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.warehouse-table th,
+.warehouse-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.warehouse-table th {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.warehouse-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.warehouse-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(31, 36, 35, 0.45);
+}
+
+.warehouse-dialog {
+  width: min(480px, 100%);
+  max-height: 92vh;
+  overflow-y: auto;
+  padding: 22px;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.25);
+}
+
+.warehouse-dialog label {
+  display: block;
+  margin: 12px 0 4px;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.warehouse-dialog input,
+.warehouse-dialog select,
+.warehouse-dialog textarea {
+  width: 100%;
+}
+
+.warehouse-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  margin: 0 0 8px;
+}
+
+.warehouse-facts dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.warehouse-facts dd {
+  margin: 0;
+  font-size: 14px;
+}
+
+.warehouse-result {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
+
+.warehouse-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+@media (max-width: 720px) {
+  .warehouse-workspace {
+    padding: 20px 14px 40px;
+  }
+
+  .warehouse-table {
+    display: block;
+    overflow-x: auto;
+  }
+}

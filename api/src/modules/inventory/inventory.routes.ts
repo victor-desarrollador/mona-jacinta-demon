@@ -6,6 +6,8 @@ import { validate } from '../../middleware/validation.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { createInventoryController } from './inventory.controller.js';
 import { initialStockSchema } from './initial-stock.service.js';
+import { stockAdjustmentSchema } from './inventory-adjustment.service.js';
+import { stockListQuerySchema } from './stock-list.service.js';
 
 const branchQuery = z.object({ branchId: z.uuid() }).strict();
 const availabilityQuery = branchQuery.extend({
@@ -49,6 +51,27 @@ export function createInventoryRouter(database: PrismaClient): Router {
       resolveResourceBranch: (req) => (req.body as { branchId: string }).branchId,
     }),
     controller.loadInitialStock,
+  );
+  // WAREHOUSE-MVP: INVENTORY_MANAGE is paired with the validated branchId through
+  // the location-aware mechanism (branchScope 'own' -> hasPermissionAtLocation):
+  // a WAREHOUSE has NO role-wide access, only at the branches it is assigned to.
+  router.get(
+    '/stock',
+    validate(stockListQuerySchema, 'query'),
+    requirePermission(PRODUCTION_PERMISSIONS.INVENTORY_MANAGE, {
+      branchScope: 'own',
+      resolveResourceBranch: (req) => String(req.query.branchId),
+    }),
+    controller.listStock,
+  );
+  router.post(
+    '/adjustments',
+    validate(stockAdjustmentSchema),
+    requirePermission(PRODUCTION_PERMISSIONS.INVENTORY_MANAGE, {
+      branchScope: 'own',
+      resolveResourceBranch: (req) => (req.body as { branchId: string }).branchId,
+    }),
+    controller.adjustStock,
   );
   return router;
 }
