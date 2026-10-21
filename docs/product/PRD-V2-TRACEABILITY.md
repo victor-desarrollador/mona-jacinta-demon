@@ -72,6 +72,7 @@ referencias futuras inventadas.
 | FR-CANCEL-006 | TBD | TBD | TBD | TBD | TBD |
 | FR-CANCEL-007 | TBD | TBD | TBD | TBD | TBD |
 | FR-CANCEL-008 | TBD | TBD | TBD | TBD | TBD |
+| FR-CANCEL-009 | TBD | TBD | TBD | TBD | TBD |
 | FR-EXCH-001 | TBD | TBD | TBD | TBD | TBD |
 | FR-EXCH-002 | TBD | TBD | TBD | TBD | TBD |
 | FR-EXCH-003 | TBD | TBD | TBD | TBD | TBD |
@@ -85,6 +86,9 @@ referencias futuras inventadas.
 | FR-EXCH-011 | TBD | TBD | TBD | TBD | TBD |
 | FR-EXCH-012 | TBD | TBD | TBD | TBD | TBD |
 | FR-EXCH-013 | TBD | TBD | TBD | TBD | TBD |
+| FR-EXCH-014 | TBD | TBD | TBD | TBD | TBD |
+| FR-EXCH-015 | TBD | TBD | TBD | TBD | TBD |
+| FR-EXCH-016 | TBD | TBD | TBD | TBD | TBD |
 | FR-DISC-001 | TBD | TBD | TBD | TBD | TBD |
 | FR-DISC-002 | TBD | TBD | TBD | TBD | TBD |
 | FR-DISC-003 | TBD | TBD | TBD | TBD | TBD |
@@ -151,6 +155,8 @@ referencias futuras inventadas.
 | FR-EMPSET-009 | TBD | TBD | TBD | TBD | TBD |
 | FR-EMPSET-010 | TBD | TBD | TBD | TBD | TBD |
 | FR-EMPSET-011 | TBD | TBD | TBD | TBD | TBD |
+| FR-EMPSET-012 | TBD | TBD | TBD | TBD | TBD |
+| FR-EMPSET-013 | TBD | TBD | TBD | TBD | TBD |
 | FR-CUST-001 | TBD | TBD | TBD | TBD | TBD |
 | FR-CUST-002 | TBD | TBD | TBD | TBD | TBD |
 | FR-CUST-003 | TBD | TBD | TBD | TBD | TBD |
@@ -164,6 +170,10 @@ referencias futuras inventadas.
 | FR-SENA-008 | TBD | TBD | TBD | TBD | TBD |
 | FR-SENA-009 | TBD | TBD | TBD | TBD | TBD |
 | FR-SENA-010 | TBD | TBD | TBD | TBD | TBD |
+| FR-SENA-011 | TBD | TBD | TBD | TBD | TBD |
+| FR-SENA-012 | TBD | TBD | TBD | TBD | TBD |
+| FR-SENA-013 | TBD | TBD | TBD | TBD | TBD |
+| FR-SENA-014 | TBD | TBD | TBD | TBD | TBD |
 | FR-VOUCH-001 | TBD | TBD | TBD | TBD | TBD |
 | FR-VOUCH-002 | TBD | TBD | TBD | TBD | TBD |
 | FR-VOUCH-003 | TBD | TBD | TBD | TBD | TBD |
@@ -175,6 +185,7 @@ referencias futuras inventadas.
 | FR-VOUCH-009 | TBD | TBD | TBD | TBD | TBD |
 | FR-VOUCH-010 | TBD | TBD | TBD | TBD | TBD |
 | FR-VOUCH-011 | TBD | TBD | TBD | TBD | TBD |
+| FR-VOUCH-012 | TBD | TBD | TBD | TBD | TBD |
 | FR-SUPP-001 | TBD | TBD | TBD | TBD | TBD |
 | FR-SUPP-002 | TBD | TBD | TBD | TBD | TBD |
 | FR-PURCHASE-001 | TBD | TBD | TBD | TBD | TBD |

@@ -147,6 +147,9 @@ documento; en el PRD V2 son OR-006, OR-050 y OR-051):
 - **Plazo de cambio:** 15 días como valor inicial; ADMIN/OWNER pueden modificar la cantidad de
   días mediante la configuración comercial, con auditoría; CASHIER y SELLER no pueden (dominios 12 y 40).
 - **Caja chica:** detalle o motivo obligatorio; comprobante opcional (dominio 34).
+- **Domingo en la cuenta de empleados:** la semana operativa sigue siendo lunes a sábado; un movimiento de cuenta realizado un domingo pertenece al ciclo que comienza el lunes siguiente (dominios 52 y 54).
+- **Pago de deuda de empleado:** el importe de un pago o aplicación de deuda no puede superar el saldo pendiente; no se crea saldo acreedor ni crédito (dominio 52).
+- **Cantidad reversible:** cantidad vendida − ya devuelta/cambiada − ya repuesta por reversas previas; sin doble reposición de stock ni doble reconocimiento de valor; con cantidad reversible cero se rechaza (dominios 11 y 12).
 - **Ajustes grandes de stock:** un ajuste común usa el permiso operativo normal; un ajuste cuyo
   impacto supera el umbral configurado exige autorización supervisada ADMIN/OWNER, motivo y
   auditoría. El umbral lo configura ADMIN/OWNER y su valor inicial es **TBD** (no se inventa un
@@ -325,7 +328,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 11 · Anulación post-cobro · MISSING · P0
 - CURRENT: no existe. `cancellation.service.ts:127` devuelve 409 `PAYMENT_ALREADY_ACCEPTED` y `:129` solo acepta DRAFT y PENDING_PAYMENT.
-- TARGET: una venta PAID/COMPLETED se anula solo con autorización ADMIN/OWNER por PIN y motivo obligatorio. Es una **reversa vinculada** a la venta original (nunca se edita ni se borra), que revierte el stock. **No hay devolución automática de efectivo** ni StoreCredit general. La resolución comercial normal es el cambio de prenda (dominio 12) y, si la nueva prenda vale más, se cobra la diferencia. Registra autorizador, AuditLog y notificación/visibilidad.
+- TARGET: una venta PAID/COMPLETED se anula solo con autorización ADMIN/OWNER por PIN y motivo obligatorio. Es una **reversa vinculada** a la venta original (nunca se edita ni se borra), que revierte el stock. Solo se revierte lo reversible: cantidad vendida − ya devuelta/cambiada − ya repuesta por reversas previas; nunca se repone stock dos veces y, si no queda cantidad reversible, se rechaza. **No hay devolución automática de efectivo** ni StoreCredit general. La resolución comercial normal es el cambio de prenda (dominio 12) y, si la nueva prenda vale más, se cobra la diferencia. Registra autorizador, AuditLog y notificación/visibilidad.
 - GAP: todo.
 - BUSINESS_RISK: errores de cobro corregidos fuera del sistema, con caja y stock que no cierran.
 - TECHNICAL_RISK: alto (triggers de pago, ledger de checkout, conciliación de caja).
@@ -337,19 +340,19 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 12 · Cambios · MISSING · P0
 - CURRENT: no existe. `EXCHANGE_MANAGE` está declarado y otorgado a CASHIER sin implementación (`api/src/modules/rbac/permissions.ts:44`, `role-permission-matrix.ts:47`).
-- TARGET: cambio vinculado siempre a la venta original encontrada en el sistema. Plazo inicial de 15 días, modificable por ADMIN/OWNER (dominio 40). Con ticket lo procesa CASHIER; sin ticket exige PIN ADMIN/OWNER + motivo. Se permite en otra sucursal. Valor reconocido = importe efectivamente pagado por la línea original (`ACTUAL_PAID_AMOUNT`). Nueva prenda más cara: se cobra la diferencia (checkout proporcional); igual valor: cambio directo; más barata: no se devuelve la diferencia y no se crea StoreCredit.
+- TARGET: cambio vinculado siempre a la venta original encontrada en el sistema. Plazo inicial de 15 días, modificable por ADMIN/OWNER (dominio 40). Con ticket lo procesa CASHIER; sin ticket exige PIN ADMIN/OWNER + motivo. Se permite en otra sucursal. Valor reconocido = importe efectivamente pagado por la línea original (`ACTUAL_PAID_AMOUNT`). Nueva prenda más cara: se cobra la diferencia (checkout proporcional); igual valor: cambio directo; más barata: no se devuelve la diferencia y no se crea StoreCredit. Prenda nueva: `cashPrice` es la base y el precio final lo calcula PROPORTIONAL_V1 según los medios usados para pagar la diferencia (no siempre `cashPrice`). El valor reconocido es un aporte interno no monetario: sin CashMovement, sin crédito reutilizable y sin retiro como efectivo.
 - GAP: todo.
 - BUSINESS_RISK: en ropa los cambios son diarios; hoy obligan a ajustes manuales y caja informal.
 - TECHNICAL_RISK: alto (valor pagado por línea con pago mixto, stock de dos líneas, cobro de diferencia, multi-sucursal).
 - DEPENDENCIES: 11, 16, 5, 38 (ticket identifica la venta), 27, 40 (plazo configurable), autorización PIN (3.2).
 - OPEN_SOURCE_PATTERN: Medusa Exchange/Swap (vinculado a la orden original, con diferencia); Saleor returns.
 - DECISION: ADAPT.
-- ACCEPTANCE_CRITERIA: un cambio referencia venta y líneas originales; no se devuelve más de lo vendido; fuera del plazo vigente (inicialmente 15 días) o sin ticket exige autorización; el cambio de plazo solo lo hace ADMIN/OWNER y queda auditado; la diferencia a favor del local se cobra con medio trazable; no se genera crédito ni reintegro por diferencia a favor del cliente.
+- ACCEPTANCE_CRITERIA: un cambio referencia venta y líneas originales; no se devuelve más de lo reversible (vendido − ya devuelto/cambiado − ya repuesto) ni se reconoce dos veces el valor de una línea; fuera del plazo vigente (inicialmente 15 días) o sin ticket exige autorización; el cambio de plazo solo lo hace ADMIN/OWNER y queda auditado; la diferencia a favor del local se cobra con medio trazable; no se genera crédito ni reintegro por diferencia a favor del cliente.
 - EVIDENCE: `api/src/modules/rbac/permissions.ts:44`, `role-permission-matrix.ts:47`.
 
 #### 32 · Seña · MISSING · P1
 - CURRENT CANONICAL: solo permisos `SENA_CREATE/MANAGE/SETTLE`; ningún modelo, ruta ni servicio. El WIP histórico (`feat/sena-five-day-expiry`, sin commitear, sobre `3d7318e`) **no cuenta como implementación**; su migración `20261021130000_sena_deposit` choca en timestamp con `20261021130000_warehouse_stock_adjustment`.
-- TARGET: **REDESIGN / SELECTIVE PORT** sobre System V2. 120 h exactas desde la activación; ACTIVE bloquea stock; liberación única e idempotente al vencer; precio/snapshot congelado al activarla; monto mínimo configurable por ADMIN/OWNER; medios y QR según las reglas del checkout correspondiente; el vencimiento no devuelve dinero, no genera crédito ni CashMovement; la cancelación manual no reintegra; la venta normal sigue sin TTL.
+- TARGET: **REDESIGN / SELECTIVE PORT** sobre System V2. 120 h exactas desde la activación; ACTIVE bloquea stock; liberación única e idempotente al vencer; precio/snapshot congelado al activarla; monto mínimo configurable por ADMIN/OWNER; medios y QR según las reglas del checkout correspondiente; el vencimiento no devuelve dinero, no genera crédito ni CashMovement; la cancelación manual no reintegra; la venta normal sigue sin TTL. Cierre exitoso: con la Seña ACTIVE y dentro de las 120 h, el cliente aplica el anticipo exclusivamente a esa operación (no es crédito general, ni voucher, ni reutilizable) y paga el saldo calculado por PROPORTIONAL_V1 según los medios elegidos; si el total final supera el anticipo, paga la diferencia (sin devolución de efectivo); se consume el stock reservado y la Seña queda COMPLETED.
 - GAP: todo el dominio canónico; la migración del WIP desaparece con el rediseño.
 - BUSINESS_RISK: señas en papel; riesgo de doble liberación o reintegros informales.
 - TECHNICAL_RISK: medio (vencimiento concurrente; bloqueo de stock separado de las reservas de venta).
@@ -361,8 +364,8 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 33a · Voucher de Seña · MISSING · P1
 - CURRENT: no existe.
-- TARGET: único vale existente. No se genera automáticamente: requiere operación separada con autorización ADMIN. Monto = total aceptado de los SenaPayment. Un voucher por Seña (unicidad en DB). Misma sucursal. Uso completo en una sola compra, sin vuelto. La compra debe ser ≥ al valor del vale; si es mayor, se paga la diferencia con medio trazable. **Solo sirve para una venta normal, no para otra Seña.** Sin vencimiento. Emitirlo o usarlo no genera CashMovement.
-- GAP: todo; integrarlo como medio de pago del checkout.
+- TARGET: único vale existente. No se genera automáticamente: requiere operación separada con autorización ADMIN. Monto = total aceptado de los SenaPayment. Un voucher por Seña (unicidad en DB). Misma sucursal. Uso completo en una sola compra, sin vuelto. La compra debe ser ≥ al valor del vale; si es mayor, se paga la diferencia con medio trazable. **Solo sirve para una venta normal, no para otra Seña.** Sin vencimiento. Emitirlo o usarlo no genera CashMovement. Solo se emite a partir de una Seña cancelada manualmente y con autorización de ADMIN; el vencimiento de la Seña no habilita un Voucher.
+- GAP: todo; integrarlo en el checkout como tender de uso único.
 - BUSINESS_RISK: vales en papel; doble uso.
 - TECHNICAL_RISK: medio (medio de pago nuevo en proporcional y en la conciliación de caja, que debe excluir su valor).
 - DEPENDENCIES: 32, 5, 9, 10, 29, 46.
@@ -584,7 +587,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 52 · EmployeeAccount (cuenta corriente de empleados) · MISSING · P0
 - CURRENT: no existe.
-- TARGET: `EmployeeAccount` por empleado **sin campo de saldo**; `EmployeeAccountMovement` append-only en BigInt centavos con signo fijo (deuda positiva) y CHECK por tipo. Tipos: `OPENING_BALANCE`, `MERCHANDISE_WITHDRAWAL`, `RETURN`, `PAYMENT`, `PAYROLL_DEDUCTION`, `REVERSAL`, `ADJUSTMENT`. **`OPENING_BALANCE`**: saldo vigente del sistema viejo, con fecha de corte explícita, append-only, sin reescribir historia previa inexistente en V2. Saldo = suma de movimientos. **Límite global** configurable (inicial `30000000n` = $300.000; dominio 40); sin límite individual. **Pago directo CASH/TRANSFER**, parcial o total: CASH genera un CashMovement de tipo nuevo en la sesión del local; TRANSFER deja referencia verificable (patrón ExternalCollection); ambos generan `PAYMENT`. `REVERSAL` referencia un único original y es único por original. `ADJUSTMENT` exige autorización ADMIN/OWNER y motivo.
+- TARGET: `EmployeeAccount` por empleado **sin campo de saldo**; `EmployeeAccountMovement` append-only en BigInt centavos con signo fijo (deuda positiva) y CHECK por tipo. Tipos: `OPENING_BALANCE`, `MERCHANDISE_WITHDRAWAL`, `RETURN`, `PAYMENT`, `PAYROLL_DEDUCTION`, `REVERSAL`, `ADJUSTMENT`. **`OPENING_BALANCE`**: saldo vigente del sistema viejo, con fecha de corte explícita, append-only, sin reescribir historia previa inexistente en V2. Saldo = suma de movimientos. **Límite global** configurable (inicial `30000000n` = $300.000; dominio 40); sin límite individual. **Pago directo CASH/TRANSFER**, parcial o total: CASH genera un CashMovement de tipo nuevo en la sesión del local; TRANSFER deja referencia verificable (patrón ExternalCollection); ambos generan `PAYMENT`. `REVERSAL` referencia un único original y es único por original. `ADJUSTMENT` exige autorización ADMIN/OWNER y motivo. Un pago o aplicación de deuda no puede superar el saldo pendiente: no existe saldo acreedor del empleado.
 - GAP: todo.
 - BUSINESS_RISK: deudas de empleados no controladas o perdidas.
 - TECHNICAL_RISK: medio (inmutabilidad y signos).
@@ -608,7 +611,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 54 · EmployeeSettlement (liquidación semanal) · MISSING · P0
 - CURRENT: no existe.
-- TARGET: concepto separado de la cuenta corriente. Semana **lunes a sábado** en zona America/Argentina/Buenos_Aires. Administración registra el importe a aplicar, que puede ser **parcial**; el resto se arrastra solo porque el saldo es derivado. Cada liquidación guarda empleado, semana, importe, autor, fecha y nota, y genera exactamente un `PAYROLL_DEDUCTION` (negativo) vinculado de forma única. Nunca borra ni sobrescribe movimientos; una corrección es una reversa. No es payroll ni calcula sueldo. Reconstruible: saldo antes, lo descontado, semana, quién, saldo después.
+- TARGET: concepto separado de la cuenta corriente. Semana **lunes a sábado** en zona America/Argentina/Buenos_Aires; un movimiento realizado un domingo pertenece al ciclo que comienza el lunes siguiente. Administración registra el importe a aplicar, que puede ser **parcial** y no superior al saldo pendiente; el resto se arrastra solo porque el saldo es derivado. Cada liquidación guarda empleado, semana, importe, autor, fecha y nota, y genera exactamente un `PAYROLL_DEDUCTION` (negativo) vinculado de forma única. Nunca borra ni sobrescribe movimientos; una corrección es una reversa. No es payroll ni calcula sueldo. Reconstruible: saldo antes, lo descontado, semana, quién, saldo después.
 - GAP: todo.
 - BUSINESS_RISK: descuentos de sueldo sin trazabilidad; disputas con empleados.
 - TECHNICAL_RISK: medio (unicidad por semana y concurrencia con retiros).

@@ -444,6 +444,12 @@ nueva prenda cuesta más, el cliente paga la diferencia.
 - **Regla:** Toda anulación DEBE registrarse en auditoría y quedar visible para ADMIN y OWNER en la bandeja de alertas.
 - **Aceptación:** Una anulación genera registro de auditoría con autorizador y motivo, y una alerta visible.
 
+#### FR-CANCEL-009 · Cantidad reversible
+- **Prioridad:** P0 · **Origen:** Matrix 11, 12 · OR-056
+- **Regla:** La cantidad reversible de una línea vendida DEBE ser la cantidad vendida menos la cantidad ya devuelta o cambiada y menos la cantidad ya repuesta por reversas previas; el sistema NO DEBE reponer stock dos veces ni revertir más cantidad de la vendida, y DEBE rechazar la operación si la cantidad reversible es cero.
+- **Aceptación:** Anular una venta con un cambio parcial previo repone solo el remanente; anular dos veces o cambiar más unidades que las reversibles es rechazado; con cantidad reversible cero la operación falla.
+- **Dependencias:** FR-EXCH-011, FR-EXCH-016.
+
 ## 12. Cambios
 
 #### FR-EXCH-001 · Definición de cambio
@@ -516,6 +522,22 @@ nueva prenda cuesta más, el cliente paga la diferencia.
 - **Aceptación:** Un cambio excepcional genera una alerta en la bandeja y un registro de auditoría con autorizador.
 
 ## 13. Descuentos
+
+#### FR-EXCH-014 · Valuación de la mercadería nueva
+- **Prioridad:** P0 · **Origen:** Matrix 12 · OR-053
+- **Regla:** Para la mercadería nueva de un cambio, `cashPrice` DEBE ser la base y el precio final DEBE calcularlo PROPORTIONAL_V1 según los medios usados para pagar la diferencia; NO DEBE usarse siempre `cashPrice` como precio final.
+- **Aceptación:** Si la diferencia se paga con un medio con recargo, el precio final de la prenda nueva refleja el recargo de ese medio; si el valor reconocido cubre todo, no hay recargo que aplicar.
+
+#### FR-EXCH-015 · Valor reconocido como aporte interno no monetario
+- **Prioridad:** P0 · **Origen:** Matrix 12 · OR-053
+- **Regla:** El valor reconocido de la mercadería devuelta DEBE aplicarse como aporte interno no monetario: NO DEBE generar movimiento de caja ni crédito reutilizable, ni poder retirarse como efectivo.
+- **Aceptación:** Un cambio no produce movimiento de caja por el valor reconocido y, tras el cambio, no existe saldo a favor del cliente por ese valor.
+
+#### FR-EXCH-016 · Valor reconocido una sola vez
+- **Prioridad:** P0 · **Origen:** Matrix 12 · OR-056
+- **Regla:** El sistema NO DEBE reconocer más de una vez el valor de la misma cantidad de una línea: la suma de valores reconocidos de una línea no puede superar lo efectivamente pagado por ella, y si no queda cantidad ni valor reversible la operación DEBE rechazarse.
+- **Aceptación:** Dos cambios sobre la misma línea reconocen en total, como máximo, lo pagado por esa línea; un cambio sobre una línea sin valor remanente es rechazado.
+- **Dependencias:** FR-CANCEL-009, FR-EXCH-007.
 
 #### FR-DISC-001 · Quién autoriza descuentos
 - **Prioridad:** P1 · **Origen:** Matrix 13 · OR-019
@@ -872,6 +894,18 @@ nueva prenda cuesta más, el cliente paga la diferencia.
 - **Regla:** Todo pago directo DEBE generar un movimiento de pago en la cuenta del empleado.
 - **Aceptación:** Cada pago, en efectivo o transferencia, aparece como movimiento de pago.
 
+#### FR-EMPSET-012 · Movimiento de domingo
+- **Prioridad:** P0 · **Origen:** Matrix 54, 52 · OR-054
+- **Regla:** Un movimiento de la cuenta de un empleado realizado un domingo DEBE pertenecer al ciclo semanal que comienza el lunes siguiente.
+- **Aceptación:** Un pago o retiro registrado un domingo, hora de Argentina, se asigna a la semana que empieza el lunes inmediato posterior; uno registrado de lunes a sábado se asigna a la semana en curso.
+- **Dependencias:** FR-EMPSET-001, NFR-TIME-002.
+
+#### FR-EMPSET-013 · Pago o aplicación de deuda no superior al saldo
+- **Prioridad:** P0 · **Origen:** Matrix 52, 54 · OR-055
+- **Regla:** El sistema NO DEBE aceptar un pago directo ni una aplicación de deuda (liquidación) por un importe superior al saldo pendiente del empleado: `importe <= saldo pendiente`.
+- **Aceptación:** Un pago o una liquidación mayor que el saldo pendiente es rechazado; el saldo del empleado nunca queda a favor del empleado y no se crea crédito.
+- **Dependencias:** FR-EMPACC-001, FR-EMPSET-002, FR-EMPSET-008.
+
 # Parte G — Clientes y Seña
 
 ## 22. Clientes
@@ -946,6 +980,26 @@ nueva prenda cuesta más, el cliente paga la diferencia.
 
 ## 24. Voucher de Seña
 
+#### FR-SENA-011 · Cierre de la Seña dentro de las 120 horas
+- **Prioridad:** P1 · **Origen:** Matrix 32 · OR-052
+- **Regla:** Mientras la Seña esté ACTIVE y dentro de las 120 horas, el cliente DEBE poder completarla aplicando el anticipo y pagando el saldo restante.
+- **Aceptación:** Una Seña activa dentro del plazo puede iniciar su cierre; una Seña vencida no.
+
+#### FR-SENA-012 · Anticipo exclusivo de la operación
+- **Prioridad:** P1 · **Origen:** Matrix 32 · OR-052
+- **Regla:** El anticipo DEBE aplicarse exclusivamente a la operación de cierre de esa Seña: NO DEBE ser crédito general, NO DEBE ser un Voucher, NO DEBE ser reutilizable y NO DEBE aplicarse a otra operación.
+- **Aceptación:** Un intento de aplicar el anticipo a otra venta es rechazado; tras el cierre no queda saldo ni instrumento derivado del anticipo.
+
+#### FR-SENA-013 · Saldo y precio final del cierre
+- **Prioridad:** P1 · **Origen:** Matrix 32 · OR-052
+- **Regla:** El saldo restante DEBE calcularse con PROPORTIONAL_V1, de modo que el precio final dependa de los medios elegidos; si el total final supera el anticipo, el cliente DEBE pagar la diferencia, y NO DEBE haber devolución de efectivo.
+- **Aceptación:** Pagar el saldo de la misma Seña con otro medio produce el total final que corresponde a ese medio; no existe egreso de caja por el anticipo.
+
+#### FR-SENA-014 · Consumo del stock reservado y finalización
+- **Prioridad:** P1 · **Origen:** Matrix 32 · OR-052
+- **Regla:** Al completarse el cobro, el sistema DEBE consumir el stock reservado de la Seña y dejarla en estado COMPLETED, en una única operación atómica.
+- **Aceptación:** Tras el cierre el stock reservado queda consumido y no se libera, y la Seña figura COMPLETED.
+
 #### FR-VOUCH-001 · Emisión autorizada
 - **Prioridad:** P1 · **Origen:** Matrix 33a · OR-038
 - **Regla:** Un Voucher de Seña NO DEBE emitirse automáticamente: DEBE requerir una operación separada con autorización de ADMIN.
@@ -1000,6 +1054,11 @@ nueva prenda cuesta más, el cliente paga la diferencia.
 - **Prioridad:** P1 · **Origen:** Matrix 33a, 5 · OR-040
 - **Regla:** El Voucher DEBE integrarse como medio de pago del checkout proporcional, con uso único.
 - **Aceptación:** Un Voucher usado no puede volver a usarse.
+
+#### FR-VOUCH-012 · Origen del Voucher
+- **Prioridad:** P1 · **Origen:** Matrix 33a, 32 · OR-034, OR-038
+- **Regla:** El Voucher de Seña SOLO PUEDE emitirse a partir de una Seña cancelada manualmente y con autorización de ADMIN; el vencimiento de una Seña NO DEBE habilitar un Voucher.
+- **Aceptación:** Emitir un Voucher sobre una Seña vencida es rechazado; sobre una Seña cancelada manualmente, con autorización de ADMIN, es aceptado.
 
 # Parte H — Abastecimiento y finanzas
 
@@ -1513,9 +1572,9 @@ La prioridad indica el **orden de entrega**. El PRD describe el producto complet
 quita requisitos del producto objetivo. La lista siguiente se genera desde los campos
 `Prioridad` de cada requisito.
 
-**P0 — primera entrega** (96 requisitos): FR-PAY-006, FR-PAY-012, FR-CASH-009, FR-CANCEL-001, FR-CANCEL-002, FR-CANCEL-003, FR-CANCEL-004, FR-CANCEL-005, FR-CANCEL-006, FR-CANCEL-007, FR-CANCEL-008, FR-EXCH-001, FR-EXCH-002, FR-EXCH-003, FR-EXCH-004, FR-EXCH-005, FR-EXCH-006, FR-EXCH-007, FR-EXCH-008, FR-EXCH-009, FR-EXCH-010, FR-EXCH-011, FR-EXCH-012, FR-EXCH-013, FR-STOCK-003, FR-STOCK-004, FR-TRANSFER-001, FR-TRANSFER-002, FR-TRANSFER-003, FR-TRANSFER-004, FR-TRANSFER-005, FR-TRANSFER-006, FR-TRANSFER-007, FR-TRANSFER-008, FR-RECV-004, FR-EMP-001, FR-EMP-002, FR-EMP-003, FR-EMP-004, FR-EMP-005, FR-EMP-006, FR-EMP-007, FR-EMPACC-001, FR-EMPACC-002, FR-EMPACC-003, FR-EMPACC-004, FR-EMPACC-005, FR-EMPACC-006, FR-EMPACC-007, FR-EMPACC-008, FR-EMPACC-009, FR-EMPACC-010, FR-EMPWD-001, FR-EMPWD-002, FR-EMPWD-003, FR-EMPWD-004, FR-EMPWD-005, FR-EMPWD-006, FR-EMPWD-007, FR-EMPWD-008, FR-EMPWD-009, FR-EMPWD-010, FR-EMPSET-001, FR-EMPSET-002, FR-EMPSET-003, FR-EMPSET-004, FR-EMPSET-005, FR-EMPSET-006, FR-EMPSET-007, FR-EMPSET-008, FR-EMPSET-009, FR-EMPSET-010, FR-EMPSET-011, FR-AUTH-001, FR-AUTH-002, FR-AUTH-003, FR-AUTH-004, FR-AUTH-005, FR-AUTH-006, FR-AUTH-007, FR-AUTH-008, FR-AUTH-009, FR-AUTH-010, FR-ALERT-003, FR-AUDIT-004, NFR-MONEY-001, NFR-MONEY-003, NFR-STOCK-001, NFR-STOCK-002, NFR-STOCK-003, NFR-CONC-001, NFR-IDEMP-001, NFR-AUDIT-002, NFR-TIME-002, FR-MIG-001, FR-MIG-002
+**P0 — primera entrega** (102 requisitos): FR-PAY-006, FR-PAY-012, FR-CASH-009, FR-CANCEL-001, FR-CANCEL-002, FR-CANCEL-003, FR-CANCEL-004, FR-CANCEL-005, FR-CANCEL-006, FR-CANCEL-007, FR-CANCEL-008, FR-CANCEL-009, FR-EXCH-001, FR-EXCH-002, FR-EXCH-003, FR-EXCH-004, FR-EXCH-005, FR-EXCH-006, FR-EXCH-007, FR-EXCH-008, FR-EXCH-009, FR-EXCH-010, FR-EXCH-011, FR-EXCH-012, FR-EXCH-013, FR-EXCH-014, FR-EXCH-015, FR-EXCH-016, FR-STOCK-003, FR-STOCK-004, FR-TRANSFER-001, FR-TRANSFER-002, FR-TRANSFER-003, FR-TRANSFER-004, FR-TRANSFER-005, FR-TRANSFER-006, FR-TRANSFER-007, FR-TRANSFER-008, FR-RECV-004, FR-EMP-001, FR-EMP-002, FR-EMP-003, FR-EMP-004, FR-EMP-005, FR-EMP-006, FR-EMP-007, FR-EMPACC-001, FR-EMPACC-002, FR-EMPACC-003, FR-EMPACC-004, FR-EMPACC-005, FR-EMPACC-006, FR-EMPACC-007, FR-EMPACC-008, FR-EMPACC-009, FR-EMPACC-010, FR-EMPWD-001, FR-EMPWD-002, FR-EMPWD-003, FR-EMPWD-004, FR-EMPWD-005, FR-EMPWD-006, FR-EMPWD-007, FR-EMPWD-008, FR-EMPWD-009, FR-EMPWD-010, FR-EMPSET-001, FR-EMPSET-002, FR-EMPSET-003, FR-EMPSET-004, FR-EMPSET-005, FR-EMPSET-006, FR-EMPSET-007, FR-EMPSET-008, FR-EMPSET-009, FR-EMPSET-010, FR-EMPSET-011, FR-EMPSET-012, FR-EMPSET-013, FR-AUTH-001, FR-AUTH-002, FR-AUTH-003, FR-AUTH-004, FR-AUTH-005, FR-AUTH-006, FR-AUTH-007, FR-AUTH-008, FR-AUTH-009, FR-AUTH-010, FR-ALERT-003, FR-AUDIT-004, NFR-MONEY-001, NFR-MONEY-003, NFR-STOCK-001, NFR-STOCK-002, NFR-STOCK-003, NFR-CONC-001, NFR-IDEMP-001, NFR-AUDIT-002, NFR-TIME-002, FR-MIG-001, FR-MIG-002
 
-**P1 — segunda entrega** (117 requisitos): FR-ORG-001, FR-ORG-002, FR-ORG-003, FR-ORG-004, FR-ORG-005, FR-CAT-001, FR-CAT-002, FR-CAT-003, FR-CAT-004, FR-CAT-005, FR-CAT-006, FR-CAT-007, FR-PRICE-001, FR-PRICE-002, FR-PRICE-003, FR-PRICE-004, FR-PRICE-005, FR-PRICE-006, FR-PRICE-008, FR-PRICE-009, FR-SALE-001, FR-SALE-002, FR-SALE-004, FR-SALE-005, FR-SALE-006, FR-PAY-001, FR-PAY-002, FR-PAY-003, FR-PAY-004, FR-PAY-005, FR-PAY-009, FR-PAY-010, FR-PAY-011, FR-CASH-002, FR-CASH-003, FR-CASH-004, FR-CASH-005, FR-CASH-006, FR-CASH-007, FR-CASH-008, FR-CASH-010, FR-CASH-011, FR-CASH-012, FR-DISC-001, FR-DISC-002, FR-DISC-003, FR-DISC-004, FR-DISC-005, FR-RECV-001, FR-RECV-002, FR-RECV-003, FR-CUST-001, FR-CUST-002, FR-CUST-003, FR-SENA-001, FR-SENA-002, FR-SENA-003, FR-SENA-004, FR-SENA-005, FR-SENA-006, FR-SENA-007, FR-SENA-008, FR-SENA-009, FR-SENA-010, FR-VOUCH-001, FR-VOUCH-002, FR-VOUCH-003, FR-VOUCH-004, FR-VOUCH-005, FR-VOUCH-006, FR-VOUCH-007, FR-VOUCH-008, FR-VOUCH-009, FR-VOUCH-010, FR-VOUCH-011, FR-USER-001, FR-USER-002, FR-USER-003, FR-USER-004, FR-USER-005, FR-ALERT-001, FR-ALERT-002, FR-AUDIT-001, FR-AUDIT-002, FR-AUDIT-003, FR-RPT-001, FR-RPT-002, FR-RPT-003, FR-RPT-004, FR-RPT-005, FR-TICKET-001, FR-TICKET-002, FR-TICKET-003, FR-ARCA-001, FR-ARCA-002, FR-ARCA-003, FR-CONF-001, FR-CONF-002, FR-CONF-003, NFR-SEC-001, NFR-SEC-003, NFR-SEC-004, NFR-SEC-005, NFR-MONEY-002, NFR-MONEY-004, NFR-MONEY-005, NFR-CONC-002, NFR-CONC-003, NFR-IDEMP-002, NFR-AUDIT-001, NFR-AUDIT-003, NFR-TIME-001, NFR-OPS-001, NFR-OPS-003, NFR-OPS-004, NFR-OPS-005, NFR-OPS-006
+**P1 — segunda entrega** (122 requisitos): FR-ORG-001, FR-ORG-002, FR-ORG-003, FR-ORG-004, FR-ORG-005, FR-CAT-001, FR-CAT-002, FR-CAT-003, FR-CAT-004, FR-CAT-005, FR-CAT-006, FR-CAT-007, FR-PRICE-001, FR-PRICE-002, FR-PRICE-003, FR-PRICE-004, FR-PRICE-005, FR-PRICE-006, FR-PRICE-008, FR-PRICE-009, FR-SALE-001, FR-SALE-002, FR-SALE-004, FR-SALE-005, FR-SALE-006, FR-PAY-001, FR-PAY-002, FR-PAY-003, FR-PAY-004, FR-PAY-005, FR-PAY-009, FR-PAY-010, FR-PAY-011, FR-CASH-002, FR-CASH-003, FR-CASH-004, FR-CASH-005, FR-CASH-006, FR-CASH-007, FR-CASH-008, FR-CASH-010, FR-CASH-011, FR-CASH-012, FR-DISC-001, FR-DISC-002, FR-DISC-003, FR-DISC-004, FR-DISC-005, FR-RECV-001, FR-RECV-002, FR-RECV-003, FR-CUST-001, FR-CUST-002, FR-CUST-003, FR-SENA-001, FR-SENA-002, FR-SENA-003, FR-SENA-004, FR-SENA-005, FR-SENA-006, FR-SENA-007, FR-SENA-008, FR-SENA-009, FR-SENA-010, FR-SENA-011, FR-SENA-012, FR-SENA-013, FR-SENA-014, FR-VOUCH-001, FR-VOUCH-002, FR-VOUCH-003, FR-VOUCH-004, FR-VOUCH-005, FR-VOUCH-006, FR-VOUCH-007, FR-VOUCH-008, FR-VOUCH-009, FR-VOUCH-010, FR-VOUCH-011, FR-VOUCH-012, FR-USER-001, FR-USER-002, FR-USER-003, FR-USER-004, FR-USER-005, FR-ALERT-001, FR-ALERT-002, FR-AUDIT-001, FR-AUDIT-002, FR-AUDIT-003, FR-RPT-001, FR-RPT-002, FR-RPT-003, FR-RPT-004, FR-RPT-005, FR-TICKET-001, FR-TICKET-002, FR-TICKET-003, FR-ARCA-001, FR-ARCA-002, FR-ARCA-003, FR-CONF-001, FR-CONF-002, FR-CONF-003, NFR-SEC-001, NFR-SEC-003, NFR-SEC-004, NFR-SEC-005, NFR-MONEY-002, NFR-MONEY-004, NFR-MONEY-005, NFR-CONC-002, NFR-CONC-003, NFR-IDEMP-002, NFR-AUDIT-001, NFR-AUDIT-003, NFR-TIME-001, NFR-OPS-001, NFR-OPS-003, NFR-OPS-004, NFR-OPS-005, NFR-OPS-006
 
 **P2 — tercera entrega** (40 requisitos): FR-PRICE-007, FR-SALE-003, FR-WHOL-001, FR-WHOL-002, FR-PAY-007, FR-PAY-008, FR-CASH-001, FR-CASH-013, FR-STOCK-001, FR-STOCK-002, FR-STOCK-005, FR-STOCK-006, FR-STOCK-007, FR-ADJ-001, FR-ADJ-002, FR-ADJ-003, FR-ADJ-004, FR-SUPP-001, FR-SUPP-002, FR-PURCHASE-001, FR-PURCHASE-002, FR-PURCHASE-003, FR-SUPDEBT-001, FR-SUPDEBT-002, FR-SUPDEBT-003, FR-EXP-001, FR-EXP-002, FR-EXP-003, FR-EXP-004, FR-TREAS-001, FR-TREAS-002, FR-TREAS-003, FR-TREAS-004, FR-RBAC-001, FR-RBAC-002, FR-RBAC-003, FR-RBAC-004, FR-ALERT-004, NFR-SEC-002, NFR-OPS-002
 
@@ -1576,8 +1635,8 @@ liquidación y pago directo; (8) Anulación y Cambios; (9) Transferencias, alert
 | 8 | Caja / CashSession | 10 | FR-CASH | 13 |
 | 9 | CashMovement | 10 | FR-CASH | 13 |
 | 10 | Cierre / arqueo | 10 | FR-CASH | 13 |
-| 11 | Anulación post-cobro | 11 | FR-CANCEL | 8 |
-| 12 | Cambios | 12 | FR-EXCH | 13 |
+| 11 | Anulación post-cobro | 11 | FR-CANCEL | 9 |
+| 12 | Cambios | 12 | FR-EXCH | 16 |
 | 13 | Descuentos | 13 | FR-DISC | 5 |
 | 14 | Inventario | 14 | FR-STOCK | 7 |
 | 15 | Reservas | 14 | FR-STOCK | 7 |
@@ -1597,8 +1656,8 @@ liquidación y pago directo; (8) Anulación y Cambios; (9) Transferencias, alert
 | 29 | AuditLog | 33 | FR-AUDIT, NFR-AUDIT | 7 |
 | 30 | Reportes | 34 | FR-RPT | 5 |
 | 31 | ExternalCollection | 9 | FR-PAY | 12 |
-| 32 | Seña | 23 | FR-SENA | 10 |
-| 33a | Voucher de Seña | 24 | FR-VOUCH | 11 |
+| 32 | Seña | 23 | FR-SENA | 14 |
+| 33a | Voucher de Seña | 24 | FR-VOUCH | 12 |
 | 34 | Gastos | 28 | FR-EXP | 4 |
 | 35 | Tesorería | 29 | FR-TREAS | 4 |
 | 36 | Contabilidad operativa | 29 | FR-TREAS | 4 |
@@ -1619,7 +1678,7 @@ liquidación y pago directo; (8) Anulación y Cambios; (9) Transferencias, alert
 | 51 | Inmutabilidad de los ledgers | 39 | NFR-MONEY, NFR-STOCK | 8 |
 | 52 | EmployeeAccount | 19 | FR-EMPACC | 10 |
 | 53 | EmployeeWithdrawal | 20 | FR-EMPWD | 10 |
-| 54 | EmployeeSettlement | 21 | FR-EMPSET | 11 |
+| 54 | EmployeeSettlement | 21 | FR-EMPSET | 13 |
 
 Cada dominio tiene al menos una sección PRD y un prefijo con requisitos. La columna "Requisitos" cuenta todos los requisitos del prefijo (varios dominios comparten prefijo). Capacidad transversal sin dominio propio en la Matrix: `FR-AUTH` (Matrix 3.2).
 
@@ -1670,11 +1729,11 @@ Los requisitos relacionados se derivan del campo `Origen` de cada requisito.
 | OR-031 | 2026-10-21 | La liquidación puede ser parcial; el saldo restante se arrastra; no es payroll. | FR-EMPSET-002, FR-EMPSET-003, FR-EMPSET-004, FR-EMPSET-005, FR-EMPSET-006, FR-EMPSET-007 | ACTIVE |
 | OR-032 | 2026-10-21 | La devolución de un retiro está permitida, vinculada al retiro original, repone stock, reduce/revierte deuda y no supera lo retirado. | FR-EMPWD-008, FR-EMPWD-009, FR-EMPWD-010 | ACTIVE |
 | OR-033 | 2026-10-21 | Seña: redesign/selective port; 120 horas exactas desde la activación; una Seña activa bloquea stock; liberación única al vencer. | FR-SENA-001, FR-SENA-002, FR-SENA-003, FR-SENA-004 | ACTIVE |
-| OR-034 | 2026-10-21 | El vencimiento de la Seña no devuelve dinero, no genera crédito ni CashMovement; la cancelación manual tampoco reintegra. | FR-SENA-005, FR-SENA-006 | ACTIVE |
+| OR-034 | 2026-10-21 | El vencimiento de la Seña no devuelve dinero, no genera crédito ni CashMovement; la cancelación manual tampoco reintegra. | FR-SENA-005, FR-SENA-006, FR-VOUCH-012 | ACTIVE |
 | OR-035 | 2026-10-21 | El precio/snapshot de la Seña se congela al activarla. | FR-SENA-007 | ACTIVE |
 | OR-036 | 2026-10-21 | El monto mínimo de Seña es configurable por ADMIN/OWNER. | FR-SENA-008, FR-CONF-002 | ACTIVE |
 | OR-037 | 2026-10-21 | Los medios (incluido QR) de la Seña siguen las reglas del checkout correspondiente. | FR-SENA-009 | ACTIVE |
-| OR-038 | 2026-10-21 | Voucher de Seña: emisión manual con autorización ADMIN; monto = total aceptado de los pagos de la Seña; uno por Seña. | FR-VOUCH-001, FR-VOUCH-002, FR-VOUCH-003 | ACTIVE |
+| OR-038 | 2026-10-21 | Voucher de Seña: emisión manual con autorización ADMIN; monto = total aceptado de los pagos de la Seña; uno por Seña. | FR-VOUCH-001, FR-VOUCH-002, FR-VOUCH-003, FR-VOUCH-012 | ACTIVE |
 | OR-039 | 2026-10-21 | Voucher de Seña: misma sucursal, uso completo en una compra, sin vuelto, compra ≥ vale, sin vencimiento. | FR-VOUCH-004, FR-VOUCH-005, FR-VOUCH-006, FR-VOUCH-007, FR-VOUCH-009 | ACTIVE |
 | OR-040 | 2026-10-21 | Voucher de Seña: solo paga venta normal (no otra Seña); emitirlo o usarlo no genera movimiento de caja. | FR-CASH-010, FR-VOUCH-008, FR-VOUCH-011 | ACTIVE |
 | OR-041 | 2026-10-21 | La venta normal no tiene TTL. | FR-STOCK-006, FR-SENA-010 | ACTIVE |
@@ -1688,6 +1747,11 @@ Los requisitos relacionados se derivan del campo `Origen` de cada requisito.
 | OR-049 | 2026-10-21 | La anulación revierte pago y caja con egreso por reintegro (R2). | Reemplazada por OR-015 (FR-CANCEL-005) | SUPERSEDED por OR-015 |
 | OR-050 | 2026-10-21 | Caja chica: detalle/motivo obligatorio; comprobante opcional. | FR-EXP-001, FR-EXP-003 | ACTIVE |
 | OR-051 | 2026-10-21 | Ajustes de stock comunes con permiso operativo normal; por encima de un umbral configurable por ADMIN/OWNER requieren autorización ADMIN/OWNER, motivo y AuditLog; umbral TBD. | FR-ADJ-004, FR-CONF-002 | ACTIVE |
+| OR-052 | 2026-10-21 | Finalización exitosa de la Seña: con la Seña ACTIVE, el cliente vuelve dentro de las 120 h, aplica el anticipo exclusivamente a esa operación y paga el saldo calculado por PROPORTIONAL_V1 según los medios elegidos (si el total final supera el anticipo, paga la diferencia); se consume el stock reservado y la Seña queda COMPLETED. El anticipo no es crédito general, no es voucher, no es reutilizable y no se aplica a otra operación. | FR-SENA-011, FR-SENA-012, FR-SENA-013, FR-SENA-014 | ACTIVE |
+| OR-053 | 2026-10-21 | Valuación en el cambio: prenda devuelta = importe efectivamente pagado por esa línea; mercadería nueva = cashPrice como base y precio final calculado por PROPORTIONAL_V1 según los medios usados para pagar la diferencia (no siempre cashPrice). El valor reconocido es un aporte interno no monetario: sin CashMovement, sin crédito reutilizable y sin retiro como efectivo. | FR-EXCH-014, FR-EXCH-015 | ACTIVE |
+| OR-054 | 2026-10-21 | Un movimiento de cuenta de empleado realizado un domingo pertenece al ciclo semanal que comienza el lunes siguiente (la semana operativa sigue siendo de lunes a sábado). | FR-EMPSET-012 | ACTIVE |
+| OR-055 | 2026-10-21 | Un pago directo o una aplicación de deuda de un empleado no puede superar el saldo pendiente: importe <= saldo pendiente; no se crea saldo acreedor ni crédito. | FR-EMPSET-013 | ACTIVE |
+| OR-056 | 2026-10-21 | Cantidad reversible = cantidad vendida − ya devuelta/cambiada − ya repuesta por reversas previas; no se repone stock dos veces, no se reconoce valor dos veces y no se revierte más de lo vendido; con cantidad reversible cero se rechaza. | FR-CANCEL-009, FR-EXCH-016 | ACTIVE |
 
 ## Apéndice C — Decisiones descartadas
 
