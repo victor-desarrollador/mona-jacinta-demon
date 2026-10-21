@@ -23,6 +23,7 @@ import {
   CASH_CATALOG_OBJECTS,
   CASH_CHECK_DEFINITIONS,
   CREDIT_CATALOG_OBJECTS,
+  WAREHOUSE_CATALOG_OBJECTS,
   R3_TRIGGER_BINDINGS,
   READINESS_CATALOG_OBJECTS,
   R3ReadinessError,
@@ -44,10 +45,13 @@ const PINS = [
   ['20261018180000_cash_movement_reversals', 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770'],
   // CARD_CREDIT block (OWNER 2026-10-21): the gate is G12 = G11 + the additive CARD_CREDIT migration.
   ['20261021120000_r3_card_credit', 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be'],
+  // WAREHOUSE-MVP (m13): the gate is G13 = G12 + the additive stock-adjustment migration.
+  ['20261021130000_warehouse_stock_adjustment', '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0'],
 ] as const;
-const [M8, M9, M10, M11, M12] = PINS.map(([name]) => name);
+const [M8, M9, M10, M11, M12, M13] = PINS.map(([name]) => name);
 const row = (i: number, patch: Partial<R3LedgerRow> = {}): R3LedgerRow => ({ migration_name: PINS[i]![0], checksum: PINS[i]![1], finished: true, rolled_back: false, ...patch });
-const g11Ledger = (): R3LedgerRow[] => [row(0), row(1), row(2), row(3), row(4)];
+const g11Ledger = (): R3LedgerRow[] => [row(0), row(1), row(2), row(3), row(4), row(5)];
+const g12Ledger = (): R3LedgerRow[] => [row(0), row(1), row(2), row(3), row(4)];
 const catalog = (absent: readonly string[] = []) => Object.fromEntries(READINESS_CATALOG_OBJECTS.map((name) => [name, !absent.includes(name)]));
 const CASH_ONLY: R3Features = { locationSelectorEnabled: false, externalMethodsEnabled: false, cashMovementsEnabled: true };
 const ALL_OFF: R3Features = { locationSelectorEnabled: false, externalMethodsEnabled: false, cashMovementsEnabled: false };
@@ -61,7 +65,7 @@ describe('S9 G11 strict — feature dependencies', () => {
     }
   });
 
-  it('G11-S9-02 any feature on → exactly m8, m9, m10, m11, m12, in order', () => {
+  it('G11-S9-02 any feature on → exactly m8, m9, m10, m11, m12, m13, in order', () => {
     for (const f of [CASH_ONLY, { ...ALL_OFF, locationSelectorEnabled: true }, { ...ALL_OFF, externalMethodsEnabled: true }]) {
       expect(requiredR3Migrations(f).map((p) => [p.name, p.sha256])).toEqual(PINS.map((p) => [...p]));
     }
@@ -77,29 +81,48 @@ describe('S9 G11 strict — feature dependencies', () => {
 
 describe('S9 G11 strict — ledger', () => {
   it('G11-S9-04 m8/m9 present but m10 or m11 missing → MIGRATION_MISSING naming exactly it', () => {
-    expect(evaluateR3Readiness({ ledger: [row(0), row(1), row(4)], objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M10, M11] });
-    expect(evaluateR3Readiness({ ledger: [row(0), row(1), row(2), row(4)], objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M11] });
-    expect(evaluateR3Readiness({ ledger: [row(2), row(3), row(4)], objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M8, M9] });
+    expect(evaluateR3Readiness({ ledger: [row(0), row(1), row(4), row(5)], objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M10, M11] });
+    expect(evaluateR3Readiness({ ledger: [row(0), row(1), row(2), row(4), row(5)], objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M11] });
+    expect(evaluateR3Readiness({ ledger: [row(2), row(3), row(4), row(5)], objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M8, M9] });
   });
 
   it('G12-S9-04b m8–m11 present but the CARD_CREDIT migration m12 missing → MIGRATION_MISSING naming exactly it', () => {
-    expect(evaluateR3Readiness({ ledger: [row(0), row(1), row(2), row(3)], objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M12] });
+    expect(evaluateR3Readiness({ ledger: [row(0), row(1), row(2), row(3), row(5)], objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M12] });
+  });
+
+  it('G13-S9-04c a G12 database (m8–m12, no m13): G13 code is REJECTED naming exactly m13, with or without its catalog objects', () => {
+    expect(evaluateR3Readiness({ ledger: g12Ledger(), objects: catalog() }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M13] });
+    expect(evaluateR3Readiness({ ledger: g12Ledger(), objects: catalog(WAREHOUSE_CATALOG_OBJECTS) }, CASH_ONLY)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M13] });
+    expect(evaluateR3Readiness({ ledger: g12Ledger(), objects: catalog() }, { ...ALL_OFF, locationSelectorEnabled: true })).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M13] });
+  });
+
+  it('G13-S9-04d the G13 ledger on a G13 schema is accepted (and only then)', () => {
+    expect(evaluateR3Readiness({ ledger: g11Ledger(), objects: catalog() }, CASH_ONLY)).toEqual({ ready: true });
   });
 
   it('G12-S9-05b m12 unfinished, rolled back, drifted or duplicated is never READY', () => {
     const verdict = (ledger: R3LedgerRow[]) => evaluateR3Readiness({ ledger, objects: catalog() }, CASH_ONLY);
-    const base = [row(0), row(1), row(2), row(3)];
+    const base = [row(0), row(1), row(2), row(3), row(5)];
     expect(verdict([...base, row(4, { finished: false })])).toMatchObject({ reason: 'MIGRATION_UNFINISHED', migrations: [M12] });
     expect(verdict([...base, row(4, { finished: false, rolled_back: true })])).toMatchObject({ reason: 'MIGRATION_ROLLED_BACK', migrations: [M12] });
     expect(verdict([...base, row(4, { checksum: 'f'.repeat(64) })])).toMatchObject({ reason: 'MIGRATION_CHECKSUM_DRIFT', migrations: [M12] });
     expect(verdict([...base, row(4), row(4)])).toMatchObject({ reason: 'MIGRATION_UNFINISHED', migrations: [M12] });
   });
 
+  it('G13-S9-05c m13 unfinished, rolled back, drifted or duplicated is never READY', () => {
+    const verdict = (ledger: R3LedgerRow[]) => evaluateR3Readiness({ ledger, objects: catalog() }, CASH_ONLY);
+    const base = [row(0), row(1), row(2), row(3), row(4)];
+    expect(verdict([...base, row(5, { finished: false })])).toMatchObject({ reason: 'MIGRATION_UNFINISHED', migrations: [M13] });
+    expect(verdict([...base, row(5, { finished: false, rolled_back: true })])).toMatchObject({ reason: 'MIGRATION_ROLLED_BACK', migrations: [M13] });
+    expect(verdict([...base, row(5, { checksum: 'f'.repeat(64) })])).toMatchObject({ reason: 'MIGRATION_CHECKSUM_DRIFT', migrations: [M13] });
+    expect(verdict([...base, row(5), row(5)])).toMatchObject({ reason: 'MIGRATION_UNFINISHED', migrations: [M13] });
+  });
+
   it('G11-S9-05 m10/m11 unfinished, rolled back, drifted or duplicated is never READY', () => {
     const verdict = (ledger: R3LedgerRow[]) => evaluateR3Readiness({ ledger, objects: catalog() }, CASH_ONLY);
-    expect(verdict([row(0), row(1), row(2), row(3, { finished: false }), row(4)])).toMatchObject({ reason: 'MIGRATION_UNFINISHED', migrations: [M11] });
-    expect(verdict([row(0), row(1), row(2, { finished: false, rolled_back: true }), row(3), row(4)])).toMatchObject({ reason: 'MIGRATION_ROLLED_BACK', migrations: [M10] });
-    expect(verdict([row(0), row(1), row(2), row(3, { checksum: 'f'.repeat(64) }), row(4)])).toMatchObject({ reason: 'MIGRATION_CHECKSUM_DRIFT', migrations: [M11] });
+    expect(verdict([row(0), row(1), row(2), row(3, { finished: false }), row(4), row(5)])).toMatchObject({ reason: 'MIGRATION_UNFINISHED', migrations: [M11] });
+    expect(verdict([row(0), row(1), row(2, { finished: false, rolled_back: true }), row(3), row(4), row(5)])).toMatchObject({ reason: 'MIGRATION_ROLLED_BACK', migrations: [M10] });
+    expect(verdict([row(0), row(1), row(2), row(3, { checksum: 'f'.repeat(64) }), row(4), row(5)])).toMatchObject({ reason: 'MIGRATION_CHECKSUM_DRIFT', migrations: [M11] });
     expect(verdict([...g11Ledger(), row(2)])).toMatchObject({ reason: 'MIGRATION_UNFINISHED', migrations: [M10] });
   });
 });
@@ -131,6 +154,18 @@ describe('S9 G11 strict — catalog and verdict', () => {
       'chk_checkout_credit_snapshot', 'chk_attempt_credit_snapshot', 'ExternalCollection_credit_ref_key',
     ]);
     for (const name of CREDIT_CATALOG_OBJECTS) {
+      expect(evaluateR3Readiness({ ledger: g11Ledger(), objects: catalog([name]) }, CASH_ONLY), name).toMatchObject({ ready: false, reason: 'SCHEMA_OBJECT_MISSING', objects: [name] });
+    }
+    // The warehouse objects (m13) are required too: the three StockMovement columns, the ADJUSTMENT label,
+    // the five reason labels, the idempotency unique index and the three validated CHECKs.
+    expect(WAREHOUSE_CATALOG_OBJECTS).toEqual([
+      'StockMovement.reason', 'StockMovement.note', 'StockMovement.idempotencyKey',
+      'StockMovementType.ADJUSTMENT',
+      'StockAdjustmentReason.DAMAGED', 'StockAdjustmentReason.LOST', 'StockAdjustmentReason.LOAD_ERROR', 'StockAdjustmentReason.SURPLUS', 'StockAdjustmentReason.OTHER',
+      'StockMovement_userId_idempotencyKey_key',
+      'chk_stock_movement_adjustment_shape', 'chk_stock_movement_adjustment_reason_rules', 'chk_stock_movement_reason_only_adjustment',
+    ]);
+    for (const name of WAREHOUSE_CATALOG_OBJECTS) {
       expect(evaluateR3Readiness({ ledger: g11Ledger(), objects: catalog([name]) }, CASH_ONLY), name).toMatchObject({ ready: false, reason: 'SCHEMA_OBJECT_MISSING', objects: [name] });
     }
     // The R3 objects stay required too (G11 strict), even with the R3 flags off.
@@ -174,7 +209,7 @@ function captureRaw(): { raw: Pick<PrismaClient, '$queryRaw'>; calls: CapturedCa
 }
 
 describe('S9 G11 strict — real client probe construction (G11-ADV-004)', () => {
-  it('exactly two statements; the ledger is first, its single parameter is the five G12 names (m8–m12)', async () => {
+  it('exactly two statements; the ledger is first, its single parameter is the six G13 names (m8–m13)', async () => {
     const { raw, calls } = captureRaw();
     const client = createPrismaR3ReadinessClient(raw);
     await client.readSnapshot();

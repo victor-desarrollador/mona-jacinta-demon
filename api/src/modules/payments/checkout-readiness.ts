@@ -6,13 +6,13 @@
 // AFTER the environment is parsed and BEFORE httpServer.listen(). If no feature
 // is on it is a no-op and reads nothing.
 //
-// PILOT G11 cut-over (OWNER 2026-10-18), extended by the CARD_CREDIT block to G12:
-// the gate is STRICT. This release ships the cash movement features (exits, reversals,
-// movement history; open/close read and write the m10/m11 CashMovement columns) and the
-// CARD_CREDIT snapshot columns (m12) unconditionally, so the gate always runs and
-// requires m8, m9, m10, m11 AND m12 exactly, plus a bounded catalog probe of the R3,
-// cash and credit objects: the API never starts on a database that has m8/m9 but not
-// m10/m11/m12. The contract notes below about "both flags OFF" now describe the
+// PILOT G11 cut-over (OWNER 2026-10-18), extended by the CARD_CREDIT block to G12 and by
+// the WAREHOUSE-MVP block to G13: the gate is STRICT. This release ships the cash movement features (exits, reversals,
+// movement history; open/close read and write the m10/m11 CashMovement columns) the
+// CARD_CREDIT snapshot columns (m12) and the manual stock-adjustment columns (m13)
+// unconditionally, so the gate always runs and requires m8, m9, m10, m11, m12 AND m13
+// exactly, plus a bounded catalog probe of the R3, cash, credit and warehouse objects:
+// the API never starts on a database that has m8/m9 but not m10/m11/m12/m13. The contract notes below about "both flags OFF" now describe the
 // injected all-features-off case only.
 //
 // Contract (OWNER, S9):
@@ -92,6 +92,28 @@ export const CREDIT_MIGRATION_PINS: readonly MigrationPin[] = Object.freeze([
   Object.freeze({ name: '20261021120000_r3_card_credit', sha256: 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be' }),
 ]);
 export const G12_MIGRATION_PINS: readonly MigrationPin[] = Object.freeze([...G11_MIGRATION_PINS, ...CREDIT_MIGRATION_PINS]);
+
+// WAREHOUSE-MVP (OWNER 2026-10-21): the reviewed bytes of migration 13, the additive manual
+// stock-adjustment migration (StockMovement ADJUSTMENT + reason/note/idempotencyKey, the
+// reason enum, the idempotency unique index and three CHECKs). The inventory adjustment
+// endpoint writes those columns unconditionally, so the code must never run on a database
+// without it: G13 = G12 + m13 is what the gate requires from now on. Same rule as every pin.
+export const WAREHOUSE_MIGRATION_PINS: readonly MigrationPin[] = Object.freeze([
+  Object.freeze({ name: '20261021130000_warehouse_stock_adjustment', sha256: '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0' }),
+]);
+export const G13_MIGRATION_PINS: readonly MigrationPin[] = Object.freeze([...G12_MIGRATION_PINS, ...WAREHOUSE_MIGRATION_PINS]);
+
+// The minimal catalog evidence that m13 is really present: the three adjustment columns,
+// the ADJUSTMENT label and the five reason labels, the idempotency unique index and the
+// three SQL-only CHECKs (validated). Names are the real ones of the migration.
+export const WAREHOUSE_CATALOG_OBJECTS: readonly string[] = Object.freeze([
+  'StockMovement.reason', 'StockMovement.note', 'StockMovement.idempotencyKey',
+  'StockMovementType.ADJUSTMENT',
+  'StockAdjustmentReason.DAMAGED', 'StockAdjustmentReason.LOST', 'StockAdjustmentReason.LOAD_ERROR',
+  'StockAdjustmentReason.SURPLUS', 'StockAdjustmentReason.OTHER',
+  'StockMovement_userId_idempotencyKey_key',
+  'chk_stock_movement_adjustment_shape', 'chk_stock_movement_adjustment_reason_rules', 'chk_stock_movement_reason_only_adjustment',
+]);
 
 // The minimal catalog evidence that m12 is really present: the four credit snapshot
 // columns, the two credit snapshot CHECKs (validated) and the credit reference index.
@@ -175,6 +197,7 @@ export const READINESS_CATALOG_OBJECTS: readonly string[] = Object.freeze([
   ...R3_TRIGGER_BINDINGS.map((binding) => binding.trigger),
   ...CASH_CATALOG_OBJECTS,
   ...CREDIT_CATALOG_OBJECTS,
+  ...WAREHOUSE_CATALOG_OBJECTS,
 ]);
 
 // Feature dependencies, from the real code: the R3 location selector and external
@@ -193,10 +216,10 @@ export function r3Required(features: R3Features): boolean {
   return features.locationSelectorEnabled || features.externalMethodsEnabled || features.cashMovementsEnabled;
 }
 
-// The required migrations: G12 strict (m8, m9, m10, m11, m12) whenever any feature is on;
+// The required migrations: G13 strict (m8, m9, m10, m11, m12, m13) whenever any feature is on;
 // nothing (and no query) when every feature is off.
 export function requiredR3Migrations(features: R3Features): readonly MigrationPin[] {
-  return r3Required(features) ? G12_MIGRATION_PINS : [];
+  return r3Required(features) ? G13_MIGRATION_PINS : [];
 }
 
 // Derives the features from the already-validated environment. The two R3 flags are
@@ -337,7 +360,7 @@ function checkDef(name: string): string {
 // m10/m11 unique indexes plus the composite FK's column pairs and RESTRICT/RESTRICT
 // SIMPLE actions are all probed, not assumed.
 export function createPrismaR3ReadinessClient(database: Pick<PrismaClient, '$queryRaw'>): R3ReadinessClient {
-  const names = [...G12_MIGRATION_PINS.map((pin) => pin.name)];
+  const names = [...G13_MIGRATION_PINS.map((pin) => pin.name)];
   return {
     async readSnapshot(): Promise<R3ReadinessSnapshot> {
       const ledger = await database.$queryRaw<LedgerRowResult[]>`
@@ -359,6 +382,19 @@ export function createPrismaR3ReadinessClient(database: Pick<PrismaClient, '$que
           EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = to_regclass('public."SaleCheckout"') AND c.conname = 'chk_checkout_credit_snapshot' AND c.contype = 'c' AND c.convalidated) AS "chk_checkout_credit_snapshot",
           EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = to_regclass('public."CheckoutAttempt"') AND c.conname = 'chk_attempt_credit_snapshot' AND c.contype = 'c' AND c.convalidated) AS "chk_attempt_credit_snapshot",
           to_regclass('public."ExternalCollection_credit_ref_key"') IS NOT NULL AS "ExternalCollection_credit_ref_key",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = to_regclass('public."StockMovement"') AND a.attname = 'reason' AND NOT a.attisdropped) AS "StockMovement.reason",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = to_regclass('public."StockMovement"') AND a.attname = 'note' AND NOT a.attisdropped) AS "StockMovement.note",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = to_regclass('public."StockMovement"') AND a.attname = 'idempotencyKey' AND NOT a.attisdropped) AS "StockMovement.idempotencyKey",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_enum e WHERE e.enumtypid = to_regtype('public."StockMovementType"') AND e.enumlabel = 'ADJUSTMENT') AS "StockMovementType.ADJUSTMENT",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_enum e WHERE e.enumtypid = to_regtype('public."StockAdjustmentReason"') AND e.enumlabel = 'DAMAGED') AS "StockAdjustmentReason.DAMAGED",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_enum e WHERE e.enumtypid = to_regtype('public."StockAdjustmentReason"') AND e.enumlabel = 'LOST') AS "StockAdjustmentReason.LOST",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_enum e WHERE e.enumtypid = to_regtype('public."StockAdjustmentReason"') AND e.enumlabel = 'LOAD_ERROR') AS "StockAdjustmentReason.LOAD_ERROR",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_enum e WHERE e.enumtypid = to_regtype('public."StockAdjustmentReason"') AND e.enumlabel = 'SURPLUS') AS "StockAdjustmentReason.SURPLUS",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_enum e WHERE e.enumtypid = to_regtype('public."StockAdjustmentReason"') AND e.enumlabel = 'OTHER') AS "StockAdjustmentReason.OTHER",
+          to_regclass('public."StockMovement_userId_idempotencyKey_key"') IS NOT NULL AS "StockMovement_userId_idempotencyKey_key",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = to_regclass('public."StockMovement"') AND c.conname = 'chk_stock_movement_adjustment_shape' AND c.contype = 'c' AND c.convalidated) AS "chk_stock_movement_adjustment_shape",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = to_regclass('public."StockMovement"') AND c.conname = 'chk_stock_movement_adjustment_reason_rules' AND c.contype = 'c' AND c.convalidated) AS "chk_stock_movement_adjustment_reason_rules",
+          EXISTS (SELECT 1 FROM pg_catalog.pg_constraint c WHERE c.conrelid = to_regclass('public."StockMovement"') AND c.conname = 'chk_stock_movement_reason_only_adjustment' AND c.contype = 'c' AND c.convalidated) AS "chk_stock_movement_reason_only_adjustment",
           to_regprocedure('public."fn_checkout_attempt_guard"()') IS NOT NULL AS "fn_checkout_attempt_guard",
           to_regprocedure('public."fn_checkout_attempt_tender_guard"()') IS NOT NULL AS "fn_checkout_attempt_tender_guard",
           to_regprocedure('public."fn_checkout_attempt_commit_check"()') IS NOT NULL AS "fn_checkout_attempt_commit_check",

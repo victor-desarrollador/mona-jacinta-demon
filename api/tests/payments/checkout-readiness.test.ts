@@ -34,12 +34,15 @@ const SHA11 = 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770'
 // CARD_CREDIT block: the gate is G12 (m8–m12); m12 is the additive CARD_CREDIT migration.
 const M12 = '20261021120000_r3_card_credit';
 const SHA12 = 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be';
+// WAREHOUSE-MVP: the gate is G13 (m8–m13); m13 is the additive stock-adjustment migration.
+const M13 = '20261021130000_warehouse_stock_adjustment';
+const SHA13 = '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0';
 const OFF: R3Features = { locationSelectorEnabled: false, externalMethodsEnabled: false, cashMovementsEnabled: false };
 const LOCATION_ON: R3Features = { locationSelectorEnabled: true, externalMethodsEnabled: false, cashMovementsEnabled: false };
 const EXTERNAL_ON: R3Features = { locationSelectorEnabled: false, externalMethodsEnabled: true, cashMovementsEnabled: false };
 
 const applied = (migration_name: string, checksum: string): R3LedgerRow => ({ migration_name, checksum, finished: true, rolled_back: false });
-const CASH_APPLIED = (): R3LedgerRow[] => [applied(M10, SHA10), applied(M11, SHA11), applied(M12, SHA12)];
+const CASH_APPLIED = (): R3LedgerRow[] => [applied(M10, SHA10), applied(M11, SHA11), applied(M12, SHA12), applied(M13, SHA13)];
 const completeLedger = (): R3LedgerRow[] => [applied(M8, SHA8), applied(M9, SHA9), ...CASH_APPLIED()];
 
 // Every required object present unless the caller removes some.
@@ -80,12 +83,12 @@ describe('R3-A4.3 S9 — feature detection and required migrations', () => {
     expect(calls()).toBe(0);
   });
 
-  it('S9-02 location selector ON: migrations 8, 9, 10, 11 and 12 are required (G12 strict)', () => {
-    expect(requiredR3Migrations(LOCATION_ON).map((pin) => pin.name)).toEqual([M8, M9, M10, M11, M12]);
+  it('S9-02 location selector ON: migrations 8, 9, 10, 11, 12 and 13 are required (G13 strict)', () => {
+    expect(requiredR3Migrations(LOCATION_ON).map((pin) => pin.name)).toEqual([M8, M9, M10, M11, M12, M13]);
   });
 
-  it('S9-03 external methods ON: migrations 8, 9, 10, 11 and 12 are required (G12 strict)', () => {
-    expect(requiredR3Migrations(EXTERNAL_ON).map((pin) => pin.name)).toEqual([M8, M9, M10, M11, M12]);
+  it('S9-03 external methods ON: migrations 8, 9, 10, 11, 12 and 13 are required (G13 strict)', () => {
+    expect(requiredR3Migrations(EXTERNAL_ON).map((pin) => pin.name)).toEqual([M8, M9, M10, M11, M12, M13]);
   });
 
   it('derives the features from the parsed environment exactly as the runtime does', () => {
@@ -124,8 +127,8 @@ describe('R3-A4.3 S9 — ledger classification', () => {
     expect(evaluateR3Readiness(snapshot(ledger), LOCATION_ON)).toMatchObject({ ready: false, reason: 'MIGRATION_CHECKSUM_DRIFT', migrations: [M9] });
   });
 
-  it('empty ledger is MIGRATION_MISSING for all four required migrations', () => {
-    expect(evaluateR3Readiness(snapshot([]), LOCATION_ON)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M8, M9, M10, M11, M12] });
+  it('empty ledger is MIGRATION_MISSING for every required migration', () => {
+    expect(evaluateR3Readiness(snapshot([]), LOCATION_ON)).toMatchObject({ ready: false, reason: 'MIGRATION_MISSING', migrations: [M8, M9, M10, M11, M12, M13] });
   });
 
   it('a rolled-back attempt followed by a clean applied attempt is ready', () => {

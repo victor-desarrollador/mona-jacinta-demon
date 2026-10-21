@@ -383,6 +383,40 @@ describe.skipIf(!suiteM9)('R3-A4.3 S9 — readiness gate on a real 1–9 cluster
     });
     expect(column).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['SaleCheckout.creditAdjustmentBps', 'chk_checkout_credit_snapshot'] });
   }, 60_000);
+
+  it('S9-PG-19 the WAREHOUSE migration m13 is part of the gate: a real G12 schema is REJECTED, and each m13 catalog object is probed', async () => {
+    const M13 = '20261021130000_warehouse_stock_adjustment';
+    // A faithful G12 database: the m13 ledger row AND every m13 object are gone.
+    const g12 = await withRollback(pool, async (client) => {
+      await client.query('DELETE FROM "_prisma_migrations" WHERE "migration_name" = $1', [M13]);
+      await client.query('ALTER TABLE "StockMovement" DROP CONSTRAINT "chk_stock_movement_adjustment_shape", DROP CONSTRAINT "chk_stock_movement_adjustment_reason_rules", DROP CONSTRAINT "chk_stock_movement_reason_only_adjustment"');
+      await client.query('DROP INDEX "StockMovement_userId_idempotencyKey_key"');
+      await client.query('ALTER TABLE "StockMovement" DROP COLUMN "reason", DROP COLUMN "note", DROP COLUMN "idempotencyKey"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(g12).toEqual({ reason: 'MIGRATION_MISSING', migrations: [M13], objects: [] });
+    // A ledger that claims m13 over a schema that lacks the objects is refused by the catalog probe.
+    const index = await withRollback(pool, async (client) => {
+      await client.query('DROP INDEX "StockMovement_userId_idempotencyKey_key"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(index).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['StockMovement_userId_idempotencyKey_key'] });
+    const check = await withRollback(pool, async (client) => {
+      await client.query('ALTER TABLE "StockMovement" DROP CONSTRAINT "chk_stock_movement_adjustment_shape"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(check).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['chk_stock_movement_adjustment_shape'] });
+    const columns = await withRollback(pool, async (client) => {
+      await client.query('ALTER TABLE "StockMovement" DROP CONSTRAINT "chk_stock_movement_adjustment_shape", DROP CONSTRAINT "chk_stock_movement_adjustment_reason_rules", DROP CONSTRAINT "chk_stock_movement_reason_only_adjustment"');
+      await client.query('DROP INDEX "StockMovement_userId_idempotencyKey_key"');
+      await client.query('ALTER TABLE "StockMovement" DROP COLUMN "note"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(columns).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: [
+      'StockMovement.note', 'StockMovement_userId_idempotencyKey_key',
+      'chk_stock_movement_adjustment_shape', 'chk_stock_movement_adjustment_reason_rules', 'chk_stock_movement_reason_only_adjustment',
+    ] });
+  }, 90_000);
 });
 
 describe.skipIf(!suitePre9)('R3-A4.3 S9 — m9-strict rejection on a real 1–8 cluster (disposable LOCAL_TEST)', () => {
