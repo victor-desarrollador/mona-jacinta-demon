@@ -240,7 +240,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - EVIDENCE: `api/src/modules/sales/sales.service.ts`, `sale-finalization.ts:96-189`, `cancellation.service.ts:105-145`, `pending-correction.service.ts`.
 
 #### 5 · Checkout · PARTIAL · P1
-- CURRENT: conviven `FIXED_TOTAL` (`POST /sales/:id/payments`, legacy) y `PROPORTIONAL_V1` (quote → reserva de intento → cierre → recuperación de stock, ledger `CheckoutAttempt` con triggers F1-F5). El modelo se elige al crear la venta según `PROPORTIONAL_CHECKOUT_LOCATION_IDS` (env). **PROPORTIONAL_V1 rechaza QR** (`api/src/modules/payments/dto/checkout-fields.ts:44`: "accepts CASH, TRANSFER, CARD_DEBIT and CARD_CREDIT; QR is refused").
+- CURRENT: conviven `FIXED_TOTAL` (`POST /sales/:id/payments`, legacy) y `PROPORTIONAL_V1` (quote → reserva de intento → cierre → recuperación de stock, ledger `CheckoutAttempt` con triggers F1-F5). El modelo se elige al crear la venta según `PROPORTIONAL_CHECKOUT_LOCATION_IDS` (env). **PROPORTIONAL_V1 rechaza QR** (`api/src/modules/payments/dto/checkout-fields.ts:44`: "accepts CASH, TRANSFER, CARD_DEBIT and CARD_CREDIT; QR is refused"). P0-A limitó FIXED_TOTAL a CASH: TRANSFER, CARD_DEBIT, CARD_CREDIT y QR son rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura.
 - TARGET: PROPORTIONAL_V1 en todos los locales, con QR soportado y `qrAdjustmentBps` configurable; FIXED_TOTAL deprecado de forma progresiva; Voucher de Seña como medio de pago de uso único (33a).
 - GAP: soportar QR en proporcional; sacar la selección por local del env; plan de desactivación de FIXED_TOTAL por local, que **no puede ejecutarse antes de resolver QR**.
 - BUSINESS_RISK: dos reglas de cobro según el local; sin QR en proporcional, retirar FIXED_TOTAL deja a QR sin camino de cobro.
@@ -253,9 +253,9 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - QR: `PRODUCT_DECISION=CLOSED` · `IMPLEMENTATION_BLOCKER=YES`.
 
 #### 6 · Pagos · PARTIAL · P0
-- CURRENT: en FIXED_TOTAL el DTO acepta `CASH|TRANSFER|CARD_DEBIT|CARD_CREDIT|QR` sin referencia, institución ni comprobante para los medios no efectivo; solo el efectivo genera CashMovement. El camino proporcional sí exige ExternalCollection con referencia única por sucursal.
+- CURRENT: P0-A cerró el guard: FIXED_TOTAL ahora acepta solo CASH; TRANSFER, CARD_DEBIT, CARD_CREDIT y QR son rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura. Solo el efectivo genera CashMovement. El camino proporcional exige ExternalCollection con referencia única por sucursal.
 - TARGET: todo cobro no efectivo deja referencia verificable y conciliable; el camino definitivo es PROPORTIONAL_V1 en todos los locales (incluido QR).
-- GAP: mientras FIXED_TOTAL siga vivo, referencia obligatoria (o limitarlo a CASH); migrar todos los locales a proporcional.
+- GAP: P0-A cerró la brecha limitando FIXED_TOTAL a CASH (ya no hay pagos no efectivo sin evidencia en FIXED_TOTAL). Queda pendiente soportar QR en PROPORTIONAL_V1 y migrar todos los locales a proporcional antes de retirar FIXED_TOTAL.
 - BUSINESS_RISK: se puede marcar PAID una venta con una transferencia o QR inexistente. Pérdida de dinero no detectable al cierre; es el único P0 que pierde plata hoy.
 - TECHNICAL_RISK: bajo (DTO + guard).
 - DEPENDENCIES: 5.
@@ -265,7 +265,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - EVIDENCE: `api/src/modules/payments/dto/payment.dto.ts:13-45`, `payments.service.ts:120-170`.
 
 #### 7 · Pago combinado · PARTIAL · P1
-- CURRENT: 1 a 3 medios con roles FIXED/BALANCE, distribución exacta por línea (`SaleLineAllocation`), vuelto solo en efectivo. QR excluido a propósito.
+- CURRENT: 1 a 3 medios con roles FIXED/BALANCE, distribución exacta por línea (`SaleLineAllocation`), vuelto solo en efectivo. QR excluido a propósito. FIXED_TOTAL ya no admite medios no efectivo (guard P0-A); el pago combinado solo existe en PROPORTIONAL_V1.
 - TARGET: lo mismo, con QR como medio soportado (decisión OWNER R4) bajo las reglas de checkout.
 - GAP: QR dentro del pago combinado proporcional.
 - BUSINESS_RISK: bajo, salvo por el bloqueo de FIXED_TOTAL (ver 5).

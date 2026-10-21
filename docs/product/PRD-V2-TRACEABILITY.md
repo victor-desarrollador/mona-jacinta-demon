@@ -41,11 +41,11 @@ test permanecen en `TBD` hasta que existan; no se registran referencias futuras 
 | FR-WHOL-001 | BP-14.1 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-WHOL-002 | BP-14.1 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PAY-001 | BP-12.1, BP-48.1 | TBD | TBD | TBD | BLUEPRINTED |
-| FR-PAY-002 | BP-12.6, BP-48.1 | TBD | TBD | TBD | BLUEPRINTED |
-| FR-PAY-003 | BP-12.6, BP-48.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-002 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (guard FIXED_TOTAL cash-only) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts, api/tests/payments/split-payment.test.ts, api/tests/sales/paid-transition.test.ts | IMPLEMENTED |
+| FR-PAY-003 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (guard FIXED_TOTAL cash-only) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts | IMPLEMENTED |
 | FR-PAY-004 | BP-12.2, BP-12.3 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PAY-005 | BP-12.2, BP-10.2 | TBD | TBD | TBD | BLUEPRINTED |
-| FR-PAY-006 | BP-12.6, BP-48.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-006 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts, client/src/app/cashier-fixed-total-cash-only.test.tsx, api/tests/payments/split-payment.test.ts, api/tests/sales/paid-transition.test.ts | IMPLEMENTED |
 | FR-PAY-007 | BP-13.1 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PAY-008 | BP-13.1 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PAY-009 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | TBD | TBD | TBD | BLUEPRINTED |

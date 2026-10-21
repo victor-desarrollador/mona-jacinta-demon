@@ -304,7 +304,7 @@ Un cambio de igual o menor valor, o una Seña cuyo anticipo cubre el total a esc
 Se mantiene: 1 a 3 medios externos, distribución exacta por línea (Hamilton), vuelto solo en efectivo. Los tenders internos **no cuentan** en el límite de 3 medios: `SENA_ADVANCE` ≤ 1 y `EXCHANGE_RECOGNITION` ≤ 1 por venta; para `SENA_VOUCHER` el PRD no impone un máximo por venta, por lo que no se fija uno (cada voucher se usa completo).
 
 #### BP-12.6 · FIXED_TOTAL: deprecación
-FIXED_TOTAL pasa a **legado de solo lectura progresiva**: se conservan sus datos y su lectura; se deja de escribir con él en cada local a medida que el local opera en PROPORTIONAL_V1 con QR. Hasta entonces, el guard `FR-PAY-006` (referencia obligatoria para no efectivo) corre sobre el camino FIXED_TOTAL. Plan completo en la sección 48.
+FIXED_TOTAL pasa a **legado de solo lectura progresiva**: se conservan sus datos y su lectura; se deja de escribir con él en cada local a medida que el local opera en PROPORTIONAL_V1 con QR. Hasta entonces, el guard `FR-PAY-006` corre sobre el camino FIXED_TOTAL: **implementado en P0-A, FIXED_TOTAL acepta solo CASH** (TRANSFER/CARD_DEBIT/CARD_CREDIT/QR rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura). Desviación real vs. borrador: el diseño decía "referencia obligatoria para no efectivo"; la implementación limitó FIXED_TOTAL a efectivo, que es más estricto y cubre FR-PAY-006 sin necesidad de referencia por cobro. Plan completo en la sección 48.
 
 #### BP-12.7 · Importe pagado por línea
 - **PROPORTIONAL_V1:** `paid(saleItem) = Σ SaleLineAllocation.amount + Σ SaleInternalTenderAllocation.amount`. Incluye la porción interna, por lo que un cambio sobre una línea que a su vez se pagó con valor reconocido reconoce exactamente lo que esa línea pagó (BP-16.8).
@@ -759,12 +759,14 @@ Herramienta de importación (script de administración, no ruta pública) que le
 ## 48. FIXED_TOTAL → PROPORTIONAL_V1
 
 #### BP-48.1 · Plan
-1. Guard `FR-PAY-006` sobre el camino FIXED_TOTAL (referencia obligatoria no efectivo).
+1. Guard `FR-PAY-006` implementado (P0-A): FIXED_TOTAL acepta solo CASH; TRANSFER/CARD_DEBIT/CARD_CREDIT/QR rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT`.
 2. Soportar QR en el motor (BP-12.2).
 3. Mover la activación por local del entorno a configuración (BP-39.1).
 4. Activar PROPORTIONAL_V1 local por local; verificar con el cierre de caja.
 5. Desactivar la escritura FIXED_TOTAL en cada local migrado. Las ventas históricas FIXED_TOTAL quedan de solo lectura (y su "pagado por línea" por la reconstrucción legacy marcada).
 6. Contract: retirar el código de escritura FIXED_TOTAL cuando ningún local lo use. Nunca se borran las filas históricas.
+
+**Condición de rollout (despliegue por local):** un local que todavía dependa de FIXED_TOTAL para TRANSFER/CARD_DEBIT/CARD_CREDIT/QR NO puede recibir el retiro de non-cash legacy aisladamente. Secuencia obligatoria por local: (1) activar PROPORTIONAL_V1 en el local; (2) verificar que el checkout no efectivo (TRANSFER/CARD_DEBIT/CARD_CREDIT/QR) funciona en PROPORTIONAL_V1; (3) recién después retirar la escritura FIXED_TOTAL non-cash de ese local. QR sigue pendiente en PROPORTIONAL_V1, por lo que ningún local puede retirar FIXED_TOTAL mientras necesite QR como medio de cobro.
 
 ## 49. Seña (migration set S12)
 
