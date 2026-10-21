@@ -32,6 +32,8 @@ const MIG9 = { name: R3_ATTEMPTS, bytes: 35290, sha256: '076884120da38a05099ee00
 const MIG10 = { name: CASH_MOVEMENT, bytes: 2732, sha256: 'e37149442d1fb82ec87877e7b3e1f2e4311b36a9d47d314a3fd1843702c5adf9' };
 const CASH_REVERSAL = '20261018180000_cash_movement_reversals';
 const MIG11 = { name: CASH_REVERSAL, bytes: 3366, sha256: 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770' };
+const CARD_CREDIT = '20261021120000_r3_card_credit';
+const MIG12 = { name: CARD_CREDIT, bytes: 11413, sha256: 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be' };
 
 const fn = (name) => {
   const value = payloadModule[name];
@@ -87,24 +89,31 @@ test('U1-PIN-01c the cash-reversal pin is the exact reviewed metadata of migrati
   for (const p of pins) assert.ok(Object.isFrozen(p));
 });
 
+test('U1-PIN-01d the card-credit pin is the exact reviewed metadata of migration 12', () => {
+  const pins = payloadModule.CARD_CREDIT_MIGRATION_PINS;
+  assert.ok(Array.isArray(pins) && Object.isFrozen(pins), 'CARD_CREDIT_MIGRATION_PINS must be a frozen array');
+  assert.deepEqual(pins.map((p) => ({ ...p })), [MIG12]);
+  for (const p of pins) assert.ok(Object.isFrozen(p));
+});
+
 test('U1-PIN-02 the pins equal the committed bytes on disk (size and SHA-256), file by file', () => {
-  for (const m of [MIG8, MIG9, MIG10, MIG11]) {
+  for (const m of [MIG8, MIG9, MIG10, MIG11, MIG12]) {
     const bytes = readFileSync(sqlOf(API_DIR, m.name));
     assert.equal(bytes.length, m.bytes, m.name);
     assert.equal(sha(bytes), m.sha256, m.name);
   }
 });
 
-test('U1-PIN-03 G11 IS the shared PILOT G11 payload (same object, never re-typed): mig 1–7 + 8 + 9 + 10 + 11, frozen; same lock', () => {
+test('U1-PIN-03 the LOCAL_TEST payload IS the shared PILOT payload (same object, never re-typed): mig 1–7 + 8 + 9 + 10 + 11 + 12, frozen; same lock', () => {
   const g9 = G11();
   assert.ok(Object.isFrozen(g9) && Object.isFrozen(g9.migrations));
-  assert.equal(g9.migrations.length, 11);
-  // G11 cut-over: pilot-migrate.mjs approves exactly G11, so LOCAL_TEST and PILOT share ONE payload.
+  assert.equal(g9.migrations.length, 12);
+  // G12 cut-over: pilot-migrate.mjs approves exactly G12, so LOCAL_TEST and PILOT share ONE payload.
   assert.equal(g9, APPROVED_MIGRATION_PAYLOAD, 'the LOCAL_TEST payload is the shared payload object');
-  assert.deepEqual(g9.migrations.slice(7).map((m) => ({ ...m })), [MIG8, MIG9, MIG10, MIG11]);
+  assert.deepEqual(g9.migrations.slice(7).map((m) => ({ ...m })), [MIG8, MIG9, MIG10, MIG11, MIG12]);
   const names = g9.migrations.map((m) => m.name);
   assert.deepEqual([...names].sort(), names);
-  assert.equal(new Set(names).size, 11);
+  assert.equal(new Set(names).size, 12);
   assert.equal(g9.lock, APPROVED_MIGRATION_PAYLOAD.lock);
 });
 
@@ -123,8 +132,8 @@ test('U1-PIN-05 no digest is typed here: every pin comes from the shared literal
 
 // --- PILOT and LOCAL_TEST share one exact payload (E) ----------------------------------------
 
-test('U1-PILOT-01 pilot-migrate approves exactly the eleven shared pins and the real G11 tree verifies for it', () => {
-  assert.equal(APPROVED_MIGRATION_PAYLOAD.migrations.length, 11);
+test('U1-PILOT-01 pilot-migrate approves exactly the twelve shared pins and the real G12 tree verifies for it', () => {
+  assert.equal(APPROVED_MIGRATION_PAYLOAD.migrations.length, 12);
   const real = verifyMigrationPayload(API_DIR);
   assert.equal(real.ok, true, real.reason);
 });
@@ -141,7 +150,7 @@ test('U1-PILOT-02 pilot-migrate.mjs never imports or names the LOCAL_TEST payloa
 
 // --- the exact-tree verifier (A + D) ----------------------------------------------------------
 
-test('U1-VER-01 the real reviewed tree verifies as G11: eleven migrations with their pinned digests and the pinned lock', () => {
+test('U1-VER-01 the real reviewed tree verifies as G12: twelve migrations with their pinned digests and the pinned lock', () => {
   const r = fn('verifyLocalTestMigrationPayload')(API_DIR);
   assert.equal(r.ok, true, r.reason);
   assert.deepEqual(r.migrations.map((m) => [m.name, m.sha256]), G11().migrations.map((m) => [m.name, m.sha256]));

@@ -70,8 +70,13 @@ const CASH_REVERSAL_TREE_ENTRY = Object.freeze({
   bytes: 3366,
   sha256: 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770',
 });
-const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY]);
-const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10 and the cash-reversal migration 11';
+const CARD_CREDIT_TREE_ENTRY = Object.freeze({
+  name: '20261021120000_r3_card_credit',
+  bytes: 11413,
+  sha256: 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be',
+});
+const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY, CARD_CREDIT_TREE_ENTRY]);
+const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11 and the card-credit migration 12';
 const REVIEWED_TREE_NAMES = Object.freeze([...EXPECTED_PINS.map(([name]) => name), ...REVIEWED_TREE_ENTRIES.map((e) => e.name)]);
 const NAMES = EXPECTED_PINS.map(([name]) => name);
 const row = (i, patch = {}) => ({ migration_name: EXPECTED_PINS[i][0], checksum: EXPECTED_PINS[i][1], finished: true, rolled_back: false, ...patch });
@@ -99,7 +104,7 @@ function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSy
   }
 }
 
-test('D5H v1 keeps six independent pins and verifies the eleven-directory tree (no drift)', () => {
+test('D5H v1 keeps six independent pins and verifies the twelve-directory tree (no drift)', () => {
   assert.equal(D5H_MIGRATIONS.length, 6);
   assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
   const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));

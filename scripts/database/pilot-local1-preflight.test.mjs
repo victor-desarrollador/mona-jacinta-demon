@@ -48,7 +48,8 @@ const PACKAGES = [
   ['pg-types', '2.2.0'], ['pgpass', '1.0.5'], ['split2', '4.2.0'], ['pg-int8', '1.0.1'], ['postgres-array', '2.0.0'],
   ['postgres-bytea', '1.0.1'], ['postgres-date', '1.0.7'], ['postgres-interval', '1.2.0'], ['pg-cloudflare', '1.4.0'], ['xtend', '4.0.2'],
 ];
-const MIGRATIONS = states.MIGRATION_PINS.map((m) => m.name);
+// The preflight runs against PILOT BEFORE the G12 cut-over, so its scenarios are the exact G11 ledger (never all current pins).
+const MIGRATIONS = [...states.STATES.EXACT_G11];
 
 // Synthetic app-schema catalogs (served by the fake's projection statements) and their references.
 const rawCatalog = (tables) => ({

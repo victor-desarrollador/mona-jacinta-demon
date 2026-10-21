@@ -36,9 +36,10 @@ const REVIEWED = [
 ] as const;
 
 describe('migration 11 — cash movement reversals (static)', () => {
-  it('M11-01 is the last of exactly eleven migrations; migrations 8–10 keep their reviewed bytes', () => {
-    expect(names()).toHaveLength(11);
-    expect(names().at(-1)).toBe(M11);
+  it('M11-01 is the eleventh migration (right after migration 10), whatever follows it; migrations 8–10 keep their reviewed bytes', () => {
+    // A property of m11 itself: later migrations (m12 CARD_CREDIT, ...) never move or precede it.
+    expect(names().indexOf(M11)).toBe(10);
+    expect(names()[9]).toBe('20261018120000_cash_movement_withdrawals_expenses');
     for (const [name, digest] of REVIEWED) {
       expect(sha256(readFileSync(path.join(MIGRATIONS, name, 'migration.sql'))), name).toBe(digest);
     }
