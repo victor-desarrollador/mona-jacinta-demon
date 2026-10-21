@@ -68,15 +68,20 @@ describe('split payments', () => {
       .set('Authorization', `Bearer ${accessToken}`).send(body);
   }
 
-  async function openCashSession() {
-    const register = await db.cashRegister.findFirstOrThrow({ where: { branchId } });
+  async function openCashSession(sessionBranchId = branchId) {
+    const register = await db.cashRegister.findFirstOrThrow({ where: { branchId: sessionBranchId } });
     return db.cashSession.create({ data: { registerId: register.id, openedById: cashierId, startingCash: 0n, status: 'OPEN' } });
   }
+
+  // System V2 P0-A: the legacy FIXED_TOTAL path takes CASH only (non-cash is
+  // refused with NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT), so the payments this
+  // suite registers are cash payments that need an OPEN cash session.
+  const cashBody = (amount: string) => ({ method: 'CASH', amount, receivedAmount: amount, idempotencyKey: randomUUID() });
 
   it('requires authentication and validates the sale resource', async () => {
     const sale = await createSale();
     expect((await request(app).post(`/api/v1/sales/${sale.id}/payments`).send({})).status).toBe(401);
-    expect((await pay(randomUUID(), { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() })).status).toBe(404);
+    expect((await pay(randomUUID(), cashBody('1'))).status).toBe(404);
   });
 
   it('requires SALE_CHARGE and has no role-name bypass or stale permission', async () => {
@@ -86,10 +91,10 @@ describe('split payments', () => {
     // grant (req.auth.assignments), not the legacy sale.charge code.
     const permission = await db.permission.findUniqueOrThrow({ where: { code: 'SALE_CHARGE' } });
     await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
-    expect((await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() })).status).toBe(403);
+    expect((await pay(sale.id, cashBody('1'))).status).toBe(403);
 
     await db.role.update({ where: { id: role.id }, data: { code: 'ADMIN_LOOKALIKE' } });
-    expect((await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() })).status).toBe(403);
+    expect((await pay(sale.id, cashBody('1'))).status).toBe(403);
   });
 
   // Phase 1D.3.2 §8: isolate the authority source explicitly. Fresh users on
@@ -97,11 +102,12 @@ describe('split payments', () => {
   // fails closed on anything else) prove the grant alone decides, not the
   // shared demo cashier01/seller01 fixtures' incidental state.
   it('authorizes payment registration via the Production SALE_CHARGE grant alone', async () => {
+    await openCashSession();
     const cashierRole = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
     const user = await createTestUser(db, cashierRole.id, branchId);
     const isolatedToken = await getAuthToken(user);
     const sale = await createSale(1n);
-    const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, isolatedToken);
+    const response = await pay(sale.id, cashBody('1'), isolatedToken);
     expect(response.status).toBe(201);
   });
 
@@ -115,7 +121,7 @@ describe('split payments', () => {
     const user = await createTestUser(db, warehouseRole.id, branchId);
     const isolatedToken = await getAuthToken(user);
     const sale = await createSale(1n);
-    const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, isolatedToken);
+    const response = await pay(sale.id, cashBody('1'), isolatedToken);
     expect(response.status).toBe(403);
   });
 
@@ -135,11 +141,12 @@ describe('split payments', () => {
     });
     const multiToken = await getAuthToken(multi);
     const saleAtA = await createSale(1n);
-    expect((await pay(saleAtA.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, multiToken)).status).toBe(403);
+    await openCashSession(otherBranch.id);
+    expect((await pay(saleAtA.id, cashBody('1'), multiToken)).status).toBe(403);
     // Explicit LIST (like createSale above): this test proves location authorization, not price-mode compatibility.
     const saleAtB = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', priceMode: 'LIST', subtotal: 1n, total: 1n } });
     await hold(saleAtB.id, otherBranch.id);
-    expect((await pay(saleAtB.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }, multiToken)).status).toBe(201);
+    expect((await pay(saleAtB.id, cashBody('1'), multiToken)).status).toBe(201);
   });
 
   it('requires the persisted sale branch and applies branch revocation to an existing JWT', async () => {
@@ -148,7 +155,7 @@ describe('split payments', () => {
     // Branch-scope revocation: move the authoritative LOCATION scope only.
     // UserBranchRole (role/permission authority) stays valid for this assertion.
     await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranch.id } });
-    expect((await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() })).status).toBe(403);
+    expect((await pay(sale.id, cashBody('1'))).status).toBe(403);
   });
 
   it('grants payment registration on a fresh UserRoleScope location despite a stale UserBranchRole', async () => {
@@ -161,31 +168,34 @@ describe('split payments', () => {
     // Explicit LIST (like createSale above): this test proves location authorization, not price-mode compatibility.
     const sale = await db.sale.create({ data: { sellerId, branchId: otherBranch.id, status: 'PENDING_PAYMENT', priceMode: 'LIST', subtotal: 1n, total: 1n } });
     await hold(sale.id, otherBranch.id);
-    const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
+    await openCashSession(otherBranch.id);
+    const response = await pay(sale.id, cashBody('1'));
     expect(response.status).toBe(201);
   });
 
   it.each(['DRAFT', 'PAID', 'COMPLETED', 'CANCELLED'] as const)('rejects a new payment for %s', async (status) => {
     const sale = await createSale(1n, status);
-    const response = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
+    const response = await pay(sale.id, cashBody('1'));
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe('INVALID_SALE_STATE');
   });
 
   it('supports exact split payments and leaves partial payments pending', async () => {
+    await openCashSession();
     const sale = await createSale();
-    expect((await pay(sale.id, { method: 'TRANSFER', amount: '10000000', idempotencyKey: randomUUID() })).status).toBe(201);
-    const partial = await pay(sale.id, { method: 'CARD_DEBIT', amount: '6500000', idempotencyKey: randomUUID() });
+    expect((await pay(sale.id, cashBody('10000000'))).status).toBe(201);
+    const partial = await pay(sale.id, cashBody('6500000'));
     expect(partial.status).toBe(201);
     expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
 
     const pending = await createSale();
-    await pay(pending.id, { method: 'TRANSFER', amount: '10000000', idempotencyKey: randomUUID() });
-    await pay(pending.id, { method: 'TRANSFER', amount: '6000000', idempotencyKey: randomUUID() });
+    await pay(pending.id, cashBody('10000000'));
+    await pay(pending.id, cashBody('6000000'));
     expect((await db.sale.findUniqueOrThrow({ where: { id: pending.id } })).status).toBe('PENDING_PAYMENT');
   });
 
   it('rejects zero, negative, float, exponent and BIGINT overflow amounts without Number conversion', async () => {
+    await openCashSession();
     const sale = await createSale();
     for (const amount of ['0', '-1', '1.5', '1e3', '9223372036854775808']) {
       const response = await pay(sale.id, { method: 'TRANSFER', amount, idempotencyKey: randomUUID() });
@@ -193,14 +203,14 @@ describe('split payments', () => {
     }
     const exact = '9007199254740993';
     const exactSale = await createSale(BigInt(exact));
-    const response = await pay(exactSale.id, { method: 'TRANSFER', amount: exact, idempotencyKey: randomUUID() });
+    const response = await pay(exactSale.id, cashBody(exact));
     expect(response.status).toBe(201);
     expect(response.body.amount).toBe(exact);
   });
 
   it('rejects overpayment beyond the remaining balance', async () => {
     const sale = await createSale(10n);
-    const response = await pay(sale.id, { method: 'TRANSFER', amount: '11', idempotencyKey: randomUUID() });
+    const response = await pay(sale.id, cashBody('11'));
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe('OVERPAYMENT');
   });
@@ -235,21 +245,30 @@ describe('split payments', () => {
     }
   });
 
-  it('requires an open cash session and keeps non-cash payments independent of cash', async () => {
+  // System V2 P0-A: a non-cash payment is no longer accepted on this path, so it
+  // can no longer be "independent of cash": it is refused, and writes nothing.
+  it('requires an open cash session and refuses non-cash payments on the legacy path', async () => {
     const cashSale = await createSale(10n);
     const missing = await pay(cashSale.id, { method: 'CASH', amount: '10', receivedAmount: '10', idempotencyKey: randomUUID() });
     expect(missing.status).toBe(409);
     expect(missing.body.error.code).toBe('NO_OPEN_CASH_SESSION');
     const transferSale = await createSale(10n);
-    expect((await pay(transferSale.id, { method: 'TRANSFER', amount: '10', receivedAmount: null, idempotencyKey: randomUUID() })).status).toBe(201);
+    for (const method of ['TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT', 'QR']) {
+      const refused = await pay(transferSale.id, { method, amount: '10', idempotencyKey: randomUUID() });
+      expect(refused.status, method).toBe(409);
+      expect(refused.body.error.code, method).toBe('NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT');
+    }
+    expect(await db.salePayment.count({ where: { saleId: transferSale.id } })).toBe(0);
     expect(await db.cashMovement.count({ where: { type: 'SALE_INCOME' } })).toBe(0);
+    expect((await db.sale.findUniqueOrThrow({ where: { id: transferSale.id } })).status).toBe('PENDING_PAYMENT');
   });
 
   it('serializes concurrent different intents against the Sale row', async () => {
+    await openCashSession();
     const sale = await createSale(10n);
     const responses = await Promise.all([
-      pay(sale.id, { method: 'TRANSFER', amount: '10', idempotencyKey: randomUUID() }),
-      pay(sale.id, { method: 'CARD_DEBIT', amount: '10', idempotencyKey: randomUUID() }),
+      pay(sale.id, cashBody('10')),
+      pay(sale.id, cashBody('10')),
     ]);
     expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
     expect(await db.salePayment.count({ where: { saleId: sale.id } })).toBe(1);
@@ -257,9 +276,10 @@ describe('split payments', () => {
   });
 
   it('returns payments in deterministic order and enforces GET branch access without writes', async () => {
+    await openCashSession();
     const sale = await createSale(2n);
-    const first = await pay(sale.id, { method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
-    const second = await pay(sale.id, { method: 'CARD_DEBIT', amount: '1', idempotencyKey: randomUUID() });
+    const first = await pay(sale.id, cashBody('1'));
+    const second = await pay(sale.id, cashBody('1'));
     const before = await db.auditLog.count();
     const response = await request(app).get(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${token}`);
     expect(response.status).toBe(200);
@@ -284,6 +304,7 @@ describe('split payments', () => {
   });
 
   it('allows a bare COMPANY-scoped OWNER to register and list payments for a sale at any branch', async () => {
+    await openCashSession();
     const ownerRole = await db.role.findUniqueOrThrow({
       where: { code: 'OWNER' },
     });
@@ -310,11 +331,7 @@ describe('split payments', () => {
 
     const payResponse = await pay(
       sale.id,
-      {
-        method: 'TRANSFER',
-        amount: '1',
-        idempotencyKey: randomUUID(),
-      },
+      cashBody('1'),
       ownerToken,
     );
 

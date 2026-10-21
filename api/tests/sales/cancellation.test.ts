@@ -7,6 +7,7 @@ import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js'
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 import { getAuthToken, createTestUser } from '../helpers/auth.js';
 import { createRole } from '../helpers/factories.js';
+import { ensureOpenCashSession } from '../helpers/cash-session.js';
 
 describe('Task 19: sale cancellation and expired reservation release', () => {
   let db: PrismaClient;
@@ -321,7 +322,9 @@ describe('Task 19: sale cancellation and expired reservation release', () => {
       db.user.findUniqueOrThrow({ where: { email: 'admin@demo.local' } }),
     ]);
     const paymentToken = await getAuthToken(cashier);
-    const paymentResponse = request(app).post(`/api/v1/sales/${current.id}/payments`).set('Authorization', `Bearer ${paymentToken}`).send({ method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
+    // System V2 P0-A: the legacy path takes CASH only, which needs an open session.
+    await ensureOpenCashSession(db, branchId, cashier.id);
+    const paymentResponse = request(app).post(`/api/v1/sales/${current.id}/payments`).set('Authorization', `Bearer ${paymentToken}`).send({ method: 'CASH', amount: '1', receivedAmount: '1', idempotencyKey: randomUUID() });
     const releaseResponse = release(await getAuthToken(admin));
     const [paymentResult, expiryResult] = await Promise.all([paymentResponse, releaseResponse]);
     const persistedPayment = await db.salePayment.count({ where: { saleId: current.id } });

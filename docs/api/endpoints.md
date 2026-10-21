@@ -112,6 +112,8 @@ Supported payment methods:
 
 Cash payments support `amount`, `receivedAmount`, and backend-calculated change according to the existing payment contract.
 
+System V2 P0-A: on this route (a `FIXED_TOTAL` sale) **only `CASH` is accepted**. `TRANSFER`, `CARD_DEBIT`, `CARD_CREDIT` and `QR` are refused with `409 NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT`, because the only valid evidence for a non-cash payment (`ExternalCollection`) exists in the proportional checkout (`POST /sales/:saleId/checkout`). The refusal writes nothing and does not consume the idempotency key. An idempotent replay of a payment recorded before this rule still returns `200` with the original payment, whatever its method. The wire contract above is unchanged; the sale's pricing model is decided by the service under the sale lock.
+
 Pilot P0.1-C contract (see [`../pilot-v1.1/00-pilot-safety-gate.md`](../pilot-v1.1/00-pilot-safety-gate.md)):
 
 - An idempotent replay (same `idempotencyKey`, same intent) is resolved first and returns `200` with the original payment, even if the sale is now `PAID`/`COMPLETED` or its hold timestamp has passed.

@@ -703,7 +703,7 @@ describe.skip('authoritative expired technical-hold release (Pilot P0.1-B1) [SUP
       expect((await send((await draft()).id)).status).toBe(200);
       const cashier = await db.user.findUniqueOrThrow({ where: { email: 'cashier01@demo.local' } });
       const paid = await request(app).post(`/api/v1/sales/${stale.id}/payments`).set('Authorization', `Bearer ${await getAuthToken(cashier)}`)
-        .send({ method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() });
+        .send({ method: 'CASH', amount: '1', receivedAmount: '1', idempotencyKey: randomUUID() });
       expect(paid.status).toBe(409);
       expect(JSON.stringify(paid.body)).toContain('INVALID_RESERVATION');
       expect(await db.salePayment.count({ where: { saleId: stale.id } })).toBe(0);

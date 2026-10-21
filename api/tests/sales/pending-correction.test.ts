@@ -7,6 +7,7 @@ import { createCancellationService } from '../../src/modules/sales/cancellation.
 import type { PrismaClient } from '../../src/generated/prisma/client.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 import { getAuthToken } from '../helpers/auth.js';
+import { ensureOpenCashSession } from '../helpers/cash-session.js';
 
 // Pilot P0.2-A: a cashier corrects a PENDING_PAYMENT sale before its first
 // payment. Only reservations move (never physical stock), the original hold
@@ -433,10 +434,12 @@ describe('POST /api/v1/sales/:saleId/correct (Pilot P0.2-A)', () => {
       // sale is PAID and the correction is refused; if the correction commits
       // first the total shrinks and the stale payment is an OVERPAYMENT.
       const { sale } = await heldSale([{ variant: remera, quantity: 2n }]);
+      // System V2 P0-A: the legacy path takes CASH only, which needs an open session.
+      await ensureOpenCashSession(db, branchId, cashierId);
       const [correction, payment] = await Promise.all([
         correct(sale.id, [{ variantId: remera.id, quantity: 1 }]),
         request(app).post(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${tokens.cashier}`)
-          .send({ method: 'TRANSFER', amount: String(2n * remera.price), idempotencyKey: randomUUID() }),
+          .send({ method: 'CASH', amount: String(2n * remera.price), receivedAmount: String(2n * remera.price), idempotencyKey: randomUUID() }),
       ]);
       const committed = [correction.status === 200, payment.status === 201].filter(Boolean);
       expect(committed).toHaveLength(1);

@@ -47,6 +47,9 @@ describe('PENDING_PAYMENT to PAID transition', () => {
     jeanId = jean.id;
     jeanProductId = jean.productId;
     token = await getAuthToken(cashier);
+    // System V2 P0-A: the legacy FIXED_TOTAL path takes CASH only, so every payment
+    // this suite registers is a cash payment and needs an OPEN cash session.
+    await openCashSession();
   }, 120000);
 
   afterEach(() => vi.restoreAllMocks());
@@ -131,25 +134,26 @@ describe('PENDING_PAYMENT to PAID transition', () => {
     return payments.reduce((sum, payment) => sum + payment.amount, 0n);
   }
 
+  // Idempotent: beforeEach opens the session; a test that opens it again gets the same one.
   async function openCashSession() {
     const register = await db.cashRegister.findFirstOrThrow({ where: { branchId } });
+    const open = await db.cashSession.findFirst({ where: { registerId: register.id, status: 'OPEN' } });
+    if (open) return open;
     return db.cashSession.create({
       data: { registerId: register.id, openedById: cashierId, startingCash: 0n, status: 'OPEN' },
     });
   }
 
+  const cashBody = (amount: string) => ({ method: 'CASH', amount, receivedAmount: amount, idempotencyKey: randomUUID() });
+
   it('transitions only after exact multi-payment equality', async () => {
     const sale = await createSale();
-    const first = await pay(sale.id, {
-      method: 'TRANSFER', amount: '10000000', idempotencyKey: randomUUID(),
-    });
+    const first = await pay(sale.id, cashBody('10000000'));
     expect(first.status).toBe(201);
     expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PENDING_PAYMENT');
     expect(await acceptedTotal(sale.id)).toBe(10000000n);
 
-    const second = await pay(sale.id, {
-      method: 'TRANSFER', amount: '6500000', idempotencyKey: randomUUID(),
-    });
+    const second = await pay(sale.id, cashBody('6500000'));
     expect(second.status).toBe(201);
     expect(await acceptedTotal(sale.id)).toBe(16500000n);
     expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
@@ -157,9 +161,7 @@ describe('PENDING_PAYMENT to PAID transition', () => {
 
   it('transitions after one exact payment', async () => {
     const sale = await createSale();
-    const response = await pay(sale.id, {
-      method: 'CARD_DEBIT', amount: '16500000', idempotencyKey: randomUUID(),
-    });
+    const response = await pay(sale.id, cashBody('16500000'));
     expect(response.status).toBe(201);
     expect(response.body.amount).toBe('16500000');
     expect(await acceptedTotal(sale.id)).toBe(sale.total);
@@ -168,23 +170,21 @@ describe('PENDING_PAYMENT to PAID transition', () => {
 
   it('does not transition after a partial split', async () => {
     const sale = await createSale();
-    await pay(sale.id, { method: 'TRANSFER', amount: '10000000', idempotencyKey: randomUUID() });
-    await pay(sale.id, { method: 'CARD_CREDIT', amount: '6000000', idempotencyKey: randomUUID() });
+    await pay(sale.id, cashBody('10000000'));
+    await pay(sale.id, cashBody('6000000'));
     expect(await acceptedTotal(sale.id)).toBe(16000000n);
     expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PENDING_PAYMENT');
   });
 
   it('rejects overpayment without changing persisted payment or side-effect state', async () => {
     const sale = await createSale();
-    await pay(sale.id, { method: 'TRANSFER', amount: '10000000', idempotencyKey: randomUUID() });
+    await pay(sale.id, cashBody('10000000'));
     const before = {
       payments: await db.salePayment.count({ where: { saleId: sale.id } }),
       movements: await db.cashMovement.count(),
       audits: await db.auditLog.count({ where: { action: 'PAYMENT_REGISTERED' } }),
     };
-    const response = await pay(sale.id, {
-      method: 'TRANSFER', amount: '6500001', idempotencyKey: randomUUID(),
-    });
+    const response = await pay(sale.id, cashBody('6500001'));
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe('OVERPAYMENT');
     expect(await acceptedTotal(sale.id)).toBe(10000000n);
@@ -196,15 +196,13 @@ describe('PENDING_PAYMENT to PAID transition', () => {
 
   it('rejects a new payment on a PAID sale without side effects', async () => {
     const sale = await createSale(10n);
-    await pay(sale.id, { method: 'TRANSFER', amount: '10', idempotencyKey: randomUUID() });
+    await pay(sale.id, cashBody('10'));
     const before = {
       payments: await db.salePayment.count({ where: { saleId: sale.id } }),
       movements: await db.cashMovement.count(),
       audits: await db.auditLog.count({ where: { action: 'PAYMENT_REGISTERED' } }),
     };
-    const response = await pay(sale.id, {
-      method: 'CARD_DEBIT', amount: '1', idempotencyKey: randomUUID(),
-    });
+    const response = await pay(sale.id, cashBody('1'));
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe('INVALID_SALE_STATE');
     expect(await db.salePayment.count({ where: { saleId: sale.id } })).toBe(before.payments);
@@ -234,9 +232,7 @@ describe('PENDING_PAYMENT to PAID transition', () => {
   it.each(['DRAFT', 'COMPLETED', 'CANCELLED'] as const)('rejects a payment on %s', async (status) => {
     const sale = await createSale(10n, status);
     const before = await db.salePayment.count({ where: { saleId: sale.id } });
-    const response = await pay(sale.id, {
-      method: 'TRANSFER', amount: '10', idempotencyKey: randomUUID(),
-    });
+    const response = await pay(sale.id, cashBody('10'));
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe('INVALID_SALE_STATE');
     expect(await db.salePayment.count({ where: { saleId: sale.id } })).toBe(before);
@@ -247,9 +243,7 @@ describe('PENDING_PAYMENT to PAID transition', () => {
     const exact = '9007199254740993';
     const total = BigInt(exact);
     const sale = await createSale(total);
-    const response = await pay(sale.id, {
-      method: 'TRANSFER', amount: exact, idempotencyKey: randomUUID(),
-    });
+    const response = await pay(sale.id, cashBody(exact));
     expect(response.status).toBe(201);
     expect(response.body.amount).toBe(exact);
     expect(await acceptedTotal(sale.id)).toBe(total);
@@ -259,10 +253,10 @@ describe('PENDING_PAYMENT to PAID transition', () => {
 
   it('serializes competing final payments and accepts only one', async () => {
     const sale = await createSale();
-    await pay(sale.id, { method: 'TRANSFER', amount: '10000000', idempotencyKey: randomUUID() });
+    await pay(sale.id, cashBody('10000000'));
     const [a, b] = await Promise.all([
-      pay(sale.id, { method: 'TRANSFER', amount: '6500000', idempotencyKey: randomUUID() }),
-      pay(sale.id, { method: 'CARD_DEBIT', amount: '6500000', idempotencyKey: randomUUID() }),
+      pay(sale.id, cashBody('6500000')),
+      pay(sale.id, cashBody('6500000')),
     ]);
     expect([a.status, b.status].sort()).toEqual([201, 409]);
     expect(await acceptedTotal(sale.id)).toBe(16500000n);
@@ -278,9 +272,7 @@ describe('PENDING_PAYMENT to PAID transition', () => {
       movements: await db.stockMovement.count(),
       saleAudits: await db.auditLog.count({ where: { entityType: 'Sale', entityId: sale.id } }),
     };
-    const response = await pay(sale.id, {
-      method: 'TRANSFER', amount: '16500000', idempotencyKey: randomUUID(),
-    });
+    const response = await pay(sale.id, cashBody('16500000'));
     expect(response.status).toBe(201);
     expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
     expect(await db.inventory.findMany({ orderBy: { id: 'asc' }, select: { id: true, physical: true, reserved: true } })).toEqual(before.physical);
@@ -291,7 +283,8 @@ describe('PENDING_PAYMENT to PAID transition', () => {
   });
   // Pilot P0.1-C: payment against current technical-hold coverage.
   describe('current hold coverage at payment (Pilot P0.1-C)', () => {
-    const transfer = (amount = '16500000') => ({ method: 'TRANSFER', amount, idempotencyKey: randomUUID() });
+    // System V2 P0-A: cash (the legacy path takes no other method); name kept for a small diff.
+    const transfer = (amount = '16500000') => cashBody(amount);
 
     async function expectRejectedWithoutSideEffects(saleId: string, body: object, code: string) {
       const before = await sideEffects(saleId);
@@ -464,7 +457,7 @@ describe('PENDING_PAYMENT to PAID transition', () => {
 
     it('payment first: the later release is PAYMENT_PROTECTED and the hold stays ACTIVE', async () => {
       const sale = await createSale(16500000n, 'PENDING_PAYMENT');
-      expect((await pay(sale.id, { method: 'TRANSFER', amount: '10000000', idempotencyKey: randomUUID() })).status).toBe(201);
+      expect((await pay(sale.id, cashBody('10000000'))).status).toBe(201);
       const before = await reserved();
       expect((await release(sale.id)).outcome).toBe('PAYMENT_PROTECTED');
       expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: sale.id } })).status).toBe('ACTIVE');
@@ -476,7 +469,7 @@ describe('PENDING_PAYMENT to PAID transition', () => {
       const before = await reserved();
       expect((await release(sale.id)).outcome).toBe('NOTHING_EXPIRED');
       expect(await reserved()).toBe(before);
-      const response = await pay(sale.id, { method: 'TRANSFER', amount: '16500000', idempotencyKey: randomUUID() });
+      const response = await pay(sale.id, cashBody('16500000'));
       expect(response.status).toBe(201);
       expect(await db.salePayment.count({ where: { saleId: sale.id } })).toBe(1);
     });
@@ -485,7 +478,7 @@ describe('PENDING_PAYMENT to PAID transition', () => {
       const sale = await createSale(16500000n, 'PENDING_PAYMENT');
       const before = await reserved();
       const [payment, released] = await Promise.all([
-        pay(sale.id, { method: 'TRANSFER', amount: '10000000', idempotencyKey: randomUUID() }),
+        pay(sale.id, cashBody('10000000')),
         release(sale.id),
       ]);
       const payments = await db.salePayment.count({ where: { saleId: sale.id } });
@@ -508,7 +501,7 @@ describe('PENDING_PAYMENT to PAID transition', () => {
       const emit = vi.fn(() => { throw new Error('socket adapter down: secret-internal-detail'); });
       const throwingApp = createApp(db, { emit });
       const sale = await createSale();
-      const body = { method: 'TRANSFER', amount: '16500000', idempotencyKey: randomUUID() };
+      const body = cashBody('16500000');
       const response = await request(throwingApp).post(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${token}`).send(body);
       expect(response.status).toBe(201);
       expect(emit).toHaveBeenCalledTimes(1);

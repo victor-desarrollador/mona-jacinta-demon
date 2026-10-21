@@ -7,6 +7,7 @@ import { createCancellationService } from '../../src/modules/sales/cancellation.
 import type { PrismaClient } from '../../src/generated/prisma/client.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 import { createTestUser, getAuthToken } from '../helpers/auth.js';
+import { ensureOpenCashSession } from '../helpers/cash-session.js';
 
 // Pilot P0.2-B: controlled cancellation. DRAFT = the owning seller only;
 // PENDING_PAYMENT = SALE_CANCEL_PENDING at the sale's location and ZERO
@@ -333,10 +334,12 @@ describe('POST /api/v1/sales/:saleId/cancel (Pilot P0.2-B)', () => {
   describe('concurrency (Sale-first serialization)', () => {
     it('cancel vs first payment: never an accepted payment with released stock', async () => {
       const pending = await sale('PENDING_PAYMENT');
+      // System V2 P0-A: the legacy path takes CASH only, which needs an open session.
+      await ensureOpenCashSession(db, branchId, cashierId);
       const [cancelled, paid] = await Promise.all([
         cancel(pending.id, tokens.cashier),
         request(app).post(`/api/v1/sales/${pending.id}/payments`).set('Authorization', `Bearer ${tokens.cashier}`)
-          .send({ method: 'TRANSFER', amount: '1', idempotencyKey: randomUUID() }),
+          .send({ method: 'CASH', amount: '1', receivedAmount: '1', idempotencyKey: randomUUID() }),
       ]);
       expect([cancelled.status === 200, paid.status === 201].filter(Boolean)).toHaveLength(1);
       const payments = await db.salePayment.count({ where: { saleId: pending.id } });

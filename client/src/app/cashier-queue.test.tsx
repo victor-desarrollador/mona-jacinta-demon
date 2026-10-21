@@ -173,7 +173,6 @@ describe("cashier queue hold states (Pilot P0.1-C)", () => {
   it("keeps the sale selected and completable after the final payment makes it PAID", async () => {
     const state = { queue: [row()], payments: [] as Payment[] };
     await renderCashier(state);
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     await waitFor(() => expect(payButton()).toBeEnabled());
     fireEvent.click(payButton());
     await waitFor(() => expect(completeButton()).toBeEnabled());

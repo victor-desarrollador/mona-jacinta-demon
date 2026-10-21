@@ -1057,29 +1057,32 @@ describe('Block 1 final hardening — WHOLESALE_PAYMENT_REQUIRES_CASHIER_CONFIRM
   it('P02 + Q25 FULL payment before confirmation is rejected', async () => {
     const t = setup();
     const saleId = await wholesalePending(t);
-    await expectAppError(payWith(t, saleId, 'TRANSFER', t.sale(saleId).total as bigint), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
+    await expectAppError(payWith(t, saleId, 'CASH', t.sale(saleId).total as bigint), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
     expect(t.db.table('salePayment')).toHaveLength(0);
   });
 
-  it('P03 + P04 + Q06 confirmed WHOLESALE accepts a partial then a final payment, two methods', async () => {
+  // System V2 P0-A: the legacy FIXED_TOTAL path takes CASH only, so this test no
+  // longer mixes TRANSFER and CASH (the mixed-method part of the original is
+  // superseded; non-cash refusal is covered by payments/fixed-total-cash-only).
+  it('P03 + P04 + Q06 confirmed WHOLESALE accepts a partial then a final payment', async () => {
     const t = setup();
     openCash(t);
     const saleId = await wholesalePending(t);
     await t.sales.confirmWholesale(t.reqs.cashier, t.ids.cashier, saleId);
     const total = t.sale(saleId).total as bigint; // 14000 at wholesale
     expect(total).toBe(14000n);
-    expect((await payWith(t, saleId, 'TRANSFER', 4000n)).resultingStatus).toBe('PENDING_PAYMENT');
+    expect((await payWith(t, saleId, 'CASH', 4000n)).resultingStatus).toBe('PENDING_PAYMENT');
     expect((await payWith(t, saleId, 'CASH', total - 4000n)).resultingStatus).toBe('PAID');
     expect(t.db.table('salePayment')).toHaveLength(2);
-    expect(t.db.table('cashMovement')).toHaveLength(1);
+    expect(t.db.table('cashMovement')).toHaveLength(2);
   });
 
   it('P05 + P06 LIST sale: partial and final payments need no confirmation', async () => {
     const t = setup();
     const saleId = await t.draft('seller', [[t.V1, 1n]]);
     await t.send(saleId);
-    expect((await payWith(t, saleId, 'TRANSFER', 3000n)).resultingStatus).toBe('PENDING_PAYMENT');
-    expect((await payWith(t, saleId, 'TRANSFER', 7000n)).resultingStatus).toBe('PAID');
+    expect((await payWith(t, saleId, 'CASH', 3000n)).resultingStatus).toBe('PENDING_PAYMENT');
+    expect((await payWith(t, saleId, 'CASH', 7000n)).resultingStatus).toBe('PAID');
   });
 
   it('P07 correction with ZERO payments may clear the confirmation (reconfirmation required)', async () => {
@@ -1088,14 +1091,14 @@ describe('Block 1 final hardening — WHOLESALE_PAYMENT_REQUIRES_CASHIER_CONFIRM
     await t.sales.confirmWholesale(t.reqs.cashier, t.ids.cashier, saleId);
     await t.correction.correctPendingSale(t.reqs.cashier, saleId, { items: [{ variantId: t.V1, quantity: 1n }] });
     expect(t.sale(saleId)).toMatchObject({ wholesaleConfirmedAt: null, wholesaleConfirmedById: null });
-    await expectAppError(payWith(t, saleId, 'TRANSFER', 1n), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
+    await expectAppError(payWith(t, saleId, 'CASH', 1n), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
   });
 
   it('P08 + Q26 correction after a partial payment fails closed and keeps the confirmation', async () => {
     const t = setup();
     const saleId = await wholesalePending(t);
     await t.sales.confirmWholesale(t.reqs.cashier, t.ids.cashier, saleId);
-    await payWith(t, saleId, 'TRANSFER', 1000n);
+    await payWith(t, saleId, 'CASH', 1000n);
     const before = { ...t.sale(saleId) };
     await expectAppError(t.correction.correctPendingSale(t.reqs.cashier, saleId, { items: [{ variantId: t.V1, quantity: 1n }] }), 409, 'PAYMENT_ALREADY_ACCEPTED');
     expect(t.sale(saleId)).toMatchObject({
@@ -1109,7 +1112,7 @@ describe('Block 1 final hardening — WHOLESALE_PAYMENT_REQUIRES_CASHIER_CONFIRM
     const admin = requestFor(randomUUID(), [assignment('ADMIN', null)]);
     await expectAppError(t.sales.confirmWholesale(admin, (admin as unknown as { auth: Express.AuthContext }).auth.userId, saleId), 403, 'WHOLESALE_CASHIER_REQUIRED');
     await expectAppError(t.payments.registerPayment(admin, (admin as unknown as { auth: Express.AuthContext }).auth.userId, saleId, {
-      method: 'TRANSFER', amount: 1n, receivedAmount: null, idempotencyKey: randomUUID(),
+      method: 'CASH', amount: 1n, receivedAmount: 1n, idempotencyKey: randomUUID(),
     }), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
     expect(t.db.table('salePayment')).toHaveLength(0);
   });
@@ -1123,7 +1126,7 @@ describe('Block 1 final hardening — WHOLESALE_PAYMENT_REQUIRES_CASHIER_CONFIRM
     });
     await expectAppError(t.sales.confirmWholesale({ auth: legacy } as unknown as Request, userId, saleId), 403, 'FORBIDDEN');
     expect(t.sale(saleId).wholesaleConfirmedAt).toBeNull();
-    await expectAppError(payWith(t, saleId, 'TRANSFER', 1n), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
+    await expectAppError(payWith(t, saleId, 'CASH', 1n), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
   });
 });
 
@@ -1277,7 +1280,7 @@ describe('Block 1 fix round 2 — durable payment history in the application (D0
   }
   const pay = (t: ReturnType<typeof setup>, saleId: string, amount: bigint) =>
     t.payments.registerPayment(t.reqs.cashier, t.ids.cashier, saleId, {
-      method: 'TRANSFER', amount, receivedAmount: null, idempotencyKey: randomUUID(),
+      method: 'CASH', amount, receivedAmount: amount, idempotencyKey: randomUUID(),
     });
 
   it('D01 + D02 + S02/S04 first confirmed WHOLESALE payment marks history; a second payment keeps it', async () => {
@@ -1360,7 +1363,7 @@ describe('Block 1 payment history — application with the modelled DB triggers 
     const saleId = await t.draft('seller', [[t.V1, 1n]]);
     await t.send(saleId);
     const first = await t.payments.registerPayment(t.reqs.cashier, t.ids.cashier, saleId, {
-      method: 'TRANSFER', amount: 1000n, receivedAmount: null, idempotencyKey: randomUUID(),
+      method: 'CASH', amount: 1000n, receivedAmount: 1000n, idempotencyKey: randomUUID(),
     });
     expect(t.sale(saleId).paymentStartedAt).toEqual(first.payment.paidAt);
     const payments = t.db.client.salePayment as { update: (args: unknown) => Promise<unknown> };
@@ -1377,12 +1380,12 @@ describe('Block 1 payment history — application with the modelled DB triggers 
     await t.sales.activateWholesale(t.reqs.seller, t.ids.seller, saleId, CODE);
     await t.send(saleId);
     await expectAppError(t.payments.registerPayment(t.reqs.cashier, t.ids.cashier, saleId, {
-      method: 'TRANSFER', amount: 1n, receivedAmount: null, idempotencyKey: randomUUID(),
+      method: 'CASH', amount: 1n, receivedAmount: 1n, idempotencyKey: randomUUID(),
     }), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
     expect(t.sale(saleId).paymentStartedAt).toBeNull();
     await t.sales.confirmWholesale(t.reqs.cashier, t.ids.cashier, saleId);
     await t.payments.registerPayment(t.reqs.cashier, t.ids.cashier, saleId, {
-      method: 'TRANSFER', amount: 1n, receivedAmount: null, idempotencyKey: randomUUID(),
+      method: 'CASH', amount: 1n, receivedAmount: 1n, idempotencyKey: randomUUID(),
     });
     await expectAppError(t.correction.correctPendingSale(t.reqs.cashier, saleId, { items: [{ variantId: t.V1, quantity: 1n }] }), 409, 'PAYMENT_ALREADY_ACCEPTED');
   });

@@ -1479,9 +1479,13 @@ function CashierWorkspace({
   const paymentsStatus = selectedPaymentsEntry?.status ?? "loading";
   const fixedPriceMode = displaySale?.priceMode;
   const requiredMethod = fixedPriceMode ? PRICE_MODE_METHOD[fixedPriceMode] : undefined;
+  // System V2 P0-A: the traditional (FIXED_TOTAL) payment takes CASH only. Every
+  // non-cash method is charged through the proportional checkout, so the method
+  // of this panel always starts as cash for the selected sale.
   useEffect(() => {
-    if (requiredMethod) setPaymentMethod(requiredMethod);
-  }, [requiredMethod, selectedSaleId]);
+    setPaymentMethod("CASH");
+  }, [selectedSaleId]);
+  const nonCashPriceMode = requiredMethod !== undefined && requiredMethod !== "CASH";
 
   // Pilot P0.2-C: paid and remaining amounts are the server's queue values,
   // read-only. The client never recomputes them from its payment list.
@@ -2625,13 +2629,19 @@ function CashierWorkspace({
                 onChange={(event) => setPaymentMethod(event.target.value as PaymentMethod)}
                 disabled={paymentLoading || isPaid}
               >
-                <option value="CASH" disabled={requiredMethod !== undefined && requiredMethod !== "CASH"}>Efectivo</option>
-                <option value="TRANSFER" disabled={requiredMethod !== undefined && requiredMethod !== "TRANSFER"}>Transferencia</option>
-                <option value="CARD_DEBIT" disabled={requiredMethod !== undefined && requiredMethod !== "CARD_DEBIT"}>Tarjeta de débito</option>
-                <option value="CARD_CREDIT" disabled={requiredMethod !== undefined && requiredMethod !== "CARD_CREDIT"}>Tarjeta de crédito</option>
-                <option value="QR" disabled={requiredMethod !== undefined && requiredMethod !== "QR"}>QR</option>
+                <option value="CASH">Efectivo</option>
+                <option value="TRANSFER" disabled>Transferencia (solo con checkout proporcional)</option>
+                <option value="CARD_DEBIT" disabled>Tarjeta de débito (solo con checkout proporcional)</option>
+                <option value="CARD_CREDIT" disabled>Tarjeta de crédito (solo con checkout proporcional)</option>
+                <option value="QR" disabled>QR (solo con checkout proporcional)</option>
               </select>
             </label>
+            {nonCashPriceMode ? (
+              <p className="state-pill" role="status">
+                Esta venta tiene un modo de precio no efectivo y el cobro tradicional solo admite efectivo. Los cobros con
+                transferencia, tarjeta o QR se registran con el checkout proporcional.
+              </p>
+            ) : null}
 
             <label className="split-toggle">
               <input

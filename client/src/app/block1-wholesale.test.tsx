@@ -161,7 +161,6 @@ describe("Block 1 wholesale UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirmar venta mayorista" }));
     await waitFor(() => expect(screen.getByText("Mayorista confirmada")).toBeInTheDocument());
     expect(calls.some((call) => call.method === "POST" && call.url.endsWith("/sales/sale-1/wholesale/confirm"))).toBe(true);
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     await waitFor(() => expect(payButton()).toBeEnabled());
   });
 

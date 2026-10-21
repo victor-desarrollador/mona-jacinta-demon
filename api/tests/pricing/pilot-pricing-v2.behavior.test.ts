@@ -17,9 +17,10 @@
 //   S09 mode change after send-to-cashier  -> DENY 409 SALE_NOT_DRAFT
 //   S10 config change after first payment  -> PRESERVE_SNAPSHOT, total fixed, remaining payment OK
 //   S11 CREDIT_CARD sale + CASH payment    -> FAIL_CLOSED 409, no payment row
-//   S12 two partial CARD_CREDIT payments settle the fixed total -> ALLOW
-//   S13 CARD_CREDIT then CASH (mixed attempt) -> FAIL_CLOSED, first payment kept
-//   S14 LIST sale accepts CASH and CARD_CREDIT -> ALLOW (documented: LIST has no method twin)
+//   S12 several partial CASH payments settle the fixed total -> ALLOW (System V2 P0-A: CASH only)
+//   S13 a credit-mode sale on the legacy path: CARD_CREDIT -> NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT,
+//       CASH -> PAYMENT_METHOD_PRICE_MODE_CONFLICT; nothing is written
+//   S14 LIST sale accepts CASH and refuses CARD_CREDIT (System V2 P0-A)
 //   S15 wholesale + card sale: payment before cashier confirmation -> DENY 409
 //   S16 wholesale + card sale after confirmation pays at 8400 base-derived total -> ALLOW
 //   S17 pending correction adds a line -> DERIVE in the sale's own tier + mode, snapshotted
@@ -179,9 +180,11 @@ describe('Pilot Pricing V2 — retail derivation and snapshot', () => {
     const saleId = await t.draft([[t.V1, 1n]]);
     expect(t.audits('SALE_CREATED')).toHaveLength(1);
     expect(t.sale(saleId).priceMode).toBe('CASH');
-    // A CASH-default sale pays by CASH and is rejected for a card (single mode).
+    // A CASH-default sale pays by CASH and is rejected for a card. System V2
+    // P0-A: the legacy path now refuses every non-cash method up front, so the
+    // card is refused by the FIXED_TOTAL guard (before the price-mode check).
     await t.send(saleId);
-    await expectAppError(t.pay(saleId, 'CARD_CREDIT'), 409, 'PAYMENT_METHOD_PRICE_MODE_CONFLICT');
+    await expectAppError(t.pay(saleId, 'CARD_CREDIT'), 409, 'NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT');
     expect(await t.pay(saleId, 'CASH')).toMatchObject({ resultingStatus: 'PAID' });
   });
 
@@ -221,18 +224,21 @@ describe('Pilot Pricing V2 — wholesale base', () => {
     expect(t.sale(saleId).total).toBe(84000n);
   });
 
-  it('S15 + S16 wholesale card sale needs cashier confirmation before any payment, then settles', async () => {
+  // System V2 P0-A: the card settlement of the original test is superseded (the
+  // legacy path takes CASH only). The wholesale confirmation gate it proved is
+  // unchanged and is exercised here with the CASH settlement; the wholesale +
+  // CREDIT_CARD price (8400) is pinned at S05 above.
+  it('S15 + S16 wholesale sale needs cashier confirmation before any payment, then settles in cash', async () => {
     const t = setup();
-    await t.config({ CREDIT_CARD: 2000 });
-    const saleId = await t.draft([[t.V1, 1n]], 'CREDIT_CARD');
+    const saleId = await t.draft([[t.V1, 1n]]);
     await t.sales.activateWholesale(t.reqs.seller, t.ids.seller, saleId, CODE);
     await t.send(saleId);
-    await expectAppError(t.pay(saleId, 'CARD_CREDIT'), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
+    await expectAppError(t.pay(saleId, 'CASH'), 409, 'WHOLESALE_CONFIRMATION_REQUIRED');
     expect(t.db.table('salePayment')).toHaveLength(0);
     await t.sales.confirmWholesale(t.reqs.cashier, t.ids.cashier, saleId);
-    const paid = await t.pay(saleId, 'CARD_CREDIT');
+    const paid = await t.pay(saleId, 'CASH');
     expect(paid).toMatchObject({ resultingStatus: 'PAID' });
-    expect(t.sale(saleId).total).toBe(8400n);
+    expect(t.sale(saleId).total).toBe(7000n);
   });
 
   it('S14b selecting a new mode on a wholesale draft keeps the wholesale base', async () => {
@@ -286,26 +292,29 @@ describe('Pilot Pricing V2 — sale price-mode lifecycle', () => {
     expect(t.sale(saleId).priceMode).toBe('CASH');
   });
 
+  // System V2 P0-A: a non-cash mode can no longer be settled on the legacy path,
+  // so the invariant is proved with a LIST sale (which has a bps and takes CASH).
   it('S10 a config change after the first payment never moves the fixed total', async () => {
     const t = setup();
-    await t.config({ CREDIT_CARD: 2000 });
-    const saleId = await t.draft([[t.V1, 2n]], 'CREDIT_CARD');
+    await t.config({ LIST: 2000 });
+    const saleId = await t.draft([[t.V1, 2n]], 'LIST');
     await t.send(saleId);
-    await t.pay(saleId, 'CARD_CREDIT', 10000n);
-    await t.config({ CREDIT_CARD: 9000 });
+    await t.pay(saleId, 'CASH', 10000n);
+    await t.config({ LIST: 9000 });
     expect(t.sale(saleId).total).toBe(24000n);
     expect(t.first(saleId).unitPrice).toBe(12000n);
-    expect(await t.pay(saleId, 'CARD_CREDIT', 14000n)).toMatchObject({ resultingStatus: 'PAID' });
+    expect(await t.pay(saleId, 'CASH', 14000n)).toMatchObject({ resultingStatus: 'PAID' });
   });
 
   it('S18 a completed sale is untouched by later configuration changes', async () => {
     const t = setup();
-    await t.config({ QR: 500 });
-    const saleId = await t.draft([[t.V1, 1n]], 'QR');
+    // System V2 P0-A: LIST + CASH stands in for QR + QR (non-cash is refused on this path).
+    await t.config({ LIST: 500 });
+    const saleId = await t.draft([[t.V1, 1n]], 'LIST');
     await t.send(saleId);
-    await t.pay(saleId, 'QR');
+    await t.pay(saleId, 'CASH');
     await t.sales.completeSale(t.reqs.cashier, t.ids.cashier, saleId);
-    await t.config({ QR: 10000 });
+    await t.config({ LIST: 10000 });
     expect(t.sale(saleId)).toMatchObject({ status: 'COMPLETED', total: 10500n });
     expect(t.first(saleId)).toMatchObject({ unitPrice: 10500n, priceAdjustmentBps: 500 });
   });
@@ -359,40 +368,55 @@ describe('Pilot Pricing V2 — payment compatibility (one price mode per sale)',
 
   it('S12 several partial payments of the same mode settle the fixed total', async () => {
     const t = setup();
-    await t.config({ CREDIT_CARD: 2000 });
-    const saleId = await t.draft([[t.V1, 2n]], 'CREDIT_CARD');
+    // System V2 P0-A: CASH mode + CASH (the legacy path takes no other method).
+    const saleId = await t.draft([[t.V1, 2n]], 'CASH');
     await t.send(saleId);
-    await t.pay(saleId, 'CARD_CREDIT', 4000n);
-    await t.pay(saleId, 'CARD_CREDIT', 8000n);
-    expect(await t.pay(saleId, 'CARD_CREDIT', 12000n)).toMatchObject({ resultingStatus: 'PAID' });
+    await t.pay(saleId, 'CASH', 4000n);
+    await t.pay(saleId, 'CASH', 8000n);
+    expect(await t.pay(saleId, 'CASH', 8000n)).toMatchObject({ resultingStatus: 'PAID' });
     expect(t.db.table('salePayment')).toHaveLength(3);
   });
 
-  it('S13 a mixed attempt (credit then cash) fails closed and keeps the first payment', async () => {
+  // System V2 P0-A: a credit-mode sale can no longer be settled on the legacy
+  // path: the card is refused by the FIXED_TOTAL guard and cash by the price-mode
+  // check. Both fail closed and nothing is written (the original proved that a
+  // mixed attempt keeps the first payment; there is no longer a first card payment).
+  it('S13 a credit-mode sale on the legacy path fails closed for card and for cash', async () => {
     const t = setup();
     await t.config({ CREDIT_CARD: 2000 });
     const saleId = await t.draft([[t.V1, 2n]], 'CREDIT_CARD');
     await t.send(saleId);
-    await t.pay(saleId, 'CARD_CREDIT', 4000n);
+    await expectAppError(t.pay(saleId, 'CARD_CREDIT', 4000n), 409, 'NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT');
     await expectAppError(t.pay(saleId, 'CASH', 20000n), 409, 'PAYMENT_METHOD_PRICE_MODE_CONFLICT');
-    expect(t.db.table('salePayment')).toHaveLength(1);
+    expect(t.db.table('salePayment')).toHaveLength(0);
+    expect(t.db.table('cashMovement')).toHaveLength(0);
+    expect(t.sale(saleId).status).toBe('PENDING_PAYMENT');
   });
 
-  it('S14 an explicitly selected LIST mode (no method twin) accepts cash and card settlement', async () => {
+  it('S14 an explicitly selected LIST mode (no method twin) accepts cash and refuses card on the legacy path', async () => {
     const t = setup();
     const saleId = await t.draft([[t.V1, 2n]], 'LIST');
     await t.send(saleId);
     await t.pay(saleId, 'CASH', 10000n);
-    expect(await t.pay(saleId, 'CARD_CREDIT', 10000n)).toMatchObject({ resultingStatus: 'PAID' });
+    await expectAppError(t.pay(saleId, 'CARD_CREDIT', 10000n), 409, 'NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT');
+    expect(t.db.table('salePayment')).toHaveLength(1);
+    expect(await t.pay(saleId, 'CASH', 10000n)).toMatchObject({ resultingStatus: 'PAID' });
   });
 
   it.each([['DEBIT_CARD', 'CARD_DEBIT'], ['BANK_TRANSFER', 'TRANSFER'], ['QR', 'QR'], ['CASH', 'CASH']] as const)(
-    'S14c %s sale is settled by %s',
+    'S14c %s sale: its twin method %s',
     async (mode, method) => {
       const t = setup();
       const saleId = await t.draft([[t.V1, 1n]], mode);
       await t.send(saleId);
-      expect(await t.pay(saleId, method)).toMatchObject({ resultingStatus: 'PAID' });
+      if (method === 'CASH') {
+        expect(await t.pay(saleId, method)).toMatchObject({ resultingStatus: 'PAID' });
+        return;
+      }
+      // System V2 P0-A: a non-cash twin is no longer settled on the legacy path.
+      await expectAppError(t.pay(saleId, method), 409, 'NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT');
+      expect(t.db.table('salePayment')).toHaveLength(0);
+      expect(t.sale(saleId).status).toBe('PENDING_PAYMENT');
     },
   );
 });

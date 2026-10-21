@@ -299,18 +299,17 @@ describe("cashier payment UX (Pilot P0.2-C)", () => {
 
   it("with split OFF pays exactly the remaining balance from a read-only amount", async () => {
     const state = await renderCashier({ queue: [row({ holdState: "PAYMENT_PROTECTED", paidAmount: "400000", remainingBalance: "600000", paymentCount: 1, canCorrect: false, canCancel: false })], payments: [payment("400000")] });
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     expect(screen.getByRole("checkbox", { name: /Pago parcial/ })).not.toBeChecked();
     expect(amountInput()).toHaveAttribute("readonly");
     expect(amountInput()).toHaveValue("6000");
+    await waitFor(() => expect(button(/Registrar pago/)!).toBeEnabled());
     fireEvent.click(button(/Registrar pago/)!);
     await waitFor(() => expect(posted(state, "/payments")).toHaveLength(1));
-    expect(posted(state, "/payments")[0]!.body).toMatchObject({ method: "TRANSFER", amount: "600000" });
+    expect(posted(state, "/payments")[0]!.body).toMatchObject({ method: "CASH", amount: "600000" });
   });
 
   it("with split ON accepts a valid partial amount", async () => {
     const state = await renderCashier({ queue: [row()] });
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /Pago parcial/ }));
     expect(amountInput()).not.toHaveAttribute("readonly");
     fireEvent.change(amountInput(), { target: { value: "2500" } });
@@ -322,7 +321,6 @@ describe("cashier payment UX (Pilot P0.2-C)", () => {
 
   it("rejects zero and above-remaining partial amounts before calling the server", async () => {
     const state = await renderCashier({ queue: [row()] });
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /Pago parcial/ }));
     fireEvent.change(amountInput(), { target: { value: "0" } });
     fireEvent.click(button(/Registrar pago/)!);
@@ -335,7 +333,7 @@ describe("cashier payment UX (Pilot P0.2-C)", () => {
 
   it("keeps the backend as final authority when it rejects a payment", async () => {
     await renderCashier({ queue: [row()], fail: { payment: "El pago excede el saldo pendiente." } });
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
+    await waitFor(() => expect(button(/Registrar pago/)!).toBeEnabled());
     fireEvent.click(button(/Registrar pago/)!);
     expect(await screen.findByText(/El pago excede el saldo pendiente/)).toBeInTheDocument();
     expect(within(remainingCard()).getByText(/10\.000/)).toBeInTheDocument();

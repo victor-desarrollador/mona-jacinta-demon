@@ -8,6 +8,7 @@ import { bootstrapSystemActor } from '../../src/modules/audit/system-actor.servi
 import { createCancellationService } from '../../src/modules/sales/cancellation.service.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 import { getAuthToken } from '../helpers/auth.js';
+import { ensureOpenCashSession } from '../helpers/cash-session.js';
 
 type Variant = { id: string; productId: string; sku: string; price: bigint };
 
@@ -50,6 +51,8 @@ describe('normal sale stock commitment does not expire by the clock', () => {
     sellerId = seller.id; adminId = admin.id; centroId = centro.id; remera = variant;
     sellerToken = await getAuthToken(seller);
     cashierToken = await getAuthToken(cashier);
+    // System V2 P0-A: the legacy FIXED_TOTAL path takes CASH only (needs an open session).
+    await ensureOpenCashSession(db, centro.id, cashier.id);
   }, 120000);
   afterAll(async () => { await db?.$disconnect(); }, 120000);
 
@@ -108,7 +111,7 @@ describe('normal sale stock commitment does not expire by the clock', () => {
     await setInventory(1n, 0n);
     const sale = await pendingSale();
     const response = await request(app).post(`/api/v1/sales/${sale.id}/payments`).set('Authorization', `Bearer ${cashierToken}`)
-      .send({ method: 'TRANSFER', amount: String(remera.price), idempotencyKey: randomUUID() });
+      .send({ method: 'CASH', amount: String(remera.price), receivedAmount: String(remera.price), idempotencyKey: randomUUID() });
     expect(response.status).toBe(201);
     expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
     expect((await holdsOf(sale.id)).map((row) => row.status)).toEqual(['ACTIVE']);
@@ -129,7 +132,7 @@ describe('normal sale stock commitment does not expire by the clock', () => {
     request(app).post(`/api/v1/sales/${saleId}/complete`).set('Authorization', `Bearer ${token}`).send({});
   const pay = (saleId: string, amount: bigint, token = cashierToken) =>
     request(app).post(`/api/v1/sales/${saleId}/payments`).set('Authorization', `Bearer ${token}`)
-      .send({ method: 'TRANSFER', amount: String(amount), idempotencyKey: randomUUID() });
+      .send({ method: 'CASH', amount: String(amount), receivedAmount: String(amount), idempotencyKey: randomUUID() });
 
   it('RED 4: pay then complete consumes the old commitment atomically (physical, reserved, hold, movement, audit)', async () => {
     await setInventory(3n, 0n);

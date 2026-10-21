@@ -49,6 +49,21 @@ function checkoutRequired() {
   return new AppError(409, 'CHECKOUT_REQUIRED', 'Esta venta se cobra con el checkout proporcional.');
 }
 
+// System V2 P0-A (Matrix R4 domain 6, FR-PAY-006): the historical FIXED_TOTAL
+// path takes CASH only. It never recorded a reference, an institution or any
+// evidence for a non-cash payment, so such a sale could be marked PAID with a
+// payment that never existed. The only valid evidence contract for a non-cash
+// method is ExternalCollection, which exists inside the PROPORTIONAL_V1
+// checkout; nothing is added to SalePayment and ExternalCollection is not
+// duplicated here. Nothing is written when this refuses.
+function nonCashRequiresCheckout() {
+  return new AppError(
+    409,
+    'NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT',
+    'Los cobros con transferencia, tarjeta o QR se registran con el checkout proporcional; el cobro tradicional solo admite efectivo.',
+  );
+}
+
 // Pilot P0.1-C: stable, detail-free rejections for a NEW payment. The
 // inventory/reservation specifics are never exposed.
 function reservationExpired() {
@@ -101,6 +116,13 @@ export function createPaymentsService(database: PrismaClient) {
         if (!sameIntent(existing, input)) throw new AppError(409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD', 'La clave de idempotencia ya fue utilizada con otro pago.');
         return { payment: existing, replayed: true, saleId, branchId: sale.branchId, resultingStatus: sale.status };
       }
+      // System V2 P0-A: after the idempotent replay (a historical non-cash row
+      // for the same key is still returned above, never refused), under the
+      // Sale lock and before any new write or state decision: this sale is
+      // FIXED_TOTAL here (PROPORTIONAL_V1 already took the checkout route), and
+      // a FIXED_TOTAL sale is settled in cash only. The refused intent consumes
+      // no idempotency key because nothing is written.
+      if (input.method !== 'CASH') throw nonCashRequiresCheckout();
       if (sale.status !== 'PENDING_PAYMENT') throw invalidState();
 
       // Pilot P0.1-C: a NEW payment needs exact CURRENT hold coverage

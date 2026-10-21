@@ -22,7 +22,8 @@
 //   C1 PROPORTIONAL_V1 through /payments -> DENY 409 CHECKOUT_REQUIRED, zero effects
 //   C2 decision site                    -> persisted column, read FOR UPDATE
 //   C3 FIXED_TOTAL CASH payment         -> ALLOW, PAID (historical path byte-for-byte)
-//   C4 FIXED_TOTAL credit + QR partials -> ALLOW, PAID (historical path byte-for-byte)
+//   C4 FIXED_TOTAL CASH partials -> ALLOW, PAID; credit + QR -> NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT
+//      (System V2 P0-A: the historical path takes CASH only)
 //   C5 FIXED_TOTAL PAID completion      -> ALLOW, COMPLETED (historical path byte-for-byte)
 //   C6 the real route                   -> 409 CHECKOUT_REQUIRED, no payment row
 //
@@ -333,14 +334,19 @@ describe('C — /payments decides on the persisted model, under the lock (req. 3
     expect(t.audits('PAYMENT_REGISTERED')).toHaveLength(1);
   });
 
-  it('C4 a FIXED_TOTAL sale keeps credit and QR partial payments', async () => {
+  it('C4 a FIXED_TOTAL sale keeps CASH partial payments and refuses credit and QR', async () => {
     const t = setup({ proportional: [L1] });
     const saleId = await t.draft(t.reqs.seller2, t.ids.seller2, L2);
     await t.sales.updatePriceMode(t.reqs.seller2, t.ids.seller2, saleId, 'LIST');
     await t.sales.sendToCashier(saleId, t.ids.seller2, [L2]);
-    expect(await t.pay(saleId, t.reqs.cashier2, t.ids.cashier2, 'CARD_CREDIT', 12000n))
+    for (const method of ['CARD_CREDIT', 'QR'] as const) {
+      const refused = await t.pay(saleId, t.reqs.cashier2, t.ids.cashier2, method, 8000n).then(() => null, (cause: unknown) => cause);
+      expect(refused, method).toMatchObject({ status: 409, code: 'NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT' });
+    }
+    expect(t.db.table('salePayment')).toHaveLength(0);
+    expect(await t.pay(saleId, t.reqs.cashier2, t.ids.cashier2, 'CASH', 12000n))
       .toMatchObject({ resultingStatus: 'PENDING_PAYMENT' });
-    expect(await t.pay(saleId, t.reqs.cashier2, t.ids.cashier2, 'QR', 8000n))
+    expect(await t.pay(saleId, t.reqs.cashier2, t.ids.cashier2, 'CASH', 8000n))
       .toMatchObject({ resultingStatus: 'PAID' });
     expect(t.db.table('salePayment')).toHaveLength(2);
   });

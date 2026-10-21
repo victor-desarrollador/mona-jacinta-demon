@@ -158,19 +158,17 @@ describe("cashier payment prefill is exact (H2)", () => {
 
   it("M06 the split prefill is the exact balance and a typed centavo amount is sent exactly", async () => {
     const { calls } = await renderCashier({ queue: [row()] });
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /Pago parcial/ }));
     const amount = screen.getByRole("textbox", { name: /Importe ARS/ }) as HTMLInputElement;
     expect(amount.value).toBe("1209,40");
     fireEvent.change(amount, { target: { value: "500,25" } });
     fireEvent.click(registerButton());
     await waitFor(() => expect(paymentPosts(calls)).toHaveLength(1));
-    expect(paymentPosts(calls)[0]!.body).toMatchObject({ method: "TRANSFER", amount: "50025" });
+    expect(paymentPosts(calls)[0]!.body).toMatchObject({ method: "CASH", amount: "50025" });
   });
 
   it("M07b a one-centavo balance prefills 0,01 when splitting", async () => {
     await renderCashier({ queue: [row({ remainingBalance: "1" })] });
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /Pago parcial/ }));
     expect((screen.getByRole("textbox", { name: /Importe ARS/ }) as HTMLInputElement).value).toBe("0,01");
   });
@@ -188,10 +186,11 @@ describe("cashier payment prefill is exact (H2)", () => {
 
   it("M13 a non-split TRANSFER still sends the exact server balance", async () => {
     const { calls } = await renderCashier({ queue: [row()] });
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
+    // The cash-received prefill is a passive effect: wait until the button is usable.
+    await waitFor(() => expect(registerButton()).toBeEnabled());
     fireEvent.click(registerButton());
     await waitFor(() => expect(paymentPosts(calls)).toHaveLength(1));
-    expect(paymentPosts(calls)[0]!.body).toMatchObject({ method: "TRANSFER", amount: "120940" });
+    expect(paymentPosts(calls)[0]!.body).toMatchObject({ method: "CASH", amount: "120940" });
   });
 
   it("M14 the close notice shows the counted amount with centavos", async () => {

@@ -245,13 +245,12 @@ describe("M1 malformed payment answers fail closed", () => {
     let queueReply: Reply = ok({ items: [row()] });
     const { state } = await renderPage({ queue: () => queueReply });
     expect(await screen.findByRole("heading", { name: "CEN-V-000001" })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     state.payments = () => ok({ items: [payment("sale-1", { amount: "1000000" })] });
     queueReply = ok({ items: {} });
     const pay = screen.getByRole("button", { name: /Registrar pago/ });
     await waitFor(() => expect(pay).toBeEnabled());
     fireEvent.click(pay);
-    expect(await screen.findByText(/Transferencia .* registrado\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Efectivo .* registrado\./)).toBeInTheDocument();
     expect(await screen.findByText(QUEUE_INVALID)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Reintentar mismo pago" })).toBeNull();
   });
@@ -485,7 +484,6 @@ describe("M1/M2 revision 1 (independent review findings)", () => {
       paymentPost: () => post.promise,
     });
     expect(await screen.findByRole("heading", { name: "CEN-V-000001" })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     const pay = screen.getByRole("button", { name: /Registrar pago/ });
     await waitFor(() => expect(pay).toBeEnabled());
     fireEvent.click(pay);
@@ -505,7 +503,6 @@ describe("M1/M2 revision 1 (independent review findings)", () => {
       paymentPost: () => post.promise,
     });
     expect(await screen.findByRole("heading", { name: "CEN-V-000001" })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: /Método/ }), { target: { value: "TRANSFER" } });
     const pay = screen.getByRole("button", { name: /Registrar pago/ });
     await waitFor(() => expect(pay).toBeEnabled());
     fireEvent.click(pay);
