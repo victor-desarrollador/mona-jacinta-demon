@@ -23,7 +23,7 @@ export const RACE_TIMEOUT_MS = 60_000;
 
 // The rows a suite may hold as an overlap coordinator. A closed set, so a table
 // name is never interpolated from arbitrary input.
-export type LockableTable = 'Sale' | 'CashSession' | 'Inventory' | 'ExternalCollection' | 'CheckoutAttempt';
+export type LockableTable = 'Sale' | 'CashSession' | 'Inventory' | 'ExternalCollection' | 'CheckoutAttempt' | 'Location';
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
@@ -185,7 +185,8 @@ export async function waitForBlocked(pool: Pool, holderPid: number, count: numbe
 // CR: the PILOT cash-reversal gate (cash-movement-reversal.pg.test.ts), slot 10.
 // CC: the CARD_CREDIT gate (checkout-card-credit.pg.test.ts), slot 11.
 // WH: the WAREHOUSE-MVP stock-adjustment gate (inventory-adjustment.pg.test.ts), slot 12.
-export const POS_SUITE_SLOTS = Object.freeze({ S4: 3, SREF: 4, S5: 5, S6: 6, S7: 7, S7RR: 8, CM: 9, CR: 10, CC: 11, WH: 12 } as const);
+// SC: the scope-assignment lock gate (scope-assignment-lock.pg.test.ts), slot 13.
+export const POS_SUITE_SLOTS = Object.freeze({ S4: 3, SREF: 4, S5: 5, S6: 6, S7: 7, S7RR: 8, CM: 9, CR: 10, CC: 11, WH: 12, SC: 13 } as const);
 export type PosSuite = keyof typeof POS_SUITE_SLOTS;
 const POS_SLOT_WIDTH = 10_000_000;
 
