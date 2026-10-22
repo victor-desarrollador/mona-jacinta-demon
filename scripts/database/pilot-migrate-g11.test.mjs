@@ -1,6 +1,6 @@
 // Zero-database unit tests for the G14 cut-over contract of scripts/database/pilot-migrate.mjs:
-// approved tree = exact G14, an EXPLICIT expected initial state (EXACT_S4 | EXACT_G7, never
-// auto-selected), a plan digest the OWNER approves, a read-only pre-check (marker, exact
+// approved tree = exact G14, an EXPLICIT expected initial state (EXACT_S4 | EXACT_G7 | EXACT_G11,
+// never auto-selected), a plan digest the OWNER approves, a read-only pre-check (marker, exact
 // ledger, app-schema digest + probes) before Prisma, and a read-only post-check that accepts
 // only EXACT_G14 — a failed post-check reports RESTORE_REQUIRED and never repairs.
 // Hermetic: fake api/ tree, fake pg client, fake spawn, synthetic schema references.
@@ -171,7 +171,9 @@ async function planFor(state) {
 }
 const PLAN_S4 = await planFor('EXACT_S4');
 const PLAN_G7 = await planFor('EXACT_G7');
-const exec = (state = 'EXACT_S4', plan = null) => ['--target=pilot', '--execute', `--marker-id=${MARKER}`, `--confirm-project-ref=${REF}`, `--expected-initial-state=${state}`, `--plan=${plan ?? (state === 'EXACT_S4' ? PLAN_S4 : PLAN_G7)}`];
+const PLAN_G11 = await planFor('EXACT_G11');
+const PLANS = { EXACT_S4: PLAN_S4, EXACT_G7: PLAN_G7, EXACT_G11: PLAN_G11 };
+const exec = (state = 'EXACT_S4', plan = null) => ['--target=pilot', '--execute', `--marker-id=${MARKER}`, `--confirm-project-ref=${REF}`, `--expected-initial-state=${state}`, `--plan=${plan ?? PLANS[state]}`];
 
 // --- payload ------------------------------------------------------------------------
 
@@ -185,12 +187,13 @@ test('MG-01 the approved payload is the exact G14 tree from the shared pins (14 
 
 // --- CLI ------------------------------------------------------------------------------
 
-test('MG-02 the expected initial state is mandatory, explicit and only EXACT_S4 | EXACT_G7; execute also needs a hex plan digest', () => {
+test('MG-02 the expected initial state is mandatory, explicit and only EXACT_S4 | EXACT_G7 | EXACT_G11; execute also needs a hex plan digest', () => {
   assert.deepEqual(parseCliArgs(dry('EXACT_S4')), { ok: true, mode: 'dry-run', markerId: MARKER, confirmProjectRef: null, initialState: 'EXACT_S4', plan: null });
   assert.equal(parseCliArgs(dry('EXACT_G7')).initialState, 'EXACT_G7');
+  assert.equal(parseCliArgs(dry('EXACT_G11')).initialState, 'EXACT_G11');
   for (const argv of [
     ['--target=pilot', '--dry-run', `--marker-id=${MARKER}`],
-    dry('EXACT_G11'), dry('S4'), dry('G7'), dry(''), dry('exact_s4'),
+    dry('EXACT_G12'), dry('EXACT_G13'), dry('EXACT_G14'), dry('G11'), dry('S4'), dry('G7'), dry(''), dry('exact_s4'), dry('exact_g11'),
     [...dry('EXACT_S4'), '--expected-initial-state=EXACT_G7'],
     exec('EXACT_S4', 'notahex'), ['--target=pilot', '--execute', `--marker-id=${MARKER}`, `--confirm-project-ref=${REF}`, '--expected-initial-state=EXACT_S4'],
     [...dry('EXACT_S4'), `--plan=${'a'.repeat(64)}`],
@@ -200,7 +203,7 @@ test('MG-02 the expected initial state is mandatory, explicit and only EXACT_S4 
 // --- dry-run --------------------------------------------------------------------------
 
 test('MG-03 dry-run states INITIAL_STATE, the exact migrations to apply, EXACT_G14 and the plan digest; no client, no child', async () => {
-  for (const [state, pending, digest] of [['EXACT_S4', 10, PLAN_S4], ['EXACT_G7', 7, PLAN_G7]]) {
+  for (const [state, pending, digest] of [['EXACT_S4', 10, PLAN_S4], ['EXACT_G7', 7, PLAN_G7], ['EXACT_G11', 3, PLAN_G11]]) {
     const r = await run(dry(state));
     assert.equal(r.code, 0, r.text);
     assert.equal(r.created.length, 0);
@@ -211,7 +214,7 @@ test('MG-03 dry-run states INITIAL_STATE, the exact migrations to apply, EXACT_G
     for (const name of STATES.EXACT_G14.slice(STATES[state].length)) assert.ok(r.text.includes(name), name);
     assert.match(r.text, new RegExp(`PLAN_DIGEST=${digest}`));
   }
-  assert.notEqual(PLAN_S4, PLAN_G7);
+  assert.equal(new Set([PLAN_S4, PLAN_G7, PLAN_G11]).size, 3);
 });
 
 test('MG-04 a missing schema reference for the initial or final state refuses dry-run and execute', async () => {
@@ -236,7 +239,7 @@ test('MG-05 execute with a plan digest that is not the dry-run plan is refused b
 });
 
 test('MG-06 the happy path: proof, read-only pre-check (exact initial state), ONE prisma deploy, read-only post-check (EXACT_G14)', async () => {
-  for (const state of ['EXACT_S4', 'EXACT_G7']) {
+  for (const state of ['EXACT_S4', 'EXACT_G7', 'EXACT_G11']) {
     const db = fakeDb({ phases: [{ ledger: ledgerOf(state), raw: RAW[state] }, { ledger: ledgerOf('EXACT_G14'), raw: RAW.EXACT_G14 }] });
     const r = await run(exec(state), { db });
     assert.equal(r.code, 0, r.text);
@@ -324,4 +327,45 @@ test('MG-11 a failed prisma deploy reports RESTORE_REQUIRED after a read-only in
   assert.match(r.text, /phase=prisma/);
   assert.match(r.text, /PILOT_MIGRATE_RESULT=RESTORE_REQUIRED/);
   assert.equal(db.snapshots(), 2, 'the post-failure state is read (read-only) for the report');
+});
+
+// --- EXACT_G11 initial state: partial G12/G13 ledgers ----------------------------------
+
+test('MG-12 from EXACT_G11 a partial G12/G13 ledger (an interrupted earlier attempt) is refused before Prisma, never resumed', async () => {
+  const pin = (i) => ({ migration_name: MIGRATION_PINS[i].name, checksum: MIGRATION_PINS[i].sha256, finished: true, rolled_back: false });
+  const prefix = (n) => Array.from({ length: n }, (_, i) => pin(i));
+  for (const [label, ledger, raw] of [
+    ['G12', prefix(12), RAW.EXACT_G12],
+    ['G13', prefix(13), RAW.EXACT_G13],
+    ['failed m12', [...prefix(11), { ...pin(11), finished: false }], RAW.EXACT_G11],
+    ['rolled-back m13', [...prefix(12), { ...pin(12), rolled_back: true }], RAW.EXACT_G12],
+    ['G14 while G11 expected', prefix(14), RAW.EXACT_G14],
+    ['G7 while G11 expected', prefix(7), RAW.EXACT_G7],
+  ]) {
+    const db = fakeDb({ phases: [{ ledger, raw }] });
+    const r = await run(exec('EXACT_G11'), { db });
+    assert.notEqual(r.code, 0, label);
+    assert.match(r.text, /phase=precheck/, label);
+    assert.equal(r.spawned.length, 0, label);
+    assert.doesNotMatch(r.text, /PILOT_MIGRATE_RESULT=EXACT_G14/, label);
+  }
+});
+
+test('MG-13 from EXACT_G11 a deploy that stops at G12/G13 reports RESTORE_REQUIRED (one deploy, no resolve)', async () => {
+  const pin = (i) => ({ migration_name: MIGRATION_PINS[i].name, checksum: MIGRATION_PINS[i].sha256, finished: true, rolled_back: false });
+  const prefix = (n) => Array.from({ length: n }, (_, i) => pin(i));
+  for (const [label, post, code] of [
+    ['post G12', { ledger: prefix(12), raw: RAW.EXACT_G12 }, 0],
+    ['post G13', { ledger: prefix(13), raw: RAW.EXACT_G13 }, 0],
+    ['failed m13', { ledger: [...prefix(12), { ...pin(12), finished: false }], raw: RAW.EXACT_G12 }, 1],
+    ['failed m14', { ledger: [...prefix(13), { ...pin(13), finished: false }], raw: RAW.EXACT_G13 }, 1],
+  ]) {
+    const db = fakeDb({ phases: [{ ledger: ledgerOf('EXACT_G11'), raw: RAW.EXACT_G11 }, post] });
+    const r = await run(exec('EXACT_G11'), { db, spawner: fakeSpawn({ code }) });
+    assert.notEqual(r.code, 0, label);
+    assert.match(r.text, /precheck ok — ledger EXACT_G11/, label);
+    assert.match(r.text, code === 0 ? /phase=postcheck/ : /phase=prisma/, label);
+    assert.match(r.text, /PILOT_MIGRATE_RESULT=RESTORE_REQUIRED/, label);
+    assert.equal(r.spawned.length, 1, label);
+  }
 });

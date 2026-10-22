@@ -5,11 +5,12 @@
 // are reviewed literals (tests recompute the real bytes), and a new or changed
 // migration needs a fresh OWNER review and a new pin here.
 //
-// States (OWNER 2026-10-18, extended 2026-10-20): the last PILOT ledger the OWNER
-// observed was S4, but it is not re-confirmed, so BOTH EXACT_S4 and EXACT_G7 are
-// authorizable initial states. They are mutually exclusive and never auto-selected:
-// every caller names the one state it expects (requireState). EXACT_G11, EXACT_G12
-// and EXACT_G13 are preserved as exact ledgers; the only final state is EXACT_G14.
+// States (OWNER 2026-10-18, extended 2026-10-20 and 2026-10-22): EXACT_S4, EXACT_G7 and
+// EXACT_G11 (the ledger the Local 1 cut-over left on PILOT) are the authorizable initial
+// states. They are mutually exclusive and never auto-selected: every caller names the
+// one state it expects (requireState). EXACT_G12 and EXACT_G13 are exact ledgers but
+// never an initial state (a PILOT found there is a partial cut-over: restore, never
+// resume); the only final state is EXACT_G14.
 //
 // "Exact" means: every ledger row is one of the pinned migrations, exactly one row per
 // migration, finished, never rolled back, with the pinned checksum (Prisma's checksum
@@ -46,7 +47,7 @@ export const STATES = Object.freeze({
   EXACT_G13: Object.freeze(NAMES.slice(0, 13)),
   EXACT_G14: Object.freeze(NAMES.slice()),
 });
-export const INITIAL_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7']);
+export const INITIAL_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7', 'EXACT_G11']);
 export const FINAL_STATE = 'EXACT_G14';
 
 // The ONLY ledger read, identical everywhere: four columns, no ordering or filtering in

@@ -21,14 +21,16 @@ const SID = '7311234567890123456';
 const MID = '11111111-1111-4111-8111-111111111111';
 
 // ---------------- arguments ----------------
-test('LAB-01 arguments: exactly one op; state ops need one exact state; rehearsal needs --from S4|G7; teardown needs a run id', () => {
+test('LAB-01 arguments: exactly one op; state ops need one exact state; rehearsal needs --from S4|G7|G11; teardown needs a run id', () => {
   assert.deepEqual(L.parseLabArgs(['--op=provision', '--state=EXACT_S4']), { ok: true, op: 'provision', state: 'EXACT_S4', from: null, run: null });
   assert.deepEqual(L.parseLabArgs(['--op=schema-reference', '--state=EXACT_G11']).state, 'EXACT_G11');
   assert.deepEqual(L.parseLabArgs(['--op=migration-rehearsal', '--from=EXACT_G7']), { ok: true, op: 'migration-rehearsal', state: null, from: 'EXACT_G7', run: null });
+  assert.deepEqual(L.parseLabArgs(['--op=migration-rehearsal', '--from=EXACT_G11']), { ok: true, op: 'migration-rehearsal', state: null, from: 'EXACT_G11', run: null });
+  assert.equal(L.parseLabArgs(['--op=backup-restore-proof', '--state=EXACT_G13']).state, 'EXACT_G13');
   assert.equal(L.parseLabArgs(['--op=integration-test']).ok, true);
   assert.equal(L.parseLabArgs(['--op=teardown', '--run=lab-20261018T120000Z-0123abcd']).ok, true);
   for (const argv of [[], ['--op=provision'], ['--op=provision', '--state=EXACT_G10'], ['--op=provision', '--state=S4'], ['--op=provision', '--state=EXACT_S4', '--state=EXACT_S4'],
-    ['--op=nuke', '--state=EXACT_S4'], ['--op=migration-rehearsal', '--from=EXACT_G11'], ['--op=migration-rehearsal'], ['--op=migration-rehearsal', '--from=EXACT_S4', '--state=EXACT_G11'],
+    ['--op=nuke', '--state=EXACT_S4'], ['--op=migration-rehearsal', '--from=EXACT_G12'], ['--op=migration-rehearsal', '--from=EXACT_G13'], ['--op=migration-rehearsal', '--from=EXACT_G14'], ['--op=migration-rehearsal'], ['--op=migration-rehearsal', '--from=EXACT_S4', '--state=EXACT_G11'],
     ['--op=teardown'], ['--op=teardown', '--run=../x'], ['--op=teardown', '--run=/abs'], ['--op=provision', '--state=EXACT_S4', '--url=postgres://x'], ['--op=integration-test', '--state=EXACT_S4'],
     ['provision']]) {
     assert.equal(L.parseLabArgs(argv).ok, false, JSON.stringify(argv));
@@ -153,8 +155,9 @@ test('LAB-12 the plan digest is reproducible SHA-256 over canonical JSON and cha
   for (const over of [{ state: 'EXACT_G7' }, { configSha256: 'b'.repeat(64) }, { prisma: { ...base.prisma, version: '7.10.1' } }]) assert.notEqual(L.buildLabPlan({ ...base, ...over }).digest, a.digest);
   const r = L.buildLabPlan({ op: 'migration-rehearsal', state: null, from: 'EXACT_S4', prisma: base.prisma, configSha256: 'c'.repeat(64) });
   assert.deepEqual(r.plan.migrations.map(([name]) => name), NAMES.slice(0, 4), 'source build');
-  assert.deepEqual(r.plan.rehearsal.map(([name]) => name), NAMES.slice(4), 'S4 → G11 applies exactly m5..m11');
+  assert.deepEqual(r.plan.rehearsal.map(([name]) => name), NAMES.slice(4), 'S4 → G14 applies exactly m5..m14');
   assert.deepEqual(L.buildLabPlan({ op: 'migration-rehearsal', state: null, from: 'EXACT_G7', prisma: base.prisma, configSha256: 'c'.repeat(64) }).plan.rehearsal.map(([n]) => n), NAMES.slice(7));
+  assert.deepEqual(L.buildLabPlan({ op: 'migration-rehearsal', state: null, from: 'EXACT_G11', prisma: base.prisma, configSha256: 'c'.repeat(64) }).plan.rehearsal.map(([n]) => n), NAMES.slice(11), 'G11 → G14 applies exactly m12..m14');
 });
 
 // Temp copy of the reviewed tree (api/prisma/migrations), optionally mutated.
@@ -272,11 +275,30 @@ test('LAB-23 itestProvision refuses outside a lab integration-test run', async (
 test('LAB-24 the fixture is deterministic and carries the state\'s pinned catalog', () => {
   assert.deepEqual(OPS.fixtureStatements('EXACT_S4'), OPS.fixtureStatements('EXACT_S4'));
   assert.equal(OPS.fixtureStatements('EXACT_S4').join('\n').includes('9400-000000000036'), false, 'S4/G7 seed CATALOG_35');
-  assert.equal(OPS.fixtureStatements('EXACT_G11').join('\n').includes('9400-000000000036'), true, 'G11 seeds CATALOG_36');
+  for (const s of ['EXACT_G11', 'EXACT_G12', 'EXACT_G13', 'EXACT_G14']) assert.equal(OPS.fixtureStatements(s).join('\n').includes('9400-000000000036'), true, `${s} seeds CATALOG_36`);
   assert.doesNotMatch(OPS.fixtureStatements('EXACT_G11').join('\n'), /"reason"|"reversesMovementId"|"pricingModel"|"expectedCash"/, 'columns of migrations 1–4 only');
 });
 test('LAB-25 projection diff reports object keys only, never bodies', () => {
   const p = { tables: [{ name: 'T', columns: [{ name: 'a' }] }], enums: [], types: [], constraints: [{ table: 'T', name: 'c1', definition: 'CHECK (secret)' }], indexes: [], functions: [], triggers: [] };
   const q = JSON.parse(JSON.stringify(p)); q.constraints[0].definition = 'CHECK (other)';
   assert.deepEqual(OPS.diffProjections(p, q), ['constraint:T.c1']);
+});
+
+test('LAB-26 the rehearsal always ends at the final state; the source decides the catalog, the RBAC outcome and the row deltas', () => {
+  assert.equal(L.REHEARSAL_TARGET, 'EXACT_G14');
+  for (const s of ['EXACT_S4', 'EXACT_G7']) assert.equal(L.labCatalog(s), 'CATALOG_35', s);
+  for (const s of ['EXACT_G11', 'EXACT_G12', 'EXACT_G13', 'EXACT_G14']) assert.equal(L.labCatalog(s), 'CATALOG_36', s);
+  assert.throws(() => L.labCatalog('EXACT_G10'));
+  for (const [from, applied] of [['EXACT_S4', 10], ['EXACT_G7', 7]]) {
+    assert.deepEqual(L.rehearsalExpectations(from), { from, target: 'EXACT_G14', sourceCatalog: 'CATALOG_35', rbacOutcome: 'UPGRADED', applied,
+      delta: { _prisma_migrations: applied, Permission: 1, RolePermission: 2 } });
+  }
+  assert.deepEqual(L.rehearsalExpectations('EXACT_G11'), { from: 'EXACT_G11', target: 'EXACT_G14', sourceCatalog: 'CATALOG_36', rbacOutcome: 'NOOP_VERIFIED', applied: 3,
+    delta: { _prisma_migrations: 3, Permission: 0, RolePermission: 0 } });
+  for (const bad of ['EXACT_G12', 'EXACT_G13', 'EXACT_G14', 'EXACT_G10', null]) assert.throws(() => L.rehearsalExpectations(bad), /rehearsal source/);
+  const src = fs.readFileSync(path.join(HERE, 'local-test-cutover-lab-ops.mjs'), 'utf8');
+  assert.doesNotMatch(src, /→ EXACT_G11|'EXACT_G11' \? CATALOG_36|state === 'EXACT_G11'/, 'no stale G11 target or catalog switch in the operations');
+  assert.match(src, /rehearsalExpectations\(from\)/);
+  assert.doesNotMatch(src, /'EXACT_G11'/, 'no operation is pinned to the historical G11 state');
+  assert.match(src, /provisionState\(ctx, run, c9, FINAL_STATE\)/, 'the S9 startup-gate PG proof runs on a cluster at the final state the gate requires');
 });

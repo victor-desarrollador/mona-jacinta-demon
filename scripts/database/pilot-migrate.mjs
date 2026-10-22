@@ -40,13 +40,13 @@ import { buildTargetBinding, buildToolingBinding, readLockedFile, toolingFile, v
 // OWNER-only guarded `prisma migrate deploy` for PILOT.
 //
 //   node scripts/database/pilot-migrate.mjs --target=pilot --dry-run --marker-id=<uuid> \
-//     --expected-initial-state=EXACT_S4|EXACT_G7
+//     --expected-initial-state=EXACT_S4|EXACT_G7|EXACT_G11
 //   node scripts/database/pilot-migrate.mjs --target=pilot --execute --marker-id=<uuid> \
-//     --confirm-project-ref=<ref> --expected-initial-state=EXACT_S4|EXACT_G7 --plan=<dry-run digest>
+//     --confirm-project-ref=<ref> --expected-initial-state=EXACT_S4|EXACT_G7|EXACT_G11 --plan=<dry-run digest>
 //
 // G14 cut-over (OWNER 2026-10-21): the approved repository tree is exactly G14 (the fourteen
 // pins of pilot-migration-states.mjs). The initial state is NEVER auto-selected: the OWNER
-// names it (EXACT_S4 or EXACT_G7) after a fresh A4, and --execute requires the plan digest
+// names it (EXACT_S4, EXACT_G7 or EXACT_G11) after a fresh A4, and --execute requires the plan digest
 // the dry run printed for it. --execute then runs, in order: the identity proof; a READ-ONLY
 // pre-check snapshot (REPEATABLE READ READ ONLY, pinned search_path, same marker) that must
 // show exactly the expected ledger AND the app-owned schema of that state's generated

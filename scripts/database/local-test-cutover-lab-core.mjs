@@ -17,12 +17,14 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, rmSync, wri
 import path from 'node:path';
 import { checkNoSymlinkComponents, checkPrivateDir, isUnderAny } from './pilot-launch-command.mjs';
 import { readPinned } from './pilot-migrate.mjs';
-import { LOCK_PIN, MIGRATION_PINS, STATES } from './pilot-migration-states.mjs';
+import { FINAL_STATE, INITIAL_STATES, LOCK_PIN, MIGRATION_PINS, STATES } from './pilot-migration-states.mjs';
 import { verifyMigrationTree } from './local-test-migration-payload.mjs';
 
 export const LAB_OPS = Object.freeze(['provision', 'schema-reference', 'backup-restore-proof', 'migration-rehearsal', 'integration-test', 'teardown']);
 export const LAB_STATES = Object.freeze(Object.keys(STATES));
-export const REHEARSAL_SOURCES = Object.freeze(['EXACT_S4', 'EXACT_G7']);
+// The rehearsal sources are exactly pilot-migrate's authorizable initial states; it always ends at FINAL_STATE.
+export const REHEARSAL_SOURCES = INITIAL_STATES;
+export const REHEARSAL_TARGET = FINAL_STATE;
 export const PLAN_FORMAT = 'mona-local-test-cutover-lab-plan/v1';
 export const RUN_ID = /^lab-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$/;
 export const LOCAL_TEST = Object.freeze({ host: '127.0.0.1', port: 5432, database: 'mona_local_test', user: 'mona_local_test' });
@@ -139,6 +141,24 @@ export function evaluateFresh(f) {
   return { ok: true };
 }
 
+// ---------------- catalogs and rehearsal expectations ----------------
+// The state's pinned RBAC catalog: CATALOG_35 before the G11 cut-over, CATALOG_36 from G11 on.
+const PRE_G11 = new Set(['EXACT_S4', 'EXACT_G7']);
+export function labCatalog(state) {
+  if (!LAB_STATES.includes(state)) throw new Error('unknown state');
+  return PRE_G11.has(state) ? 'CATALOG_35' : 'CATALOG_36';
+}
+// What a rehearsal from `from` must show: a CATALOG_35 source is upgraded (+1 permission, +2 grants),
+// a CATALOG_36 source is verified unchanged; every pending migration adds one ledger row.
+export function rehearsalExpectations(from) {
+  if (!REHEARSAL_SOURCES.includes(from)) throw new Error('unknown rehearsal source');
+  const sourceCatalog = labCatalog(from);
+  const applied = STATES[REHEARSAL_TARGET].length - STATES[from].length;
+  const upgrade = sourceCatalog === 'CATALOG_35';
+  return { from, target: REHEARSAL_TARGET, sourceCatalog, rbacOutcome: upgrade ? 'UPGRADED' : 'NOOP_VERIFIED', applied,
+    delta: { _prisma_migrations: applied, Permission: upgrade ? 1 : 0, RolePermission: upgrade ? 2 : 0 } };
+}
+
 // ---------------- payloads and plans ----------------
 export function statePayload(state) {
   if (!LAB_STATES.includes(state)) throw new Error('unknown state');
@@ -158,7 +178,7 @@ export function buildLabPlan({ op, state, from, prisma, configSha256 }) {
 }
 
 // A fresh owner-only copy of exactly the state's migrations + lock: <stageRoot>/mona-local-test-lab-XXXXXX/prisma/migrations.
-// The WHOLE source tree must first be exactly the eleven reviewed pins (drift anywhere refuses); every byte copied is the
+// The WHOLE source tree must first be exactly the reviewed pins (drift anywhere refuses); every byte copied is the
 // one readPinned verified; the copy is verified again as an exact tree of the state. Nothing is left behind on failure.
 export function stageStatePayload(apiDir, state, stageRoot) {
   const fail = (reason) => ({ ok: false, reason });

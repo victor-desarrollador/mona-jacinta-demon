@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 // S9 G11 startup-gate PG proof (G11-ADV-004). Runs ONLY through the LOCAL_TEST
 // cut-over lab (--op=integration-test), which provisions the disposable,
-// marker-proven EXACT_G11 cluster and passes the binding through the
+// marker-proven cluster at the final state (EXACT_G14) and passes the binding through the
 // environment; launched any other way the suite skips (opt-in env missing).
 // This runner deliberately does not inherit vitest.config.ts: its globalSetup
 // cleans factory rows against a hosted TEST target and tests/setup.ts owns the

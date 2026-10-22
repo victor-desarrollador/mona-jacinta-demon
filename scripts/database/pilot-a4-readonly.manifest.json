@@ -16,7 +16,7 @@
     },
     {
       "path": "scripts/database/pilot-migration-states.mjs",
-      "sha256": "a13421df83d9dc36273a7056642619967a1ae7895809cc65280e37773b2a57ab"
+      "sha256": "ebaa8d10f109fc70451e395237fb9cb6446cf71038162fcdf862488ae49840a4"
     },
     {
       "path": "scripts/database/app-schema-projection.mjs",

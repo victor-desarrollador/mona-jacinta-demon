@@ -1,10 +1,10 @@
 // LOCAL_TEST cut-over lab — the ONE protected entry for disposable LOCAL_TEST clusters used by
-// the PILOT G11 cut-over tooling (references, restore proof, migration rehearsal, real-PG itest).
+// the PILOT cut-over tooling (references, restore proof, migration rehearsal, real-PG itest).
 //
-//   node scripts/database/local-test-cutover-lab.mjs --op=provision            --state=EXACT_S4|EXACT_G7|EXACT_G11
+//   node scripts/database/local-test-cutover-lab.mjs --op=provision            --state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13|EXACT_G14
 //   node scripts/database/local-test-cutover-lab.mjs --op=schema-reference     --state=…
 //   node scripts/database/local-test-cutover-lab.mjs --op=backup-restore-proof --state=…
-//   node scripts/database/local-test-cutover-lab.mjs --op=migration-rehearsal  --from=EXACT_S4|EXACT_G7
+//   node scripts/database/local-test-cutover-lab.mjs --op=migration-rehearsal  --from=EXACT_S4|EXACT_G7|EXACT_G11   (always → EXACT_G14)
 //   node scripts/database/local-test-cutover-lab.mjs --op=integration-test
 //   node scripts/database/local-test-cutover-lab.mjs --op=teardown             --run=lab-<utc>-<hex>
 //

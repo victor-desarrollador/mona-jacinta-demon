@@ -64,7 +64,7 @@ test('ST-03 the six authorizable states are exact prefixes: S4 = 1â€“4, G7 = 1â€
   assert.deepEqual(states.STATES.EXACT_G12, NAMES.slice(0, 12));
   assert.deepEqual(states.STATES.EXACT_G13, NAMES.slice(0, 13));
   assert.deepEqual(states.STATES.EXACT_G14, NAMES);
-  assert.deepEqual(states.INITIAL_STATES, ['EXACT_S4', 'EXACT_G7']);
+  assert.deepEqual(states.INITIAL_STATES, ['EXACT_S4', 'EXACT_G7', 'EXACT_G11']);
   assert.equal(states.FINAL_STATE, 'EXACT_G14');
   assert.ok(Object.isFrozen(states.STATES) && Object.isFrozen(states.STATES.EXACT_G14));
 });
@@ -72,7 +72,8 @@ test('ST-03 the six authorizable states are exact prefixes: S4 = 1â€“4, G7 = 1â€
 test('ST-04 pendingFor names exactly the migrations an initial state still needs, in order', () => {
   assert.deepEqual(states.pendingFor('EXACT_S4'), NAMES.slice(4));
   assert.deepEqual(states.pendingFor('EXACT_G7'), NAMES.slice(7));
-  for (const bad of ['EXACT_G11', 'S4', 'G7', '', null, undefined, 'EXACT_G9']) assert.throws(() => states.pendingFor(bad), /initial state/);
+  assert.deepEqual(states.pendingFor('EXACT_G11'), NAMES.slice(11));
+  for (const bad of ['EXACT_G12', 'EXACT_G13', 'EXACT_G14', 'S4', 'G7', 'G11', '', null, undefined, 'EXACT_G9']) assert.throws(() => states.pendingFor(bad), /initial state/);
 });
 
 test('ST-05 exact S4, G7, G11, G12, G13 and G14 classify as such, in any row order', () => {

@@ -1,7 +1,7 @@
 import { defineConfig } from 'prisma/config';
 
-// PILOT G11 cut-over lab: Prisma CLI config for a disposable LOCAL_TEST cluster built FRESH
-// with EXACTLY one state's migrations (EXACT_S4 = 1–4, EXACT_G7 = 1–7, EXACT_G11 = 1–11).
+// PILOT cut-over lab: Prisma CLI config for a disposable LOCAL_TEST cluster built FRESH
+// with EXACTLY one state's migrations (EXACT_S4 = 1–4, EXACT_G7 = 1–7, EXACT_G11 = 1–11, … EXACT_G14 = 1–14).
 // Only ever selected explicitly by scripts/database/local-test-cutover-lab-ops.mjs, after its
 // identity and FRESH proofs; Prisma's implicit discovery never picks this filename.
 //

@@ -18,11 +18,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import {
-  buildLabPlan, canonicalJson, checkLabRoot, childEnv, createGate, evaluateFresh, evaluateIdentity, LOCAL_TEST, localTestUrl,
-  parseControlData, proveIsolation, RUN_ID, stageStatePayload,
+  buildLabPlan, canonicalJson, checkLabRoot, childEnv, createGate, evaluateFresh, evaluateIdentity, labCatalog, LOCAL_TEST, localTestUrl,
+  parseControlData, proveIsolation, rehearsalExpectations, RUN_ID, stageStatePayload,
 } from './local-test-cutover-lab-core.mjs';
 import { CONFIRM_LOCAL_TARGET, main as markerMain, MARKER_FACTS_SQL, MARKER_ROWS_SQL, verifyMarkerStructure } from './local-test-marker.mjs';
-import { LEDGER_SQL, MIGRATION_PINS, requireState, STATES } from './pilot-migration-states.mjs';
+import { FINAL_STATE, LEDGER_SQL, MIGRATION_PINS, requireState, STATES } from './pilot-migration-states.mjs';
 import { PINNED_SEARCH_PATH, projectionDigest, projectionSummary, readProjection, runProbes } from './app-schema-projection.mjs';
 import { SCHEMA_REFERENCES, STATE_PROBES } from './pilot-schema-references.mjs';
 import { CATALOG_35, CATALOG_36, CATALOG_SQL, classifyCatalog } from './pilot-rbac-catalog.mjs';
@@ -240,9 +240,9 @@ async function provisionState(ctx, run, cluster, state) {
 
 // ---------------- deterministic fixture ----------------
 // Columns of migrations 1–4 only (valid in every state); ids and values fixed. The catalog is the
-// state's pinned RBAC catalog (CATALOG_35 before the cut-over, CATALOG_36 at G11).
+// state's pinned RBAC catalog (labCatalog: CATALOG_35 before the G11 cut-over, CATALOG_36 from G11 on).
 export function fixtureStatements(state) {
-  const cat = state === 'EXACT_G11' ? CATALOG_36 : CATALOG_35;
+  const cat = labCatalog(state) === 'CATALOG_36' ? CATALOG_36 : CATALOG_35;
   const roleId = new Map(cat.roles.map(([c, id]) => [c, id])); const permId = new Map(cat.permissions.map(([c, id]) => [c, id]));
   const ts = "'2026-10-01 12:00:00+00'";
   const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
@@ -281,7 +281,7 @@ async function seed(ctx, cluster, state) {
       await c.query('COMMIT');
     } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw new Error(`fixture seed failed: ${String(e?.message ?? '').slice(0, 200)}`); } finally { await c.end(); }
   });
-  ctx.say(`${cluster.name}: deterministic fixture seeded (${fixtureStatements(state).length} statements, catalog ${state === 'EXACT_G11' ? 'CATALOG_36' : 'CATALOG_35'})`);
+  ctx.say(`${cluster.name}: deterministic fixture seeded (${fixtureStatements(state).length} statements, catalog ${labCatalog(state)})`);
 }
 
 // ---------------- measurements ----------------
@@ -431,7 +431,7 @@ async function sourceAndRestore(ctx, run, state) {
 async function opBackupRestore(ctx, { state }) {
   return withRun(ctx, `backup-restore-proof ${state}`, async (run) => {
     const { src, dst, srcM, dstM } = await sourceAndRestore(ctx, run, state);
-    const cmp = compareProofs(srcM, dstM, state, state === 'EXACT_G11' ? 'CATALOG_36' : 'CATALOG_35');
+    const cmp = compareProofs(srcM, dstM, state, labCatalog(state));
     run.evidence.restoreProof = { state, source: src.systemIdentifier, restore: dst.systemIdentifier, digest: dstM.digest, counts: dstM.counts, checks: cmp.checks, invariants: dstM.invariants.values };
     ctx.say(`LOCAL_RESTORE_PROOF ${state} source_sysid=${src.systemIdentifier} restore_sysid=${dst.systemIdentifier} digest=${dstM.digest}`);
     ctx.say(`  checks ${fmtChecks(cmp.checks)}`);
@@ -447,9 +447,10 @@ async function opBackupRestore(ctx, { state }) {
 }
 
 async function opRehearsal(ctx, { from }) {
-  return withRun(ctx, `migration-rehearsal ${from} → EXACT_G11`, async (run) => {
+  const x = rehearsalExpectations(from);
+  return withRun(ctx, `migration-rehearsal ${from} → ${x.target}`, async (run) => {
     const { dst, srcM, dstM } = await sourceAndRestore(ctx, run, from);
-    const pre = compareProofs(srcM, dstM, from, 'CATALOG_35');
+    const pre = compareProofs(srcM, dstM, from, x.sourceCatalog);
     ctx.say(`  restored clone ${from}: ${fmtChecks(pre.checks)}`);
     if (!pre.ok) return { ok: false };
     const columnsOf = Object.fromEntries(Object.entries(dstM.columns).filter(([, v]) => v !== null));
@@ -459,8 +460,9 @@ async function opRehearsal(ctx, { from }) {
     if (!payload.ok) throw new Error(`payload: ${payload.reason}`);
     const res = await dst.gate().run('rehearsal migrate', { state: from }, () => runPrisma(ctx, dst, { args: REHEARSAL_PRISMA_ARGS }));
     if (!res.ok) throw new Error('rehearsal prisma migrate failed; see cr/log/prisma.log (RESTORE_REQUIRED on PILOT)');
-    // The RBAC upgrade with the very statements pilot-rbac-catalog-upgrade runs, after identity + EXACT_G11.
-    const step = await dst.gate().run('rbac upgrade', { state: 'EXACT_G11' }, async () => {
+    // The RBAC step with the very statements pilot-rbac-catalog-upgrade runs, after identity + the target state:
+    // a CATALOG_35 source is upgraded, a CATALOG_36 source must verify as a no-op.
+    const step = await dst.gate().run('rbac upgrade', { state: x.target }, async () => {
       const c = await dst.client();
       try {
         await c.query(UPGRADE_SQL.begin); await c.query(UPGRADE_SQL.searchPath); for (const s of UPGRADE_SQL.timeouts) await c.query(s);
@@ -469,28 +471,27 @@ async function opRehearsal(ctx, { from }) {
         return r;
       } catch (e) { await c.query('ROLLBACK').catch(() => {}); throw e; } finally { await c.end(); }
     });
-    const after = await measure(dst, 'EXACT_G11', { columnsOf });
-    const ref = SCHEMA_REFERENCES.EXACT_G11?.digest ?? null;
-    const delta = { _prisma_migrations: STATES.EXACT_G11.length - STATES[from].length, Permission: 1, RolePermission: 2 };
-    const countsPreserved = Object.keys(before.counts).every((t) => after.counts[t] === before.counts[t] + (delta[t] ?? 0));
-    const changed = Object.keys(before.fingerprints).filter((t) => t !== '_prisma_migrations' && t !== 'Permission' && t !== 'RolePermission' && before.fingerprints[t] !== after.fingerprints[t]);
+    const after = await measure(dst, x.target, { columnsOf });
+    const ref = SCHEMA_REFERENCES[x.target]?.digest ?? null;
+    const countsPreserved = Object.keys(before.counts).every((t) => after.counts[t] === before.counts[t] + (x.delta[t] ?? 0));
+    const changed = Object.keys(before.fingerprints).filter((t) => !x.delta[t] && before.fingerprints[t] !== after.fingerprints[t]);
     const checks = {
-      ledger: after.ledger.ok && after.ledger.state === 'EXACT_G11',
-      migrationsApplied: after.counts._prisma_migrations - before.counts._prisma_migrations === MIGRATION_PINS.length - STATES[from].length,
+      ledger: after.ledger.ok && after.ledger.state === x.target,
+      migrationsApplied: after.counts._prisma_migrations - before.counts._prisma_migrations === x.applied,
       schemaReference: ref === null ? 'NO_REFERENCE_YET' : after.digest === ref,
       probes: after.probesFailed.length === 0,
       constraintsValidated: after.unvalidated.length === 0 && after.invalidIndexes.length === 0,
-      rbac: step.outcome === 'UPGRADED' && after.rbac.ok && after.rbac.catalog === 'CATALOG_36',
+      rbac: step.outcome === x.rbacOutcome && after.rbac.ok && after.rbac.catalog === 'CATALOG_36',
       countsPreserved,
       fingerprintsPreserved: changed.length === 0,
       invariants: after.invariants.ok,
     };
     const ok = Object.values(checks).every((v) => v === true || v === 'NO_REFERENCE_YET');
-    run.evidence.rehearsal = { from, sysid: dst.systemIdentifier, before: { digest: before.digest, counts: before.counts }, after: { digest: after.digest, counts: after.counts, summary: after.summary },
+    run.evidence.rehearsal = { from, target: x.target, sysid: dst.systemIdentifier, before: { digest: before.digest, counts: before.counts }, after: { digest: after.digest, counts: after.counts, summary: after.summary },
       checks, changedFingerprints: changed, probesFailed: after.probesFailed, unvalidated: after.unvalidated, prismaArgs: REHEARSAL_PRISMA_ARGS };
-    ctx.say(`MIGRATION_REHEARSAL ${from} → EXACT_G11 sysid=${dst.systemIdentifier} applied=${delta._prisma_migrations} (${MIGRATION_PINS.slice(STATES[from].length).map((m) => m.name.slice(0, 14)).join(',')})`);
+    ctx.say(`MIGRATION_REHEARSAL ${from} → ${x.target} sysid=${dst.systemIdentifier} applied=${x.applied} (${MIGRATION_PINS.slice(STATES[from].length).map((m) => m.name.slice(0, 14)).join(',')})`);
     ctx.say(`  command: prisma ${REHEARSAL_PRISMA_ARGS.join(' ')} (pilot-migrate's command; reviewed tree verified by pilot-migrate.verifyMigrationPayload)`);
-    ctx.say(`  rbac ${step.outcome} catalog_after=${after.rbac.ok ? after.rbac.catalog : 'NONE'} schema_after=${after.digest}`);
+    ctx.say(`  rbac ${step.outcome} (expected ${x.rbacOutcome}) catalog_after=${after.rbac.ok ? after.rbac.catalog : 'NONE'} schema_after=${after.digest}`);
     ctx.say(`  checks ${fmtChecks(checks)}${changed.length ? ` changed=${changed.join(',')}` : ''}`);
     for (const f of [...after.probesFailed, ...after.unvalidated.map((x) => `UNVALIDATED:${x}`)]) ctx.say(`  ${f}`);
     return { ok };
@@ -512,7 +513,7 @@ async function opIntegration(ctx) {
     ctx.say(`INTEGRATION_TEST exit=${r.code} tests=${tally('tests')} pass=${tally('pass')} fail=${tally('fail')} skipped=${tally('skipped')} (log ${file})`);
     const itestOk = r.ok && tally('fail') === 0 && tally('skipped') === 0 && tally('pass') > 0;
     // G11-ADV-004: in the SAME gated run, the real-PostgreSQL proof of the S9 startup gate:
-    // a fresh disposable EXACT_G11 cluster (this run's own Cluster, stopped with the run)
+    // a fresh disposable FINAL_STATE cluster — the full ledger the gate requires (this run's own Cluster, stopped with the run)
     // carries the OPT-IN PG suite of the gate itself, which on real PostgreSQL 17 proves the
     // shipped probe SQL end to end — every catalog object including the trigger bindings, the
     // composite FK column pairs and RESTRICT/RESTRICT/SIMPLE, and the six CHECK definitions
@@ -520,7 +521,7 @@ async function opIntegration(ctx) {
     // cases. The binding travels only in the child environment and is never printed.
     try {
       const c9 = new Cluster(ctx, run, 's9src');
-      await provisionState(ctx, run, c9, 'EXACT_G11');
+      await provisionState(ctx, run, c9, FINAL_STATE);
       const env9 = childEnv({ home: path.join(run.dir, 'home'), tmpdir: path.join(run.dir, 'tmp'), path: `${path.dirname(ctx.execPath)}:/usr/bin:/bin`,
         extra: { MONA_CUTOVER_LAB_RUN: run.id, MONA_TEST_DATABASE_TARGET: 'local',
           MONA_R3_S9_PG: '1', MONA_R3_S9_PG_DISPOSABLE: '1', MONA_R3_PG_SYSTEM_ID: String(c9.systemIdentifier),
