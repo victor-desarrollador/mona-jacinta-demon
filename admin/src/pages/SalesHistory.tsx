@@ -1,7 +1,7 @@
 import { Eye } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
-import { api, endOfDayIso, startOfDayIso, type Branch, type SaleDetail, type SaleSummary } from '../lib/api';
+import { api, type Branch, type SaleDetail, type SaleSummary } from '../lib/api';
 import { cn, formatARS, formatDateTime, paymentMethodLabel, statusBadge, statusLabel } from '../lib/utils';
 
 const LIMIT = 20;
@@ -22,8 +22,11 @@ export function SalesHistory() {
   const params = useMemo(() => {
     const query = new URLSearchParams({ limit: LIMIT.toString(), offset: offset.toString() });
     if (branchId) query.set('branchId', branchId);
-    if (dateFrom) query.set('dateFrom', startOfDayIso(dateFrom));
-    if (dateTo) query.set('dateTo', endOfDayIso(dateTo));
+    // P0-C: enviar la fecha de negocio (YYYY-MM-DD) tal cual. La API es la
+    // autoridad de la zona (America/Argentina/Tucuman); el frontend no
+    // convierte un dia comercial a UTC.
+    if (dateFrom) query.set('dateFrom', dateFrom);
+    if (dateTo) query.set('dateTo', dateTo);
     return query;
   }, [branchId, dateFrom, dateTo, offset]);
 

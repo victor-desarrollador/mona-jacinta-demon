@@ -9,7 +9,9 @@ import { assignScopeDto, userIdParamsDto, userRoleParamsDto } from './scope-assi
 
 const limit = z.coerce.number().int().min(1).max(100).default(50);
 const offset = z.coerce.number().int().min(0).default(0);
-const date = z.coerce.date();
+const date = z.string();
+// dateFrom/dateTo llegan como string: ISO timestamp (compatibilidad) o
+// fecha de negocio "YYYY-MM-DD" (zona de Tucuman, P0-C). El servicio los interpreta.
 
 const salesQuery = z.object({
   branchId: z.uuid().optional(),

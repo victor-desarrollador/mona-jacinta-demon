@@ -3,6 +3,7 @@ import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { authorizedLocationIds } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { AppError } from '../../shared/errors.js';
+import { operatingDayBounds, parseOperatingDate } from '../../shared/operating-time.js';
 import {
   effectiveAvailability,
   loadReleasableExpiredHolds,
@@ -14,8 +15,10 @@ type BackofficeDatabase = PrismaClient;
 export type ListSalesFilters = {
   branchId?: string;
   sellerId?: string;
-  dateFrom?: Date;
-  dateTo?: Date;
+  // ISO timestamp (compatibilidad histórica) o fecha de negocio "YYYY-MM-DD"
+  // interpretada en la zona de America/Argentina/Tucuman.
+  dateFrom?: string | Date;
+  dateTo?: string | Date;
   limit: number;
   offset: number;
 };
@@ -33,15 +36,6 @@ function scopeBranches(req: RequestLike, branchId?: string) {
     return [branchId];
   }
   return req.auth ? authorizedLocationIds(req.auth, PRODUCTION_PERMISSIONS.REPORT_VIEW) : [];
-}
-
-function todayBounds(now = new Date()) {
-  const start = new Date(now);
-  // eslint-disable-next-line no-restricted-syntax -- legacy server-time-zone day bound; replaced by the operating-time primitive in P0-C.
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { start, end };
 }
 
 const branchSelect = { id: true, name: true, code: true } as const;
@@ -71,6 +65,18 @@ const saleItemSelect = {
   },
 } satisfies Prisma.SaleItemSelect;
 
+const localDate = /^\d{4}-\d{2}-\d{2}$/;
+
+// Resuelve un filtro de fecha (string YYYY-MM-DD) a los limites del dia de
+// negocio en America/Argentina/Tucuman. Los Date se pasan tal cual (compatibilidad
+// con ISO timestamp historico).
+function asLocalDate(value: string): { start: Date; end: Date } {
+  if (!localDate.test(value)) {
+    throw new Error(`Fecha de negocio invalida: ${value}`);
+  }
+  return parseOperatingDate(value);
+}
+
 function saleWhere(branchIds: string[], filters: ListSalesFilters) {
   return {
     branchId: { in: branchIds },
@@ -78,8 +84,25 @@ function saleWhere(branchIds: string[], filters: ListSalesFilters) {
     ...((filters.dateFrom || filters.dateTo)
       ? {
           createdAt: {
-            ...(filters.dateFrom ? { gte: filters.dateFrom } : {}),
-            ...(filters.dateTo ? { lte: filters.dateTo } : {}),
+            ...(filters.dateFrom
+              ? {
+                  gte:
+                    filters.dateFrom instanceof Date
+                      ? filters.dateFrom
+                      : asLocalDate(filters.dateFrom).start,
+                }
+              : {}),
+            ...(filters.dateTo
+              ? {
+                  // Date ISO: inclusivo (contrato historico). YYYY-MM-DD:
+                  // exclusivo (inicio del dia siguiente), sin ambigüedad.
+                  lt:
+                    filters.dateTo instanceof Date
+                      ? undefined
+                      : asLocalDate(filters.dateTo).end,
+                  lte: filters.dateTo instanceof Date ? filters.dateTo : undefined,
+                }
+              : {}),
           },
         }
       : {}),
@@ -87,9 +110,9 @@ function saleWhere(branchIds: string[], filters: ListSalesFilters) {
 }
 
 export function createBackofficeService(database: BackofficeDatabase) {
-  async function dashboard(req: RequestLike) {
+  async function dashboard(req: RequestLike, now: Date = new Date()) {
     const branchIds = scopeBranches(req);
-    const { start, end } = todayBounds();
+    const { start, end } = operatingDayBounds(now);
     const todayWhere = {
       branchId: { in: branchIds },
       createdAt: { gte: start, lt: end },
