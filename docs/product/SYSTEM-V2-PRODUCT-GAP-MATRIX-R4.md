@@ -611,7 +611,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 
 #### 54 · EmployeeSettlement (liquidación semanal) · MISSING · P0
 - CURRENT: no existe.
-- TARGET: concepto separado de la cuenta corriente. Semana **lunes a sábado** en zona America/Argentina/Buenos_Aires; un movimiento realizado un domingo pertenece al ciclo que comienza el lunes siguiente. Administración registra el importe a aplicar, que puede ser **parcial** y no superior al saldo pendiente; el resto se arrastra solo porque el saldo es derivado. Cada liquidación guarda empleado, semana, importe, autor, fecha y nota, y genera exactamente un `PAYROLL_DEDUCTION` (negativo) vinculado de forma única. Nunca borra ni sobrescribe movimientos; una corrección es una reversa. No es payroll ni calcula sueldo. Reconstruible: saldo antes, lo descontado, semana, quién, saldo después.
+- TARGET: concepto separado de la cuenta corriente. Semana **lunes a sábado** en zona America/Argentina/Tucuman; un movimiento realizado un domingo pertenece al ciclo que comienza el lunes siguiente. Administración registra el importe a aplicar, que puede ser **parcial** y no superior al saldo pendiente; el resto se arrastra solo porque el saldo es derivado. Cada liquidación guarda empleado, semana, importe, autor, fecha y nota, y genera exactamente un `PAYROLL_DEDUCTION` (negativo) vinculado de forma única. Nunca borra ni sobrescribe movimientos; una corrección es una reversa. No es payroll ni calcula sueldo. Reconstruible: saldo antes, lo descontado, semana, quién, saldo después.
 - GAP: todo.
 - BUSINESS_RISK: descuentos de sueldo sin trazabilidad; disputas con empleados.
 - TECHNICAL_RISK: medio (unicidad por semana y concurrencia con retiros).
@@ -745,17 +745,17 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - ACCEPTANCE_CRITERIA: toda venta completada puede reimprimirse y el ticket permite ubicar la venta original.
 - EVIDENCE: búsqueda de print/ticket/recibo sin resultados en `client/src` y `admin/src`.
 
-#### 47 · Día operativo / zona horaria · BROKEN · P1
-- CURRENT: `todayBounds()` usa `setHours(0,0,0,0)` con la zona del servidor; no hay referencia a America/Argentina en el código.
-- TARGET: día operativo en America/Argentina/Buenos_Aires; base de la semana lunes-sábado de la liquidación.
-- GAP: arreglar los límites del día y centralizarlos.
-- BUSINESS_RISK: "Hoy" corrido unas 3 horas si el servidor corre en UTC; las ventas de la noche caen en otro día.
+#### 47 · Día operativo / zona horaria · IMPLEMENTED · P1
+- CURRENT: `api/src/shared/operating-time.ts` define `OPERATING_TIME_ZONE = "America/Argentina/Tucuman"` como única constante backend. `backoffice.service.ts` usa `operatingDayBounds(now)` para `salesToday`/`revenueToday` (ya no `setHours(0,0,0,0)`). `backoffice.routes.ts` acepta `dateFrom`/`dateTo` como string; `YYYY-MM-DD` se interpreta como día operativo de Tucuman y los timestamps ISO pasan tal cual (contrato histórico). `admin/src/pages/SalesHistory.tsx` envía `YYYY-MM-DD` literal sin conversión de navegador.
+- TARGET: día operativo en America/Argentina/Tucuman; base de la semana lunes-sábado de la liquidación.
+- GAP: cerrado por P0-C (implementación + tests DB-free + arquitectura `no setHours`).
+- BUSINESS_RISK: mitigado. "Hoy" ya no se corre por zona del servidor; las ventas de la noche caen en el día operativo correcto de Tucuman.
 - TECHNICAL_RISK: bajo.
 - DEPENDENCIES: —
 - OPEN_SOURCE_PATTERN: —
-- DECISION: ADOPT (zona fija del negocio).
-- ACCEPTANCE_CRITERIA: test con una venta a las 22:30 ART que cae en el día correcto.
-- EVIDENCE: `api/src/modules/backoffice/backoffice.service.ts:38-44`.
+- DECISION: ADOPT (zona fija del negocio: America/Argentina/Tucuman).
+- ACCEPTANCE_CRITERIA: test con una venta a las 22:30 ART que cae en el día correcto; tests de filtros `dateFrom`/`dateTo` business day; tests de contrato Admin que envía `YYYY-MM-DD` literal.
+- EVIDENCE: `api/src/shared/operating-time.ts`, `api/src/modules/backoffice/backoffice.service.ts`, `api/src/modules/backoffice/backoffice.routes.ts`, `admin/src/pages/SalesHistory.tsx`, `api/tests/shared/operating-time.test.ts`, `api/tests/backoffice/dashboard.unit.test.ts`, `api/tests/backoffice/sales-date-filters.unit.test.ts`, `admin/src/pages/SalesHistory.test.tsx`, `api/tests/architecture/set-hours-guard.test.ts`.
 
 #### 51 · Inmutabilidad de los ledgers · MISSING · P1
 - CURRENT: los triggers protegen solo SalePayment, CheckoutAttempt (y sus tenders y declaraciones) y ExternalCollection. Nada protege StockMovement, CashMovement ni AuditLog.

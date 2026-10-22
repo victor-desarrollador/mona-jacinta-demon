@@ -124,7 +124,7 @@ las ubicaciones; alcance de local = opera solo sobre las ubicaciones que tiene a
 
 #### FR-ORG-005 · Día operativo
 - **Prioridad:** P1 · **Origen:** Matrix 47 · OR-047
-- **Regla:** El día operativo del negocio DEBE definirse en la zona America/Argentina/Buenos_Aires (ver NFR-TIME-001).
+- **Regla:** El día operativo del negocio DEBE definirse en la zona America/Argentina/Tucuman (ver NFR-TIME-001).
 - **Aceptación:** Una venta realizada a las 22:30 hora de Argentina se informa en el día operativo correcto en dashboards, reportes y cierres.
 
 # Parte B — Catálogo y precios
@@ -1504,7 +1504,7 @@ no son requisitos de este PRD hasta que se decida.
 
 #### NFR-TIME-001 · Día operativo de Argentina
 - **Prioridad:** P1 · **Origen:** Matrix 47 · OR-047
-- **Regla:** El día operativo DEBE definirse en la zona America/Argentina/Buenos_Aires, independientemente de la zona del servidor.
+- **Regla:** El día operativo DEBE definirse en la zona America/Argentina/Tucuman, independientemente de la zona del servidor.
 - **Aceptación:** Una venta a las 22:30 hora de Argentina cae en el día operativo correcto, aun si el servidor opera en UTC.
 
 #### NFR-TIME-002 · Semana lunes a sábado
@@ -1608,7 +1608,7 @@ liquidación y pago directo; (8) Anulación y Cambios; (9) Transferencias, alert
 | cashPrice | Precio base efectivo de una variante. |
 | Cambio | Operación comercial de devolución de prenda(s) y entrega de otra(s), vinculada a una venta original (FR-EXCH). |
 | Anulación | Reversión de la operación original de venta ya cobrada (FR-CANCEL). |
-| Día operativo | Día del negocio en la zona America/Argentina/Buenos_Aires. |
+| Día operativo | Día del negocio en la zona America/Argentina/Tucuman. |
 | employeeCode | Código único visible de un empleado. |
 | FIXED_TOTAL | Modelo de cobro de transición, no objetivo. |
 | OPENING_BALANCE | Movimiento de saldo inicial de la cuenta de un empleado con fecha de corte. |
@@ -1742,7 +1742,7 @@ Los requisitos relacionados se derivan del campo `Origen` de cada requisito.
 | OR-044 | 2026-10-21 | Cliente mínimo: nombre, apellido y teléfono obligatorios; DNI, email y CUIT opcionales. | FR-CUST-001, FR-CUST-002 | ACTIVE |
 | OR-045 | 2026-10-21 | Gastos: EXPENSE de caja es caja chica con detalle obligatorio; los gastos administrativos van fuera de CashSession salvo salida real de esa caja. | FR-EXP-001, FR-EXP-002 | ACTIVE |
 | OR-046 | 2026-10-21 | Contabilidad operativa: export unificado de ledgers sin ERP contable ni doble partida. | FR-TREAS-003, FR-TREAS-004 | ACTIVE |
-| OR-047 | 2026-10-21 | El día operativo se define en America/Argentina/Buenos_Aires. | FR-ORG-005, NFR-TIME-001 | ACTIVE |
+| OR-047 | 2026-10-21 | El día operativo se define en America/Argentina/Tucuman. | FR-ORG-005, NFR-TIME-001 | ACTIVE |
 | OR-048 | 2026-10-21 | La anulación post-cobro entrega un vale de anulación "cuando corresponda" (R3). | Reemplazada por OR-016 (FR-CANCEL-006, FR-CANCEL-007, FR-EXCH-001) | SUPERSEDED por OR-016 |
 | OR-049 | 2026-10-21 | La anulación revierte pago y caja con egreso por reintegro (R2). | Reemplazada por OR-015 (FR-CANCEL-005) | SUPERSEDED por OR-015 |
 | OR-050 | 2026-10-21 | Caja chica: detalle/motivo obligatorio; comprobante opcional. | FR-EXP-001, FR-EXP-003 | ACTIVE |

@@ -113,9 +113,12 @@ UUID como string para entidades; `Timestamptz(3)` para tiempos; todas las compar
 se hacen en UTC con el instante guardado; la presentación convierte a la zona del negocio.
 
 #### BP-4.3 · Día operativo y zona horaria
-- Zona fija `America/Argentina/Buenos_Aires`. Un único módulo `time` expone `operationalDay(instant)`, `operationalWeekMondayToSaturday(instant)` y `addHours`; ningún otro código usa `setHours(0,0,0,0)` ni la zona del servidor.
+- Zona fija `America/Argentina/Tucuman`. Un único módulo `api/src/shared/operating-time.ts` expone `OPERATING_TIME_ZONE`, `operatingDayBounds(instant)`, `parseOperatingDate("YYYY-MM-DD")` y `operatingWeekStart(instant)`; ningún otro código usa `setHours(0,0,0,0)` ni la zona del servidor.
+- `operatingDayBounds(instant)` devuelve `[startInclusive, endExclusive)` del día operativo de Tucuman que contiene al instante, sin usar `23:59:59.999` como autoridad interna.
+- `parseOperatingDate("YYYY-MM-DD")` devuelve los límites UTC del día de negocio de Tucuman; rechaza fechas inválidas.
+- `operatingWeekStart(instant)` devuelve el lunes de la semana en curso para lunes a sábado y el lunes inmediato posterior para el domingo (semana lunes a sábado; un movimiento de domingo pertenece al ciclo que comienza el lunes siguiente). Determinista.
 - Corrige el defecto de `todayBounds()` (`backoffice.service.ts`) usando este módulo.
-- La semana de liquidación va de lunes a sábado (`operationalWeekMondayToSaturday`). Regla cerrada **OR-054 / `FR-EMPSET-012`** (`SUNDAY_MOVEMENT_WEEK = NEXT_MONDAY_CYCLE`): un instante del domingo pertenece al ciclo que comienza el lunes siguiente. `operationalWeekStart(instant)` devuelve el lunes de la semana en curso para lunes a sábado y el lunes inmediato posterior para el domingo; es una función pura derivada de `effectiveAt` (no se guarda como campo editable).
+- Backend es la autoridad temporal: el frontend envía `YYYY-MM-DD` para filtros de día operativo y no convierte a UTC; los timestamps ISO explícitos siguen siendo compatibles.
 
 #### BP-4.4 · Numeración de venta
 `saleNumber` es no fiscal y único por ubicación (`@@unique([branchId, saleNumber])` hoy; pasa a la Location canónica). El contador `SaleNumberCounter` se re-apunta a Location (sección 6).
@@ -519,7 +522,7 @@ Para `TRANSFER`: `EmployeePayment` con `reference` e institución obligatorias y
 `EmployeeSettlement` (NEW): `employeeId`, `weekStart` (lunes, día operativo), `amountApplied` (puede ser parcial), `createdById` (ADMIN/OWNER), `note`. Genera exactamente un `EmployeeAccountMovement(PAYROLL_DEDUCTION)` negativo (`UNIQUE(settlementId)` en el movimiento y viceversa). El saldo restante se arrastra solo porque el saldo es derivado. Corregir una liquidación = reversa. No calcula sueldos. Reconstruible: saldo previo, aplicado, semana, autor, saldo posterior.
 
 #### BP-26.4 · Semana
-La semana va de lunes a sábado en `America/Argentina/Buenos_Aires` (BP-4.3). `UNIQUE(employeeId, weekStart)` solo si una sola liquidación por semana es suficiente; **decisión técnica:** el PRD permite liquidaciones parciales, por lo que puede haber más de una por semana y no se impone unicidad. La liquidación respeta también el invariante de deuda `≥ 0` (BP-24.2). Un movimiento de domingo cae en el ciclo que comienza el lunes siguiente (`operationalWeekStart`, BP-4.3; OR-054 / `FR-EMPSET-012`): una liquidación de la semana W incluye en su saldo previo los movimientos hasta el sábado de W y los del domingo siguiente forman parte del ciclo de W+1.
+La semana va de lunes a sábado en `America/Argentina/Tucuman` (BP-4.3). `UNIQUE(employeeId, weekStart)` solo si una sola liquidación por semana es suficiente; **decisión técnica:** el PRD permite liquidaciones parciales, por lo que puede haber más de una por semana y no se impone unicidad. La liquidación respeta también el invariante de deuda `≥ 0` (BP-24.2). Un movimiento de domingo cae en el ciclo que comienza el lunes siguiente (`operationalWeekStart`, BP-4.3; OR-054 / `FR-EMPSET-012`): una liquidación de la semana W incluye en su saldo previo los movimientos hasta el sábado de W y los del domingo siguiente forman parte del ciclo de W+1.
 
 # Parte G — Clientes y Seña
 

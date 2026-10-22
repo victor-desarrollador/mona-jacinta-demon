@@ -15,7 +15,7 @@ test permanecen en `TBD` hasta que existan; no se registran referencias futuras 
 | FR-ORG-002 | BP-5.4 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-ORG-003 | BP-5.2 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-ORG-004 | BP-5.3 | TBD | TBD | TBD | BLUEPRINTED |
-| FR-ORG-005 | BP-4.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ORG-005 | BP-4.3 | api/src/shared/operating-time.ts, api/src/modules/backoffice/backoffice.service.ts, api/src/modules/backoffice/backoffice.routes.ts, admin/src/pages/SalesHistory.tsx | NONE | api/tests/shared/operating-time.test.ts, api/tests/backoffice/dashboard.unit.test.ts, api/tests/backoffice/sales-date-filters.unit.test.ts, admin/src/pages/SalesHistory.test.tsx, api/tests/architecture/set-hours-guard.test.ts | IMPLEMENTED |
 | FR-CAT-001 | BP-9.1 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-CAT-002 | BP-9.1 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-CAT-003 | BP-9.1 | TBD | TBD | TBD | BLUEPRINTED |
@@ -265,8 +265,8 @@ test permanecen en `TBD` hasta que existan; no se registran referencias futuras 
 | NFR-AUDIT-001 | BP-36.1 | TBD | TBD | TBD | BLUEPRINTED |
 | NFR-AUDIT-002 | BP-8.6 | TBD | TBD | TBD | BLUEPRINTED |
 | NFR-AUDIT-003 | BP-36.1, BP-2.4 | TBD | TBD | TBD | BLUEPRINTED |
-| NFR-TIME-001 | BP-4.3 | TBD | TBD | TBD | BLUEPRINTED |
-| NFR-TIME-002 | BP-4.3, BP-26.4 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-TIME-001 | BP-4.3 | api/src/shared/operating-time.ts, api/src/modules/backoffice/backoffice.service.ts | NONE | api/tests/shared/operating-time.test.ts, api/tests/backoffice/dashboard.unit.test.ts, api/tests/architecture/set-hours-guard.test.ts | IMPLEMENTED |
+| NFR-TIME-002 | BP-4.3, BP-26.4 | api/src/shared/operating-time.ts | NONE | api/tests/shared/operating-time.test.ts | IMPLEMENTED |
 | NFR-OPS-001 | BP-50.1, BP-54.1 | TBD | TBD | TBD | BLUEPRINTED |
 | NFR-OPS-002 | BP-51.1 | TBD | TBD | TBD | BLUEPRINTED |
 | NFR-OPS-003 | BP-53.1, BP-52.1 | TBD | TBD | TBD | BLUEPRINTED |
