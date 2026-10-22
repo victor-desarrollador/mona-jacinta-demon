@@ -6,6 +6,30 @@ import { cn, formatARS, formatDateTime, paymentMethodLabel, statusBadge, statusL
 
 const LIMIT = 20;
 
+// P0-C: construye los query params de historial de ventas enviando las fechas
+// de negocio (YYYY-MM-DD) literalmente. La API es la autoridad de la zona
+// (America/Argentina/Tucuman); el frontend NO convierte un día comercial a
+// UTC ni aplica el offset del navegador.
+export function buildSalesHistoryQueryParams({
+  branchId,
+  dateFrom,
+  dateTo,
+  limit,
+  offset,
+}: {
+  branchId: string;
+  dateFrom: string;
+  dateTo: string;
+  limit: string;
+  offset: string;
+}) {
+  const query = new URLSearchParams({ limit, offset });
+  if (branchId) query.set('branchId', branchId);
+  if (dateFrom) query.set('dateFrom', dateFrom);
+  if (dateTo) query.set('dateTo', dateTo);
+  return query;
+}
+
 export function SalesHistory() {
   const { token, logout } = useAuth();
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -19,16 +43,17 @@ export function SalesHistory() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const params = useMemo(() => {
-    const query = new URLSearchParams({ limit: LIMIT.toString(), offset: offset.toString() });
-    if (branchId) query.set('branchId', branchId);
-    // P0-C: enviar la fecha de negocio (YYYY-MM-DD) tal cual. La API es la
-    // autoridad de la zona (America/Argentina/Tucuman); el frontend no
-    // convierte un dia comercial a UTC.
-    if (dateFrom) query.set('dateFrom', dateFrom);
-    if (dateTo) query.set('dateTo', dateTo);
-    return query;
-  }, [branchId, dateFrom, dateTo, offset]);
+  const params = useMemo(
+    () =>
+      buildSalesHistoryQueryParams({
+        branchId,
+        dateFrom,
+        dateTo,
+        limit: LIMIT.toString(),
+        offset: offset.toString(),
+      }),
+    [branchId, dateFrom, dateTo, offset],
+  );
 
   useEffect(() => {
     if (!token) return;

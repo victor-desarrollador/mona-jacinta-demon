@@ -1,54 +1,58 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
-import { TOKEN_KEY, adminUser, installApi, renderApp } from '../test/harness';
+import { buildSalesHistoryQueryParams } from './SalesHistory';
 
 afterEach(() => vi.unstubAllGlobals());
 
-async function openSales() {
-  window.localStorage.setItem(TOKEN_KEY, 'tok');
-  const { calls } = installApi({
-    'GET /auth/me': { body: { user: adminUser } },
-    'GET /backoffice/branches': { body: { items: [] } },
-    'GET /backoffice/sales': { body: { items: [], pagination: { limit: 20, offset: 0 } } },
+// P0-C: el Admin envía las fechas de negocio (YYYY-MM-DD) literalmente.
+// La API es la autoridad de la zona (America/Argentina/Tucuman); el
+// frontend NO aplica el offset del navegador ni convierte a UTC.
+test('dateFrom is sent literally as YYYY-MM-DD, no UTC conversion', () => {
+  const params = buildSalesHistoryQueryParams({
+    branchId: '',
+    dateFrom: '2026-10-21',
+    dateTo: '',
+    limit: '20',
+    offset: '0',
   });
-  renderApp('/ventas');
-  await screen.findByRole('heading', { name: 'Ventas' });
-  const lastQuery = () => calls.filter((c) => c.key === 'GET /backoffice/sales').at(-1)?.url.searchParams;
-  return { lastQuery };
-}
-const startOfDay = (y: number, m: number, d: number) => new Date(y, m - 1, d, 0, 0, 0, 0).toISOString();
-const endOfDay = (y: number, m: number, d: number) => new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
-
-test('"Desde" is the start of the selected day in the browser local time', async () => {
-  const { lastQuery } = await openSales();
-  fireEvent.change(screen.getByLabelText('Desde'), { target: { value: '2026-10-19' } });
-  await waitFor(() => expect(lastQuery()?.get('dateFrom')).toBe(startOfDay(2026, 10, 19)));
-  expect(lastQuery()?.get('dateTo')).toBeNull();
+  expect(params.get('dateFrom')).toBe('2026-10-21');
+  expect(params.get('dateTo')).toBeNull();
+  expect(params.get('limit')).toBe('20');
+  expect(params.get('offset')).toBe('0');
 });
 
-test('"Hasta" is the last millisecond of the selected day in the browser local time', async () => {
-  const { lastQuery } = await openSales();
-  fireEvent.change(screen.getByLabelText('Hasta'), { target: { value: '2026-10-19' } });
-  await waitFor(() => expect(lastQuery()?.get('dateTo')).toBe(endOfDay(2026, 10, 19)));
-  expect(lastQuery()?.get('dateFrom')).toBeNull();
+test('dateTo is sent literally as YYYY-MM-DD, no UTC conversion', () => {
+  const params = buildSalesHistoryQueryParams({
+    branchId: '',
+    dateFrom: '',
+    dateTo: '2026-10-21',
+    limit: '20',
+    offset: '0',
+  });
+  expect(params.get('dateTo')).toBe('2026-10-21');
+  expect(params.get('dateFrom')).toBeNull();
 });
 
-test('the same day as from and to covers exactly that local day', async () => {
-  const { lastQuery } = await openSales();
-  fireEvent.change(screen.getByLabelText('Desde'), { target: { value: '2026-10-19' } });
-  fireEvent.change(screen.getByLabelText('Hasta'), { target: { value: '2026-10-19' } });
-  await waitFor(() => expect(lastQuery()?.get('dateTo')).toBe(endOfDay(2026, 10, 19)));
-  const from = Date.parse(lastQuery()?.get('dateFrom') ?? '');
-  const to = Date.parse(lastQuery()?.get('dateTo') ?? '');
-  expect(from).toBe(Date.parse(startOfDay(2026, 10, 19)));
-  expect(to - from).toBeGreaterThanOrEqual(23 * 3_600_000);
-  expect(to - from).toBeLessThanOrEqual(25 * 3_600_000);
+test('same day range sends both dates literally as YYYY-MM-DD', () => {
+  const params = buildSalesHistoryQueryParams({
+    branchId: '',
+    dateFrom: '2026-10-21',
+    dateTo: '2026-10-21',
+    limit: '20',
+    offset: '0',
+  });
+  expect(params.get('dateFrom')).toBe('2026-10-21');
+  expect(params.get('dateTo')).toBe('2026-10-21');
 });
 
-test('a two-day range runs from the start of the first local day to the end of the last', async () => {
-  const { lastQuery } = await openSales();
-  fireEvent.change(screen.getByLabelText('Desde'), { target: { value: '2026-10-18' } });
-  fireEvent.change(screen.getByLabelText('Hasta'), { target: { value: '2026-10-19' } });
-  await waitFor(() => expect(lastQuery()?.get('dateTo')).toBe(endOfDay(2026, 10, 19)));
-  expect(lastQuery()?.get('dateFrom')).toBe(startOfDay(2026, 10, 18));
+test('branchId is included when set', () => {
+  const params = buildSalesHistoryQueryParams({
+    branchId: 'loc-a',
+    dateFrom: '2026-10-21',
+    dateTo: '2026-10-21',
+    limit: '20',
+    offset: '0',
+  });
+  expect(params.get('branchId')).toBe('loc-a');
+  expect(params.get('dateFrom')).toBe('2026-10-21');
+  expect(params.get('dateTo')).toBe('2026-10-21');
 });

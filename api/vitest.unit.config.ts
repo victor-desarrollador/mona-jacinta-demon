@@ -9,6 +9,7 @@ export default defineConfig({
     include: [
       'tests/shared/operating-time.test.ts',
       'tests/backoffice/dashboard.unit.test.ts',
+      'tests/backoffice/sales-date-filters.unit.test.ts',
     ],
   },
 });
