@@ -287,6 +287,15 @@ Se conserva `pending-correction.service` (reemplaza ítems de una venta `PENDING
 #### BP-12.2 · QR en el motor
 Se agrega `QR` a `PROPORTIONAL_METHODS` con su `qrAdjustmentBps` y columnas de snapshot (`fullPriceQr`, `qrAdjustmentBps`) en `SaleCheckout` y el plan del intento. Un cobro QR es no efectivo: exige referencia vía ExternalCollection (patrón de transferencia/débito) y se concilia en el cierre por medio. Quitar el rechazo de QR de `checkout-fields.ts` es el último paso, después de que las pruebas de QR pasen.
 
+**Implementado en P0-B** (migración `20261021140000_r3_qr`, gate G14):
+- `PROPORTIONAL_METHODS` / `CHECKOUT_METHODS` = CASH, TRANSFER, CARD_DEBIT, CARD_CREDIT, QR (ese orden canónico). El algoritmo (Hamilton, half-up por unidad, BigInt) no cambia; sin `qrAdjustmentBps` en el snapshot, QR no es cotizable y falla cerrado (`PRICING_CONFIG_MISSING`).
+- Snapshot: `fullPriceQr` y `qrAdjustmentBps` (NULLable, juntos o ninguno) en `SaleCheckout` y `CheckoutAttempt`, congelados al reservar; la liquidación y la recuperación de stock los reproducen del intento sellado y nunca releen la configuración. `algorithmVersion` pasa a 3 (1 = sin crédito, 2 = con crédito sin QR, 3 = con QR). Es la versión del **formato de snapshot guardado**, no de la gramática canónica: los planes sin QR conservan bytes y hash exactos (`mona-checkout-plan/v1`), y las versiones 1 y 2 siguen siendo válidas para el código N-1.
+- Constraints: se amplían, con el mismo nombre y en una transacción, `chk_checkout_model`, `chk_checkout_balance_method`, `chk_attempt_plan`, `chk_tender_shape`, `chk_declaration_shape`, `chk_payment_checkout_shape` y `chk_ec_institution`; los `chk_*_credit_snapshot` pasan de `algorithmVersion = 2` a `>= 2`; nuevos `chk_checkout_qr_snapshot` y `chk_attempt_qr_snapshot`; `fn_checkout_attempt_guard` congela también las columnas de QR.
+- ExternalCollection: QR exige referencia, no admite institución, y su referencia es única por sucursal en su propio índice parcial `ExternalCollection_qr_ref_key` (otro espacio de nombres que transferencia, débito y crédito). Un cobro QR nunca escribe `CashMovement`; la conciliación de caja sigue contando solo `CASH`.
+- Gate de arranque: `checkout-readiness.ts` exige G14 (m14 con su sha256 y los objetos de catálogo de QR).
+
+**Rollout de P0-B:** el código requiere simultáneamente (1) base de datos >= G14, (2) PROPORTIONAL_V1 activo en el local y (3) `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` activo (la bandera cubre todos los medios externos, QR incluido). Sin cualquiera de las tres, QR no se ofrece o la API no arranca. El despliegue a PILOT (hoy en G11) es un bloque aparte.
+
 #### BP-12.3 · Tender interno (separado de PaymentMethod)
 Para el anticipo de Seña (OR-052), el Voucher de Seña (`FR-VOUCH-011`) y el valor reconocido de un cambio (OR-053) se introduce el **tender interno**: una forma de aplicar valor que **no es un medio de pago**.
 
@@ -307,7 +316,7 @@ Un cambio de igual o menor valor, o una Seña cuyo anticipo cubre el total a esc
 Se mantiene: 1 a 3 medios externos, distribución exacta por línea (Hamilton), vuelto solo en efectivo. Los tenders internos **no cuentan** en el límite de 3 medios: `SENA_ADVANCE` ≤ 1 y `EXCHANGE_RECOGNITION` ≤ 1 por venta; para `SENA_VOUCHER` el PRD no impone un máximo por venta, por lo que no se fija uno (cada voucher se usa completo).
 
 #### BP-12.6 · FIXED_TOTAL: deprecación
-FIXED_TOTAL pasa a **legado de solo lectura progresiva**: se conservan sus datos y su lectura; se deja de escribir con él en cada local a medida que el local opera en PROPORTIONAL_V1 con QR. Hasta entonces, el guard `FR-PAY-006` corre sobre el camino FIXED_TOTAL: **implementado en P0-A, FIXED_TOTAL acepta solo CASH** (TRANSFER/CARD_DEBIT/CARD_CREDIT/QR rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura). Desviación real vs. borrador: el diseño decía "referencia obligatoria para no efectivo"; la implementación limitó FIXED_TOTAL a efectivo, que es más estricto y cubre FR-PAY-006 sin necesidad de referencia por cobro. Plan completo en la sección 48.
+FIXED_TOTAL pasa a **legado de solo lectura progresiva**: se conservan sus datos y su lectura; se deja de escribir con él en cada local a medida que el local opera en PROPORTIONAL_V1 con QR (soportado desde P0-B). Hasta entonces, el guard `FR-PAY-006` corre sobre el camino FIXED_TOTAL: **implementado en P0-A, FIXED_TOTAL acepta solo CASH** (TRANSFER/CARD_DEBIT/CARD_CREDIT/QR rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura). Desviación real vs. borrador: el diseño decía "referencia obligatoria para no efectivo"; la implementación limitó FIXED_TOTAL a efectivo, que es más estricto y cubre FR-PAY-006 sin necesidad de referencia por cobro. Plan completo en la sección 48.
 
 #### BP-12.7 · Importe pagado por línea
 - **PROPORTIONAL_V1:** `paid(saleItem) = Σ SaleLineAllocation.amount + Σ SaleInternalTenderAllocation.amount`. Incluye la porción interna, por lo que un cambio sobre una línea que a su vez se pagó con valor reconocido reconoce exactamente lo que esa línea pagó (BP-16.8).
@@ -741,10 +750,10 @@ Ante `40001`/`40P01` el servicio reintenta un número fijo de veces con backoff 
 - Cada migración se valida en un cluster descartable (suites PG) antes de pasar a PILOT.
 
 #### BP-45.2 · Numeración
-Las migraciones usan timestamp UTC `YYYYMMDDHHMMSS_nombre`, estrictamente crecientes y únicos (hoy la última es `20261021130000_warehouse_stock_adjustment`, m13). Antes de la Seña hay varias migraciones P0/P1 (QR, ledgers, Location, aprobaciones, empleados, tender interno, cambios, transferencias, clientes). Por eso la Seña **no** se llama "la próxima migración": se designa **migration set S12** (Apéndice D) y recibirá su gate y timestamp reales cuando llegue su implementación. El WIP descartado (`20261021130000_sena_deposit`) no se usa ni se reutiliza.
+Las migraciones usan timestamp UTC `YYYYMMDDHHMMSS_nombre`, estrictamente crecientes y únicos (hoy la última es `20261021140000_r3_qr`, m14, P0-B). Antes de la Seña hay varias migraciones P0/P1 (QR, ledgers, Location, aprobaciones, empleados, tender interno, cambios, transferencias, clientes). Por eso la Seña **no** se llama "la próxima migración": se designa **migration set S12** (Apéndice D) y recibirá su gate y timestamp reales cuando llegue su implementación. El WIP descartado (`20261021130000_sena_deposit`) no se usa ni se reutiliza.
 
 #### BP-45.3 · Pins de readiness
-`checkout-readiness.ts` fija columnas, CHECKs y triggers hasta G13. Cada conjunto de migraciones de V2 sube el pin a G14, G15…, y el chequeo de arranque falla si el esquema no coincide. El Apéndice D lista cada conjunto con su pin.
+`checkout-readiness.ts` fija columnas, CHECKs y triggers hasta G14 (m14 `20261021140000_r3_qr`, sha256 pineado, objetos de QR en el sondeo de catálogo). Cada conjunto de migraciones de V2 posterior sube el pin a G15, G16…, y el chequeo de arranque falla si el esquema no coincide. El Apéndice D lista cada conjunto con su pin.
 
 #### BP-45.4 · Conjuntos de migraciones
 Orden y contenido en el Apéndice D (S1 a S15). Los timestamps allí son **indicativos**; se fijan al crear cada migración.
@@ -763,13 +772,13 @@ Herramienta de importación (script de administración, no ruta pública) que le
 
 #### BP-48.1 · Plan
 1. Guard `FR-PAY-006` implementado (P0-A): FIXED_TOTAL acepta solo CASH; TRANSFER/CARD_DEBIT/CARD_CREDIT/QR rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT`.
-2. Soportar QR en el motor (BP-12.2).
+2. Soportar QR en el motor (BP-12.2): **implementado en P0-B** (G14).
 3. Mover la activación por local del entorno a configuración (BP-39.1).
 4. Activar PROPORTIONAL_V1 local por local; verificar con el cierre de caja.
 5. Desactivar la escritura FIXED_TOTAL en cada local migrado. Las ventas históricas FIXED_TOTAL quedan de solo lectura (y su "pagado por línea" por la reconstrucción legacy marcada).
 6. Contract: retirar el código de escritura FIXED_TOTAL cuando ningún local lo use. Nunca se borran las filas históricas.
 
-**Condición de rollout (despliegue por local):** un local que todavía dependa de FIXED_TOTAL para TRANSFER/CARD_DEBIT/CARD_CREDIT/QR NO puede recibir el retiro de non-cash legacy aisladamente. Secuencia obligatoria por local: (1) activar PROPORTIONAL_V1 en el local; (2) verificar que el checkout no efectivo (TRANSFER/CARD_DEBIT/CARD_CREDIT/QR) funciona en PROPORTIONAL_V1; (3) recién después retirar la escritura FIXED_TOTAL non-cash de ese local. QR sigue pendiente en PROPORTIONAL_V1, por lo que ningún local puede retirar FIXED_TOTAL mientras necesite QR como medio de cobro.
+**Condición de rollout (despliegue por local):** un local que todavía dependa de FIXED_TOTAL para TRANSFER/CARD_DEBIT/CARD_CREDIT/QR NO puede recibir el retiro de non-cash legacy aisladamente. Secuencia obligatoria por local: (1) activar PROPORTIONAL_V1 en el local; (2) verificar que el checkout no efectivo (TRANSFER/CARD_DEBIT/CARD_CREDIT/QR) funciona en PROPORTIONAL_V1; (3) recién después retirar la escritura FIXED_TOTAL non-cash de ese local. QR ya está soportado en PROPORTIONAL_V1 (P0-B), de modo que deja de ser un impedimento por sí mismo; lo que falta por local es el paso (1) y el (2), y que el código P0-B corra sobre una base >= G14 con `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` activo.
 
 ## 49. Seña (migration set S12)
 
@@ -782,7 +791,7 @@ Customer ya existe (S11), el tender interno ya existe (S8), la configuración ya
 ## 50. PILOT G11 → G actual
 
 #### BP-50.1 · Plan
-`pilot` está en G11; faltan m12 `r3_card_credit` y m13 `warehouse_stock_adjustment` y todo lo de V2. Pasos: (1) backup verificado; (2) dry-run en LOCAL_TEST; (3) aprobación del OWNER; (4) migración G11→G13; (5) migraciones V2 por conjuntos, cada una con su pin; (6) verificación de readiness. Se decide en bloques de despliegue aparte; **no se ejecuta aquí**.
+`pilot` está en G11; faltan m12 `r3_card_credit`, m13 `warehouse_stock_adjustment`, m14 `r3_qr` y todo lo de V2 posterior. Pasos: (1) backup verificado; (2) dry-run en LOCAL_TEST; (3) aprobación del OWNER; (4) migración G11→G14; (5) migraciones V2 por conjuntos, cada una con su pin; (6) verificación de readiness. Se decide en bloques de despliegue aparte; **no se ejecuta aquí**.
 
 # Parte M — Operabilidad
 
@@ -976,11 +985,11 @@ Los permisos nuevos se otorgan solo cuando existe su funcionalidad (`FR-RBAC-003
 ## Apéndice D — Plan de migraciones
 
 Los timestamps son **indicativos**; se fijan al crear la migración y deben ser distintos de
-`20261021130000` y estrictamente crecientes. Ningún conjunto modifica migraciones aplicadas.
+`20261021140000` y estrictamente crecientes. Ningún conjunto modifica migraciones aplicadas.
 
 | Conjunto | Contenido (aditivo) | Pin | Depende de |
 |---|---|---|---|
-| S1 | QR en el motor: columnas de snapshot QR, CHECKs; guard FIXED_TOTAL | G14 | — |
+| S1 | QR en el motor: columnas de snapshot QR, CHECKs; guard FIXED_TOTAL — **implementado (P0-A guard + P0-B QR): `20261021140000_r3_qr`** | G14 (vigente) | — |
 | S2 | Triggers de inmutabilidad (StockMovement, CashMovement, AuditLog); CHECK sin MANUAL | G15 | — |
 | S3 | Location: FK de seguridad Branch↔Location; tablas nuevas con Location | G16 | — |
 | S4 | CompanyOperationalConfig; SupervisorPin; SupervisorApproval; Alert; permisos | G17 | S3 |

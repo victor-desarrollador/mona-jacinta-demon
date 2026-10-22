@@ -2,7 +2,7 @@
 
 Formato listo para las siguientes fases. La columna **Blueprint Reference** apunta a las anclas
 `BP-x.y` de `docs/architecture/BLUEPRINT-V2.md`. Las referencias de implementación, migración y
-test permanecen en `TBD` hasta que existan; no se registran referencias futuras inventadas.
+test permanecen en `TBD` hasta que existan (P0-A, P0-B y P0-C ya tienen las suyas); no se registran referencias futuras inventadas.
 
 - `BASE_HEAD=1c2c2a8` (PRD con OR-052..OR-056)
 - Fuente de requisitos: `docs/product/PRD-V2.md`
@@ -27,7 +27,7 @@ test permanecen en `TBD` hasta que existan; no se registran referencias futuras 
 | FR-PRICE-002 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PRICE-003 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PRICE-004 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
-| FR-PRICE-005 | BP-10.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-005 | BP-10.2 | api/src/modules/pricing/pricing.service.ts (qrAdjustmentBps), api/src/modules/payments/checkout-quote.service.ts, api/src/modules/payments/checkout-reservation.service.ts | NONE (la columna ya existía en CompanyPricingConfig) | api/tests/pricing/proportional-checkout-qr.test.ts (QR-14), api/tests/payments/checkout-quote.behavior.test.ts (QR-Q6), api/tests/payments/checkout-qr.pg.test.ts (QRPG-07) | IMPLEMENTED |
 | FR-PRICE-006 | BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PRICE-007 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PRICE-008 | BP-10.3 | TBD | TBD | TBD | BLUEPRINTED |
@@ -43,13 +43,13 @@ test permanecen en `TBD` hasta que existan; no se registran referencias futuras 
 | FR-PAY-001 | BP-12.1, BP-48.1 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PAY-002 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (guard FIXED_TOTAL cash-only) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts, api/tests/payments/split-payment.test.ts, api/tests/sales/paid-transition.test.ts | IMPLEMENTED |
 | FR-PAY-003 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (guard FIXED_TOTAL cash-only) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts | IMPLEMENTED |
-| FR-PAY-004 | BP-12.2, BP-12.3 | TBD | TBD | TBD | BLUEPRINTED |
-| FR-PAY-005 | BP-12.2, BP-10.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-004 | BP-12.2, BP-12.3 | api/src/modules/pricing/proportional-checkout.ts, api/src/modules/payments/checkout-canonical.ts, api/src/modules/payments/dto/checkout-fields.ts, dto/checkout.dto.ts, dto/checkout-quote.dto.ts, dto/checkout-close.dto.ts, dto/checkout-reservation.dto.ts, checkout-quote.service.ts, checkout-reservation.service.ts, checkout.service.ts, checkout-close.service.ts, checkout-stock-recovery.service.ts, client/src/app/ProportionalChargePanel.tsx, client/src/app/checkout-quote.ts. El Voucher de Seña (FR-VOUCH-011) queda fuera de P0-B. | api/prisma/migrations/20261021140000_r3_qr/migration.sql (G14) | api/tests/pricing/proportional-checkout-qr.test.ts, api/tests/payments/checkout-canonical-qr.test.ts, api/tests/payments/checkout-attempt-dto.test.ts, api/tests/payments/checkout-quote.behavior.test.ts, api/tests/payments/checkout-reservation.behavior.test.ts, api/tests/payments/checkout-close.behavior.test.ts, api/tests/payments/checkout.behavior.test.ts, api/tests/payments/r3-qr-migration.static.test.ts, api/tests/payments/checkout-qr.pg.test.ts, api/tests/payments/r3-attempts-schema.pg.test.ts, api/tests/payments/checkout-readiness.test.ts, client/src/app/cashier-payment-mode.test.tsx, client/src/app/checkout-quote.test.ts; compatibilidad N-1 verificada en PostgreSQL local (ejecución, sin archivo propio) | IMPLEMENTED |
+| FR-PAY-005 | BP-12.2, BP-10.2 | api/src/modules/payments/checkout-reservation.service.ts (sella fullPriceQr/qrAdjustmentBps), api/src/modules/payments/checkout.service.ts (liquida desde el intento sellado), api/src/modules/payments/checkout-stock-recovery.service.ts | api/prisma/migrations/20261021140000_r3_qr/migration.sql (G14) | api/tests/payments/checkout-reservation.behavior.test.ts (RQ-5), api/tests/payments/checkout.behavior.test.ts (CQ-1, CQ-7), api/tests/payments/checkout-stock-recovery.behavior.test.ts (TS-B13i/j), api/tests/payments/checkout-qr.pg.test.ts (QRPG-01, QRPG-07, QRPG-08, QRPG-09) | IMPLEMENTED |
 | FR-PAY-006 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts, client/src/app/cashier-fixed-total-cash-only.test.tsx, api/tests/payments/split-payment.test.ts, api/tests/sales/paid-transition.test.ts | IMPLEMENTED |
 | FR-PAY-007 | BP-13.1 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PAY-008 | BP-13.1 | TBD | TBD | TBD | BLUEPRINTED |
-| FR-PAY-009 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | TBD | TBD | TBD | BLUEPRINTED |
-| FR-PAY-010 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-009 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | api/src/modules/pricing/proportional-checkout.ts, api/src/modules/payments/checkout.service.ts, client/src/app/ProportionalChargePanel.tsx | api/prisma/migrations/20261021140000_r3_qr/migration.sql (G14) | api/tests/pricing/proportional-checkout-qr.test.ts (QR-5..QR-10), api/tests/payments/checkout-qr.pg.test.ts (QRPG-02, QRPG-03), client/src/app/cashier-payment-mode.test.tsx (UI-QR-1..5) | IMPLEMENTED |
+| FR-PAY-010 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | api/src/modules/pricing/proportional-checkout.ts (reparto Hamilton por línea, sin cambios de algoritmo) | api/prisma/migrations/20261021140000_r3_qr/migration.sql (G14) | api/tests/pricing/proportional-checkout-qr.test.ts (QR-11, QR-12, QR-13), api/tests/payments/checkout-qr.pg.test.ts (allocationsAddUp en QRPG-01..04) | IMPLEMENTED |
 | FR-PAY-011 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-PAY-012 | BP-12.7 | TBD | TBD | TBD | BLUEPRINTED |
 | FR-CASH-001 | BP-30.1, BP-30.2, BP-31.1 | TBD | TBD | TBD | BLUEPRINTED |

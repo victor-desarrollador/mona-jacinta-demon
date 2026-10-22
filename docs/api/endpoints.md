@@ -114,6 +114,31 @@ Cash payments support `amount`, `receivedAmount`, and backend-calculated change 
 
 System V2 P0-A: on this route (a `FIXED_TOTAL` sale) **only `CASH` is accepted**. `TRANSFER`, `CARD_DEBIT`, `CARD_CREDIT` and `QR` are refused with `409 NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT`, because the only valid evidence for a non-cash payment (`ExternalCollection`) exists in the proportional checkout (`POST /sales/:saleId/checkout`). The refusal writes nothing and does not consume the idempotency key. An idempotent replay of a payment recorded before this rule still returns `200` with the original payment, whatever its method. The wire contract above is unchanged; the sale's pricing model is decided by the service under the sale lock.
 
+#### Proportional checkout (`PROPORTIONAL_V1`) — payment methods (System V2 P0-B)
+
+Sales created under `PROPORTIONAL_V1` are paid through the checkout routes, not through `POST /sales/:saleId/payments`:
+
+| Method | Path | Permission | Purpose |
+| --- | --- | --- | --- |
+| POST | `/api/v1/sales/:saleId/checkout/quote` | `sale.charge` | Price the sale for a balance method plus up to two fixed tenders (read-only). |
+| POST | `/api/v1/sales/:saleId/checkout/reservations` | `sale.charge` | Reserve and seal a payment plan (price snapshot included). |
+| POST | `/api/v1/sales/:saleId/checkout` | `sale.charge` | Confirm a sealed plan and settle it. |
+| POST | `/api/v1/sales/:saleId/checkout/reservations/:reserveKey/close` | `sale.charge` | Declare the outcome of a reserved attempt that was not settled. |
+
+Methods accepted in `balanceMethod` and in each tender (1 to 3 tenders, no repeated method): `CASH`, `TRANSFER`, `CARD_DEBIT`, `CARD_CREDIT` and `QR`. Any other value is `400 VALIDATION_ERROR`.
+
+`QR` contract:
+
+- It is priced with the company `qrAdjustmentBps` (`CompanyPricingConfig`, editable by ADMIN/OWNER only). Without a pricing configuration `QR` is `available: false` (`PRICING_CONFIG_MISSING`) in the quote and quoting it is `409 PRICING_CONFIG_MISSING`.
+- The adjustment is frozen when the plan is reserved (`fullPrices.QR` in the reservation view); a later change of `qrAdjustmentBps` never alters a sealed attempt, its settlement or the resulting checkout.
+- A new `QR` tender in the confirmation carries a mandatory `reference` and **no** `institution`/`institutionOther` and no `receivedAmount` (`400 VALIDATION_ERROR` otherwise); a `QR` tender backed by a recorded collection carries none of them. In the close request a `CHARGED` `QR` row carries `reference` and `evidence`, never an institution.
+- The reference is unique per branch within `QR` (`409 EXTERNAL_REFERENCE_ALREADY_RECORDED`); the same text under `TRANSFER`, `CARD_DEBIT` or `CARD_CREDIT` is another namespace.
+- `QR` never writes a `CashMovement` (no `SALE_INCOME`); cash-session reconciliation counts `CASH` only.
+- Like every external method it is available only when `PROPORTIONAL_EXTERNAL_METHODS_ENABLED=true` (otherwise `enabledMethods` shows it unavailable with `PAYMENT_METHOD_NOT_ENABLED`), and the API refuses to start against a database older than G14 (migration `20261021140000_r3_qr`).
+- `FIXED_TOTAL` sales stay cash-only (`NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT`, above).
+
+Implementation note (not a product rule): the stored price-snapshot format is `algorithmVersion` 3 from this migration (1 = no credit price, 2 = credit price, 3 = credit and QR prices). It does not change the canonical plan text/hash: plans without `QR` keep their exact bytes and hash.
+
 Pilot P0.1-C contract (see [`../pilot-v1.1/00-pilot-safety-gate.md`](../pilot-v1.1/00-pilot-safety-gate.md)):
 
 - An idempotent replay (same `idempotencyKey`, same intent) is resolved first and returns `200` with the original payment, even if the sale is now `PAID`/`COMPLETED` or its hold timestamp has passed.

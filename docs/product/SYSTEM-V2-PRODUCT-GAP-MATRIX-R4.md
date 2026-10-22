@@ -19,7 +19,7 @@ Convención de las filas: `ID · DOMAIN · STATUS · PRIORITY`, más CURRENT, TA
 BUSINESS_RISK, TECHNICAL_RISK, DEPENDENCIES, OPEN_SOURCE_PATTERN, DECISION,
 ACCEPTANCE_CRITERIA y EVIDENCE. Las rutas son relativas a la raíz del repo. La evidencia de
 filas sin cambio respecto de R3 proviene de la pasada de código sobre `403efe9` registrada en
-R1/R2; el único punto re-verificado al armar R4 es el rechazo de QR (ver dominio 5).
+R1/R2; el único punto re-verificado al armar R4 fue el rechazo de QR (ver dominio 5), cerrado luego por P0-B.
 
 ---
 
@@ -30,25 +30,25 @@ Se calculan desde las filas de la sección 4.
 ```
 TOTAL_DOMAINS=54
 
-COMPLETE_COUNT=10
-PARTIAL_COUNT=23
+COMPLETE_COUNT=11
+PARTIAL_COUNT=22
 MISSING_COUNT=20
 BROKEN_COUNT=0
 LEGACY_COUNT=1
 
 P0_COUNT=9
-P1_COUNT=30
-P2_COUNT=15
+P1_COUNT=29
+P2_COUNT=16
 ```
 
 Readiness (fórmula R1–R3: COMPLETE = 1, PARTIAL = 0,5, LEGACY = 0,25, MISSING/BROKEN = 0):
 
 ```
-READINESS_RAW = (10 × 1) + (23 × 0,5) + (1 × 0,25) + (20 × 0) + (0 × 0)
-              = 10 + 11,5 + 0,25
-              = 21,75 puntos
-READINESS_RATIO = 21,75 / 54 = 0,402777…
-READINESS_SCORE = 40,28 → 40/100  (redondeo al entero más cercano)
+READINESS_RAW = (11 × 1) + (22 × 0,5) + (1 × 0,25) + (20 × 0) + (0 × 0)
+              = 11 + 11 + 0,25
+              = 22,25 puntos
+READINESS_RATIO = 22,25 / 54 = 0,412037…
+READINESS_SCORE = 41,20 → 41/100  (redondeo al entero más cercano)
 ```
 
 Conciliación contra R3 (55 dominios, 10/22/21/1/1, 10 P0 / 29 P1 / 16 P2, score 38,6 → 39):
@@ -59,13 +59,18 @@ Conciliación contra R3 (55 dominios, 10/22/21/1/1, 10 P0 / 29 P1 / 16 P2, score
 | 7 Pago combinado: COMPLETE · P2 → PARTIAL · P1 | −1 COMPLETE, +1 PARTIAL, −1 P2, +1 P1 |
 | Línea base R4 (827078b) | 54 dominios; 9/23/20/1/1; 9 P0 / 30 P1 / 15 P2; score 38 |
 | 47 Día operativo: BROKEN → COMPLETE (cierre P0-C) | −1 BROKEN, +1 COMPLETE; prioridades sin cambio |
-| Resultado actual | 54 dominios; 10/23/20/0/1; 9 P0 / 30 P1 / 15 P2; score 40 |
+| Cierre P0-C (773dad3 + c4c3758) | 54 dominios; 10/23/20/0/1; 9 P0 / 30 P1 / 15 P2; score 40 |
+| 7 Pago combinado: PARTIAL · P1 → COMPLETE · P2 (cierre P0-B) | −1 PARTIAL, +1 COMPLETE, −1 P1, +1 P2 |
+| Resultado actual | 54 dominios; 11/22/20/0/1; 9 P0 / 29 P1 / 16 P2; score 41 |
 
 Justificación del cambio en 7: R3 lo dejó COMPLETE porque su TARGET era "lo mismo, más QR si el
 negocio lo pide". R4 cierra la decisión de producto: QR **entra** en PROPORTIONAL_V1. El código
 en `403efe9` lo rechaza, así que el estado actual no cumple el target. Sensibilidad: si se
 mantuviera 7 como COMPLETE, el score sería 21,25 / 54 = 39,35 → 39. Se eligió la lectura
 estricta porque una fila COMPLETE con un bloqueo de implementación declarado sería incoherente.
+P0-B levantó ese bloqueo (QR soportado en PROPORTIONAL_V1, con motor, snapshot, constraints, DB y
+cliente verificados): la única brecha del dominio 7 estaba cerrada, así que vuelve a COMPLETE · P2
+(la prioridad P1 existía solo por el bloqueo de QR).
 
 Lectura general: el núcleo de un local (venta, checkout proporcional, caja con conciliación,
 ajuste de stock, scope) es maduro y está protegido por la DB. Falta la operación de 5 locales
@@ -77,15 +82,15 @@ el dominio de empleados y la capacidad transversal de autorización por PIN.
 ## 2. Validación de conteos
 
 ```
-PRIORITY: P0 + P1 + P2 = 9 + 30 + 15 = 54 = TOTAL_DOMAINS   → PRIORITY_COUNT_VALID=YES
+PRIORITY: P0 + P1 + P2 = 9 + 29 + 16 = 54 = TOTAL_DOMAINS   → PRIORITY_COUNT_VALID=YES
 STATUS:   COMPLETE + PARTIAL + MISSING + BROKEN + LEGACY
-          = 10 + 23 + 20 + 0 + 1 = 54 = TOTAL_DOMAINS         → STATUS_COUNT_VALID=YES
+          = 11 + 22 + 20 + 0 + 1 = 54 = TOTAL_DOMAINS         → STATUS_COUNT_VALID=YES
 ```
 
 Distribución por STATUS (IDs):
 
-- COMPLETE (10): 8, 14, 15, 17, 25, 31, 43, 47, 48, 49
-- PARTIAL (23): 1, 2, 3, 4, 5, 6, 7, 9, 10, 16, 18, 23, 26, 28, 29, 30, 34, 40, 41, 42, 44, 45, 50
+- COMPLETE (11): 7, 8, 14, 15, 17, 25, 31, 43, 47, 48, 49
+- PARTIAL (22): 1, 2, 3, 4, 5, 6, 9, 10, 16, 18, 23, 26, 28, 29, 30, 34, 40, 41, 42, 44, 45, 50
 - MISSING (20): 11, 12, 13, 19, 20, 21, 22, 24, 32, 33a, 35, 36, 37, 38, 39, 46, 51, 52, 53, 54
 - BROKEN (0): —
 - LEGACY (1): 27
@@ -93,8 +98,8 @@ Distribución por STATUS (IDs):
 Distribución por PRIORITY (IDs):
 
 - P0 (9): 6, 11, 12, 16, 19, 24, 52, 53, 54
-- P1 (30): 1, 2, 3, 4, 5, 7, 9, 10, 13, 18, 20, 23, 26, 27, 28, 29, 30, 32, 33a, 37, 38, 39, 40, 41, 42, 44, 45, 46, 47, 51
-- P2 (15): 8, 14, 15, 17, 21, 22, 25, 31, 34, 35, 36, 43, 48, 49, 50
+- P1 (29): 1, 2, 3, 4, 5, 9, 10, 13, 18, 20, 23, 26, 27, 28, 29, 30, 32, 33a, 37, 38, 39, 40, 41, 42, 44, 45, 46, 47, 51
+- P2 (16): 7, 8, 14, 15, 17, 21, 22, 25, 31, 34, 35, 36, 43, 48, 49, 50
 
 ---
 
@@ -104,9 +109,9 @@ Distribución por PRIORITY (IDs):
 
 - **QR**: habilitado; entra en PROPORTIONAL_V1; porcentaje configurable por ADMIN/OWNER
   (`qrAdjustmentBps`); sin porcentaje hardcodeado.
-  `QR_PRODUCT_DECISION=CLOSED` · `QR_IMPLEMENTATION_BLOCKER=YES` (PROPORTIONAL_V1 lo rechaza hoy).
-- **FIXED_TOTAL**: deprecado de forma progresiva. No se puede retirar mientras QR no esté
-  soportado en PROPORTIONAL_V1.
+  `QR_PRODUCT_DECISION=CLOSED` · `QR_IMPLEMENTATION_BLOCKER=NO` (P0-B: PROPORTIONAL_V1 soporta QR; requiere DB >= G14).
+- **FIXED_TOTAL**: deprecado de forma progresiva. QR ya está soportado en PROPORTIONAL_V1 (P0-B);
+  el retiro sigue siendo por local, después de activar PROPORTIONAL_V1 y verificar sus medios.
 - **Precio**: `cashPrice` es el precio base efectivo. Ajustes en bps por medio:
   `listAdjustmentBps`, `creditCardAdjustmentBps`, `debitCardAdjustmentBps`,
   `bankTransferAdjustmentBps`, `qrAdjustmentBps`. Solo ADMIN/OWNER los modifican y un cambio
@@ -242,22 +247,22 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - EVIDENCE: `api/src/modules/sales/sales.service.ts`, `sale-finalization.ts:96-189`, `cancellation.service.ts:105-145`, `pending-correction.service.ts`.
 
 #### 5 · Checkout · PARTIAL · P1
-- CURRENT: conviven `FIXED_TOTAL` (`POST /sales/:id/payments`, legacy) y `PROPORTIONAL_V1` (quote → reserva de intento → cierre → recuperación de stock, ledger `CheckoutAttempt` con triggers F1-F5). El modelo se elige al crear la venta según `PROPORTIONAL_CHECKOUT_LOCATION_IDS` (env). **PROPORTIONAL_V1 rechaza QR** (`api/src/modules/payments/dto/checkout-fields.ts:44`: "accepts CASH, TRANSFER, CARD_DEBIT and CARD_CREDIT; QR is refused"). P0-A limitó FIXED_TOTAL a CASH: TRANSFER, CARD_DEBIT, CARD_CREDIT y QR son rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura.
+- CURRENT: conviven `FIXED_TOTAL` (`POST /sales/:id/payments`, legacy) y `PROPORTIONAL_V1` (quote → reserva de intento → cierre → recuperación de stock, ledger `CheckoutAttempt` con triggers F1-F5). El modelo se elige al crear la venta según `PROPORTIONAL_CHECKOUT_LOCATION_IDS` (env). **PROPORTIONAL_V1 soporta QR desde P0-B** (CASH, TRANSFER, CARD_DEBIT, CARD_CREDIT y QR): `qrAdjustmentBps` se lee de `CompanyPricingConfig`, se congela en el snapshot de la reserva (`fullPriceQr` + `qrAdjustmentBps`, `algorithmVersion` 3) y la liquidación lo reproduce del intento sellado sin releer la configuración. Un cobro QR exige referencia (única por sucursal, índice parcial propio), no admite institución y no genera `CashMovement`. Requiere DB >= G14 (migración `20261021140000_r3_qr`), PROPORTIONAL_V1 activo en el local y `PROPORTIONAL_EXTERNAL_METHODS_ENABLED`. P0-A limitó FIXED_TOTAL a CASH: TRANSFER, CARD_DEBIT, CARD_CREDIT y QR son rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura.
 - TARGET: PROPORTIONAL_V1 en todos los locales, con QR soportado y `qrAdjustmentBps` configurable; FIXED_TOTAL deprecado de forma progresiva; Voucher de Seña como medio de pago de uso único (33a).
-- GAP: soportar QR en proporcional; sacar la selección por local del env; plan de desactivación de FIXED_TOTAL por local, que **no puede ejecutarse antes de resolver QR**.
-- BUSINESS_RISK: dos reglas de cobro según el local; sin QR en proporcional, retirar FIXED_TOTAL deja a QR sin camino de cobro.
-- TECHNICAL_RISK: medio-alto (QR toca quote, snapshot, allocations y ExternalCollection).
+- GAP: sacar la selección por local del env; plan de desactivación de FIXED_TOTAL por local (QR ya no lo bloquea; falta activar PROPORTIONAL_V1 con sus medios en cada local y migrar PILOT a G14). QR en proporcional: cerrado por P0-B.
+- BUSINESS_RISK: dos reglas de cobro según el local; un local que no active PROPORTIONAL_V1 con medios externos no puede cobrar QR ni ningún medio no efectivo (FIXED_TOTAL es solo efectivo).
+- TECHNICAL_RISK: medio (QR ya implementado y verificado; queda el rollout por local).
 - DEPENDENCIES: 6, 7, 3, 31, 33a, 40.
 - OPEN_SOURCE_PATTERN: ninguno equivalente; el modelo propio es superior.
 - DECISION: ADAPT (mantener el diseño propio y extenderlo).
 - ACCEPTANCE_CRITERIA: un cobro QR en proporcional queda en ExternalCollection con referencia única y snapshot del bps vigente; ningún local nuevo usa FIXED_TOTAL; el porcentaje de QR no está hardcodeado.
-- EVIDENCE: `api/src/modules/payments/checkout*.ts`, `payments.service.ts:95`, `sales.service.ts:181-183`, `api/src/modules/payments/dto/checkout-fields.ts:44`, `api/prisma/schema.prisma:182`.
-- QR: `PRODUCT_DECISION=CLOSED` · `IMPLEMENTATION_BLOCKER=YES`.
+- EVIDENCE: `api/src/modules/payments/checkout*.ts`, `payments.service.ts:95`, `sales.service.ts:181-183`, `api/src/modules/payments/dto/checkout-fields.ts`, `api/src/modules/payments/checkout-reservation.service.ts`, `api/src/modules/payments/checkout.service.ts`, `api/src/modules/pricing/proportional-checkout.ts`, `api/prisma/migrations/20261021140000_r3_qr/migration.sql`, `api/tests/payments/checkout-qr.pg.test.ts`.
+- QR: `PRODUCT_DECISION=CLOSED` · `IMPLEMENTATION_BLOCKER=NO` (P0-B).
 
 #### 6 · Pagos · PARTIAL · P0
-- CURRENT: P0-A cerró el guard: FIXED_TOTAL ahora acepta solo CASH; TRANSFER, CARD_DEBIT, CARD_CREDIT y QR son rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura. Solo el efectivo genera CashMovement. El camino proporcional exige ExternalCollection con referencia única por sucursal.
+- CURRENT: P0-A cerró el guard: FIXED_TOTAL ahora acepta solo CASH; TRANSFER, CARD_DEBIT, CARD_CREDIT y QR son rechazados con `NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT` antes de cualquier escritura. Solo el efectivo genera CashMovement. El camino proporcional exige ExternalCollection con referencia única por sucursal, incluido QR (P0-B: sin institución, sin CashMovement; la conciliación de caja sigue contando solo CASH).
 - TARGET: todo cobro no efectivo deja referencia verificable y conciliable; el camino definitivo es PROPORTIONAL_V1 en todos los locales (incluido QR).
-- GAP: P0-A cerró la brecha limitando FIXED_TOTAL a CASH (ya no hay pagos no efectivo sin evidencia en FIXED_TOTAL). Queda pendiente soportar QR en PROPORTIONAL_V1 y migrar todos los locales a proporcional antes de retirar FIXED_TOTAL.
+- GAP: P0-A cerró la brecha limitando FIXED_TOTAL a CASH (ya no hay pagos no efectivo sin evidencia en FIXED_TOTAL). QR ya está soportado en PROPORTIONAL_V1 (P0-B). Sigue PARTIAL porque el camino definitivo (PROPORTIONAL_V1 en todos los locales) depende de activar cada local y de llevar PILOT a G14; queda pendiente antes de retirar FIXED_TOTAL.
 - BUSINESS_RISK: se puede marcar PAID una venta con una transferencia o QR inexistente. Pérdida de dinero no detectable al cierre; es el único P0 que pierde plata hoy.
 - TECHNICAL_RISK: bajo (DTO + guard).
 - DEPENDENCIES: 5.
@@ -266,17 +271,17 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - ACCEPTANCE_CRITERIA: ninguna SalePayment no efectivo sin referencia; test que rechaza QR/TRANSFER sin referencia en FIXED_TOTAL.
 - EVIDENCE: `api/src/modules/payments/dto/payment.dto.ts:13-45`, `payments.service.ts:120-170`.
 
-#### 7 · Pago combinado · PARTIAL · P1
-- CURRENT: 1 a 3 medios con roles FIXED/BALANCE, distribución exacta por línea (`SaleLineAllocation`), vuelto solo en efectivo. QR excluido a propósito. FIXED_TOTAL ya no admite medios no efectivo (guard P0-A); el pago combinado solo existe en PROPORTIONAL_V1.
+#### 7 · Pago combinado · COMPLETE · P2
+- CURRENT: 1 a 3 medios con roles FIXED/BALANCE, distribución exacta por línea (`SaleLineAllocation`), vuelto solo en efectivo, ahora con QR como medio (P0-B): QR como saldo o como importe fijo junto a los otros cuatro medios, distribución exacta por línea (propiedades Hamilton verificadas con QR sobre 400 casos de semilla fija y en PostgreSQL). FIXED_TOTAL no admite medios no efectivo (guard P0-A); el pago combinado solo existe en PROPORTIONAL_V1.
 - TARGET: lo mismo, con QR como medio soportado (decisión OWNER R4) bajo las reglas de checkout.
-- GAP: QR dentro del pago combinado proporcional.
-- BUSINESS_RISK: bajo, salvo por el bloqueo de FIXED_TOTAL (ver 5).
-- TECHNICAL_RISK: medio (allocations por línea con un tender más).
+- GAP: — (cerrado por P0-B: QR dentro del pago combinado proporcional; rollout por local en dominio 5).
+- BUSINESS_RISK: bajo.
+- TECHNICAL_RISK: bajo.
 - DEPENDENCIES: 5.
 - OPEN_SOURCE_PATTERN: OSPOS split payments.
 - DECISION: ADAPT (el actual es superior; solo se suma QR).
 - ACCEPTANCE_CRITERIA: las suites PG del checkout siguen verdes; un combinado con QR distribuye exacto por línea.
-- EVIDENCE: `api/src/modules/payments/dto/checkout.dto.ts:37-160`, schema `SaleLineAllocation`, `CheckoutAttemptTender`.
+- EVIDENCE: `api/src/modules/payments/dto/checkout.dto.ts`, `api/src/modules/pricing/proportional-checkout.ts`, schema `SaleLineAllocation`, `CheckoutAttemptTender`, `api/tests/pricing/proportional-checkout-qr.test.ts`, `api/tests/payments/checkout-qr.pg.test.ts`, `client/src/app/cashier-payment-mode.test.tsx`.
 
 #### 13 · Descuentos · MISSING · P1
 - CURRENT: `discountTotal` existe pero siempre vale `0n`.
@@ -712,8 +717,8 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - EVIDENCE: `api/src/modules/backoffice/backoffice.service.ts`.
 
 #### 31 · ExternalCollection · COMPLETE · P2
-- CURRENT: transferencia o débito recibido fuera del POS, referencia única por sucursal, flujo APPLIED/UNAPPLIED/REFUNDED con trigger guard y página en el admin; medios externos activos con `PROPORTIONAL_EXTERNAL_METHODS_ENABLED`.
-- TARGET: lo mismo; es el patrón de referencia para QR y para el pago de deuda de empleados por transferencia.
+- CURRENT: transferencia, débito, crédito o QR recibido fuera del POS (QR desde P0-B: referencia obligatoria, sin institución, índice único parcial propio `ExternalCollection_qr_ref_key`), referencia única por sucursal, flujo APPLIED/UNAPPLIED/REFUNDED con trigger guard y página en el admin; medios externos activos con `PROPORTIONAL_EXTERNAL_METHODS_ENABLED`.
+- TARGET: lo mismo; es el patrón de referencia que ya usa QR y que usará el pago de deuda de empleados por transferencia.
 - GAP: —
 - BUSINESS_RISK: bajo.
 - TECHNICAL_RISK: bajo.
@@ -721,7 +726,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - OPEN_SOURCE_PATTERN: —
 - DECISION: DISCARD (mantener).
 - ACCEPTANCE_CRITERIA: las suites PG siguen verdes.
-- EVIDENCE: `api/src/modules/payments/external-collections.service.ts`, migración `20261016130000`, `admin/src/pages/ExternalCollections.tsx`.
+- EVIDENCE: `api/src/modules/payments/external-collections.service.ts`, migraciones `20261016130000` y `20261021140000_r3_qr`, `admin/src/pages/ExternalCollections.tsx`.
 
 #### 37 · ARCA / fiscal · MISSING · P1
 - CURRENT: `saleNumber` es explícitamente no fiscal.
@@ -774,7 +779,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 ### Plataforma
 
 #### 40 · Configuración · PARTIAL · P1
-- CURRENT: en la DB solo `CompanyPricingConfig` (incluye `qrAdjustmentBps`). Lo demás está en el env: locales con checkout proporcional, medios externos, hash del código mayorista y sweeper.
+- CURRENT: en la DB solo `CompanyPricingConfig` (incluye `qrAdjustmentBps`, consumido desde P0-B por el checkout proporcional y congelado en el snapshot de cada reserva). Lo demás está en el env: locales con checkout proporcional, medios externos, hash del código mayorista y sweeper.
 - TARGET: configuración operativa en DB, auditada, editable solo por ADMIN/OWNER: bps de cada medio (incluido QR), **límite global de deuda de empleado** (BigInt centavos, inicial `30000000n`), **monto mínimo de Seña**, **plazo de cambios** (inicialmente 15 días, modificable por ADMIN/OWNER), **umbral de ajuste de stock** que exige autorización (valor TBD), **umbral de diferencia de caja** (valor TBD), locales/medios del checkout. CASHIER y SELLER no modifican ninguno de estos parámetros.
 - GAP: pasar locales proporcionales y medios a DB; agregar límite de empleado, mínimo de Seña, plazo de cambio y los umbrales de ajuste de stock y de diferencia de caja.
 - BUSINESS_RISK: cambiar un local de modo requiere redeploy; los valores de negocio no pueden quedar hardcodeados.
@@ -866,7 +871,7 @@ todos los siguientes.
 
 | # | Paso | Dominios | Depende de | Habilita |
 |---|---|---|---|---|
-| 1 | Pagos + Checkout (QR en PROPORTIONAL_V1, guard de referencia en FIXED_TOTAL) + día operativo en zona Argentina | 6, 5, 7, 47 | — | Retiro de FIXED_TOTAL; semana lunes-sábado |
+| 1 | Pagos + Checkout (QR en PROPORTIONAL_V1, guard de referencia en FIXED_TOTAL) + día operativo en zona Argentina — **P0-A, P0-B y P0-C implementados** (rollout de QR por local pendiente) | 6, 5, 7, 47 | — | Retiro de FIXED_TOTAL; semana lunes-sábado |
 | 2 | Ledgers inmutables + guard MANUAL | 51, 16 (inmutabilidad), 9, 29 | — | Ledger de empleados, reversas, Seña |
 | 3 | Branch/Location, fase expand | 27 | — | Employee, movimientos y transferencias sobre el modelo canónico |
 | 4 | Capacidad transversal de autorización por PIN ADMIN/OWNER + bandeja de alertas | (3.2), 28, 29, 41 | 2 | 11, 12, 13, 19, 32/33a |
@@ -920,8 +925,8 @@ No queda ninguna decisión OWNER de modelo abierta. Las decisiones A–I de R3 e
 
 ```
 QR_PRODUCT_DECISION_CLOSED=YES
-QR_IMPLEMENTATION_BLOCKER=YES
-QR_BLOCKER_FOR_FIXED_TOTAL_REMOVAL=YES
+QR_IMPLEMENTATION_BLOCKER=NO
+QR_BLOCKER_FOR_FIXED_TOTAL_REMOVAL=NO
 GENERAL_SALE_VOUCHER_REQUIRED=NO
 EXCHANGE_VALUE_SOURCE=ACTUAL_PAID_AMOUNT
 CROSS_BRANCH_EXCHANGE=YES
@@ -936,5 +941,5 @@ PRD_V2_READY=YES
 BLUEPRINT_V2_READY=YES
 ```
 
-No quedan bloqueos funcionales de modelo. Lo pendiente es implementación (QR en proporcional),
+No quedan bloqueos funcionales de modelo. Lo pendiente es implementación (rollout de QR por local),
 datos de despliegue (sección 6) y diseño técnico del Blueprint.
