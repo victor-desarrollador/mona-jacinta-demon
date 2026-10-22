@@ -1,5 +1,5 @@
-// PILOT G13 cut-over: the single source of the thirteen reviewed migration pins, the
-// five authorizable EXACT ledger states and the strict ledger classifier every PILOT
+// PILOT G14 cut-over: the single source of the fourteen reviewed migration pins, the
+// six authorizable EXACT ledger states and the strict ledger classifier every PILOT
 // tool shares (pilot-migrate, pilot-a4-readonly, pilot-backup, pilot-clone-restore,
 // the migration rehearsal). Builtins only, no I/O, nothing derived from disk: the pins
 // are reviewed literals (tests recompute the real bytes), and a new or changed
@@ -9,7 +9,7 @@
 // observed was S4, but it is not re-confirmed, so BOTH EXACT_S4 and EXACT_G7 are
 // authorizable initial states. They are mutually exclusive and never auto-selected:
 // every caller names the one state it expects (requireState). EXACT_G11, EXACT_G12
-// and EXACT_G13 are preserved as exact ledgers; the only final state is EXACT_G13.
+// and EXACT_G13 are preserved as exact ledgers; the only final state is EXACT_G14.
 //
 // "Exact" means: every ledger row is one of the pinned migrations, exactly one row per
 // migration, finished, never rolled back, with the pinned checksum (Prisma's checksum
@@ -32,6 +32,7 @@ export const MIGRATION_PINS = Object.freeze([
   Object.freeze({ name: '20261018180000_cash_movement_reversals', bytes: 3366, sha256: 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770' }),
   Object.freeze({ name: '20261021120000_r3_card_credit', bytes: 11413, sha256: 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be' }),
   Object.freeze({ name: '20261021130000_warehouse_stock_adjustment', bytes: 3457, sha256: '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0' }),
+  Object.freeze({ name: '20261021140000_r3_qr', bytes: 13048, sha256: '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a' }),
 ]);
 export const LOCK_PIN = Object.freeze({ bytes: 128, sha256: '99836963713b4f5b269ad49af0ed3d7b0b2e336115c2f92dc9ac683d139d0900', provider: 'postgresql' });
 
@@ -42,10 +43,11 @@ export const STATES = Object.freeze({
   EXACT_G7: Object.freeze(NAMES.slice(0, 7)),
   EXACT_G11: Object.freeze(NAMES.slice(0, 11)),
   EXACT_G12: Object.freeze(NAMES.slice(0, 12)),
-  EXACT_G13: Object.freeze(NAMES.slice()),
+  EXACT_G13: Object.freeze(NAMES.slice(0, 13)),
+  EXACT_G14: Object.freeze(NAMES.slice()),
 });
 export const INITIAL_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7']);
-export const FINAL_STATE = 'EXACT_G13';
+export const FINAL_STATE = 'EXACT_G14';
 
 // The ONLY ledger read, identical everywhere: four columns, no ordering or filtering in
 // the database (classification happens here).
@@ -83,7 +85,7 @@ export function classifyLedger(rows) {
   for (const [state, names] of Object.entries(STATES)) {
     if (names.length === seen.size && names.every((name) => seen.has(name))) return { ok: true, state };
   }
-  return refuse('the ledger is not an exact S4, G7, G11, G12 or G13 ledger');
+  return refuse('the ledger is not an exact S4, G7, G11, G12, G13 or G14 ledger');
 }
 
 // The ledger must be exactly the ONE state the caller names; another valid state is a refusal.

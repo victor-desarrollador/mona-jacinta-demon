@@ -238,10 +238,11 @@ describe.skipIf(!suiteM9)('R3-A4.3 S9 — readiness gate on a real 1–9 cluster
     });
     // G11-ADV-004: a dropped table also takes its bound triggers with it, so the gate
     // names the table AND both pg_trigger bindings that referenced it.
-    // CARD_CREDIT block: the table also carried the credit snapshot columns and its CHECK (m12).
+    // CARD_CREDIT / QR blocks: the table also carried the credit (m12) and QR (m14) snapshot columns and their CHECKs.
     expect(verdict).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: [
       'CheckoutAttempt', 'trg_checkout_attempt_guard', 'trg_checkout_attempt_commit_check',
       'CheckoutAttempt.fullPriceCredit', 'CheckoutAttempt.creditAdjustmentBps', 'chk_attempt_credit_snapshot',
+      'CheckoutAttempt.fullPriceQr', 'CheckoutAttempt.qrAdjustmentBps', 'chk_attempt_qr_snapshot',
     ] });
   }, 30_000);
 
@@ -449,4 +450,30 @@ describe.skipIf(!suitePre9)('R3-A4.3 S9 — m9-strict rejection on a real 1–8 
     })).rejects.toBeInstanceOf(R3ReadinessError);
     expect(calls).toEqual([]);
   }, 30_000);
+
+  it('S9-PG-20 the QR migration m14 is part of the gate: a real G13 schema is REJECTED, and each m14 catalog object is probed', async () => {
+    const M14 = '20261021140000_r3_qr';
+    // A ledger without m14 is refused by name, whatever the catalog says.
+    const missing = await withRollback(pool, async (client) => {
+      await client.query('DELETE FROM "_prisma_migrations" WHERE "migration_name" = $1', [M14]);
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(missing).toEqual({ reason: 'MIGRATION_MISSING', migrations: [M14], objects: [] });
+    const index = await withRollback(pool, async (client) => {
+      await client.query('DROP INDEX "ExternalCollection_qr_ref_key"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(index).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['ExternalCollection_qr_ref_key'] });
+    const check = await withRollback(pool, async (client) => {
+      await client.query('ALTER TABLE "CheckoutAttempt" DROP CONSTRAINT "chk_attempt_qr_snapshot"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(check).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['chk_attempt_qr_snapshot'] });
+    const column = await withRollback(pool, async (client) => {
+      await client.query('ALTER TABLE "SaleCheckout" DROP CONSTRAINT "chk_checkout_qr_snapshot"');
+      await client.query('ALTER TABLE "SaleCheckout" DROP COLUMN "qrAdjustmentBps"');
+      return verdictOf(client, EXTERNAL_ON);
+    });
+    expect(column).toEqual({ reason: 'SCHEMA_OBJECT_MISSING', migrations: [], objects: ['SaleCheckout.qrAdjustmentBps', 'chk_checkout_qr_snapshot'] });
+  }, 60_000);
 });

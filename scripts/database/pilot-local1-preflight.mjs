@@ -87,6 +87,7 @@ export const MIGRATIONS = Object.freeze([
   '20261006120000_pilot_pricing_v2', '20261012120000_cash_session_reconciliation',
   '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
   '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals', '20261021120000_r3_card_credit', '20261021130000_warehouse_stock_adjustment',
+  '20261021140000_r3_qr',
 ]);
 export const SHARED_MODULES = Object.freeze({
   states: 'scripts/database/pilot-migration-states.mjs',

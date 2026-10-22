@@ -639,7 +639,7 @@ describe('mirrored constants cannot drift (drift guard)', () => {
   it('G1-11 carries the 32 current relations; G1-6/G1-7 keep the historical 26, i.e. the 32 minus exactly the six new ones', async () => {
     const mod = await loadWitness();
     const { PROTECTED_RELATIONS } = await import('../scripts/local-test-fingerprint.js');
-    expect(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id)).toEqual(['G1-5', 'G1-6', 'G1-7', 'G1-11']);
+    expect(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id)).toEqual(['G1-5', 'G1-6', 'G1-7', 'G1-11', 'G1-12', 'G1-13', 'G1-14']);
     const byId = new Map(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => [g.id, g]));
     expect([...byId.get('G1-11')!.relations]).toEqual([...PROTECTED_RELATIONS]);
     expect(byId.get('G1-11')!.migrations).toHaveLength(11);

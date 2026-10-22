@@ -719,12 +719,15 @@ model SaleNumberCounter {
 // express @@check or partial unique indexes).
 //
 // SQL-only constraints:
-//   chk_checkout_model             pricingModel = 'PROPORTIONAL_V1' AND algorithmVersion IN (1, 2)
+//   chk_checkout_model             pricingModel = 'PROPORTIONAL_V1' AND algorithmVersion IN (1, 2, 3)
+//                                    (QR block: 3 = the snapshot WITH a QR price)
 //                                    (CARD_CREDIT block: 1 = no credit snapshot, 2 = credit snapshot)
 //   chk_checkout_hash              requestHash ~ '^[0-9a-f]{64}$'
-//   chk_checkout_balance_method    balanceMethod IN ('CASH','TRANSFER','CARD_DEBIT','CARD_CREDIT')
-//   chk_checkout_credit_snapshot   fullPriceCredit/creditAdjustmentBps: both NULL (version 1) or, in
-//                                    version 2, present exactly when the pricing-config snapshot is
+//   chk_checkout_balance_method    balanceMethod IN ('CASH','TRANSFER','CARD_DEBIT','CARD_CREDIT','QR')
+//   chk_checkout_credit_snapshot   fullPriceCredit/creditAdjustmentBps: both NULL (version 1) or, from
+//                                    version 2 on, present exactly when the pricing-config snapshot is
+//   chk_checkout_qr_snapshot       fullPriceQr/qrAdjustmentBps: both NULL (version 1-2) or, in version 3,
+//                                    present exactly when the pricing-config snapshot is (QR block)
 //   chk_checkout_amounts           total > 0 AND changeAmount >= 0 AND referenceSubtotal > 0
 //                                    AND fullPriceCash > 0 AND fullPriceCash % 100 = 0
 //   chk_checkout_config_snapshot   the pricing-config snapshot is all-or-nothing
@@ -750,9 +753,11 @@ model SaleCheckout {
   fullPriceTransfer     BigInt?
   fullPriceDebit        BigInt?
   fullPriceCredit       BigInt?
+  fullPriceQr           BigInt?
   transferAdjustmentBps Int?
   debitAdjustmentBps    Int?
   creditAdjustmentBps   Int?
+  qrAdjustmentBps       Int?
   pricingConfigId       String?
   pricingConfigUpdatedAt DateTime?        @db.Timestamptz(3)
   algorithmVersion      Int
@@ -788,13 +793,16 @@ model SaleCheckout {
 //   chk_ec_amount        amount > 0
 //   chk_ec_reference     char_length(reference) BETWEEN 1 AND 64
 //                          AND referenceKey ~ '^[A-Z0-9]{3,40}$'
-//   chk_ec_institution   three explicit NULL-safe forms (debit, normal transfer,
-//                          OTHER transfer); implies method in {TRANSFER, CARD_DEBIT}
+//   chk_ec_institution   three explicit NULL-safe forms (card/QR, normal transfer,
+//                          OTHER transfer); implies method in {TRANSFER, CARD_DEBIT,
+//                          CARD_CREDIT, QR}
 //   chk_ec_status         three explicit NULL-safe forms keyed by status
 //   ExternalCollection_debit_ref_key     partial unique (branchId, referenceKey)
 //                                          WHERE method = 'CARD_DEBIT'
 //   ExternalCollection_transfer_ref_key  partial unique (branchId, institution,
 //                                          referenceKey) WHERE method = 'TRANSFER'
+//   ExternalCollection_credit_ref_key / _qr_ref_key  partial unique (branchId,
+//                                          referenceKey) WHERE method = 'CARD_CREDIT' / 'QR'
 //   chk_ec_origin_attempt  originAttemptId IS NULL OR originSaleId IS NOT NULL (R3-A4.3)
 //   chk_ec_claim_state     status <> 'REFUNDED' OR claimAttemptId IS NULL (R3-A4.3)
 //   chk_ec_refund_fields   REFUNDED <=> externalRefundedAt set, <= resolvedAt, with a
@@ -899,7 +907,7 @@ model SaleLineAllocation {
 // SQL-only (migration 20261016130000_r3_checkout_attempts):
 //   chk_attempt_hashes            planHash / confirmationHash are 64 lowercase hex
 //   chk_attempt_plan              balanceMethod, positive totals, whole-peso balance
-//                                   and cash full price, 1..3 tenders, algorithmVersion = 1
+//                                   and cash full price, 1..3 tenders, algorithmVersion IN (1, 2, 3)
 //   chk_attempt_pricing_snapshot  pricing-config snapshot all-or-nothing
 //   chk_attempt_texts             supervisor reason 10..500 / evidence 3..200
 //   chk_attempt_status_fields     NULL-safe column set of each status
@@ -926,9 +934,11 @@ model CheckoutAttempt {
   fullPriceTransfer      BigInt?
   fullPriceDebit         BigInt?
   fullPriceCredit        BigInt?
+  fullPriceQr            BigInt?
   transferAdjustmentBps  Int?
   debitAdjustmentBps     Int?
   creditAdjustmentBps    Int?
+  qrAdjustmentBps        Int?
   pricingConfigId        String?
   pricingConfigUpdatedAt DateTime?             @db.Timestamptz(3)
   algorithmVersion       Int

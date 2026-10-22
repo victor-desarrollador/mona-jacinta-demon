@@ -95,6 +95,19 @@ export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([
     ]),
     relations: PROTECTED_RELATION_NAMES,
   }),
+  Object.freeze({
+    id: 'G1-14',
+    migrations: pairs([...MIGRATIONS_G7,
+      ['20261016120000_r3_proportional_checkout', '217e87eb5b156a57a5edcfd73433e1e9558ce59caa019208d9df8c0268f08dc6'],
+      ['20261016130000_r3_checkout_attempts', '076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148'],
+      ['20261018120000_cash_movement_withdrawals_expenses', 'e37149442d1fb82ec87877e7b3e1f2e4311b36a9d47d314a3fd1843702c5adf9'],
+      ['20261018180000_cash_movement_reversals', 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770'],
+      ['20261021120000_r3_card_credit', 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be'],
+      ['20261021130000_warehouse_stock_adjustment', '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0'],
+      ['20261021140000_r3_qr', '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a'],
+    ]),
+    relations: PROTECTED_RELATION_NAMES,
+  }),
 ]);
 const sameList = (a, b) => Array.isArray(a) && a.length === b.length && a.every((x, i) => x === b[i]);
 // The generation whose migration set EXACTLY equals `migrations` ([name, sha256] pairs, order included), or null.

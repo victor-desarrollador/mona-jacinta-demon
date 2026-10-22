@@ -33,7 +33,7 @@ const URL_TEXT = `postgresql://${USER}:${SECRET}@${HOST}:6543/postgres`;
 const LEAKS = [SECRET, HOST, REF, USER, URL_TEXT, `${HOST}:6543`, os.homedir()];
 const HOSTILE_URL = 'postgresql://postgres.hostileref00000000x:hostilepw@dev-hostile.invalid:5432/postgres';
 
-// G13 cut-over: the initial state is explicit (EXACT_S4 here); --execute carries the plan
+// G14 cut-over: the initial state is explicit (EXACT_S4 here); --execute carries the plan
 // digest the dry run prints for it (EXECUTE is completed below, once the fixture exists).
 const DRY = ['--target=pilot', '--dry-run', `--marker-id=${MARKER}`, '--expected-initial-state=EXACT_S4'];
 const EXECUTE_BASE = ['--target=pilot', '--execute', `--marker-id=${MARKER}`, `--confirm-project-ref=${REF}`, '--expected-initial-state=EXACT_S4'];
@@ -108,6 +108,7 @@ const RAW_S4 = rawCatalog(['Sale']);
 const RAW_G11 = rawCatalog(['Sale', 'SaleCheckout']);
 const RAW_G12 = rawCatalog(['Sale', 'SaleCheckout']);
 const RAW_G13 = rawCatalog(['Sale', 'SaleCheckout']);
+const RAW_G14 = rawCatalog(['Sale', 'SaleCheckout']);
 const SCHEMA = {
   references: {
     EXACT_S4: { digest: projectionDigest(buildProjection(RAW_S4)) },
@@ -115,11 +116,12 @@ const SCHEMA = {
     EXACT_G11: { digest: projectionDigest(buildProjection(RAW_G11)) },
     EXACT_G12: { digest: projectionDigest(buildProjection(RAW_G12)) },
     EXACT_G13: { digest: projectionDigest(buildProjection(RAW_G13)) },
+    EXACT_G14: { digest: projectionDigest(buildProjection(RAW_G14)) },
   },
-  probes: { EXACT_S4: [], EXACT_G7: [], EXACT_G11: [], EXACT_G12: [], EXACT_G13: [] },
+  probes: { EXACT_S4: [], EXACT_G7: [], EXACT_G11: [], EXACT_G12: [], EXACT_G13: [], EXACT_G14: [] },
 };
 const ledgerOf = (state) => STATES[state].map((name) => ({ migration_name: name, checksum: MIGRATION_PINS.find((m) => m.name === name).sha256, finished: true, rolled_back: false }));
-const PHASES = [{ ledger: ledgerOf('EXACT_S4'), raw: RAW_S4 }, { ledger: ledgerOf('EXACT_G13'), raw: RAW_G13 }];
+const PHASES = [{ ledger: ledgerOf('EXACT_S4'), raw: RAW_S4 }, { ledger: ledgerOf('EXACT_G14'), raw: RAW_G14 }];
 // G11-ADV-001: the plan binds target+tooling, so PLAN is the digest the tool itself
 // prints at dry-run for THIS fixture; it is derived after run() is defined below.
 
@@ -377,7 +379,7 @@ test('M38: dry-run opens no client, spawns nothing, and prints the sanitized pla
     /Prisma CLI: repository-local prisma 7\.10\.0/, /command: prisma migrate deploy --config prisma\.config\.ts/,
     /child cwd: a fresh private staged copy of the approved migration OWN bytes/,
     /identity proof: mandatory during --execute/, /no database connection was opened/i, /no migration was executed/i,
-    /POST_CHECK_STATE=EXACT_G13/, /explicit OWNER approval/,
+    /POST_CHECK_STATE=EXACT_G14/, /explicit OWNER approval/,
   ]) assert.match(r.text, needle);
   assert.doesNotMatch(r.text, /anything but EXACT_G11/);
   assertNoLeak(r.text);
@@ -666,8 +668,8 @@ test('M32-M34: the failure reason names what actually happened', async () => {
 test('M36: success only on an observed zero exit', async () => {
   const r = await run(EXECUTE, { spawner: fakeSpawn({ code: 0, stdout: ['All migrations have been successfully applied.\n'] }) });
   assert.equal(r.code, 0, r.text);
-  assert.match(r.text, /OK — the Prisma deploy exited 0 and PILOT is proven EXACT_G13/);
-  assert.match(r.text, /PILOT_MIGRATE_RESULT=EXACT_G13/);
+  assert.match(r.text, /OK — the Prisma deploy exited 0 and PILOT is proven EXACT_G14/);
+  assert.match(r.text, /PILOT_MIGRATE_RESULT=EXACT_G14/);
 });
 
 test('M31-M35: spawn failure, nonzero exit, signal, unknown status and error-then-close all fail', async () => {
@@ -775,6 +777,7 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
     '20261016130000_r3_checkout_attempts',
     '20261018120000_cash_movement_withdrawals_expenses',
     '20261018180000_cash_movement_reversals', '20261021120000_r3_card_credit', '20261021130000_warehouse_stock_adjustment',
+    '20261021140000_r3_qr',
   ]);
   assert.deepEqual([...NAMES].sort(), NAMES);
   assert.equal(new Set(NAMES).size, NAMES.length, 'V11 no duplicate manifest entry');
@@ -784,17 +787,17 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
   assert.ok(Object.isFrozen(APPROVED_MIGRATION_PAYLOAD) && Object.isFrozen(APPROVED_MIGRATION_PAYLOAD.migrations));
 });
 
-test('H1/P27: the synthetic G13 fixture and the real reviewed tree both verify against the pinned G13 payload (files only)', () => {
+test('H1/P27: the synthetic G14 fixture and the real reviewed tree both verify against the pinned G14 payload (files only)', () => {
   const fixture = verifyMigrationPayload(fakeApi());
   assert.equal(fixture.ok, true, fixture.reason);
   assert.deepEqual(fixture.migrations.map((m) => [m.name, m.sha256]), APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
   assert.equal(fixture.lock.sha256, APPROVED_MIGRATION_PAYLOAD.lock.sha256);
   const real = verifyMigrationPayload(API_DIR);
   assert.equal(real.ok, true, real.reason);
-  assert.equal(real.migrations.length, 13);
+  assert.equal(real.migrations.length, 14);
 });
 
-test('H1/P27b: the real tree is exactly the G13 payload — no extra and no missing migration directory', () => {
+test('H1/P27b: the real tree is exactly the G14 payload — no extra and no missing migration directory', () => {
   const dirs = readdirSync(path.join(API_DIR, 'prisma', 'migrations'), { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
@@ -964,7 +967,7 @@ const EXPECTED_REASON = {
 test('V13/V12: the Pricing V2 pin is the exact reviewed metadata and the manifest stays a literal (never derived from disk)', () => {
   const v2 = APPROVED_MIGRATION_PAYLOAD.migrations[5];
   assert.deepEqual({ ...v2 }, { name: '20261006120000_pilot_pricing_v2', bytes: 3282, sha256: 'd948f74e9c0eed3ce959f5c0e6edea70871d7d5957275f3304922e31bab6df12' });
-  // G13: the payload IS the shared literal pin list (pilot-migration-states.mjs, whose test pins
+  // G14: the payload IS the shared literal pin list (pilot-migration-states.mjs, whose test pins
   // every entry and recomputes the bytes); pilot-migrate re-types no digest and derives nothing.
   assert.equal(APPROVED_MIGRATION_PAYLOAD.migrations, MIGRATION_PINS);
   const source = readFileSync(new URL('./pilot-migrate.mjs', import.meta.url), 'utf8');

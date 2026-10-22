@@ -2,8 +2,8 @@
 // database (AGENTS.md): the OWNER launches it with the command printed by
 // pilot-launch-command.mjs, which pins this file, its manifest, the launch module and Node.
 //
-//   node scripts/database/pilot-backup.mjs --target=pilot --dry-run  --output-dir=<abs dir> --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13
-//   node scripts/database/pilot-backup.mjs --target=pilot --execute  --output-dir=<abs dir> --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13
+//   node scripts/database/pilot-backup.mjs --target=pilot --dry-run  --output-dir=<abs dir> --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13|EXACT_G14
+//   node scripts/database/pilot-backup.mjs --target=pilot --execute  --output-dir=<abs dir> --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13|EXACT_G14
 //
 // Gates, in order, before any connection: arguments; exact process context (Node v24.20.0,
 // env exactly HOME/PATH/LANG); code-integrity manifest (repo files, npm closure, pg_dump and
@@ -22,7 +22,7 @@
 // untrusted languages and server-side file/program access, the PILOT marker row equal to the
 // private marker id, and every public table's COPY data (row count + SHA-256 of the sorted
 // COPY lines), the Prisma ledger exactly at the OWNER-named --expected-state (EXACT_S4, EXACT_G7,
-// EXACT_G11, EXACT_G12 or EXACT_G13 — never auto-detected) with that state's exact table/function/trigger sets,
+// EXACT_G11, EXACT_G12, EXACT_G13 or EXACT_G14 — never auto-detected) with that state's exact table/function/trigger sets,
 // and the RBAC catalog (CATALOG_35/36 before G11, CATALOG_36 at G11/G12). The manifest binds the state's
 // generated app-schema reference digest; the restore proof verifies the restored schema against it.
 // pg_dump writes into a temporary file this run created exclusively (inode recorded; a replaced
@@ -104,7 +104,7 @@ export const R3_TRIGGERS = Object.freeze(['CheckoutAttempt trg_checkout_attempt_
 // G12 cut-over (OWNER 2026-10-18, extended 2026-10-20): a backup is taken of ONE explicitly expected exact state
 // (--expected-state), never auto-detected. Its public tables, app functions and triggers must
 // be EXACTLY that state's sets; the ledger must be exactly that state (shared strict classifier);
-// the RBAC catalog must be CATALOG_35/CATALOG_36 (initial states) or CATALOG_36 (EXACT_G11/EXACT_G12/EXACT_G13).
+// the RBAC catalog must be CATALOG_35/CATALOG_36 (initial states) or CATALOG_36 (EXACT_G11/EXACT_G12/EXACT_G13/EXACT_G14).
 // The full app-owned schema is proven by the restore proof (pilot-clone-restore.mjs), which
 // compares the restored clone's projection digest with the reference digest this manifest binds.
 export const STATE_OBJECTS = Object.freeze({
@@ -125,6 +125,11 @@ export const STATE_OBJECTS = Object.freeze({
     functions: Object.freeze([...BLOCK1_FUNCTIONS, ...R3_FUNCTIONS].sort()), triggers: Object.freeze([...BLOCK1_TRIGGERS, ...R3_TRIGGERS].sort()),
     catalogs: Object.freeze(['CATALOG_36']),
   }),
+  EXACT_G14: Object.freeze({
+    tables: Object.freeze([...CORE_TABLES, LEDGER_TABLE, 'CompanyPricingConfig', ...R3_TABLES].sort()),
+    functions: Object.freeze([...BLOCK1_FUNCTIONS, ...R3_FUNCTIONS].sort()), triggers: Object.freeze([...BLOCK1_TRIGGERS, ...R3_TRIGGERS].sort()),
+    catalogs: Object.freeze(['CATALOG_36']),
+  }),
 });
 export const BACKUP_STATES = Object.freeze(Object.keys(STATE_OBJECTS));
 
@@ -137,6 +142,7 @@ export const MIGRATIONS = Object.freeze([
   '20261006120000_pilot_pricing_v2', '20261012120000_cash_session_reconciliation',
   '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
   '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals', '20261021120000_r3_card_credit', '20261021130000_warehouse_stock_adjustment',
+  '20261021140000_r3_qr',
 ]);
 // The builtins-only shared cut-over modules: pinned by the manifest, imported only after it verified.
 export const SHARED_MODULES = Object.freeze({

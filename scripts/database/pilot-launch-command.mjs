@@ -67,7 +67,7 @@ export function safePathChars(p) {
 const SAFE_ABSOLUTE = /^\/[^'"$`\\\n\r\0]*$/;
 
 const STATE_PARAMS = Object.freeze(['expectedState']);
-const EXACT_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7', 'EXACT_G11', 'EXACT_G12', 'EXACT_G13']);
+const EXACT_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7', 'EXACT_G11', 'EXACT_G12', 'EXACT_G13', 'EXACT_G14']);
 const BUILDER_KEYS = Object.freeze(['launchSha256', 'manifestSha256', 'nodePath', 'nodeSha256', 'params', 'repoDir', 'tool', 'toolSha256']);
 export function buildOwnerCommand(spec) {
   if (spec === null || typeof spec !== 'object' || Object.keys(spec).sort().join(',') !== BUILDER_KEYS.join(',')) {

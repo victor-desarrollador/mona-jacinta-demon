@@ -1,8 +1,8 @@
-// PILOT G13 cut-over: generator of the app-schema references (pilot-schema-references.mjs).
+// PILOT G14 cut-over: generator of the app-schema references (pilot-schema-references.mjs).
 //
 //   LOCAL_TEST_DATABASE_URL=… LOCAL_TEST_DATABASE_MARKER_ID=… \
 //     node scripts/database/pilot-schema-reference.mjs --target=local-test \
-//       --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13 --system-identifier=<decimal>
+//       --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13|EXACT_G14 --system-identifier=<decimal>
 //
 // READ ONLY. It connects only to the canonical disposable LOCAL_TEST loopback target
 // (local-test-marker.mjs config), proves it (live facts, exactly one canonical marker row
@@ -67,7 +67,7 @@ export async function main(argv, overrides = {}) {
   const refuse = (phase, reason, rc) => { deps.error(`${PREFIX} REFUSED: phase=${phase} — ${reason}`); return end('REFUSED', rc); };
 
   const args = parseArgs(argv);
-  if (!args.ok) return refuse('args', 'exactly --target=local-test, --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13 and a decimal --system-identifier are accepted', 1);
+  if (!args.ok) return refuse('args', 'exactly --target=local-test, --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13|EXACT_G14 and a decimal --system-identifier are accepted', 1);
   const config = readLocalTestMarkerConfig(deps.env);
   if (!config.ok) return refuse('config', config.reason, 2);
 

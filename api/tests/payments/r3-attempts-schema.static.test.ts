@@ -106,18 +106,18 @@ describe('R3-A4.3 S1 — ninth migration (static)', () => {
   const statements = splitTopLevelStatements(sql);
   const shells = statements.map(stripDollarBodies).map(squash);
 
-  it('S1-01 is the ninth migration, followed only by the reviewed cash-exit (10), cash-reversal (11) CARD_CREDIT (12) and warehouse (13) migrations, and R3-A2 keeps its exact bytes', () => {
+  it('S1-01 is the ninth migration, followed only by the reviewed cash-exit (10), cash-reversal (11) CARD_CREDIT (12), warehouse (13) and QR (14) migrations, and R3-A2 keeps its exact bytes', () => {
     const names = migrationNames();
-    // Reviewed tree: 13 migrations. S1 (migration 9) is no longer last: the
+    // Reviewed tree: 14 migrations. S1 (migration 9) is no longer last: the
     // additive cash-withdrawal/expense migration 10, the additive cash-reversal
-    // migration 11, the additive CARD_CREDIT migration 12 and the additive warehouse
-    // stock-adjustment migration 13 follow it. S1's own
+    // migration 11, the additive CARD_CREDIT migration 12, the additive warehouse
+    // stock-adjustment migration 13 and the additive QR migration 14 follow it. S1's own
     // position and R3-A2's bytes are unchanged by those additive neighbours.
-    expect(names).toHaveLength(13);
-    expect(names.slice(7, 13)).toEqual([
+    expect(names).toHaveLength(14);
+    expect(names.slice(7, 14)).toEqual([
       R3_A2_MIGRATION, R3_ATTEMPTS_MIGRATION,
       '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals',
-      '20261021120000_r3_card_credit', '20261021130000_warehouse_stock_adjustment',
+      '20261021120000_r3_card_credit', '20261021130000_warehouse_stock_adjustment', '20261021140000_r3_qr',
     ]);
     expect(sha256(readFileSync(migrationPath(R3_A2_MIGRATION)))).toBe(R3_A2_SHA256);
   });

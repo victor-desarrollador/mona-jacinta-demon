@@ -16,7 +16,7 @@
     },
     {
       "path": "scripts/database/pilot-migration-states.mjs",
-      "sha256": "b9f714631fcae786b4f7b164074c0a15dc1facc4d8bc726946be0af9ff6ab930"
+      "sha256": "a13421df83d9dc36273a7056642619967a1ae7895809cc65280e37773b2a57ab"
     },
     {
       "path": "scripts/database/app-schema-projection.mjs",
@@ -24,7 +24,7 @@
     },
     {
       "path": "scripts/database/pilot-schema-references.mjs",
-      "sha256": "4719439a83251b2a2cb9a04d48868a1d36fa4cceea047b88574644d7ac3470c3"
+      "sha256": "747f4b40f4570302d21c53b17807512bcf115c09e389f3b5786477631b10bf05"
     },
     {
       "path": "scripts/database/pilot-rbac-catalog.mjs",
@@ -81,6 +81,10 @@
     {
       "path": "api/prisma/migrations/20261021130000_warehouse_stock_adjustment/migration.sql",
       "sha256": "819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0"
+    },
+    {
+      "path": "api/prisma/migrations/20261021140000_r3_qr/migration.sql",
+      "sha256": "32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a"
     }
   ],
   "packages": [

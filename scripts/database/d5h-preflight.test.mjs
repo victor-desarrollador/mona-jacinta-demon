@@ -80,8 +80,13 @@ const WAREHOUSE_TREE_ENTRY = Object.freeze({
   bytes: 3457,
   sha256: '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0',
 });
-const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY, CARD_CREDIT_TREE_ENTRY, WAREHOUSE_TREE_ENTRY]);
-const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11, the card-credit migration 12 and the warehouse migration 13';
+const QR_TREE_ENTRY = Object.freeze({
+  name: '20261021140000_r3_qr',
+  bytes: 13048,
+  sha256: '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a',
+});
+const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY, CARD_CREDIT_TREE_ENTRY, WAREHOUSE_TREE_ENTRY, QR_TREE_ENTRY]);
+const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11, the card-credit migration 12, the warehouse migration 13 and the QR migration 14';
 const REVIEWED_TREE_NAMES = Object.freeze([...EXPECTED_PINS.map(([name]) => name), ...REVIEWED_TREE_ENTRIES.map((e) => e.name)]);
 const NAMES = EXPECTED_PINS.map(([name]) => name);
 const row = (i, patch = {}) => ({ migration_name: EXPECTED_PINS[i][0], checksum: EXPECTED_PINS[i][1], finished: true, rolled_back: false, ...patch });
@@ -109,7 +114,7 @@ function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSy
   }
 }
 
-test('D5H v1 keeps six independent pins and verifies the thirteen-directory tree (no drift)', () => {
+test('D5H v1 keeps six independent pins and verifies the fourteen-directory tree (no drift)', () => {
   assert.equal(D5H_MIGRATIONS.length, 6);
   assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
   const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));

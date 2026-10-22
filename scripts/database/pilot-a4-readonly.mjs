@@ -70,6 +70,7 @@ export const MIGRATIONS = Object.freeze([
   '20261006120000_pilot_pricing_v2', '20261012120000_cash_session_reconciliation',
   '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
   '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals', '20261021120000_r3_card_credit', '20261021130000_warehouse_stock_adjustment',
+  '20261021140000_r3_qr',
 ]);
 // The builtins-only shared cut-over modules. They are pinned by the manifest and imported only
 // AFTER it verified (never statically): states/ledger classifier, app-schema projection,
@@ -99,14 +100,15 @@ const PROBES = Object.freeze({
   '20261018120000_cash_movement_withdrawals_expenses': [['CashMovement', 'reason'], ['CashMovement', 'idempotencyKey']],
   '20261018180000_cash_movement_reversals': [['CashMovement', 'reversesMovementId']],
 });
-// What a pre-G13 state necessarily lacks (and therefore flags): the later migrations, their
+// What a pre-G14 state necessarily lacks (and therefore flags): the later migrations, their
 // tables and their probe columns. Nothing else is tolerated for an exact initial state.
 const LATER = Object.freeze({
   EXACT_S4: Object.freeze({ migrations: MIGRATIONS.slice(4), tables: ['CompanyPricingConfig', ...R3_TABLES] }),
   EXACT_G7: Object.freeze({ migrations: MIGRATIONS.slice(7), tables: [...R3_TABLES] }),
   EXACT_G11: Object.freeze({ migrations: MIGRATIONS.slice(11), tables: [] }),
   EXACT_G12: Object.freeze({ migrations: MIGRATIONS.slice(12), tables: [] }),
-  EXACT_G13: Object.freeze({ migrations: [], tables: [] }),
+  EXACT_G13: Object.freeze({ migrations: MIGRATIONS.slice(13), tables: [] }),
+  EXACT_G14: Object.freeze({ migrations: [], tables: [] }),
 });
 // Column type contract for every value-bearing read: [column, type schema, typtype, allowed type names].
 // Only built-in pg_catalog base types or the schema's own public enums (built-in enum I/O);
@@ -714,9 +716,9 @@ async function readState(run, repoSha, shared, runShared) {
   lines.push(`  cutover: ledger=${ledgerState ?? 'NONE'} reference=${reference} probes_failed=${probeFailures.length} rbac=${catalog}`);
   lines.push(`  app schema digest: ${digest}`);
   for (const f of probeFailures) lines.push(`  ${f}`);
-  // An exact historical state tolerates only the flags its pre-G13 schema necessarily produces
+  // An exact historical state tolerates only the flags its pre-G14 schema necessarily produces
   // (later migrations not recorded, their probe columns and tables absent, the old catalog);
-  // EXACT_G11 and EXACT_G12 tolerate only their missing later migrations; EXACT_G13 tolerates none.
+  // EXACT_G11, EXACT_G12 and EXACT_G13 tolerate only their missing later migrations; EXACT_G14 tolerates none.
   const later = ledgerState ? LATER[ledgerState] : null;
   const tolerated = (flag) => later !== null && (
     later.migrations.some((m) => flag === `MIGRATION_NOT_RECORDED:${m}` || flag === `SCHEMA_ABSENT:${m}`)
@@ -725,7 +727,7 @@ async function readState(run, repoSha, shared, runShared) {
   const unique = [...new Set(flags)];
   const blocking = unique.filter((f) => !tolerated(f));
   const exact = ledgerState !== null && reference === 'MATCH' && probeFailures.length === 0 && blocking.length === 0
-    && ((ledgerState === 'EXACT_G11' || ledgerState === 'EXACT_G12' || ledgerState === 'EXACT_G13') ? catalog === 'CATALOG_36' : catalog === 'CATALOG_35' || catalog === 'CATALOG_36');
+    && ((ledgerState === 'EXACT_G11' || ledgerState === 'EXACT_G12' || ledgerState === 'EXACT_G13' || ledgerState === 'EXACT_G14') ? catalog === 'CATALOG_36' : catalog === 'CATALOG_35' || catalog === 'CATALOG_36');
   return { lines, flags: unique, state: exact ? ledgerState : 'PARTIAL' };
 }
 

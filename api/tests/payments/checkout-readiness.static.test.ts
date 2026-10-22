@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { CASH_CATALOG_OBJECTS, CASH_CHECK_DEFINITIONS, CASH_MIGRATION_PINS, CREDIT_MIGRATION_PINS, G11_MIGRATION_PINS, G12_MIGRATION_PINS, G13_MIGRATION_PINS, R3_CATALOG_OBJECTS, R3_MIGRATION_PINS, R3_TRIGGER_BINDINGS, WAREHOUSE_MIGRATION_PINS } from '../../src/modules/payments/checkout-readiness.js';
+import { CASH_CATALOG_OBJECTS, CASH_CHECK_DEFINITIONS, CASH_MIGRATION_PINS, CREDIT_MIGRATION_PINS, G11_MIGRATION_PINS, G12_MIGRATION_PINS, G13_MIGRATION_PINS, G14_MIGRATION_PINS, QR_MIGRATION_PINS, R3_CATALOG_OBJECTS, R3_MIGRATION_PINS, R3_TRIGGER_BINDINGS, WAREHOUSE_MIGRATION_PINS } from '../../src/modules/payments/checkout-readiness.js';
 
 const migrationSql = (name: string) =>
   readFileSync(new URL(`../../prisma/migrations/${name}/migration.sql`, import.meta.url));
@@ -60,6 +60,15 @@ describe('WAREHOUSE S9 — pinned migration 13', () => {
     expect(WAREHOUSE_MIGRATION_PINS.map((pin) => pin.name)).toEqual(['20261021130000_warehouse_stock_adjustment']);
     for (const pin of WAREHOUSE_MIGRATION_PINS) expect(sha256(migrationSql(pin.name)), pin.name).toBe(pin.sha256);
     expect(G13_MIGRATION_PINS.map((pin) => pin.name)).toEqual([...G12_MIGRATION_PINS, ...WAREHOUSE_MIGRATION_PINS].map((pin) => pin.name));
+  });
+});
+
+// QR block (P0-B): S9 is G14-strict — m14 is pinned the same way and joins m8–m13.
+describe('QR S9 — pinned migration 14', () => {
+  it('pins exactly the QR migration with the real migration.sql checksum, and G14 = G13 + m14 in order', () => {
+    expect(QR_MIGRATION_PINS.map((pin) => pin.name)).toEqual(['20261021140000_r3_qr']);
+    for (const pin of QR_MIGRATION_PINS) expect(sha256(migrationSql(pin.name)), pin.name).toBe(pin.sha256);
+    expect(G14_MIGRATION_PINS.map((pin) => pin.name)).toEqual([...G13_MIGRATION_PINS, ...QR_MIGRATION_PINS].map((pin) => pin.name));
   });
 });
 

@@ -5,7 +5,7 @@
 //
 //   unshare -U -n --map-current-user env -i PATH=/usr/bin:/bin LANG=C.UTF-8 \
 //     node scripts/database/pilot-clone-restore.mjs --archive=<abs> --manifest=<abs>.manifest.json --work-root=<abs dir> \
-//       --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13
+//       --expected-state=EXACT_S4|EXACT_G7|EXACT_G11|EXACT_G12|EXACT_G13|EXACT_G14
 //   (the exact OWNER command is produced by pilot-launch-command.mjs; it pins this file)
 //
 // Gates before any process: arguments ([A-Za-z0-9/._-] absolute paths), not root, exact env
@@ -80,6 +80,7 @@ const MIGRATIONS = Object.freeze([
   '20261006120000_pilot_pricing_v2', '20261012120000_cash_session_reconciliation',
   '20261016120000_r3_proportional_checkout', '20261016130000_r3_checkout_attempts',
   '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals', '20261021120000_r3_card_credit', '20261021130000_warehouse_stock_adjustment',
+  '20261021140000_r3_qr',
 ]);
 // The builtins-only shared cut-over modules: pinned by the manifest, imported only after it verified.
 const SHARED_MODULES = Object.freeze({
@@ -88,7 +89,7 @@ const SHARED_MODULES = Object.freeze({
   rbac: 'scripts/database/pilot-rbac-catalog.mjs',
   projection: 'scripts/database/app-schema-projection.mjs',
 });
-const EXACT_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7', 'EXACT_G11', 'EXACT_G12', 'EXACT_G13']);
+const EXACT_STATES = Object.freeze(['EXACT_S4', 'EXACT_G7', 'EXACT_G11', 'EXACT_G12', 'EXACT_G13', 'EXACT_G14']);
 const PACKAGE_CLOSURE = Object.freeze(['pg', 'pg-connection-string', 'pg-pool', 'pg-protocol', 'pg-types', 'pgpass',
   'split2', 'pg-int8', 'postgres-array', 'postgres-bytea', 'postgres-date', 'postgres-interval', 'pg-cloudflare', 'xtend']);
 export const REQUIRED_REPO_FILES = Object.freeze(['scripts/database/pilot-backup.mjs', 'scripts/database/pilot-launch-command.mjs',

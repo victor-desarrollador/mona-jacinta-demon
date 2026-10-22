@@ -24,7 +24,9 @@ const API = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const schema = readFileSync(path.join(API, 'prisma/schema.prisma'), 'utf8');
 const migrationsDir = path.join(API, 'prisma/migrations');
 const LAST_EXISTING = '20261021120000_r3_card_credit';
-const added = readdirSync(migrationsDir).filter((name) => /^\d{14}_/.test(name) && name > LAST_EXISTING).sort();
+// The warehouse migration is the one under test; later migrations (the QR migration 14 re-creates CHECKs) are outside it.
+const WAREHOUSE_MIGRATION = '20261021130000_warehouse_stock_adjustment';
+const added = readdirSync(migrationsDir).filter((name) => /^\d{14}_/.test(name) && name > LAST_EXISTING && name <= WAREHOUSE_MIGRATION).sort();
 const sql = added.map((name) => readFileSync(path.join(migrationsDir, name, 'migration.sql'), 'utf8')).join('\n');
 const block = (source: string, kind: 'model' | 'enum', name: string) =>
   new RegExp(`${kind} ${name} \\{[\\s\\S]*?\\n\\}`).exec(source)?.[0] ?? '';

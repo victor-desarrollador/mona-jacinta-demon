@@ -40,7 +40,7 @@ test('SR-02 every positive probe names an object created by a migration of that 
 test('SR-03 every negative probe names an object that only a LATER migration creates', () => {
   for (const state of ALL) {
     const own = sqlOf(STATES[state]);
-    const later = sqlOf(STATES.EXACT_G13.slice(STATES[state].length));
+    const later = sqlOf(STATES.EXACT_G14.slice(STATES[state].length));
     for (const p of R.STATE_PROBES[state].filter((x) => x.kind.startsWith('absent'))) {
       if (p.labels) {
         for (const label of p.labels) { assert.doesNotMatch(own, new RegExp(`ADD VALUE '${label}'`), `${state} ${label}`); assert.match(later, new RegExp(`'${label}'`)); }
@@ -50,7 +50,7 @@ test('SR-03 every negative probe names an object that only a LATER migration cre
       assert.doesNotMatch(own.replace(/--.*$/gm, ''), new RegExp(`(CREATE (UNIQUE )?(TABLE|INDEX|FUNCTION|TRIGGER|CONSTRAINT TRIGGER)|ADD (COLUMN|CONSTRAINT)) (public\\.)?"${p.name}"`), `${state} ${p.name} must not be created by this state`);
     }
   }
-  assert.equal(R.STATE_PROBES.EXACT_G13.filter((p) => p.kind.startsWith('absent')).length, 0, 'G13 is final: nothing later to be absent');
+  assert.equal(R.STATE_PROBES.EXACT_G14.filter((p) => p.kind.startsWith('absent')).length, 0, 'G14 is final: nothing later to be absent');
 });
 
 test('SR-04 G11 probes cover the cut-over critical objects named by the OWNER', () => {
@@ -76,7 +76,7 @@ test('SR-05 the generated references are complete, well-formed and pairwise dist
     assert.match(ref.digest, /^[0-9a-f]{64}$/, state);
     for (const k of ['tables', 'columns', 'enums', 'types', 'constraints', 'indexes', 'functions', 'triggers']) assert.ok(Number.isSafeInteger(ref.summary[k]), `${state} ${k}`);
   }
-  assert.equal(new Set(ALL.map((s) => R.SCHEMA_REFERENCES[s].digest)).size, 5);
+  assert.equal(new Set(ALL.map((s) => R.SCHEMA_REFERENCES[s].digest)).size, 6);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_S4.summary.functions, 0);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_G7.summary.functions, 3);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_G11.summary.functions, 9);
@@ -94,4 +94,12 @@ test('SR-05 the generated references are complete, well-formed and pairwise dist
   assert.equal(R.SCHEMA_REFERENCES.EXACT_G13.summary.indexes, 129);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_G13.summary.functions, 9);
   assert.equal(R.SCHEMA_REFERENCES.EXACT_G13.summary.triggers, 10);
+  // m14 (QR snapshot): +4 columns (2 on SaleCheckout, 2 on CheckoutAttempt), +2 CHECKs, +1 partial unique index; no new relation, enum, function or trigger.
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G14.summary.tables, 31);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G14.summary.columns, 304);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G14.summary.enums, 18);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G14.summary.constraints, 151);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G14.summary.indexes, 130);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G14.summary.functions, 9);
+  assert.equal(R.SCHEMA_REFERENCES.EXACT_G14.summary.triggers, 10);
 });
