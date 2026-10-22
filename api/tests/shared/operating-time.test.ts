@@ -4,7 +4,7 @@ import {
   operatingDayBounds,
   parseOperatingDate,
   operatingWeekStart,
-} from '../../src/shared/operating-time.ts';
+} from '../../src/shared/operating-time.js';
 
 describe('operating-time (canonical zone America/Argentina/Tucuman)', () => {
   it('expone la zona canónica como constante única', () => {

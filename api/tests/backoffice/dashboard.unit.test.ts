@@ -58,7 +58,7 @@ describe('backoffice dashboard uses operating day bounds (DB-free)', () => {
   });
 
   it('defaults to the real clock when no instant is supplied', async () => {
-    const count = vi.fn(async () => 0);
+    const count = vi.fn(async (_args: { where: { createdAt: { gte: Date } } }) => 0);
     const database = {
       sale: { count, aggregate: vi.fn(async () => ({ _sum: { total: null } })) },
       inventory: { count: vi.fn(async () => 0) },
