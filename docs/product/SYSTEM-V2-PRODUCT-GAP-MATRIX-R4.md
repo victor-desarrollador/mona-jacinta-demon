@@ -30,10 +30,10 @@ Se calculan desde las filas de la sección 4.
 ```
 TOTAL_DOMAINS=54
 
-COMPLETE_COUNT=9
+COMPLETE_COUNT=10
 PARTIAL_COUNT=23
 MISSING_COUNT=20
-BROKEN_COUNT=1
+BROKEN_COUNT=0
 LEGACY_COUNT=1
 
 P0_COUNT=9
@@ -44,11 +44,11 @@ P2_COUNT=15
 Readiness (fórmula R1–R3: COMPLETE = 1, PARTIAL = 0,5, LEGACY = 0,25, MISSING/BROKEN = 0):
 
 ```
-READINESS_RAW = (9 × 1) + (23 × 0,5) + (1 × 0,25) + (20 × 0) + (1 × 0)
-              = 9 + 11,5 + 0,25
-              = 20,75 puntos
-READINESS_RATIO = 20,75 / 54 = 0,384259…
-READINESS_SCORE = 38,43 → 38/100  (redondeo al entero más cercano)
+READINESS_RAW = (10 × 1) + (23 × 0,5) + (1 × 0,25) + (20 × 0) + (0 × 0)
+              = 10 + 11,5 + 0,25
+              = 21,75 puntos
+READINESS_RATIO = 21,75 / 54 = 0,402777…
+READINESS_SCORE = 40,28 → 40/100  (redondeo al entero más cercano)
 ```
 
 Conciliación contra R3 (55 dominios, 10/22/21/1/1, 10 P0 / 29 P1 / 16 P2, score 38,6 → 39):
@@ -57,7 +57,9 @@ Conciliación contra R3 (55 dominios, 10/22/21/1/1, 10 P0 / 29 P1 / 16 P2, score
 |---|---|
 | 33b retirado (era MISSING · P0) | −1 dominio, −1 MISSING, −1 P0 |
 | 7 Pago combinado: COMPLETE · P2 → PARTIAL · P1 | −1 COMPLETE, +1 PARTIAL, −1 P2, +1 P1 |
-| Resultado | 54 dominios; 9/23/20/1/1; 9 P0 / 30 P1 / 15 P2 |
+| Línea base R4 (827078b) | 54 dominios; 9/23/20/1/1; 9 P0 / 30 P1 / 15 P2; score 38 |
+| 47 Día operativo: BROKEN → COMPLETE (cierre P0-C) | −1 BROKEN, +1 COMPLETE; prioridades sin cambio |
+| Resultado actual | 54 dominios; 10/23/20/0/1; 9 P0 / 30 P1 / 15 P2; score 40 |
 
 Justificación del cambio en 7: R3 lo dejó COMPLETE porque su TARGET era "lo mismo, más QR si el
 negocio lo pide". R4 cierra la decisión de producto: QR **entra** en PROPORTIONAL_V1. El código
@@ -77,15 +79,15 @@ el dominio de empleados y la capacidad transversal de autorización por PIN.
 ```
 PRIORITY: P0 + P1 + P2 = 9 + 30 + 15 = 54 = TOTAL_DOMAINS   → PRIORITY_COUNT_VALID=YES
 STATUS:   COMPLETE + PARTIAL + MISSING + BROKEN + LEGACY
-          = 9 + 23 + 20 + 1 + 1 = 54 = TOTAL_DOMAINS         → STATUS_COUNT_VALID=YES
+          = 10 + 23 + 20 + 0 + 1 = 54 = TOTAL_DOMAINS         → STATUS_COUNT_VALID=YES
 ```
 
 Distribución por STATUS (IDs):
 
-- COMPLETE (9): 8, 14, 15, 17, 25, 31, 43, 48, 49
+- COMPLETE (10): 8, 14, 15, 17, 25, 31, 43, 47, 48, 49
 - PARTIAL (23): 1, 2, 3, 4, 5, 6, 7, 9, 10, 16, 18, 23, 26, 28, 29, 30, 34, 40, 41, 42, 44, 45, 50
 - MISSING (20): 11, 12, 13, 19, 20, 21, 22, 24, 32, 33a, 35, 36, 37, 38, 39, 46, 51, 52, 53, 54
-- BROKEN (1): 47
+- BROKEN (0): —
 - LEGACY (1): 27
 
 Distribución por PRIORITY (IDs):
@@ -745,7 +747,7 @@ comercialmente una anulación) pasa al dominio 11 (operación de cambio/reversa)
 - ACCEPTANCE_CRITERIA: toda venta completada puede reimprimirse y el ticket permite ubicar la venta original.
 - EVIDENCE: búsqueda de print/ticket/recibo sin resultados en `client/src` y `admin/src`.
 
-#### 47 · Día operativo / zona horaria · IMPLEMENTED · P1
+#### 47 · Día operativo / zona horaria · COMPLETE · P1
 - CURRENT: `api/src/shared/operating-time.ts` define `OPERATING_TIME_ZONE = "America/Argentina/Tucuman"` como única constante backend. `backoffice.service.ts` usa `operatingDayBounds(now)` para `salesToday`/`revenueToday` (ya no `setHours(0,0,0,0)`). `backoffice.routes.ts` acepta `dateFrom`/`dateTo` como string; `YYYY-MM-DD` se interpreta como día operativo de Tucuman y los timestamps ISO pasan tal cual (contrato histórico). `admin/src/pages/SalesHistory.tsx` envía `YYYY-MM-DD` literal sin conversión de navegador.
 - TARGET: día operativo en America/Argentina/Tucuman; base de la semana lunes-sábado de la liquidación.
 - GAP: cerrado por P0-C (implementación + tests DB-free + arquitectura `no setHours`).
