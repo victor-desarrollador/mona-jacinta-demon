@@ -57,9 +57,9 @@ function wireQuote(overrides: Wire = {}): Wire {
       { method: "CASH", available: true },
       { method: "TRANSFER", available: true },
       { method: "CARD_DEBIT", available: true },
-      { method: "CARD_CREDIT", available: true },
+      { method: "CARD_CREDIT", available: true }, { method: "QR", available: true },
     ],
-    fullPrices: { CASH: "50000", TRANSFER: "55000", CARD_DEBIT: "52500", CARD_CREDIT: "57500" },
+    fullPrices: { CASH: "50000", TRANSFER: "55000", CARD_DEBIT: "52500", CARD_CREDIT: "57500", QR: "56000" },
     tenders: [{ method: "CASH", role: "FIXED", amount: "20037" }],
     balance: { method: "CARD_DEBIT", amount: "31500" },
     total: "51537",
@@ -189,9 +189,9 @@ describe("Q — parsing estricto de la cotización (POST /checkout/quote)", () =
         { method: "CASH", available: true },
         { method: "TRANSFER", available: true },
         { method: "CARD_DEBIT", available: true },
-        { method: "CARD_CREDIT", available: true },
+        { method: "CARD_CREDIT", available: true }, { method: "QR", available: true },
       ],
-      fullPrices: { CASH: BigInt(50000), TRANSFER: BigInt(55000), CARD_DEBIT: BigInt(52500), CARD_CREDIT: BigInt(57500) },
+      fullPrices: { CASH: BigInt(50000), TRANSFER: BigInt(55000), CARD_DEBIT: BigInt(52500), CARD_CREDIT: BigInt(57500), QR: BigInt(56000) },
       tenders: [{ method: "CASH", role: "FIXED", amount: BigInt(20037) }],
       balance: { method: "CARD_DEBIT", amount: BigInt(31500) },
       total: BigInt(51537),
@@ -226,14 +226,14 @@ describe("Q — parsing estricto de la cotización (POST /checkout/quote)", () =
       .toEqual(["INVALID_QUOTE_RESPONSE"]);
   });
 
-  it("Q5 exige los cuatro medios una sola vez y un motivo coherente con available", () => {
+  it("Q5 exige los cinco medios una sola vez y un motivo coherente con available", () => {
     const cases: Wire[] = [
       { enabledMethods: [{ method: "CASH", available: true }] },
       { enabledMethods: [{ method: "CASH", available: true }, { method: "CASH", available: true }, { method: "TRANSFER", available: true }] },
-      { enabledMethods: [{ method: "CASH", available: true }, { method: "TRANSFER", available: true }, { method: "CARD_CREDIT", available: true }] },
-      { enabledMethods: [{ method: "CASH", available: true }, { method: "TRANSFER", available: false }, { method: "CARD_DEBIT", available: true }, { method: "CARD_CREDIT", available: true }] },
-      { enabledMethods: [{ method: "CASH", available: true }, { method: "TRANSFER", available: true, reason: "PRICING_CONFIG_MISSING" }, { method: "CARD_DEBIT", available: true }, { method: "CARD_CREDIT", available: true }] },
-      { enabledMethods: [{ method: "CASH", available: true }, { method: "TRANSFER", available: false, reason: "OTHER_REASON" }, { method: "CARD_DEBIT", available: true }, { method: "CARD_CREDIT", available: true }] },
+      { enabledMethods: [{ method: "CASH", available: true }, { method: "TRANSFER", available: true }, { method: "CARD_CREDIT", available: true }, { method: "QR", available: true }] },
+      { enabledMethods: [{ method: "CASH", available: true }, { method: "TRANSFER", available: false }, { method: "CARD_DEBIT", available: true }, { method: "CARD_CREDIT", available: true }, { method: "QR", available: true }] },
+      { enabledMethods: [{ method: "CASH", available: true }, { method: "TRANSFER", available: true, reason: "PRICING_CONFIG_MISSING" }, { method: "CARD_DEBIT", available: true }, { method: "CARD_CREDIT", available: true }, { method: "QR", available: true }] },
+      { enabledMethods: [{ method: "CASH", available: true }, { method: "TRANSFER", available: false, reason: "OTHER_REASON" }, { method: "CARD_DEBIT", available: true }, { method: "CARD_CREDIT", available: true }, { method: "QR", available: true }] },
       { enabledMethods: "CASH" },
     ];
     for (const overrides of cases) {
@@ -245,7 +245,7 @@ describe("Q — parsing estricto de la cotización (POST /checkout/quote)", () =
         { method: "CASH", available: true },
         { method: "TRANSFER", available: false, reason: "PRICING_CONFIG_MISSING" },
         { method: "CARD_DEBIT", available: false, reason: "PRICING_CONFIG_MISSING" },
-        { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" },
+        { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" }, { method: "QR", available: false, reason: "PRICING_CONFIG_MISSING" },
       ],
     });
     expect(methodAvailability(missing).TRANSFER).toEqual({ available: false, reason: "PRICING_CONFIG_MISSING" });
@@ -271,9 +271,9 @@ describe("Q — parsing estricto de la cotización (POST /checkout/quote)", () =
     })))).toEqual(["INVALID_QUOTE_RESPONSE"]);
   });
 
-  it("Q7 exige los cuatro precios completos, con null para un medio sin configuración", () => {
-    expect(quote({ fullPrices: { CASH: "50000", TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null } }).fullPrices)
-      .toEqual({ CASH: BigInt(50000), TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null });
+  it("Q7 exige los cinco precios completos, con null para un medio sin configuración", () => {
+    expect(quote({ fullPrices: { CASH: "50000", TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null, QR: null } }).fullPrices)
+      .toEqual({ CASH: BigInt(50000), TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null, QR: null });
     for (const fullPrices of [
       { CASH: "50000", TRANSFER: "55000" },
       { CASH: "50000", TRANSFER: "55000", CARD_DEBIT: "52500" },
@@ -335,15 +335,15 @@ describe("M — métodos habilitados", () => {
         { method: "CASH", available: true },
         { method: "TRANSFER", available: false, reason: "PRICING_CONFIG_MISSING" },
         { method: "CARD_DEBIT", available: false, reason: "PRICING_CONFIG_MISSING" },
-        { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" },
+        { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" }, { method: "QR", available: false, reason: "PRICING_CONFIG_MISSING" },
       ],
-      fullPrices: { CASH: "50000", TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null },
+      fullPrices: { CASH: "50000", TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null, QR: null },
     });
     expect(availableMethods(noConfig)).toEqual(["CASH"]);
     expect(methodAvailability(noConfig).CARD_DEBIT).toEqual({ available: false, reason: "PRICING_CONFIG_MISSING" });
   });
 
-  it("M2 con configuración los cuatro medios están disponibles, en el orden del contrato", () => {
+  it("M2 con configuración los cinco medios están disponibles, en el orden del contrato", () => {
     const all = quote();
     expect(availableMethods(all)).toEqual([...PROPORTIONAL_METHODS]);
     expect(methodAvailability(all).TRANSFER).toEqual({ available: true });
@@ -355,7 +355,7 @@ describe("M — métodos habilitados", () => {
         { method: "CASH", available: true },
         { method: "TRANSFER", available: false, reason: "PRICING_CONFIG_MISSING" },
         { method: "CARD_DEBIT", available: false, reason: "PRICING_CONFIG_MISSING" },
-        { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" },
+        { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" }, { method: "QR", available: false, reason: "PRICING_CONFIG_MISSING" },
       ],
     });
     expect(methodAvailability(noConfig).CASH).toEqual({ available: true });
@@ -367,7 +367,7 @@ describe("M — métodos habilitados", () => {
         { method: "CASH", available: true },
         { method: "TRANSFER", available: false, reason: "PRICING_CONFIG_MISSING" },
         { method: "CARD_DEBIT", available: false, reason: "PRICING_CONFIG_MISSING" },
-        { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" },
+        { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" }, { method: "QR", available: false, reason: "PRICING_CONFIG_MISSING" },
       ],
     });
     const asBalance = draft({ balanceMethod: "TRANSFER", fixed: [{ method: "CASH", amount: "20037", receivedAmount: "20037" }] });

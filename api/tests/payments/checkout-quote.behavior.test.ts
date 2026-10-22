@@ -149,7 +149,7 @@ function createQuoteDb() {
 // ---------------------------------------------------------------------------
 // Fixture
 // ---------------------------------------------------------------------------
-function setup(options: { pricing?: boolean; transferBps?: number; debitBps?: number; creditBps?: number } = {}) {
+function setup(options: { pricing?: boolean; transferBps?: number; debitBps?: number; creditBps?: number; qrBps?: number } = {}) {
   const db = createQuoteDb();
   db.insert('company', { name: 'Mona Jacinta', cuit: '00000000000', address: 'Demo', isActive: true, createdAt: new Date() });
   const companyId = db.table('company')[0]!.id as string;
@@ -160,7 +160,7 @@ function setup(options: { pricing?: boolean; transferBps?: number; debitBps?: nu
       bankTransferAdjustmentBps: options.transferBps ?? 1000,
       debitCardAdjustmentBps: options.debitBps ?? 500,
       creditCardAdjustmentBps: options.creditBps ?? 0,
-      qrAdjustmentBps: 0,
+      qrAdjustmentBps: options.qrBps ?? 0,
     });
   }
   db.insert('location', { id: BRANCH, isActive: true });
@@ -237,7 +237,7 @@ describe('F — the quote prices the same methods and amounts as the real checko
     const quote = await t.quoteOf(saleId);
     expect(quote).toMatchObject({
       saleId, saleNumber: t.saleRow(saleId).saleNumber, pricingModel: 'PROPORTIONAL_V1',
-      fullPrices: { CASH: 50000n, TRANSFER: 55000n, CARD_DEBIT: 52500n, CARD_CREDIT: 50000n },
+      fullPrices: { CASH: 50000n, TRANSFER: 55000n, CARD_DEBIT: 52500n, CARD_CREDIT: 50000n, QR: 50000n },
       tenders: [], balance: { method: 'CASH', amount: 50000n }, total: 50000n,
     });
     expect(bySku(quote)).toEqual({ V1: 20000n, V2: 30000n });
@@ -260,7 +260,7 @@ describe('F — the quote prices the same methods and amounts as the real checko
     expect(bySku(quote)).toEqual({ V1: 21000n, V2: 31500n });
   });
 
-  it('F4 enabledMethods lists the three R3 methods, all available', async () => {
+  it('F4 enabledMethods lists the five proportional methods, all available', async () => {
     const t = setup();
     const quote = await t.quoteOf(await t.draft());
     expect(quote.enabledMethods).toEqual([
@@ -268,6 +268,7 @@ describe('F — the quote prices the same methods and amounts as the real checko
       { method: 'TRANSFER', available: true },
       { method: 'CARD_DEBIT', available: true },
       { method: 'CARD_CREDIT', available: true },
+      { method: 'QR', available: true },
     ]);
   });
 
@@ -408,7 +409,7 @@ describe('S — the answer carries everything a later checkout request needs', (
     const t = setup();
     const quote = await t.quoteOf(await t.draft());
     expect(Object.keys(quote).sort()).toEqual(RESPONSE_KEYS);
-    expect(Object.keys(quote.fullPrices).sort()).toEqual(['CARD_CREDIT', 'CARD_DEBIT', 'CASH', 'TRANSFER']);
+    expect(Object.keys(quote.fullPrices).sort()).toEqual(['CARD_CREDIT', 'CARD_DEBIT', 'CASH', 'QR', 'TRANSFER']);
     expect(Object.keys(quote.balance).sort()).toEqual(['amount', 'method']);
   });
 });
@@ -502,10 +503,10 @@ describe('R — a sale that is not quotable is refused with a stable code', () =
     await expectAppError(t.quote(saleId, { balanceMethod: 'CASH', tenders: [{ method: 'TRANSFER', amount: 1000n }, { method: 'TRANSFER', amount: 2000n }] }), 409, 'DUPLICATE_TENDER_METHOD');
     await expectAppError(t.quote(saleId, { balanceMethod: 'CASH', tenders: [{ method: 'CASH', amount: 1000n }] }), 409, 'BALANCE_METHOD_ALSO_FIXED');
     // The engine's own method guard is 400 (the approved A3.2 behaviour); the
-    // HTTP edge rejects CARD_CREDIT/QR earlier as 400 VALIDATION_ERROR. `as
+    // HTTP edge rejects an unknown method earlier as 400 VALIDATION_ERROR. `as
     // never` models the out-of-enum value a JS consumer or a bad cast can hand
     // the engine, which is exactly what its public-boundary guard is for.
-    await expectAppError(t.quote(saleId, { balanceMethod: 'QR' as never, tenders: [] }), 400, 'PAYMENT_METHOD_NOT_ENABLED');
+    await expectAppError(t.quote(saleId, { balanceMethod: 'PAYPAL' as never, tenders: [] }), 400, 'PAYMENT_METHOD_NOT_ENABLED');
     await expectAppError(t.quote(saleId, { balanceMethod: 'CASH', tenders: [{ method: 'TRANSFER', amount: 9223372036854775808n }] }), 409, 'AMOUNT_OVERFLOW');
   });
 
@@ -518,8 +519,9 @@ describe('R — a sale that is not quotable is refused with a stable code', () =
       { method: 'TRANSFER', available: false, reason: 'PRICING_CONFIG_MISSING' },
       { method: 'CARD_DEBIT', available: false, reason: 'PRICING_CONFIG_MISSING' },
       { method: 'CARD_CREDIT', available: false, reason: 'PRICING_CONFIG_MISSING' },
+      { method: 'QR', available: false, reason: 'PRICING_CONFIG_MISSING' },
     ]);
-    expect(quote.fullPrices).toEqual({ CASH: 50000n, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null });
+    expect(quote.fullPrices).toEqual({ CASH: 50000n, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null, QR: null });
     expect(quote.total).toBe(50000n);
     await expectAppError(t.quote(saleId, t.noFixed('TRANSFER')), 409, 'PRICING_CONFIG_MISSING');
   });
@@ -547,7 +549,7 @@ describe('N — the quote has no side effect at all', () => {
     const t = setup();
     const saleId = await t.draft();
     const before = t.countRows();
-    const cashOnly = { balanceMethod: 'QR' as never, tenders: [] };
+    const cashOnly = { balanceMethod: 'PAYPAL' as never, tenders: [] };
     const attempts = [
       t.quote(saleId, cashOnly),
       t.quote(saleId, { balanceMethod: 'CASH', tenders: [{ method: 'TRANSFER', amount: 55000n }] }),
@@ -588,7 +590,7 @@ describe('H — HTTP contract of POST /sales/:saleId/checkout/quote', () => {
     // total keeps the fixed centavos: 20037 + 31500 = 51537.
     expect(response.body).toMatchObject({
       saleId, pricingModel: 'PROPORTIONAL_V1',
-      fullPrices: { CASH: '50000', TRANSFER: '55000', CARD_DEBIT: '52500', CARD_CREDIT: '50000' },
+      fullPrices: { CASH: '50000', TRANSFER: '55000', CARD_DEBIT: '52500', CARD_CREDIT: '50000', QR: '50000' },
       tenders: [{ method: 'CASH', role: 'FIXED', amount: '20037' }],
       balance: { method: 'CARD_DEBIT', amount: '31500' },
       total: '51537',
@@ -607,7 +609,7 @@ describe('H — HTTP contract of POST /sales/:saleId/checkout/quote', () => {
       .set('X-Test-User', 'cashier')
       .send(body);
     const bodies = [
-      { balanceMethod: 'QR', tenders: [] },
+      { balanceMethod: 'PAYPAL', tenders: [] },
       { balanceMethod: 'CASH', tenders: [{ method: 'CASH', amount: '0' }] },
       { balanceMethod: 'CASH', tenders: [{ method: 'TRANSFER', amount: '1' }, { method: 'CARD_DEBIT', amount: '1' }, { method: 'CASH', amount: '1' }] },
       { balanceMethod: 'CASH', tenders: [], expectedTotal: '1' },
@@ -624,12 +626,13 @@ describe('H — HTTP contract of POST /sales/:saleId/checkout/quote', () => {
       .set('X-Test-User', 'cashier')
       .send({ balanceMethod: 'CASH', tenders: [] });
     expect(badId.status).toBe(400);
-    // QR is outside the proportional engine: enabling it is a code change. CARD_CREDIT is a valid
-    // proportional method since the CARD_CREDIT block.
+    // CARD_CREDIT and QR are valid proportional methods (CARD_CREDIT and QR blocks); only unknown ones are 400.
     const credit = await post({ balanceMethod: 'CASH', tenders: [{ method: 'CARD_CREDIT', amount: '100' }] });
     expect(credit.status).toBe(200);
     const qr = await post({ balanceMethod: 'CASH', tenders: [{ method: 'QR', amount: '100' }] });
-    expect(qr.status).toBe(400);
+    expect(qr.status).toBe(200);
+    const unknown = await post({ balanceMethod: 'CASH', tenders: [{ method: 'PAYPAL', amount: '100' }] });
+    expect(unknown.status).toBe(400);
   });
 
   it('H3 a rejection keeps its stable code through the real error handler', async () => {
@@ -701,6 +704,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'QR', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
   });
 
@@ -713,10 +717,11 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'QR', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
   });
 
-  it('GATE-03 gate ON: the three methods are available', async () => {
+  it('GATE-03 gate ON: the external methods are available', async () => {
     const t = setup();
     const saleId = await t.draft();
     const on = await createCheckoutQuoteService(t.db.client as unknown as PrismaClient, { externalMethodsEnabled: true })
@@ -726,6 +731,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'TRANSFER', available: true },
       { method: 'CARD_DEBIT', available: true },
       { method: 'CARD_CREDIT', available: true },
+      { method: 'QR', available: true },
     ]);
   });
 
@@ -741,6 +747,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'QR', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
   });
 
@@ -795,6 +802,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'QR', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
   });
 
@@ -817,6 +825,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, quote)', () => 
       { method: 'TRANSFER', available: true },
       { method: 'CARD_DEBIT', available: true },
       { method: 'CARD_CREDIT', available: true },
+      { method: 'QR', available: true },
     ]);
     expect(response.body.unappliedCollections).toHaveLength(1);
   });
@@ -832,7 +841,7 @@ describe('CARD_CREDIT — quote', () => {
   it('CRED-Q1 retail: fullPrices carries the credit price (cash base + credit bps, one rounding per unit)', async () => {
     const t = setup({ creditBps: 1500 });
     const quote = await t.quoteOf(await t.draft());
-    expect(quote.fullPrices).toEqual({ CASH: 50000n, TRANSFER: 55000n, CARD_DEBIT: 52500n, CARD_CREDIT: 57500n });
+    expect(quote.fullPrices).toEqual({ CASH: 50000n, TRANSFER: 55000n, CARD_DEBIT: 52500n, CARD_CREDIT: 57500n, QR: 50000n });
   });
 
   it('CRED-Q2 simple credit (no fixed tenders): total is the credit full price, lines add up', async () => {
@@ -881,5 +890,92 @@ describe('CARD_CREDIT — quote', () => {
     const quote = await t.quoteOf(saleId);
     expect(quote.enabledMethods).toContainEqual({ method: 'CARD_CREDIT', available: false, reason: 'PRICING_CONFIG_MISSING' });
     await expectAppError(t.quote(saleId, t.noFixed('CARD_CREDIT')), 409, 'PRICING_CONFIG_MISSING');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QR (P0-B): the quote prices QR from qrAdjustmentBps of the company configuration, on
+// the same line base as the other methods. Same fixture as CARD_CREDIT: V1 $200 + V2
+// $300 (the store keeps pesos x100 here); QR +12% -> V1 224, V2 336, total 560.
+// ---------------------------------------------------------------------------
+describe('QR — quote', () => {
+  it('QR-Q1 retail: fullPrices carries the QR price (cash base + qrAdjustmentBps, one rounding per unit)', async () => {
+    const t = setup({ qrBps: 1200 });
+    const quote = await t.quoteOf(await t.draft());
+    expect(quote.fullPrices).toEqual({ CASH: 50000n, TRANSFER: 55000n, CARD_DEBIT: 52500n, CARD_CREDIT: 50000n, QR: 56000n });
+    expect(quote.enabledMethods).toContainEqual({ method: 'QR', available: true });
+  });
+
+  it('QR-Q2 simple QR (no fixed tenders): total is the QR full price, lines add up', async () => {
+    const t = setup({ qrBps: 1200 });
+    const quote = await t.quote(await t.draft(), t.noFixed('QR'));
+    expect(quote).toMatchObject({ balance: { method: 'QR', amount: 56000n }, total: 56000n });
+    expect(bySku(quote)).toEqual({ V1: 22400n, V2: 33600n });
+  });
+
+  it('QR-Q3 combined: CASH 20.000 fixed + balance QR', async () => {
+    const t = setup({ qrBps: 1200 });
+    const quote = await t.quote(await t.draft(), { balanceMethod: 'QR', tenders: [{ method: 'CASH', amount: 20000n }] });
+    // balance = 56.000 * (50.000 - 20.000) / 50.000 = 33.600
+    expect(quote).toMatchObject({ balance: { method: 'QR', amount: 33600n }, total: 53600n });
+    expect(Object.values(bySku(quote)).reduce((sum, value) => sum + value, 0n)).toBe(53600n);
+  });
+
+  it('QR-Q4 combined: TRANSFER and CARD_DEBIT fixed against a QR balance, and QR fixed against a CASH balance', async () => {
+    const t = setup({ qrBps: 1200 });
+    const saleId = await t.draft();
+    const transfer = await t.quote(saleId, { balanceMethod: 'QR', tenders: [{ method: 'TRANSFER', amount: 27500n }] });
+    expect(transfer).toMatchObject({ balance: { method: 'QR', amount: 28000n }, total: 55500n });
+    const debit = await t.quote(saleId, { balanceMethod: 'QR', tenders: [{ method: 'CARD_DEBIT', amount: 26250n }] });
+    expect(debit).toMatchObject({ balance: { method: 'QR', amount: 28000n }, total: 54250n });
+    const qrFixed = await t.quote(saleId, { balanceMethod: 'CASH', tenders: [{ method: 'QR', amount: 28000n }] });
+    expect(qrFixed).toMatchObject({ balance: { method: 'CASH', amount: 25000n }, total: 53000n });
+  });
+
+  it('QR-Q5 wholesale: QR is priced on the wholesale base lines', async () => {
+    const t = setup({ qrBps: 1200 });
+    const saleId = await t.draft();
+    Object.assign(t.saleRow(saleId), { pricingMode: 'WHOLESALE', wholesaleAuthorizedAt: new Date(), wholesaleConfirmedAt: new Date(), wholesaleConfirmedById: t.ids.cashier });
+    const bases: Record<string, bigint> = { V1: 15000n, V2: 25000n };
+    for (const line of t.linesOf(saleId)) {
+      line.priceBaseType = 'WHOLESALE';
+      line.baseUnitPrice = bases[line.sku as string]!;
+    }
+    const quote = await t.quote(saleId, t.noFixed('QR'));
+    expect(quote.fullPrices).toMatchObject({ CASH: 40000n, QR: 44800n });
+    expect(bySku(quote)).toEqual({ V1: 16800n, V2: 28000n });
+  });
+
+  it('QR-Q6 a change of qrAdjustmentBps changes the next quote only (the configuration is read, never cached)', async () => {
+    const t = setup({ qrBps: 1200 });
+    const saleId = await t.draft();
+    expect((await t.quote(saleId, t.noFixed('QR'))).total).toBe(56000n);
+    t.db.table('companyPricingConfig')[0]!.qrAdjustmentBps = 2000;
+    expect((await t.quote(saleId, t.noFixed('QR'))).total).toBe(60000n);
+  });
+
+  it('QR-Q7 without a pricing configuration QR is unavailable and quoting it fails closed', async () => {
+    const t = setup({ pricing: false });
+    const saleId = await t.draft();
+    const quote = await t.quoteOf(saleId);
+    expect(quote.enabledMethods).toContainEqual({ method: 'QR', available: false, reason: 'PRICING_CONFIG_MISSING' });
+    await expectAppError(t.quote(saleId, t.noFixed('QR')), 409, 'PRICING_CONFIG_MISSING');
+  });
+
+  it('QR-Q8 HTTP: QR is accepted by the edge as a balance and as a fixed tender; strings carry the money', async () => {
+    const t = setup({ qrBps: 1200 });
+    const saleId = await t.draft();
+    const { app } = httpHarness(t);
+    const response = await supertest(app)
+      .post(`/api/v1/sales/${saleId}/checkout/quote`)
+      .set('X-Test-User', 'cashier')
+      .send({ balanceMethod: 'QR', tenders: [{ method: 'CASH', amount: '20000' }] });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ balance: { method: 'QR', amount: '33600' }, total: '53600', fullPrices: { QR: '56000' } });
+    const fixed = await supertest(app)
+      .post(`/api/v1/sales/${saleId}/checkout/quote`)
+      .set('X-Test-User', 'cashier')
+      .send({ balanceMethod: 'CASH', tenders: [{ method: 'QR', amount: '28000' }] });
+    expect(fixed.status).toBe(200);
   });
 });

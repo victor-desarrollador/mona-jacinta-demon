@@ -34,9 +34,13 @@ const parseMoney = (value: string) => {
   }
 };
 
-// R3 accepts these four methods and nothing else: QR is rejected at the edge
-// (enabling another method is a code change, never a switch).
-const checkoutMethod = z.enum(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']);
+// R3 accepts these five methods and nothing else (enabling another method is a code
+// change, never a switch).
+const checkoutMethod = z.enum(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT', 'QR']);
+// The card/QR collections carry a reference and never an institution (the institution is the
+// origin bank of a TRANSFER only).
+const noInstitutionMessage = (method: string): string => (
+  method === 'CARD_CREDIT' ? 'El crédito no lleva institución.' : method === 'QR' ? 'El QR no lleva institución.' : 'El débito no lleva institución.');
 const tenderRole = z.enum(['FIXED', 'BALANCE']);
 // Mirrors TransferInstitution (prisma/schema.prisma) and the service's own
 // private institution list.
@@ -181,8 +185,8 @@ export type CheckoutRequestInput = z.output<typeof checkoutRequestDto>;
 // accepted: they come from the sealed plan. Per tender:
 //   CASH: receivedAmount only;
 //   TRANSFER (NEW): reference + institution (+ institutionOther for OTHER);
-//   CARD_DEBIT / CARD_CREDIT (NEW): reference, no institution;
-//   COLLECTION tender (TRANSFER/CARD_DEBIT/CARD_CREDIT): nothing at all.
+//   CARD_DEBIT / CARD_CREDIT / QR (NEW): reference, no institution;
+//   COLLECTION tender (TRANSFER/CARD_DEBIT/CARD_CREDIT/QR): nothing at all.
 // The service checks the exact method set and NEW/COLLECTION against the plan.
 import type { ConfirmationTenderInput } from '../checkout-canonical.js';
 import { normalizeReferenceKey as canonicalReferenceKey } from '../checkout-canonical.js';
@@ -218,9 +222,9 @@ const confirmationTender = z.object({
     return;
   }
   if (tender.receivedAmount !== undefined) issue('receivedAmount', 'Solo el efectivo lleva importe recibido.');
-  if (tender.method === 'CARD_DEBIT' || tender.method === 'CARD_CREDIT') {
+  if (tender.method === 'CARD_DEBIT' || tender.method === 'CARD_CREDIT' || tender.method === 'QR') {
     if (tender.institution !== undefined || tender.institutionOther !== undefined) {
-      issue('institution', tender.method === 'CARD_CREDIT' ? 'El crédito no lleva institución.' : 'El débito no lleva institución.');
+      issue('institution', noInstitutionMessage(tender.method));
     }
     return;
   }

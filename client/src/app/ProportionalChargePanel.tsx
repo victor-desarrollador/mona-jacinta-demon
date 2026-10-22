@@ -96,6 +96,7 @@ const METHOD_LABELS: Record<ProportionalMethod, string> = {
   TRANSFER: "Transferencia",
   CARD_DEBIT: "Tarjeta de débito",
   CARD_CREDIT: "Tarjeta de crédito",
+  QR: "QR",
 };
 
 const INSTITUTION_LABELS: Record<TransferInstitution, string> = {
@@ -128,7 +129,7 @@ function institutionLabel(institution: TransferInstitution): string {
 }
 
 function isProportional(method: PaymentMethod): method is ProportionalMethod {
-  return method === "CASH" || method === "TRANSFER" || method === "CARD_DEBIT" || method === "CARD_CREDIT";
+  return method === "CASH" || method === "TRANSFER" || method === "CARD_DEBIT" || method === "CARD_CREDIT" || method === "QR";
 }
 
 function centavosOrRaw(money: MoneyTools, input: string): string {
@@ -163,6 +164,7 @@ const SIMPLE_LABELS: Record<ProportionalMethod, string> = {
   TRANSFER: "Transferencia",
   CARD_DEBIT: "Débito",
   CARD_CREDIT: "Crédito",
+  QR: "QR",
 };
 
 const INITIAL_DRAFT: DraftState = {

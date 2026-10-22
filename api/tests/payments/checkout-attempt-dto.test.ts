@@ -103,7 +103,15 @@ describe('R3-A4.3 S2 — reservation DTO (POST /sales/:saleId/checkout/reservati
     expect(accepted).toBe(3 + 3 + 2);
   });
 
-  it('D05 CARD_CREDIT is a proportional method (balance, NEW fixed, COLLECTION fixed); QR and unknown methods are refused', () => {
+  it('D05 CARD_CREDIT and QR are proportional methods (balance, NEW fixed, COLLECTION fixed); unknown methods are refused', () => {
+    ok(checkoutReservationDto, reservation({ balanceMethod: 'QR', tenders: [
+      { method: 'QR', role: 'BALANCE', source: 'NEW' },
+      { method: 'CASH', role: 'FIXED', source: 'NEW', amount: '1' },
+    ] }));
+    ok(checkoutReservationDto, withTenders([
+      { method: 'CASH', role: 'BALANCE', source: 'NEW' },
+      { method: 'QR', role: 'FIXED', source: 'COLLECTION', amount: '50000', externalCollectionId: COLLECTION },
+    ]));
     ok(checkoutReservationDto, reservation({ balanceMethod: 'CARD_CREDIT', tenders: [
       { method: 'CARD_CREDIT', role: 'BALANCE', source: 'NEW' },
       { method: 'CASH', role: 'FIXED', source: 'NEW', amount: '1' },
@@ -112,7 +120,7 @@ describe('R3-A4.3 S2 — reservation DTO (POST /sales/:saleId/checkout/reservati
       { method: 'CASH', role: 'BALANCE', source: 'NEW' },
       { method: 'CARD_CREDIT', role: 'FIXED', source: 'COLLECTION', amount: '50000', externalCollectionId: COLLECTION },
     ]));
-    for (const method of ['QR', 'cash', 'OTHER']) {
+    for (const method of ['PAYPAL', 'cash', 'OTHER']) {
       ko(checkoutReservationDto, reservation({ balanceMethod: method }), method);
       ko(checkoutReservationDto, withTenders([{ method: 'CASH', role: 'BALANCE', source: 'NEW' }, { method, role: 'FIXED', source: 'NEW', amount: '1' }]), method);
     }
@@ -221,7 +229,13 @@ describe('R3-A4.3 S2 — confirmation DTO (POST /sales/:saleId/checkout)', () =>
     ko(checkoutConfirmationDto, confirmation({ tenders: [] }), 'empty');
     ko(checkoutConfirmationDto, confirmation({ tenders: [{ method: 'CASH', receivedAmount: '1' }, { method: 'CASH', receivedAmount: '2' }] }), 'duplicate');
     ko(checkoutConfirmationDto, confirmation({ tenders: [{ method: 'CASH', receivedAmount: '1' }, { method: 'TRANSFER' }, { method: 'CARD_DEBIT' }, { method: 'TRANSFER' }] }), 'four');
-    ko(checkoutConfirmationDto, confTender({ method: 'QR' }), 'QR');
+    // QR: a reference (NEW) or none (COLLECTION), never an institution nor a received amount.
+    ok(checkoutConfirmationDto, confTender({ method: 'QR', reference: 'QR 0001' }));
+    ok(checkoutConfirmationDto, confTender({ method: 'QR' }));
+    expect(checkoutConfirmationDto.parse(confTender({ method: 'QR', reference: ' qr/000-1 ' })).tenders[0]!.referenceKey).toBe('QR0001');
+    ko(checkoutConfirmationDto, confTender({ method: 'QR', reference: 'QR 0001', institution: 'BBVA' }), 'QR with institution');
+    ko(checkoutConfirmationDto, confTender({ method: 'QR', receivedAmount: '1' }), 'QR with receivedAmount');
+    ko(checkoutConfirmationDto, confTender({ method: 'PAYPAL' }), 'unknown method');
     // CARD_CREDIT: a reference (NEW) or none (COLLECTION), never an institution.
     ok(checkoutConfirmationDto, confTender({ method: 'CARD_CREDIT', reference: 'CRD 0001' }));
     ok(checkoutConfirmationDto, confTender({ method: 'CARD_CREDIT' }));
@@ -318,7 +332,8 @@ describe('R3-A4.3 S2 — close/declaration DTO (POST …/reservations/:reserveKe
     ko(checkoutCloseDto, close([]), 'empty');
     ko(checkoutCloseDto, close([{ method: 'CASH', outcome: 'NONE' }, { method: 'CASH', outcome: 'NONE' }]), 'duplicate');
     ok(checkoutCloseDto, close([{ method: 'CARD_CREDIT', outcome: 'NONE' }]));
-    ko(checkoutCloseDto, close([{ method: 'QR', outcome: 'NONE' }]), 'QR');
+    ok(checkoutCloseDto, close([{ method: 'QR', outcome: 'NONE' }]));
+    ko(checkoutCloseDto, close([{ method: 'PAYPAL', outcome: 'NONE' }]), 'unknown method');
     expect(checkoutCloseDto.parse(close([{ method: 'CASH', outcome: 'NONE', evidence: 'ok1' }], { supervisor: { reason, evidence: 'cupón 1' } })).supervisor).toEqual({ reason, evidence: 'cupón 1' });
     ko(checkoutCloseDto, close([{ method: 'CASH', outcome: 'NONE' }], { supervisor: { reason: 'corto', evidence: 'ok1' } }), 'short reason');
     ko(checkoutCloseDto, close([{ method: 'CASH', outcome: 'NONE' }], { status: 'ABANDONED' }), 'extra');

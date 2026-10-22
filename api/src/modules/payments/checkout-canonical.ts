@@ -9,7 +9,7 @@
 //     sign or leading zeroes, within PostgreSQL BIGINT; absent: "-"; enum: its
 //     name; referenceKey: [A-Z0-9]{3,40}, already normalised;
 //     institutionOther: trim → NFC → UTF-8 → lowercase hex;
-//   - tenders always in the order CASH, TRANSFER, CARD_DEBIT.
+//   - tenders always in the order CASH, TRANSFER, CARD_DEBIT, CARD_CREDIT, QR.
 // Only `null` means absent ("-"). `undefined`, a Number, an empty string or any
 // malformed value is refused with CheckoutCanonicalError (fail closed): a hash
 // is never computed over input that the database or the contract would reject.
@@ -19,17 +19,22 @@ import { createHash } from 'node:crypto';
 // The tender grammar of mona-checkout-plan/v1 and mona-checkout-confirmation/v1 is
 // unchanged by CARD_CREDIT: one `tender=<METHOD>|...` row per tender, and the method
 // set only grows. A plan without credit therefore keeps its exact historical bytes
-// and hash. Order: CASH, TRANSFER, CARD_DEBIT, CARD_CREDIT.
-export const CHECKOUT_METHODS = ['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT'] as const;
+// and hash. The QR block (P0-B) grows the set the same way: a plan without QR keeps its
+// bytes and hash (golden vectors in checkout-canonical-qr.test.ts), so the grammar needs no
+// new version prefix. Order: CASH, TRANSFER, CARD_DEBIT, CARD_CREDIT, QR.
+export const CHECKOUT_METHODS = ['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT', 'QR'] as const;
 // A checkout still carries at most two fixed tenders plus the balance.
 export const MAX_CHECKOUT_TENDERS = 3;
 
 // The pricing-snapshot format written by NEW attempts and checkouts. 1 = a snapshot
-// WITHOUT a CARD_CREDIT price (everything written before the CARD_CREDIT block, and
-// what an N-1 API still writes); 2 = the snapshot WITH it. The canonical text/hash
-// grammar above is the same for both; this number only says which columns of the
-// stored row are meaningful (chk_*_credit_snapshot).
-export const CHECKOUT_ALGORITHM_VERSION = 2;
+// WITHOUT a CARD_CREDIT price (everything written before the CARD_CREDIT block); 2 = the
+// snapshot WITH it but without a QR price (what the N-1 API, the CARD_CREDIT release,
+// still writes); 3 = the snapshot WITH the QR price too. The canonical text/hash grammar
+// above is the same for all three; this number only says which columns of the stored row
+// are meaningful (chk_*_credit_snapshot, chk_*_qr_snapshot). A version is bumped only
+// when the stored snapshot gains columns, never because the method set grew.
+export const CHECKOUT_ALGORITHM_VERSION = 3;
+export const CHECKOUT_ALGORITHM_VERSION_NO_QR = 2;
 export const CHECKOUT_ALGORITHM_VERSION_NO_CREDIT = 1;
 export type CheckoutMethod = (typeof CHECKOUT_METHODS)[number];
 export const TENDER_ROLES = ['FIXED', 'BALANCE'] as const;
@@ -207,7 +212,7 @@ export function canonicalConfirmationText(input: ConfirmationInput): string {
       }
     } else {
       if (received !== null) refuse('only a CASH tender carries receivedAmount');
-      if ((tender.method === 'CARD_DEBIT' || tender.method === 'CARD_CREDIT') && (institution !== null || institutionOther !== null)) {
+      if ((tender.method === 'CARD_DEBIT' || tender.method === 'CARD_CREDIT' || tender.method === 'QR') && (institution !== null || institutionOther !== null)) {
         refuse(`a ${tender.method} tender carries no institution`);
       }
       if (tender.method === 'TRANSFER' && (referenceKey === null) !== (institution === null)) {

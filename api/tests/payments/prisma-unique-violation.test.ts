@@ -78,9 +78,9 @@ describe('attemptCollision (T-R / T-RR) — only its own CheckoutAttempt constra
 });
 
 describe('isExternalReferenceCollision (T-C / T-X) — only the partial external-reference indexes', () => {
-  it('ER-01 both partial indexes, every shape', () => {
+  it('ER-01 every partial external-reference index, every shape', () => {
     const is = helper().isExternalReferenceCollision;
-    for (const index of ['ExternalCollection_transfer_ref_key', 'ExternalCollection_debit_ref_key']) {
+    for (const index of ['ExternalCollection_transfer_ref_key', 'ExternalCollection_debit_ref_key', 'ExternalCollection_credit_ref_key', 'ExternalCollection_qr_ref_key']) {
       expect(is(p2002(index, 'ExternalCollection')), index).toBe(true);
       expect(is(p2002Adapter({ index }, 'ExternalCollection')), index).toBe(true);
     }

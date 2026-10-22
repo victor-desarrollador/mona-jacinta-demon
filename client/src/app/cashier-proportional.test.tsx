@@ -152,15 +152,15 @@ function quoteFor(row: QueueRow, body: QuoteRequest, state: ServerState) {
           { method: "CASH", available: true },
           { method: "TRANSFER", available: false, reason: "PRICING_CONFIG_MISSING" },
           { method: "CARD_DEBIT", available: false, reason: "PRICING_CONFIG_MISSING" },
-          { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" },
+          { method: "CARD_CREDIT", available: false, reason: "PRICING_CONFIG_MISSING" }, { method: "QR", available: false, reason: "PRICING_CONFIG_MISSING" },
         ]
       : [
           { method: "CASH", available: true },
           { method: "TRANSFER", available: true },
           { method: "CARD_DEBIT", available: true },
-          { method: "CARD_CREDIT", available: true },
+          { method: "CARD_CREDIT", available: true }, { method: "QR", available: true },
         ],
-    fullPrices: { CASH: row.total, TRANSFER: row.total, CARD_DEBIT: row.total, CARD_CREDIT: row.total },
+    fullPrices: { CASH: row.total, TRANSFER: row.total, CARD_DEBIT: row.total, CARD_CREDIT: row.total, QR: row.total },
     tenders: body.tenders.map((tender) => ({ method: tender.method, role: "FIXED", amount: tender.amount })),
     balance: { method: body.balanceMethod, amount: (BigInt(row.total) - fixedTotal).toString() },
     total: row.total,

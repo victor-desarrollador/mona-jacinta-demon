@@ -286,7 +286,7 @@ function setup(options: SaleOptions = {}) {
   const pricingConfig = db.insert('companyPricingConfig', {
     companyId: company.id,
     listAdjustmentBps: 2000, creditCardAdjustmentBps: 1500, debitCardAdjustmentBps: 500,
-    bankTransferAdjustmentBps: 1000, qrAdjustmentBps: 0,
+    bankTransferAdjustmentBps: 1000, qrAdjustmentBps: 1200,
     updatedAt: new Date('2026-10-01T00:00:00.000Z'),
   });
   db.insert('location', { id: BRANCH, isActive: true });
@@ -375,9 +375,11 @@ function setup(options: SaleOptions = {}) {
     fullPriceTransfer: 44000n,
     fullPriceDebit: 42000n,
     fullPriceCredit: null,
+    fullPriceQr: null,
     transferAdjustmentBps: 1000,
     debitAdjustmentBps: 500,
     creditAdjustmentBps: null,
+    qrAdjustmentBps: null,
     pricingConfigId: pricingConfig.id,
     pricingConfigUpdatedAt: pricingConfig.updatedAt,
     algorithmVersion: 1,
@@ -2922,5 +2924,147 @@ describe('CARD_CREDIT — T-C settlement', () => {
     await expect(t2.checkout.checkout(t2.reqs.cashier, t2.ids.cashier, t2.saleId, t2.confirmation({
       tenders: [confirmTender('CARD_CREDIT', { reference: 'CRD 0005', referenceKey: 'CRD0005' })],
     }))).resolves.toMatchObject({ status: 'COMPLETED' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QR (P0-B): T-C settles a sealed plan that carries QR exactly like the other external
+// methods, from the sealed QR snapshot (algorithmVersion 3). The harness company
+// configuration has QR +12% (1200 bps) on the 40000-centavo line: QR full price 44800 --
+// and a later change of that configuration never reaches a sealed attempt.
+// ---------------------------------------------------------------------------
+describe('QR — T-C settlement', () => {
+  const planTender = (
+    method: string, role: string, source: string, amount: bigint | null, externalCollectionId: string | null = null,
+  ) => ({ method, role, source, amount, externalCollectionId });
+  const confirmTender = (
+    method: 'CASH' | 'QR', fields: Partial<CheckoutConfirmationRequest['tenders'][number]> = {},
+  ): CheckoutConfirmationRequest['tenders'][number] => ({
+    method, receivedAmount: method === 'CASH' ? 12000n : null, reference: null, referenceKey: null, institution: null, institutionOther: null, ...fields,
+  });
+  const QR_SNAPSHOT = { algorithmVersion: 3, fullPriceQr: 44800n, qrAdjustmentBps: 1200 };
+
+  it('CQ-1 CASH fixed + QR balance settle one referenced QR collection, from the sealed QR price, with no cash movement for QR', async () => {
+    const t = setup();
+    // balance = 44.800 * (40.000 - 10.000) / 40.000 = 33.600 ; total = 43.600
+    t.sealPlan([
+      planTender('CASH', 'FIXED', 'NEW', 10000n),
+      planTender('QR', 'BALANCE', 'NEW', null),
+    ], { ...QR_SNAPSHOT, balanceMethod: 'QR', expectedBalanceAmount: 33600n });
+
+    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [confirmTender('CASH'), confirmTender('QR', { reference: 'QR 0001', referenceKey: 'QR0001' })],
+    }));
+
+    expect(result).toMatchObject({ status: 'COMPLETED', total: 43600n, changeAmount: 2000n });
+    const qr = t.table('salePayment').find((payment) => payment.method === 'QR')!;
+    expect(qr).toMatchObject({ amount: 33600n, tenderRole: 'BALANCE', methodFullPrice: 44800n, adjustmentBps: 1200, receivedAmount: null, changeAmount: null });
+    expect(t.table('salePayment').find((payment) => payment.method === 'CASH')).toMatchObject({ amount: 10000n, methodFullPrice: 40000n, adjustmentBps: 0 });
+    expect(qr.externalCollectionId).toBe(t.db.extra.externalCollection[0]!.id);
+    expect(t.db.extra.externalCollection[0]).toMatchObject({
+      method: 'QR', amount: 33600n, referenceKey: 'QR0001', institution: null, institutionOther: null, status: 'APPLIED',
+    });
+    // Only the cash tender touches the cash register: QR is never SALE_INCOME.
+    const movements = t.table('cashMovement');
+    expect(movements.filter((movement) => movement.salePaymentId === qr.id)).toEqual([]);
+    expect(movements.reduce((sum, movement) => sum + (movement.amount as bigint), 0n)).toBe(10000n);
+    // Allocations add up to every payment, and the payments to the sealed total.
+    for (const payment of t.table('salePayment')) {
+      const allocated = t.db.extra.saleLineAllocation
+        .filter((allocation) => allocation.salePaymentId === payment.id)
+        .reduce((sum, allocation) => sum + (allocation.amount as bigint), 0n);
+      expect(allocated).toBe(payment.amount);
+    }
+    expect(t.table('salePayment').reduce((sum, payment) => sum + (payment.amount as bigint), 0n)).toBe(43600n);
+    // The checkout carries the QR snapshot and the format version of its attempt.
+    expect(t.db.extra.saleCheckout[0]).toMatchObject({
+      balanceMethod: 'QR', fullPriceQr: 44800n, qrAdjustmentBps: 1200, algorithmVersion: 3,
+    });
+    expect(t.audits('SALE_CHECKOUT_COMPLETED')[0]!.after).toMatchObject({
+      fullPrices: { QR: '44800' }, adjustments: { qr: 1200 },
+    });
+    expect(t.table('inventory')[0]).toMatchObject({ physical: 9n, reserved: 0n });
+  });
+
+  it('CQ-2 simple QR: a single QR balance tender covers the whole sealed QR price', async () => {
+    const t = setup();
+    t.sealPlan([planTender('QR', 'BALANCE', 'NEW', null)], { ...QR_SNAPSHOT, balanceMethod: 'QR', expectedBalanceAmount: 44800n });
+
+    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [confirmTender('QR', { reference: 'QR 0002', referenceKey: 'QR0002' })],
+    }));
+
+    expect(result).toMatchObject({ status: 'COMPLETED', total: 44800n, changeAmount: 0n });
+    expect(t.table('salePayment')).toHaveLength(1);
+    expect(t.table('salePayment')[0]).toMatchObject({ method: 'QR', amount: 44800n, methodFullPrice: 44800n, adjustmentBps: 1200 });
+    expect(t.table('cashMovement')).toHaveLength(0);
+  });
+
+  it.each([
+    ['missing reference', {}],
+    ['institution', { reference: 'QR 0003', referenceKey: 'QR0003', institution: 'GALICIA' as const }],
+    ['institutionOther', { reference: 'QR 0003', referenceKey: 'QR0003', institutionOther: 'Banco X' }],
+    ['institution OTHER with its label', { reference: 'QR 0003', referenceKey: 'QR0003', institution: 'OTHER' as const, institutionOther: 'Banco X' }],
+  ])('CQ-3 NEW QR rejects %s (400), like a card', async (_label, fields) => {
+    const t = setup();
+    t.sealPlan([planTender('QR', 'BALANCE', 'NEW', null)], { ...QR_SNAPSHOT, balanceMethod: 'QR', expectedBalanceAmount: 44800n });
+    await expectAppError(
+      t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({ tenders: [confirmTender('QR', fields)] })),
+      400,
+      'VALIDATION_ERROR',
+    );
+    expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0 });
+  });
+
+  it('CQ-4 an attempt sealed WITHOUT a QR snapshot (algorithmVersion 2) can never settle a QR tender', async () => {
+    const t = setup();
+    t.sealPlan([planTender('QR', 'BALANCE', 'NEW', null)], { algorithmVersion: 2, balanceMethod: 'QR', expectedBalanceAmount: 44800n });
+    await expectAppError(
+      t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+        tenders: [confirmTender('QR', { reference: 'QR 0004', referenceKey: 'QR0004' })],
+      })),
+      500,
+      'CHECKOUT_PLAN_INCONSISTENT',
+    );
+    expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0, collections: 0 });
+  });
+
+  it('CQ-5 a historical (version 1, QR-free) attempt still settles; its checkout keeps version 1 with NULL QR and an unchanged audit shape', async () => {
+    const t = setup();
+    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation());
+    expect(t.db.extra.saleCheckout[0]).toMatchObject({ algorithmVersion: 1, fullPriceQr: null, qrAdjustmentBps: null });
+    expect(Object.keys((t.audits('SALE_CHECKOUT_COMPLETED')[0]!.after as { fullPrices: object }).fullPrices)).not.toContain('QR');
+    expect(Object.keys((t.audits('SALE_CHECKOUT_COMPLETED')[0]!.after as { adjustments: object }).adjustments)).not.toContain('qr');
+  });
+
+  it('CQ-6 a QR reference already recorded on the branch is refused (own partial unique key); the same key as CARD_CREDIT is another namespace', async () => {
+    const t = setup();
+    t.addCollection({ branchId: BRANCH, method: 'QR', amount: 100n, referenceKey: 'QR0005', institution: null, status: 'APPLIED' });
+    t.sealPlan([planTender('QR', 'BALANCE', 'NEW', null)], { ...QR_SNAPSHOT, balanceMethod: 'QR', expectedBalanceAmount: 44800n });
+    await expectAppError(
+      t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+        tenders: [confirmTender('QR', { reference: 'QR 0005', referenceKey: 'QR0005' })],
+      })),
+      409,
+      'EXTERNAL_REFERENCE_ALREADY_RECORDED',
+    );
+    const t2 = setup();
+    t2.addCollection({ branchId: BRANCH, method: 'CARD_CREDIT', amount: 100n, referenceKey: 'QR0005', institution: null, status: 'APPLIED' });
+    t2.sealPlan([planTender('QR', 'BALANCE', 'NEW', null)], { ...QR_SNAPSHOT, balanceMethod: 'QR', expectedBalanceAmount: 44800n });
+    await expect(t2.checkout.checkout(t2.reqs.cashier, t2.ids.cashier, t2.saleId, t2.confirmation({
+      tenders: [confirmTender('QR', { reference: 'QR 0005', referenceKey: 'QR0005' })],
+    }))).resolves.toMatchObject({ status: 'COMPLETED' });
+  });
+
+  it('CQ-7 the sealed QR snapshot wins over the current configuration: changing qrAdjustmentBps after the seal changes nothing', async () => {
+    const t = setup();
+    t.sealPlan([planTender('QR', 'BALANCE', 'NEW', null)], { ...QR_SNAPSHOT, balanceMethod: 'QR', expectedBalanceAmount: 44800n });
+    t.db.table('companyPricingConfig')[0]!.qrAdjustmentBps = 3000;
+    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [confirmTender('QR', { reference: 'QR 0006', referenceKey: 'QR0006' })],
+    }));
+    expect(result).toMatchObject({ status: 'COMPLETED', total: 44800n });
+    expect(t.table('salePayment')[0]).toMatchObject({ method: 'QR', amount: 44800n, adjustmentBps: 1200 });
+    expect(t.db.extra.saleCheckout[0]).toMatchObject({ qrAdjustmentBps: 1200, fullPriceQr: 44800n });
   });
 });

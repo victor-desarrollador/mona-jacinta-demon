@@ -167,8 +167,8 @@ describe('R3-A4.3 S2 — planHash canonical text (mona-checkout-plan/v1)', () =>
     refuses(() => planHash({ ...PLAN_V1, tenders: [...PLAN_V1.tenders, PLAN_V1.tenders[1]!] }), /tender/);
     refuses(() => planHash({ ...PLAN_V1, tenders: [PLAN_V1.tenders[1]!, PLAN_V1.tenders[1]!] }), /duplicated/);
     refuses(() => planHash({ ...PLAN_V1, tenders: [] }), /tender/);
-    // CARD_CREDIT is a valid method since the CARD_CREDIT block; QR stays out.
-    for (const method of ['QR', 'cash', '']) {
+    // CARD_CREDIT and QR are valid methods since the CARD_CREDIT and QR blocks.
+    for (const method of ['PAYPAL', 'cash', '']) {
       refuses(() => planHash({ ...PLAN_V1, tenders: [{ ...PLAN_V1.tenders[1]!, method: method as 'CASH' }] }), /method/);
       refuses(() => planHash({ ...PLAN_V1, balanceMethod: method as 'CASH' }), /method/);
     }

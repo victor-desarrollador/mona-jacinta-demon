@@ -37,7 +37,7 @@ describe('R3-A4.3 S4 — stockStateOf (read-time, never stored)', () => {
 const attempt = (patch: Record<string, unknown> = {}) => ({
   id: 'a1', saleId: 's1', branchId: B, reserveKey: 'rk', operationKey: 'ok', planHash: 'a'.repeat(64), cashSessionId: 'cs',
   balanceMethod: 'CASH', expectedTotal: 15000n, expectedBalanceAmount: 10000n, tenderCount: 2,
-  fullPriceCash: 15000n, fullPriceTransfer: 15300n, fullPriceDebit: 15500n, fullPriceCredit: null, transferAdjustmentBps: 200, debitAdjustmentBps: 300,
+  fullPriceCash: 15000n, fullPriceTransfer: 15300n, fullPriceDebit: 15500n, fullPriceCredit: null, fullPriceQr: null, transferAdjustmentBps: 200, debitAdjustmentBps: 300,
   pricingConfigId: 'cfg', pricingConfigUpdatedAt: NOW, algorithmVersion: 1, planSealed: true, status: 'RESERVED',
   startedById: 'u1', startedAt: NOW, recoveryReason: null, recoveryEvidence: null, confirmationHash: null, confirmedById: null,
   confirmedAt: null, confirmReason: null, confirmEvidence: null, rejectionCode: null, rejectionDetails: null, rejectedById: null,
@@ -63,7 +63,7 @@ describe('R3-A4.3 S4 — buildReservationView', () => {
           { method: 'CASH', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
           { method: 'TRANSFER', role: 'FIXED', source: 'NEW', amount: 5000n, externalCollectionId: null },
         ],
-        fullPrices: { CASH: 15000n, TRANSFER: 15300n, CARD_DEBIT: 15500n, CARD_CREDIT: null },
+        fullPrices: { CASH: 15000n, TRANSFER: 15300n, CARD_DEBIT: 15500n, CARD_CREDIT: null, QR: null },
       },
       recovery: null, rejection: null, declaration: null, declared: false,
       stockState: 'VALID', stockExpiresAt: later,
@@ -90,7 +90,7 @@ describe('R3-A4.3 S4 — buildReservationView', () => {
       tenders: tenders as never, declarations: [], startedBy: { id: 'u1', name: 'Caja 1' }, stock: null,
     });
     expect(view.recovery).toEqual({ reason: 'stock vencido, cupón 1', evidence: 'cupón 1' });
-    expect(view.plan.fullPrices).toEqual({ CASH: 15000n, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null });
+    expect(view.plan.fullPrices).toEqual({ CASH: 15000n, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null, QR: null });
     expect(view.stockState).toBeNull();
   });
 });
@@ -100,6 +100,15 @@ describe('CARD_CREDIT in the reservation view', () => {
     const view = buildReservationView({
       attempt: attempt({ fullPriceCredit: 16000n }), tenders: [], declarations: [], startedBy: { id: 'u1', name: 'Ana' }, stock: null,
     });
-    expect(view.plan.fullPrices).toEqual({ CASH: 15000n, TRANSFER: 15300n, CARD_DEBIT: 15500n, CARD_CREDIT: 16000n });
+    expect(view.plan.fullPrices).toEqual({ CASH: 15000n, TRANSFER: 15300n, CARD_DEBIT: 15500n, CARD_CREDIT: 16000n, QR: null });
+  });
+});
+
+describe('QR in the reservation view', () => {
+  it('V-QR a version-3 attempt exposes its sealed QR full price next to the others', () => {
+    const view = buildReservationView({
+      attempt: attempt({ fullPriceCredit: 16000n, fullPriceQr: 16500n }), tenders: [], declarations: [], startedBy: { id: 'u1', name: 'Ana' }, stock: null,
+    });
+    expect(view.plan.fullPrices).toEqual({ CASH: 15000n, TRANSFER: 15300n, CARD_DEBIT: 15500n, CARD_CREDIT: 16000n, QR: 16500n });
   });
 });

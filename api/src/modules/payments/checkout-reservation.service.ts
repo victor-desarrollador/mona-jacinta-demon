@@ -89,7 +89,7 @@ const stockExpired = () => new AppError(409, 'STOCK_HOLD_EXPIRED', 'La reserva d
 const stockReleased = () => new AppError(409, 'STOCK_HOLD_RELEASED', 'La reserva de stock de la venta fue liberada.');
 const inconsistentState = (message: string) => new AppError(500, 'CHECKOUT_STATE_INCONSISTENT', message);
 const concurrencyError = () => new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
-// S-REF pilot gate: the two external methods (TRANSFER/CARD_DEBIT) are switched
+// S-REF pilot gate: the external methods (TRANSFER/CARD_DEBIT/CARD_CREDIT/QR) are switched
 // off on purpose, so a NEW attempt that needs one is refused before any attempt
 // row is read. Not a malformed plan and not a sale-state problem.
 const paymentMethodNotEnabled = (method: string) => new AppError(409, 'PAYMENT_METHOD_NOT_ENABLED', `El medio de pago ${method} no está habilitado.`);
@@ -123,6 +123,7 @@ function enginePricing(snapshot: { id: string | null; adjustmentsBps: Record<str
     bankTransferAdjustmentBps: snapshot.adjustmentsBps.BANK_TRANSFER!,
     debitCardAdjustmentBps: snapshot.adjustmentsBps.DEBIT_CARD!,
     creditCardAdjustmentBps: snapshot.adjustmentsBps.CREDIT_CARD!,
+    qrAdjustmentBps: snapshot.adjustmentsBps.QR!,
   };
 }
 
@@ -317,9 +318,11 @@ export function createCheckoutReservationService(
           fullPriceTransfer: engine === null ? null : quote.fullPrices.TRANSFER,
           fullPriceDebit: engine === null ? null : quote.fullPrices.CARD_DEBIT,
           fullPriceCredit: engine === null ? null : quote.fullPrices.CARD_CREDIT,
+          fullPriceQr: engine === null ? null : quote.fullPrices.QR,
           transferAdjustmentBps: engine?.bankTransferAdjustmentBps ?? null,
           debitAdjustmentBps: engine?.debitCardAdjustmentBps ?? null,
           creditAdjustmentBps: engine === null ? null : (engine.creditCardAdjustmentBps ?? null),
+          qrAdjustmentBps: engine === null ? null : (engine.qrAdjustmentBps ?? null),
           pricingConfigId: engine === null ? null : snapshot.id,
           pricingConfigUpdatedAt: engine === null ? null : snapshot.updatedAt,
           algorithmVersion: CHECKOUT_ALGORITHM_VERSION,
@@ -544,9 +547,11 @@ export function createCheckoutReservationService(
           fullPriceTransfer: engine === null ? null : quote.fullPrices.TRANSFER,
           fullPriceDebit: engine === null ? null : quote.fullPrices.CARD_DEBIT,
           fullPriceCredit: engine === null ? null : quote.fullPrices.CARD_CREDIT,
+          fullPriceQr: engine === null ? null : quote.fullPrices.QR,
           transferAdjustmentBps: engine?.bankTransferAdjustmentBps ?? null,
           debitAdjustmentBps: engine?.debitCardAdjustmentBps ?? null,
           creditAdjustmentBps: engine === null ? null : (engine.creditCardAdjustmentBps ?? null),
+          qrAdjustmentBps: engine === null ? null : (engine.qrAdjustmentBps ?? null),
           pricingConfigId: engine === null ? null : snapshot.id,
           pricingConfigUpdatedAt: engine === null ? null : snapshot.updatedAt,
           algorithmVersion: CHECKOUT_ALGORITHM_VERSION,

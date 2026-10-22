@@ -160,7 +160,7 @@ describe.skipIf(!enabled)('CARD_CREDIT — proportional checkout on PostgreSQL (
     }
   };
 
-  it('CCPG-01 simple credit: reserve seals the credit snapshot (version 2) and the settlement writes one referenced CARD_CREDIT payment', async () => {
+  it('CCPG-01 simple credit: reserve seals the credit snapshot (version 3 since the QR migration) and the settlement writes one referenced CARD_CREDIT payment', async () => {
     const f = await fixture();
     const sale = await f.sale();
     await f.inventory(10n, 1n);
@@ -169,7 +169,7 @@ describe.skipIf(!enabled)('CARD_CREDIT — proportional checkout on PostgreSQL (
     const { view } = await reserve(db, f.users[0]!.id, f.branch, sale.id, request);
 
     const attempt = await db.checkoutAttempt.findUniqueOrThrow({ where: { reserveKey: view.reserveKey } });
-    expect(attempt).toMatchObject({ balanceMethod: 'CARD_CREDIT', fullPriceCredit: CREDIT_FULL, creditAdjustmentBps: CREDIT_BPS, algorithmVersion: 2, expectedTotal: CREDIT_FULL });
+    expect(attempt).toMatchObject({ balanceMethod: 'CARD_CREDIT', fullPriceCredit: CREDIT_FULL, creditAdjustmentBps: CREDIT_BPS, algorithmVersion: 3, expectedTotal: CREDIT_FULL });
     expect(view.plan.fullPrices.CARD_CREDIT).toBe(CREDIT_FULL);
 
     const reference = `CCPG1${f.tag}`;
@@ -186,7 +186,7 @@ describe.skipIf(!enabled)('CARD_CREDIT — proportional checkout on PostgreSQL (
     const collection = await db.externalCollection.findUniqueOrThrow({ where: { id: payments[0]!.externalCollectionId! } });
     expect(collection).toMatchObject({ method: 'CARD_CREDIT', amount: CREDIT_FULL, referenceKey: normalizeReferenceKey(reference), institution: null, institutionOther: null, status: 'APPLIED' });
     expect(await db.saleCheckout.findUniqueOrThrow({ where: { saleId: sale.id } }))
-      .toMatchObject({ balanceMethod: 'CARD_CREDIT', fullPriceCredit: CREDIT_FULL, creditAdjustmentBps: CREDIT_BPS, algorithmVersion: 2, total: CREDIT_FULL });
+      .toMatchObject({ balanceMethod: 'CARD_CREDIT', fullPriceCredit: CREDIT_FULL, creditAdjustmentBps: CREDIT_BPS, algorithmVersion: 3, total: CREDIT_FULL });
     await allocationsAddUp(sale.id);
     expect(await db.cashMovement.count({ where: { sessionId: f.session.id, type: 'SALE_INCOME' } })).toBe(0);
     expect(await db.inventory.findFirstOrThrow({ where: { variantId: f.variant.id, branchId: f.branch } })).toMatchObject({ physical: 9n, reserved: 0n });
@@ -382,8 +382,9 @@ describe.skipIf(!enabled)('CARD_CREDIT — proportional checkout on PostgreSQL (
         await expectViolation('credit price not a whole peso', ATTEMPT_SQL, row({ version: 2, credit: 11550, cBps: 1500 }), '23514', 'chk_attempt_credit_snapshot');
         await expectViolation('credit bps out of range', ATTEMPT_SQL, row({ version: 2, credit: 11500, cBps: 10001 }), '23514', 'chk_attempt_credit_snapshot');
         await expectViolation('CARD_CREDIT balance without a credit price', ATTEMPT_SQL, row({ version: 2, balanceMethod: 'CARD_CREDIT', transfer: null, debit: null, tBps: null, dBps: null, cfg: null, cfgAt: null }), '23514', 'chk_attempt_credit_snapshot');
-        await expectViolation('unknown algorithm version', ATTEMPT_SQL, row({ version: 3, transfer: null, debit: null, tBps: null, dBps: null, cfg: null, cfgAt: null }), '23514', 'chk_attempt_plan');
-        await expectViolation('QR as a balance method', ATTEMPT_SQL, row({ balanceMethod: 'QR' }), '23514', 'chk_attempt_plan');
+        await expectViolation('unknown algorithm version', ATTEMPT_SQL, row({ version: 4, transfer: null, debit: null, tBps: null, dBps: null, cfg: null, cfgAt: null }), '23514', 'chk_attempt_plan');
+        // QR is a valid plan method since the QR migration; without its QR price it is refused by the QR snapshot CHECK.
+        await expectViolation('QR as a balance method without a QR price', ATTEMPT_SQL, row({ balanceMethod: 'QR' }), '23514', 'chk_attempt_qr_snapshot');
       });
     });
 
@@ -416,7 +417,8 @@ describe.skipIf(!enabled)('CARD_CREDIT — proportional checkout on PostgreSQL (
         await client.query(insert, row('CARD_CREDIT', 'CRD44444'));
         await expectViolation('duplicate credit reference on the branch', insert, row('CARD_CREDIT', 'CRD44444'), '23505', 'ExternalCollection_credit_ref_key');
         await expectOk('the same key as a debit is another namespace', insert, row('CARD_DEBIT', 'CRD44444'));
-        await expectViolation('QR is not an external collection', insert, row('QR', 'CRD55555'), '23514', 'chk_ec_institution');
+        await expectOk('QR is an external collection since the QR migration (reference, no institution)', insert, row('QR', 'CRD55555'));
+        await expectViolation('QR with an institution', insert, row('QR', 'CRD66666', 'GALICIA'), '23514', 'chk_ec_institution');
       });
     });
   });

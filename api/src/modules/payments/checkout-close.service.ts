@@ -57,7 +57,7 @@ type LockedAttempt = {
   id: string; saleId: string; branchId: string; reserveKey: string; operationKey: string;
   planSealed: boolean; status: string; startedById: string; startedAt: Date;
   cashSessionId: string; balanceMethod: string; expectedTotal: bigint; expectedBalanceAmount: bigint; tenderCount: number;
-  fullPriceCash: bigint; fullPriceTransfer: bigint | null; fullPriceDebit: bigint | null; fullPriceCredit: bigint | null;
+  fullPriceCash: bigint; fullPriceTransfer: bigint | null; fullPriceDebit: bigint | null; fullPriceCredit: bigint | null; fullPriceQr: bigint | null;
   confirmationHash: string | null; recoveryReason: string | null; recoveryEvidence: string | null;
   rejectionCode: string | null; rejectionDetails: unknown;
   abandonedById: string | null; abandonedAt: Date | null; abandonReason: string | null; abandonEvidence: string | null;
@@ -149,7 +149,7 @@ export function createCheckoutCloseService(
     const [attempt] = await tx.$queryRaw<LockedAttempt[]>`
       SELECT id, "saleId", "branchId", "reserveKey", "operationKey", "planSealed", status,
              "startedById", "startedAt", "cashSessionId", "balanceMethod", "expectedTotal",
-             "expectedBalanceAmount", "tenderCount", "fullPriceCash", "fullPriceTransfer", "fullPriceDebit", "fullPriceCredit",
+             "expectedBalanceAmount", "tenderCount", "fullPriceCash", "fullPriceTransfer", "fullPriceDebit", "fullPriceCredit", "fullPriceQr",
              "confirmationHash", "recoveryReason", "recoveryEvidence", "rejectionCode", "rejectionDetails",
              "abandonedById", "abandonedAt", "abandonReason", "abandonEvidence", "declaredById", "declaredAt"
       FROM "CheckoutAttempt"
@@ -362,7 +362,7 @@ export function createCheckoutCloseService(
       //     reference after this read, and the P2002 of the index stays the
       //     final authority (close()).
       for (const row of request.declarations) {
-        if (row.outcome !== 'CHARGED' || (row.method !== 'TRANSFER' && row.method !== 'CARD_DEBIT' && row.method !== 'CARD_CREDIT')) continue;
+        if (row.outcome !== 'CHARGED' || (row.method !== 'TRANSFER' && row.method !== 'CARD_DEBIT' && row.method !== 'CARD_CREDIT' && row.method !== 'QR')) continue;
         const recorded = await tx.externalCollection.findFirst({
           where: row.method === 'TRANSFER'
             ? { branchId: sale.branchId, method: 'TRANSFER', institution: row.institution, referenceKey: row.referenceKey! }

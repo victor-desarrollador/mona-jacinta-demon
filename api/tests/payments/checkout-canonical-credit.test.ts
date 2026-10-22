@@ -34,8 +34,8 @@ const historicalPlan: PlanInput = {
 };
 
 describe('canonical checkout with CARD_CREDIT', () => {
-  it('lists the four methods in the canonical order', () => {
-    expect([...CHECKOUT_METHODS]).toEqual(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']);
+  it('lists CARD_CREDIT after the three historical methods in the canonical order', () => {
+    expect([...CHECKOUT_METHODS].slice(0, 4)).toEqual(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']);
   });
 
   it('keeps the plan hash of a plan without credit byte-identical to v1 (historical hashes still verify)', () => {
@@ -129,10 +129,4 @@ describe('canonical checkout with CARD_CREDIT', () => {
     })).toThrow();
   });
 
-  it('still refuses QR', () => {
-    expect(() => canonicalPlanText({
-      ...historicalPlan,
-      tenders: [{ method: 'QR' as never, role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null }],
-    })).toThrow();
-  });
 });

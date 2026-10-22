@@ -45,7 +45,7 @@ function auth(userId: string, role: Role, locationId: string | null) {
   } as never;
 }
 
-function setup(options: { pricing?: boolean; holdsExpireAt?: Date; creditBps?: number } = {}) {
+function setup(options: { pricing?: boolean; holdsExpireAt?: Date; creditBps?: number; qrBps?: number } = {}) {
   const db = createCheckoutReservationFakeDb({ now: () => NOW });
   const branch = uuid();
   const cashier = db.insert('user', { id: uuid(), name: 'Caja 1' });
@@ -54,7 +54,7 @@ function setup(options: { pricing?: boolean; holdsExpireAt?: Date; creditBps?: n
   if (options.pricing !== false) {
     db.insert('companyPricingConfig', {
       id: uuid(), companyId: db.table('company')[0]!.id, updatedAt: new Date('2026-10-01T00:00:00Z'), listAdjustmentBps: 0,
-      creditCardAdjustmentBps: options.creditBps ?? 0, debitCardAdjustmentBps: 300, bankTransferAdjustmentBps: 200, qrAdjustmentBps: 0,
+      creditCardAdjustmentBps: options.creditBps ?? 0, debitCardAdjustmentBps: 300, bankTransferAdjustmentBps: 200, qrAdjustmentBps: options.qrBps ?? 0,
     });
   }
   const register = db.insert('cashRegister', { id: uuid(), branchId: branch });
@@ -72,7 +72,7 @@ function setup(options: { pricing?: boolean; holdsExpireAt?: Date; creditBps?: n
   }
   let next = 0;
   const service = createCheckoutReservationService(db.client as unknown as PrismaClient, { now: () => NOW, operationKey: () => OP_KEYS[next++ % OP_KEYS.length]!, externalMethodsEnabled: true });
-  const pricing = options.pricing === false ? null : { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300, creditCardAdjustmentBps: options.creditBps ?? 0 };
+  const pricing = options.pricing === false ? null : { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300, creditCardAdjustmentBps: options.creditBps ?? 0, qrAdjustmentBps: options.qrBps ?? 0 };
   const lines = items.map((item) => ({ saleItemId: item.id as string, sku: item.sku as string, quantity: item.quantity as bigint, baseUnitPrice: item.baseUnitPrice as bigint }));
   function request(tenders: PlanTenderInput[], patch: Partial<CheckoutReservationRequest> = {}): CheckoutReservationRequest {
     const balance = tenders.find((t) => t.role === 'BALANCE')!.method;
@@ -121,7 +121,7 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
     const [attempt] = t.db.table('checkoutAttempt');
     expect(attempt).toMatchObject({
       saleId: t.sale.id, branchId: t.branch, reserveKey: req.reserveKey, operationKey: OP_KEYS[0], planSealed: true, status: 'RESERVED',
-      startedById: t.cashier.id, planHash: planHash({ saleId: t.sale.id as string, ...req }), tenderCount: 3, algorithmVersion: 2,
+      startedById: t.cashier.id, planHash: planHash({ saleId: t.sale.id as string, ...req }), tenderCount: 3, algorithmVersion: 3,
       expectedTotal: req.expectedTotal, expectedBalanceAmount: req.expectedBalanceAmount, cashSessionId: t.session.id,
       transferAdjustmentBps: 200, debitAdjustmentBps: 300, pricingConfigId: t.db.table('companyPricingConfig')[0]!.id,
     });
@@ -298,8 +298,8 @@ describe('R3-A4.3 S4 — T-R reservation', () => {
     expect(ok.view.plan.fullPrices.TRANSFER).not.toBeNull();
     expect(t.db.table('checkoutAttempt')[0]).toMatchObject({
       fullPriceTransfer: ok.view.plan.fullPrices.TRANSFER, fullPriceDebit: ok.view.plan.fullPrices.CARD_DEBIT,
-      // New attempts seal the credit snapshot (algorithmVersion 2): the company's credit adjustment is 0 bps here.
-      fullPriceCredit: ok.view.plan.fullPrices.CARD_CREDIT, creditAdjustmentBps: 0, algorithmVersion: 2,
+      // New attempts seal the credit snapshot (algorithmVersion 3): the company's credit adjustment is 0 bps here.
+      fullPriceCredit: ok.view.plan.fullPrices.CARD_CREDIT, creditAdjustmentBps: 0, algorithmVersion: 3,
     });
     // No pricing configuration: CASH only; a TRANSFER tender cannot be quoted.
     const bare = setup({ pricing: false });
@@ -721,7 +721,7 @@ describe('GATE — PROPORTIONAL_EXTERNAL_METHODS_ENABLED (S-REF, T-R)', () => {
   });
 });
 
-// CARD_CREDIT (OWNER block): T-R seals the credit snapshot (algorithmVersion 2) and plans
+// CARD_CREDIT (OWNER block): T-R seals the credit snapshot (algorithmVersion 3 since the QR block) and plans
 // that carry CARD_CREDIT; the server quote stays the authority.
 describe('CARD_CREDIT — T-R reservation', () => {
   const credit = (role: 'BALANCE' | 'FIXED', source: 'NEW' | 'COLLECTION' = 'NEW', amount: bigint | null = null, id: string | null = null): PlanTenderInput =>
@@ -729,7 +729,7 @@ describe('CARD_CREDIT — T-R reservation', () => {
   const cash = (role: 'BALANCE' | 'FIXED', amount: bigint | null = null): PlanTenderInput =>
     ({ method: 'CASH', role, source: 'NEW', amount, externalCollectionId: null });
 
-  it('RC-1 CASH fixed + CARD_CREDIT balance: the attempt seals the credit price and bps (version 2) and its canonical plan hash', async () => {
+  it('RC-1 CASH fixed + CARD_CREDIT balance: the attempt seals the credit price and bps (version 3, with the QR snapshot next to it) and its canonical plan hash', async () => {
     const t = setup({ creditBps: 1500 });
     const req = t.request([cash('FIXED', 2000n), credit('BALANCE')]);
     const result = await t.service.reserve(t.asCashier, t.sale.id as string, req);
@@ -737,7 +737,7 @@ describe('CARD_CREDIT — T-R reservation', () => {
     expect(result.view.plan.fullPrices.CARD_CREDIT).not.toBeNull();
     const [attempt] = t.db.table('checkoutAttempt');
     expect(attempt).toMatchObject({
-      balanceMethod: 'CARD_CREDIT', algorithmVersion: 2, creditAdjustmentBps: 1500, tenderCount: 2,
+      balanceMethod: 'CARD_CREDIT', algorithmVersion: 3, creditAdjustmentBps: 1500, tenderCount: 2,
       fullPriceCredit: result.view.plan.fullPrices.CARD_CREDIT, planHash: planHash({ saleId: t.sale.id as string, ...req }),
     });
     expect(t.db.table('checkoutAttemptTender').map((tender) => [tender.method, tender.role]).sort()).toEqual([['CARD_CREDIT', 'BALANCE'], ['CASH', 'FIXED']]);
@@ -765,11 +765,84 @@ describe('CARD_CREDIT — T-R reservation', () => {
     const bare = setup({ pricing: false });
     const cashReq = bare.cashOnly();
     await bare.service.reserve(bare.asCashier, bare.sale.id as string, cashReq);
-    expect(bare.db.table('checkoutAttempt')[0]).toMatchObject({ algorithmVersion: 2, fullPriceCredit: null, creditAdjustmentBps: null, pricingConfigId: null });
+    expect(bare.db.table('checkoutAttempt')[0]).toMatchObject({ algorithmVersion: 3, fullPriceCredit: null, creditAdjustmentBps: null, pricingConfigId: null });
     const other = setup({ pricing: false });
     expect(await codeOf(other.service.reserve(other.asCashier, other.sale.id as string, {
       ...other.cashOnly(), balanceMethod: 'CARD_CREDIT', tenders: [credit('BALANCE')],
     }))).toMatchObject({ status: 409, code: 'PRICING_CONFIG_MISSING' });
     expect(other.db.table('checkoutAttempt')).toHaveLength(0);
+  });
+});
+
+// QR (P0-B): T-R seals the QR snapshot (algorithmVersion 3) and plans that carry QR; the
+// server quote stays the authority and the sealed snapshot never follows a later config change.
+describe('QR — T-R reservation', () => {
+  const qr = (role: 'BALANCE' | 'FIXED', source: 'NEW' | 'COLLECTION' = 'NEW', amount: bigint | null = null, id: string | null = null): PlanTenderInput =>
+    ({ method: 'QR', role, source, amount, externalCollectionId: id });
+  const cash = (role: 'BALANCE' | 'FIXED', amount: bigint | null = null): PlanTenderInput =>
+    ({ method: 'CASH', role, source: 'NEW', amount, externalCollectionId: null });
+
+  it('RQ-1 CASH fixed + QR balance: the attempt seals the QR price and bps (version 3) and its canonical plan hash', async () => {
+    const t = setup({ qrBps: 1200 });
+    const req = t.request([cash('FIXED', 2000n), qr('BALANCE')]);
+    const result = await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    expect(result.view.plan.balanceMethod).toBe('QR');
+    expect(result.view.plan.fullPrices.QR).not.toBeNull();
+    const [attempt] = t.db.table('checkoutAttempt');
+    expect(attempt).toMatchObject({
+      balanceMethod: 'QR', algorithmVersion: 3, qrAdjustmentBps: 1200, tenderCount: 2,
+      fullPriceQr: result.view.plan.fullPrices.QR, planHash: planHash({ saleId: t.sale.id as string, ...req }),
+    });
+    expect(t.db.table('checkoutAttemptTender').map((tender) => [tender.method, tender.role]).sort()).toEqual([['CASH', 'FIXED'], ['QR', 'BALANCE']]);
+  });
+
+  it('RQ-2 the server quote is the authority for a QR plan too: a different total is CHECKOUT_QUOTE_CHANGED, no row', async () => {
+    const t = setup({ qrBps: 1200 });
+    const req = t.request([cash('FIXED', 2000n), qr('BALANCE')]);
+    expect(await codeOf(t.service.reserve(t.asCashier, t.sale.id as string, { ...req, expectedTotal: req.expectedTotal + 100n })))
+      .toMatchObject({ status: 409, code: 'CHECKOUT_QUOTE_CHANGED' });
+    expect(t.db.table('checkoutAttempt')).toHaveLength(0);
+  });
+
+  it('RQ-3 a recorded QR collection is a valid COLLECTION tender and is claimed by the attempt', async () => {
+    const t = setup({ qrBps: 1200 });
+    const ec = t.collection({ method: 'QR', amount: 4000n });
+    const req = t.request([cash('BALANCE'), qr('FIXED', 'COLLECTION', 4000n, ec.id as string)]);
+    await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    const [attempt] = t.db.table('checkoutAttempt');
+    expect(t.db.table('externalCollection')[0]).toMatchObject({ claimAttemptId: attempt!.id, status: 'UNAPPLIED' });
+    expect(t.db.table('checkoutAttemptTender').find((tender) => tender.method === 'QR')).toMatchObject({ role: 'FIXED', source: 'COLLECTION', externalCollectionId: ec.id });
+  });
+
+  it('RQ-4 without a pricing configuration a QR plan is refused (PRICING_CONFIG_MISSING); a CASH-only attempt seals NULL QR', async () => {
+    const bare = setup({ pricing: false });
+    await bare.service.reserve(bare.asCashier, bare.sale.id as string, bare.cashOnly());
+    expect(bare.db.table('checkoutAttempt')[0]).toMatchObject({ algorithmVersion: 3, fullPriceQr: null, qrAdjustmentBps: null, pricingConfigId: null });
+    const other = setup({ pricing: false });
+    expect(await codeOf(other.service.reserve(other.asCashier, other.sale.id as string, {
+      ...other.cashOnly(), balanceMethod: 'QR', tenders: [qr('BALANCE')],
+    }))).toMatchObject({ status: 409, code: 'PRICING_CONFIG_MISSING' });
+    expect(other.db.table('checkoutAttempt')).toHaveLength(0);
+  });
+
+  it('RQ-5 the QR snapshot is frozen at reserve time: a later configuration change does not touch the stored attempt, and a replay keeps it', async () => {
+    const t = setup({ qrBps: 1200 });
+    const req = t.request([cash('FIXED', 2000n), qr('BALANCE')]);
+    const first = await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    const sealed = { ...t.db.table('checkoutAttempt')[0]! };
+    t.db.table('companyPricingConfig')[0]!.qrAdjustmentBps = 3000;
+    const replay = await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    expect(replay.replayed).toBe(true);
+    expect(replay.view.plan.fullPrices.QR).toBe(first.view.plan.fullPrices.QR);
+    expect(t.db.table('checkoutAttempt')).toHaveLength(1);
+    expect(t.db.table('checkoutAttempt')[0]).toMatchObject({ fullPriceQr: sealed.fullPriceQr, qrAdjustmentBps: 1200 });
+  });
+
+  it('RQ-6 a CARD_CREDIT attempt also seals the QR snapshot (the snapshot is for the whole configuration, not for the method)', async () => {
+    const t = setup({ creditBps: 1500, qrBps: 1200 });
+    const req = t.request([cash('FIXED', 2000n), { method: 'CARD_CREDIT', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null }]);
+    await t.service.reserve(t.asCashier, t.sale.id as string, req);
+    expect(t.db.table('checkoutAttempt')[0]).toMatchObject({ algorithmVersion: 3, creditAdjustmentBps: 1500, qrAdjustmentBps: 1200 });
+    expect(t.db.table('checkoutAttempt')[0]!.fullPriceQr).not.toBeNull();
   });
 });

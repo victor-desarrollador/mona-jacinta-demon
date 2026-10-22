@@ -108,6 +108,7 @@ export function createCheckoutQuoteService(
       bankTransferAdjustmentBps: snapshot.adjustmentsBps.BANK_TRANSFER,
       debitCardAdjustmentBps: snapshot.adjustmentsBps.DEBIT_CARD,
       creditCardAdjustmentBps: snapshot.adjustmentsBps.CREDIT_CARD,
+      qrAdjustmentBps: snapshot.adjustmentsBps.QR,
     };
   }
 

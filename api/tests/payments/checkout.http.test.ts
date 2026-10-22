@@ -265,14 +265,13 @@ describe('R3 checkout DTO', () => {
     ['an operationKey that is not a UUID', { operationKey: 'not-a-uuid' }],
     ['an operationKey that is not version 4', { operationKey: '123e4567-e89b-12d3-a456-426614174000' }],
     ['a cashSessionId that is not a UUID', { cashSessionId: 'nope' }],
-    ['a balanceMethod outside CASH/TRANSFER/CARD_DEBIT', { balanceMethod: 'CARD_CREDIT' }],
-    ['a QR balanceMethod', { balanceMethod: 'QR' }],
+    ['a balanceMethod outside the five methods', { balanceMethod: 'PAYPAL' }],
     ['an expectedTotal that is not an integer string', { expectedTotal: '42037.00' }],
     ['an expectedBalanceAmount with a sign', { expectedBalanceAmount: '-1' }],
     ['a leading zero in expectedTotal', { expectedTotal: '042037' }],
     ['an unknown top-level field', { branchId: BRANCH }],
     ['no tenders', { tenders: [] }],
-    ['a tender outside CASH/TRANSFER/CARD_DEBIT', { tenders: [{ method: 'QR', role: 'BALANCE', reference: 'D009' }] }],
+    ['a tender outside the five methods', { tenders: [{ method: 'PAYPAL', role: 'BALANCE', reference: 'D009' }] }],
   ])('A5 rejects %s', (_label, overrides) => {
     expect(rejected(validBody(overrides))).toBe(true);
   });

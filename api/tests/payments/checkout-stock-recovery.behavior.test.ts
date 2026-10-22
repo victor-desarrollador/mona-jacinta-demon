@@ -168,7 +168,7 @@ function guardSetup() {
       fullPriceCash: full(0), fullPriceTransfer: full(TRANSFER_BPS), fullPriceDebit: full(DEBIT_BPS),
       transferAdjustmentBps: TRANSFER_BPS, debitAdjustmentBps: DEBIT_BPS, pricingConfigId: 'cfg-1', pricingConfigUpdatedAt: NOW,
       // An attempt sealed before the CARD_CREDIT block (algorithmVersion 1): no credit snapshot.
-      fullPriceCredit: null, creditAdjustmentBps: null,
+      fullPriceCredit: null, creditAdjustmentBps: null, fullPriceQr: null, qrAdjustmentBps: null,
       ...patch,
     });
     for (const tender of tenders) db.insert('checkoutAttemptTender', { attemptId: row.id, source: 'NEW', amount: null, externalCollectionId: null, ...tender });
@@ -485,6 +485,38 @@ describe('R3-A4.3 S7-C — sealed-plan coherence (DB-free)', () => {
       ['tampered credit bps', { ...creditSnapshot(1500), creditAdjustmentBps: 2500 }],
       ['credit price without bps', { ...creditSnapshot(1500), creditAdjustmentBps: null }],
       ['credit bps without price', { ...creditSnapshot(1500), fullPriceCredit: null }],
+    ];
+    for (const [label, patch] of cases) {
+      const outcome = await afterMutation(() => undefined, DEFAULT_LINES, patch, tenders);
+      expect(outcome.result, label).toMatchObject({ status: 500, code: 'CHECKOUT_PLAN_INCONSISTENT' });
+      expect(outcome.t.db.writesSince(outcome.mark), label).toEqual([]);
+    }
+  });
+
+  // QR block: a version-3 attempt seals the QR price and bps next to the others; T-S must
+  // reproduce them from the sale's current lines exactly like the other sealed full prices.
+  const qrSnapshot = (bps: number) => ({
+    algorithmVersion: 3,
+    fullPriceQr: lineFullPrices(
+      DEFAULT_LINES.map((line, index) => ({ saleItemId: `qr-${index}`, sku: line.variantId, quantity: line.quantity, baseUnitPrice: line.baseUnitPrice })), bps,
+    ).reduce((sum, value) => sum + value, 0n),
+    qrAdjustmentBps: bps,
+  });
+
+  it('TS-B13i a coherent sealed QR snapshot passes the guard with zero writes and no stock lock', async () => {
+    const tenders = [{ method: 'CASH', role: 'FIXED', amount: 3000n }, { method: 'QR', role: 'BALANCE' }];
+    const { t, mark, result } = await afterMutation(() => undefined, DEFAULT_LINES, { ...creditSnapshot(1500), ...qrSnapshot(1200) }, tenders);
+    expect(result).toBeNull();
+    expect(t.db.writesSince(mark)).toEqual([]);
+    expect(locksSince(t, mark)).toEqual(['Sale', 'CheckoutAttempt']);
+  });
+
+  it('TS-B13j a QR snapshot that no longer reproduces (tampered bps) or is incomplete is 500 CHECKOUT_PLAN_INCONSISTENT', async () => {
+    const tenders = [{ method: 'CASH', role: 'FIXED', amount: 3000n }, { method: 'QR', role: 'BALANCE' }];
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['tampered QR bps', { ...creditSnapshot(1500), ...qrSnapshot(1200), qrAdjustmentBps: 2500 }],
+      ['QR price without bps', { ...creditSnapshot(1500), ...qrSnapshot(1200), qrAdjustmentBps: null }],
+      ['QR bps without price', { ...creditSnapshot(1500), ...qrSnapshot(1200), fullPriceQr: null }],
     ];
     for (const [label, patch] of cases) {
       const outcome = await afterMutation(() => undefined, DEFAULT_LINES, patch, tenders);

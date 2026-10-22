@@ -54,6 +54,7 @@ export type StockRecoveryAttempt = {
   fullPriceCash: bigint; fullPriceTransfer: bigint | null; fullPriceDebit: bigint | null;
   transferAdjustmentBps: number | null; debitAdjustmentBps: number | null;
   fullPriceCredit: bigint | null; creditAdjustmentBps: number | null;
+  fullPriceQr: bigint | null; qrAdjustmentBps: number | null;
 };
 export type StockRecoveryTarget = { sale: StockRecoverySale; attempt: StockRecoveryAttempt };
 
@@ -126,7 +127,7 @@ export async function lockStockRecoveryTarget(
   const [attempt] = await tx.$queryRaw<StockRecoveryAttempt[]>`
     SELECT id, "saleId", "branchId", "reserveKey", "operationKey", status, "planSealed",
            "fullPriceCash", "fullPriceTransfer", "fullPriceDebit", "transferAdjustmentBps", "debitAdjustmentBps",
-           "fullPriceCredit", "creditAdjustmentBps"
+           "fullPriceCredit", "creditAdjustmentBps", "fullPriceQr", "qrAdjustmentBps"
     FROM "CheckoutAttempt"
     WHERE "reserveKey" = ${reserveKey} AND "saleId" = ${saleId}
     FOR UPDATE
@@ -188,11 +189,16 @@ async function assertSealedPlanStillMatchesSale(tx: Tx, sale: StockRecoverySale,
   if ((attempt.fullPriceCredit === null) !== (attempt.creditAdjustmentBps === null)) {
     throw planInconsistent('La reserva sellada tiene un snapshot de crédito incompleto.');
   }
+  // Same for the QR snapshot (algorithmVersion 3); a version-1/2 attempt has no QR price to reproduce.
+  if ((attempt.fullPriceQr === null) !== (attempt.qrAdjustmentBps === null)) {
+    throw planInconsistent('La reserva sellada tiene un snapshot de QR incompleto.');
+  }
   const sealed: Array<[string, number, bigint]> = [['CASH', 0, attempt.fullPriceCash]];
   if (present !== 0) {
     sealed.push(['TRANSFER', attempt.transferAdjustmentBps!, attempt.fullPriceTransfer!]);
     sealed.push(['CARD_DEBIT', attempt.debitAdjustmentBps!, attempt.fullPriceDebit!]);
     if (attempt.fullPriceCredit !== null) sealed.push(['CARD_CREDIT', attempt.creditAdjustmentBps!, attempt.fullPriceCredit]);
+    if (attempt.fullPriceQr !== null) sealed.push(['QR', attempt.qrAdjustmentBps!, attempt.fullPriceQr]);
   }
   for (const [method, bps, sealedFullPrice] of sealed) {
     let fullPrice: bigint;

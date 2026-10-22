@@ -345,6 +345,7 @@ describe.skipIf(!enabled)('R3-A4.3 S-REF — T-F refund on PostgreSQL (migration
       { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
       { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+      { method: 'QR', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
     ]);
     expect(quote.unappliedCollections).toEqual([]);
 
@@ -359,7 +360,7 @@ describe.skipIf(!enabled)('R3-A4.3 S-REF — T-F refund on PostgreSQL (migration
     // (2)(3) A NEW TRANSFER and a NEW CARD_DEBIT tender are refused with the gate
     // code (the gate runs at step 3.5, before any attempt read and before any
     // quote comparison).
-    for (const method of ['TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT'] as const) {
+    for (const method of ['TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT', 'QR'] as const) {
       const tenders: PlanTenderInput[] = [
         { method: 'CASH', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
         { method, role: 'FIXED', source: 'NEW', amount: 2000n, externalCollectionId: null },

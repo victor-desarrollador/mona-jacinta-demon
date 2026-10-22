@@ -24,7 +24,7 @@ export const checkoutReservationParamsDto = saleIdParams;
 // chk_tender_shape at the edge:
 //   BALANCE + NEW, no amount, no collection;
 //   FIXED + NEW, amount > 0, no collection;
-//   FIXED + COLLECTION, TRANSFER/CARD_DEBIT/CARD_CREDIT only, amount > 0 and the collection id.
+//   FIXED + COLLECTION, TRANSFER/CARD_DEBIT/CARD_CREDIT/QR only, amount > 0 and the collection id.
 const planTender = z.object({
   method: checkoutMethod,
   role: tenderRole,

@@ -73,12 +73,14 @@ const OFF_METHODS = [
   { method: 'TRANSFER', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
   { method: 'CARD_DEBIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
   { method: 'CARD_CREDIT', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
+  { method: 'QR', available: false, reason: 'PAYMENT_METHOD_NOT_ENABLED' },
 ];
 const ON_METHODS = [
   { method: 'CASH', available: true },
   { method: 'TRANSFER', available: true },
   { method: 'CARD_DEBIT', available: true },
   { method: 'CARD_CREDIT', available: true },
+  { method: 'QR', available: true },
 ];
 
 function setup(options: { withCandidate?: boolean } = {}) {

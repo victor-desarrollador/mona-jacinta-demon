@@ -72,7 +72,7 @@ function setup(options: { pricing?: boolean; holdsExpireAt?: Date } = {}) {
   const client = db.client as unknown as PrismaClient;
   const reservation = createCheckoutReservationService(client, { now: () => NOW, operationKey: () => OP_KEYS[next++ % OP_KEYS.length]!, externalMethodsEnabled: true });
   const close = createCheckoutCloseService(client, { now: () => NOW });
-  const pricing = options.pricing === false ? null : { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300, creditCardAdjustmentBps: 0 };
+  const pricing = options.pricing === false ? null : { bankTransferAdjustmentBps: 200, debitCardAdjustmentBps: 300, creditCardAdjustmentBps: 0, qrAdjustmentBps: 0 };
   const lines = items.map((item) => ({ saleItemId: item.id as string, sku: item.sku as string, quantity: item.quantity as bigint, baseUnitPrice: item.baseUnitPrice as bigint }));
   function request(tenders: PlanTenderInput[], patch: Partial<CheckoutReservationRequest> = {}): CheckoutReservationRequest {
     const balance = tenders.find((t) => t.role === 'BALANCE')!.method;
@@ -99,7 +99,7 @@ function setup(options: { pricing?: boolean; holdsExpireAt?: Date } = {}) {
 }
 
 // A close request row: every field is explicit (the DTO always delivers them).
-function d(method: 'CASH' | 'TRANSFER' | 'CARD_DEBIT' | 'CARD_CREDIT', patch: Partial<CheckoutDeclarationRow> = {}): CheckoutDeclarationRow {
+function d(method: 'CASH' | 'TRANSFER' | 'CARD_DEBIT' | 'CARD_CREDIT' | 'QR', patch: Partial<CheckoutDeclarationRow> = {}): CheckoutDeclarationRow {
   return {
     method, outcome: 'NONE', returnedAmount: null, amount: null, reference: null, referenceKey: null,
     institution: null, institutionOther: null, evidence: null, ...patch,
@@ -458,7 +458,7 @@ describe('R3-A4.3 S6 — T-X close/declaration', () => {
       { method: 'CARD_CREDIT', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
     ]);
     const attempt = t.db.table('checkoutAttempt')[0]!;
-    expect(attempt).toMatchObject({ balanceMethod: 'CARD_CREDIT', algorithmVersion: 2, creditAdjustmentBps: 0 });
+    expect(attempt).toMatchObject({ balanceMethod: 'CARD_CREDIT', algorithmVersion: 3, creditAdjustmentBps: 0 });
     await t.close.close(t.asCashier, t.sale.id as string, attempt.reserveKey as string, closeRequest([
       d('CASH'), d('CARD_CREDIT', { outcome: 'CHARGED', amount: attempt.expectedBalanceAmount as bigint, reference: 'CRD 123', referenceKey: 'CRD123', evidence: 'cupón' }),
     ]));
@@ -494,6 +494,51 @@ describe('R3-A4.3 S6 — T-X close/declaration', () => {
       d('CASH'), d('CARD_CREDIT', { outcome: 'CHARGED', amount: attempt2.expectedBalanceAmount as bigint, reference: 'CRD 123', referenceKey: 'CRD123', evidence: 'cupón' }),
     ]));
     expect(other.db.table('externalCollection').filter((r) => r.method === 'CARD_CREDIT')).toHaveLength(1);
+  });
+
+  it('S6-19d a CHARGED QR row creates one UNAPPLIED QR collection with a reference and no institution', async () => {
+    const t = setup();
+    await reserved(t, [
+      { method: 'CASH', role: 'FIXED', source: 'NEW', amount: 2000n, externalCollectionId: null },
+      { method: 'QR', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+    ]);
+    const attempt = t.db.table('checkoutAttempt')[0]!;
+    expect(attempt).toMatchObject({ balanceMethod: 'QR', algorithmVersion: 3, qrAdjustmentBps: 0 });
+    await t.close.close(t.asCashier, t.sale.id as string, attempt.reserveKey as string, closeRequest([
+      d('CASH'), d('QR', { outcome: 'CHARGED', amount: attempt.expectedBalanceAmount as bigint, reference: 'QR 123', referenceKey: 'QR123', evidence: 'comprobante' }),
+    ]));
+    const created = t.db.table('externalCollection').filter((row) => row.originAttemptId === attempt.id);
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      status: 'UNAPPLIED', branchId: t.branch, method: 'QR', amount: attempt.expectedBalanceAmount,
+      reference: 'QR 123', referenceKey: 'QR123', institution: null, institutionOther: null,
+    });
+  });
+
+  it('S6-20d a recorded QR reference of the branch is 409 EXTERNAL_REFERENCE_ALREADY_RECORDED with no write; a credit with the same key is another namespace', async () => {
+    const tenders: PlanTenderInput[] = [
+      { method: 'CASH', role: 'FIXED', source: 'NEW', amount: 2000n, externalCollectionId: null },
+      { method: 'QR', role: 'BALANCE', source: 'NEW', amount: null, externalCollectionId: null },
+    ];
+    const clash = setup();
+    await reserved(clash, tenders);
+    clash.collection({ method: 'QR', amount: 100n, reference: 'QR 123', referenceKey: 'QR123', institution: null });
+    const attempt = clash.db.table('checkoutAttempt')[0]!;
+    const row = d('QR', { outcome: 'CHARGED', amount: attempt.expectedBalanceAmount as bigint, reference: 'qr-123', referenceKey: 'QR123', evidence: 'comprobante' });
+    expect(await codeOf(clash.close.close(clash.asCashier, clash.sale.id as string, attempt.reserveKey as string, closeRequest([d('CASH'), row]))))
+      .toMatchObject({ status: 409, code: 'EXTERNAL_REFERENCE_ALREADY_RECORDED' });
+    expect(clash.db.table('checkoutAttempt')[0]).toMatchObject({ status: 'RESERVED', declaredAt: null });
+    expect(clash.db.table('checkoutAttemptDeclaration')).toHaveLength(0);
+    expect(clash.db.table('externalCollection')).toHaveLength(1);
+
+    const other = setup();
+    await reserved(other, tenders);
+    other.collection({ method: 'CARD_CREDIT', amount: 100n, reference: 'QR 123', referenceKey: 'QR123', institution: null });
+    const attempt2 = other.db.table('checkoutAttempt')[0]!;
+    await other.close.close(other.asCashier, other.sale.id as string, attempt2.reserveKey as string, closeRequest([
+      d('CASH'), d('QR', { outcome: 'CHARGED', amount: attempt2.expectedBalanceAmount as bigint, reference: 'QR 123', referenceKey: 'QR123', evidence: 'comprobante' }),
+    ]));
+    expect(other.db.table('externalCollection').filter((r) => r.method === 'QR')).toHaveLength(1);
   });
 
   it('S6-20 a partial-reference P2002 maps to 409 EXTERNAL_REFERENCE_ALREADY_RECORDED and rolls the close back; an unrelated P2002 is rethrown', async () => {

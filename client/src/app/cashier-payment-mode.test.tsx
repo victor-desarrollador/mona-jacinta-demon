@@ -14,10 +14,10 @@ const TOKEN_KEY = "mona-jacinta-token";
 const SALE_ID = "11111111-1111-4111-8111-111111111111";
 const SESSION_ID = "22222222-2222-4222-8222-222222222222";
 // Cada medio tiene su propio precio completo (centavos): efectivo 45.000,
-// transferencia 47.500, débito 48.125, crédito 51.750.
-const PRICES = { CASH: "4500000", TRANSFER: "4750000", CARD_DEBIT: "4812500", CARD_CREDIT: "5175000" } as const;
+// transferencia 47.500, débito 48.125, crédito 51.750, QR +12% = 50.400.
+const PRICES = { CASH: "4500000", TRANSFER: "4750000", CARD_DEBIT: "4812500", CARD_CREDIT: "5175000", QR: "5040000" } as const;
 // La lista mayorista (wholesalePrice) con los mismos ajustes: efectivo 30.000, crédito +15% = 34.500.
-const WHOLESALE_PRICES = { CASH: "3000000", TRANSFER: "3300000", CARD_DEBIT: "3150000", CARD_CREDIT: "3450000" } as const;
+const WHOLESALE_PRICES = { CASH: "3000000", TRANSFER: "3300000", CARD_DEBIT: "3150000", CARD_CREDIT: "3450000", QR: "3360000" } as const;
 
 type Method = keyof typeof PRICES;
 type QuoteRequest = { balanceMethod: Method; tenders: Array<{ method: Method; amount: string }> };
@@ -63,7 +63,7 @@ function quoteFor(sale: Row, body: QuoteRequest, state: ServerState) {
   const total = body.tenders.length === 0 ? prices[body.balanceMethod] : prices.CASH;
   return {
     saleId: sale.saleId, saleNumber: sale.saleNumber, pricingModel: "PROPORTIONAL_V1",
-    enabledMethods: (["CASH", "TRANSFER", "CARD_DEBIT", "CARD_CREDIT"] as const).map((method) => (
+    enabledMethods: (["CASH", "TRANSFER", "CARD_DEBIT", "CARD_CREDIT", "QR"] as const).map((method) => (
       state.unavailable?.includes(method)
         ? { method, available: false, reason: "PRICING_CONFIG_MISSING" }
         : { method, available: true }
@@ -181,14 +181,12 @@ describe("Caja — tipo de cobro", () => {
     expect(button(/^Cobrar/)).toBeNull();
   });
 
-  it("UI-CREDIT-1 aparece Crédito en Pago simple y como opción dentro de Pago combinado (nunca QR)", async () => {
+  it("UI-CREDIT-1 aparece Crédito en Pago simple y como opción dentro de Pago combinado", async () => {
     await renderCashier();
     expect(await screen.findByRole("button", { name: /Crédito/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /QR/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
     const balance = screen.getByLabelText("Medio de saldo");
     expect(within(balance).getByRole("option", { name: "Tarjeta de crédito" })).toBeInTheDocument();
-    expect(within(balance).queryByRole("option", { name: /QR/ })).toBeNull();
     fireEvent.click(button(/Agregar importe fijo/)!);
     expect(within(screen.getByLabelText("Medio del importe fijo 1")).getByRole("option", { name: "Tarjeta de crédito" })).toBeInTheDocument();
   });
@@ -257,6 +255,73 @@ describe("Caja — tipo de cobro", () => {
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
     expect((checkouts(state)[0]!.body as CheckoutBody).expectedTotal).toBe(WHOLESALE_PRICES.CARD_CREDIT);
+  });
+
+  it("UI-QR-1 aparece QR en Pago simple y como opción dentro de Pago combinado (saldo e importe fijo)", async () => {
+    await renderCashier();
+    expect(await screen.findByRole("button", { name: /QR.*50\.400/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
+    expect(within(screen.getByLabelText("Medio de saldo")).getByRole("option", { name: "QR" })).toBeInTheDocument();
+    fireEvent.click(button(/Agregar importe fijo/)!);
+    expect(within(screen.getByLabelText("Medio del importe fijo 1")).getByRole("option", { name: "QR" })).toBeInTheDocument();
+  });
+
+  it("UI-QR-2 Pago simple + QR cotiza sin importes fijos, exige solo la referencia (sin institución ni recibido) y cobra con balanceMethod QR", async () => {
+    const state = await renderCashier();
+    await chooseSimple(/QR.*50\.400/, "50.400");
+    expect(lastQuote(state)).toEqual({ balanceMethod: "QR", tenders: [] });
+    expect(screen.queryByLabelText("Institución")).toBeNull();
+    expect(screen.queryByLabelText("Recibido")).toBeNull();
+    expect(button(/^Cobrar/)).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Referencia"), { target: { value: "QR0042" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    fireEvent.click(button(/^Cobrar/)!);
+    await screen.findByTestId("proportional-result");
+    const [body] = checkouts(state).map((request) => request.body as CheckoutBody);
+    expect(body).toMatchObject({ balanceMethod: "QR", expectedTotal: PRICES.QR, cashSessionId: SESSION_ID });
+    expect(body!.tenders).toHaveLength(1);
+    expect(body!.tenders[0]).toMatchObject({ method: "QR", role: "BALANCE", reference: "QR0042" });
+    expect(body!.tenders[0]).not.toHaveProperty("institution");
+    expect(body!.tenders[0]).not.toHaveProperty("receivedAmount");
+  });
+
+  it("UI-QR-3 Pago combinado permite QR: efectivo fijo + saldo en QR (y QR fijo con saldo en efectivo)", async () => {
+    const state = await renderCashier();
+    await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
+    fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
+    fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "QR" } });
+    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "CASH" } });
+    fireEvent.change(screen.getByLabelText("Importe fijo 1"), { target: { value: "100" } });
+    fireEvent.change(screen.getByLabelText("Recibido del importe fijo 1"), { target: { value: "100" } });
+    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "QR0043" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    expect(lastQuote(state)).toEqual({ balanceMethod: "QR", tenders: [{ method: "CASH", amount: "10000" }] });
+    expect(screen.queryByLabelText("Institución del saldo")).toBeNull();
+    // QR como importe fijo: pide su referencia, sin institución.
+    fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "CASH" } });
+    fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "QR" } });
+    expect(screen.getByLabelText("Referencia del importe fijo 1")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Institución del importe fijo 1")).toBeNull();
+  });
+
+  it("UI-QR-4 un QR sin configuración de precios queda deshabilitado y no se ofrece como saldo", async () => {
+    await renderCashier({ unavailable: ["QR"] });
+    expect(await screen.findByRole("button", { name: /Efectivo.*45\.000/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /QR/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
+    expect(within(screen.getByLabelText("Medio de saldo")).getByRole("option", { name: "QR" })).toBeDisabled();
+  });
+
+  it("UI-QR-5 mayorista: el precio de QR es el que el servidor calcula sobre la lista mayorista", async () => {
+    const state = await renderCashier({ queue: [row({ pricingMode: "WHOLESALE", wholesaleConfirmed: true })] });
+    expect(await screen.findByRole("button", { name: /QR.*33\.600/ })).toBeInTheDocument();
+    await chooseSimple(/QR.*33\.600/, "33.600");
+    fireEvent.change(screen.getByLabelText("Referencia"), { target: { value: "QR0044" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    fireEvent.click(button(/^Cobrar/)!);
+    await screen.findByTestId("proportional-result");
+    expect((checkouts(state)[0]!.body as CheckoutBody).expectedTotal).toBe(WHOLESALE_PRICES.QR);
   });
 
   it("UI-3 Pago simple + Efectivo cotiza sin importes fijos, pide lo recibido y cobra con balanceMethod CASH", async () => {

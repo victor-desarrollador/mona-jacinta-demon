@@ -45,13 +45,13 @@ const amountOf = (result: ProportionalQuote, method: ProportionalMethod) =>
   result.methods.find((entry) => entry.method === method)?.amount;
 
 describe('CARD_CREDIT in the proportional engine', () => {
-  it('exposes CASH, TRANSFER, CARD_DEBIT and CARD_CREDIT, in that order', () => {
-    expect([...PROPORTIONAL_METHODS]).toEqual(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']);
+  it('exposes CASH, TRANSFER, CARD_DEBIT and CARD_CREDIT first, in that order (QR comes after them)', () => {
+    expect([...PROPORTIONAL_METHODS].slice(0, 4)).toEqual(['CASH', 'TRANSFER', 'CARD_DEBIT', 'CARD_CREDIT']);
   });
 
   it('CRED-1 the quote returns the CARD_CREDIT full price next to the other three', () => {
     const result = quote({ balanceMethod: 'CASH' });
-    expect(result.fullPrices).toEqual({ CASH: p(40000), TRANSFER: p(44000), CARD_DEBIT: p(42000), CARD_CREDIT: p(46000) });
+    expect(result.fullPrices).toEqual({ CASH: p(40000), TRANSFER: p(44000), CARD_DEBIT: p(42000), CARD_CREDIT: p(46000), QR: null });
     expect(result.lineFullPrices.CARD_CREDIT).toEqual([p(46000)]);
   });
 
@@ -137,7 +137,7 @@ describe('CARD_CREDIT in the proportional engine', () => {
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return Math.floor((((t ^ (t >>> 14)) >>> 0) / 4294967296) * max);
     };
-    const methods = [...PROPORTIONAL_METHODS];
+    const methods = [...PROPORTIONAL_METHODS].slice(0, 4);
     for (let index = 0; index < 300; index += 1) {
       const lines: ProportionalLineInput[] = Array.from({ length: 1 + next(4) }, (_, lineIndex) => ({
         saleItemId: `id-${lineIndex}`, sku: `SKU-${next(5)}`, quantity: BigInt(1 + next(5)), baseUnitPrice: BigInt(10_000 + next(900_000) * 100),
@@ -180,9 +180,5 @@ describe('CARD_CREDIT in the proportional engine', () => {
   it('rejects an out-of-range credit adjustment', () => {
     expect(() => quote({ pricing: { ...PRICING, creditCardAdjustmentBps: 10_001 }, balanceMethod: 'CASH' }))
       .toThrow(expect.objectContaining({ code: 'INVALID_PRICE_ADJUSTMENT' }));
-  });
-
-  it('still refuses QR', () => {
-    expect(() => quote({ balanceMethod: 'QR' as unknown as ProportionalMethod })).toThrow(expect.objectContaining({ code: 'PAYMENT_METHOD_NOT_ENABLED' }));
   });
 });

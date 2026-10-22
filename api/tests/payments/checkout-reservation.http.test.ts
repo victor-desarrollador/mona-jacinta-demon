@@ -66,7 +66,7 @@ describe('R3-A4.3 S4 — reservation routes', () => {
   it('H02 malformed bodies and params die at the edge with 400; the service is never called', async () => {
     for (const [path, payload] of [
       [ENDPOINT, body({ expectedTotal: 15000 })],
-      [ENDPOINT, body({ tenders: [{ method: 'QR', role: 'BALANCE', source: 'NEW' }], balanceMethod: 'QR' })],
+      [ENDPOINT, body({ tenders: [{ method: 'PAYPAL', role: 'BALANCE', source: 'NEW' }], balanceMethod: 'PAYPAL' })],
       [ENDPOINT, body({ branchId: BRANCH })],
       [`/api/v1/sales/${SALE.toUpperCase()}/checkout/reservations`, body()],
     ] as const) {

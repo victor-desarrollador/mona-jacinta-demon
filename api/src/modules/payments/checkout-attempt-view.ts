@@ -38,7 +38,7 @@ export function stockStateOf(input: { branchId: string; items: CoverageItem[]; a
 type AttemptRow = {
   reserveKey: string; operationKey: string; status: string; startedById: string; startedAt: Date;
   cashSessionId: string; balanceMethod: string; expectedTotal: bigint; expectedBalanceAmount: bigint; tenderCount: number;
-  fullPriceCash: bigint; fullPriceTransfer: bigint | null; fullPriceDebit: bigint | null; fullPriceCredit?: bigint | null;
+  fullPriceCash: bigint; fullPriceTransfer: bigint | null; fullPriceDebit: bigint | null; fullPriceCredit?: bigint | null; fullPriceQr?: bigint | null;
   recoveryReason: string | null; recoveryEvidence: string | null;
   rejectionCode: string | null; rejectionDetails: unknown; declaredById: string | null; declaredAt: Date | null;
 };
@@ -61,7 +61,7 @@ export type ReservationView = {
     expectedBalanceAmount: bigint;
     tenderCount: number;
     tenders: TenderRow[];
-    fullPrices: { CASH: bigint; TRANSFER: bigint | null; CARD_DEBIT: bigint | null; CARD_CREDIT: bigint | null };
+    fullPrices: { CASH: bigint; TRANSFER: bigint | null; CARD_DEBIT: bigint | null; CARD_CREDIT: bigint | null; QR: bigint | null };
   };
   recovery: { reason: string; evidence: string } | null;
   rejection: { code: string; details: unknown } | null;
@@ -99,7 +99,7 @@ export function buildReservationView(input: {
       })),
       fullPrices: {
         CASH: attempt.fullPriceCash, TRANSFER: attempt.fullPriceTransfer, CARD_DEBIT: attempt.fullPriceDebit,
-        CARD_CREDIT: attempt.fullPriceCredit ?? null,
+        CARD_CREDIT: attempt.fullPriceCredit ?? null, QR: attempt.fullPriceQr ?? null,
       },
     },
     recovery: attempt.recoveryReason === null || attempt.recoveryEvidence === null

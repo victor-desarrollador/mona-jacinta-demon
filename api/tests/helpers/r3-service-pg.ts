@@ -184,9 +184,10 @@ export async function waitForBlocked(pool: Pool, holderPid: number, count: numbe
 // CM: the PILOT cash-exit gate (cash-movement.pg.test.ts), slot 9.
 // CR: the PILOT cash-reversal gate (cash-movement-reversal.pg.test.ts), slot 10.
 // CC: the CARD_CREDIT gate (checkout-card-credit.pg.test.ts), slot 11.
+// QR: the QR gate (checkout-qr.pg.test.ts), slot 14 (12 and 13 belong to the warehouse and scope-assignment gates).
 // WH: the WAREHOUSE-MVP stock-adjustment gate (inventory-adjustment.pg.test.ts), slot 12.
 // SC: the scope-assignment lock gate (scope-assignment-lock.pg.test.ts), slot 13.
-export const POS_SUITE_SLOTS = Object.freeze({ S4: 3, SREF: 4, S5: 5, S6: 6, S7: 7, S7RR: 8, CM: 9, CR: 10, CC: 11, WH: 12, SC: 13 } as const);
+export const POS_SUITE_SLOTS = Object.freeze({ S4: 3, SREF: 4, S5: 5, S6: 6, S7: 7, S7RR: 8, CM: 9, CR: 10, CC: 11, WH: 12, SC: 13, QR: 14 } as const);
 export type PosSuite = keyof typeof POS_SUITE_SLOTS;
 const POS_SLOT_WIDTH = 10_000_000;
 

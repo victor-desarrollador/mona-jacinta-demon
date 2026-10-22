@@ -104,7 +104,7 @@ const envSchema = z.object({
     })
     .pipe(z.array(z.uuid())),
   // R3-A4.3 S-REF (R3 rev. 2 §5): the pilot gate of the external (TRANSFER /
-  // CARD_DEBIT) payment methods of the proportional checkout. Strictly opt-in,
+  // CARD_DEBIT / CARD_CREDIT / QR) payment methods of the proportional checkout. Strictly opt-in,
   // exactly like the sweeper: only an explicit 'true' enables them, and the
   // default is off. It is validated once at startup and injected by app.ts into
   // the quote and the reservation; the services never read the process. When it

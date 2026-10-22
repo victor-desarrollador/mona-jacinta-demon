@@ -31,7 +31,7 @@
 // cobro solo puede armarse desde una cotización que corresponda exactamente a
 // ese draft.
 
-export const PROPORTIONAL_METHODS = ["CASH", "TRANSFER", "CARD_DEBIT", "CARD_CREDIT"] as const;
+export const PROPORTIONAL_METHODS = ["CASH", "TRANSFER", "CARD_DEBIT", "CARD_CREDIT", "QR"] as const;
 export type ProportionalMethod = (typeof PROPORTIONAL_METHODS)[number];
 
 export const TRANSFER_INSTITUTIONS = ["MACRO", "BBVA", "NACION", "GALICIA", "MERCADO_PAGO", "OTHER"] as const;
@@ -406,7 +406,7 @@ export function parseCheckoutQuote(value: unknown): CheckoutQuote {
   if (seenMethods.size !== PROPORTIONAL_METHODS.length) fail();
 
   if (!isRecord(value.fullPrices)) fail();
-  const fullPrices = { CASH: null, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null } as CheckoutQuote["fullPrices"];
+  const fullPrices = { CASH: null, TRANSFER: null, CARD_DEBIT: null, CARD_CREDIT: null, QR: null } as CheckoutQuote["fullPrices"];
   for (const method of PROPORTIONAL_METHODS) {
     const raw = (value.fullPrices as Record<string, unknown>)[method];
     fullPrices[method] = raw === null ? null : requiredCentavos(raw, fail);
@@ -553,7 +553,7 @@ export function parseCheckoutResult(value: unknown): CheckoutResult {
 const UNAVAILABLE: MethodAvailability = { available: false, reason: PRICING_CONFIG_MISSING };
 
 export function methodAvailability(quote: CheckoutQuote): Record<ProportionalMethod, MethodAvailability> {
-  const availability = { CASH: UNAVAILABLE, TRANSFER: UNAVAILABLE, CARD_DEBIT: UNAVAILABLE, CARD_CREDIT: UNAVAILABLE };
+  const availability = { CASH: UNAVAILABLE, TRANSFER: UNAVAILABLE, CARD_DEBIT: UNAVAILABLE, CARD_CREDIT: UNAVAILABLE, QR: UNAVAILABLE };
   for (const entry of quote.enabledMethods) {
     availability[entry.method] = entry.available ? { available: true } : UNAVAILABLE;
   }
