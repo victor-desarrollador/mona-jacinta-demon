@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { SignJWT, jwtVerify, type JWTPayload } from 'jose';
 import { env } from '../../config/env.js';
 
-const ACCESS_TOKEN_SECONDS = 15 * 60;
+const ACCESS_TOKEN_SECONDS = env.JWT_ACCESS_TTL_SECONDS;
 const key = new TextEncoder().encode(env.JWT_SECRET);
 
 export function signAccessToken(userId: string): Promise<string> {
