@@ -1363,6 +1363,10 @@ function CashierWorkspace({
 }) {
   const [register, setRegister] = useState<CashRegister | null>(null);
   const [cashSession, setCashSession] = useState<CashSession | null>(null);
+  // `cashSession === null` solo significa «cerrada» una vez que la caja de la
+  // sucursal elegida se leyó: antes de eso (carga inicial, cambio de sucursal,
+  // lectura fallida) la caja es desconocida, no cerrada.
+  const [cashKnown, setCashKnown] = useState(false);
   // CASH-1: the reconciliation of the last close (only for sessions closed
   // WITH reconciliation — never for pre-CASH-1 history) and the recent close
   // history of the authorized branch.
@@ -1413,6 +1417,13 @@ function CashierWorkspace({
   );
   const recordAttempt = useCallback((next: ProductionCheckoutAttempt) => {
     setCheckoutAttempts((current) => ({ ...current, [next.saleId]: next }));
+  }, []);
+  const discardAttempt = useCallback((saleId: string) => {
+    setCheckoutAttempts((current) => {
+      const rest = { ...current };
+      delete rest[saleId];
+      return rest;
+    });
   }, []);
   // M1: payment lists are kept per sale (the last validated list of each), so
   // another sale's payments (or "no payments") are never shown under the
@@ -1655,6 +1666,7 @@ function CashierWorkspace({
       if (!isLatest()) return;
       setRegister(currentRegister);
       setCashSession(currentSession);
+      setCashKnown(true);
     } catch (cause) {
       if (!isLatest()) return;
       throw cause;
@@ -1743,6 +1755,7 @@ function CashierWorkspace({
       // A read started before this open must not replace the new session.
       cashStateRequest.current += 1;
       setCashSession(session);
+      setCashKnown(true);
       setCloseResult(null);
       setNotice("Sesión de caja abierta.");
     } catch (cause) {
@@ -1813,6 +1826,7 @@ function CashierWorkspace({
       // branch and must not touch the selected branch's register or results.
       if (epoch !== branchEpoch.current) return;
       setCashSession(null);
+      setCashKnown(true);
       if (isCashSessionEntry(closed)) {
         setCloseResult(closed);
         setNotice(
@@ -2162,6 +2176,7 @@ function CashierWorkspace({
     // closable) under the new branch while its own state loads.
     setRegister(null);
     setCashSession(null);
+    setCashKnown(false);
     setCashHistory([]);
     setCashHistoryFailed(false);
     setCashMovements([]);
@@ -2220,6 +2235,7 @@ function CashierWorkspace({
         <CashSessionPanel
           register={register}
           session={cashSession}
+          known={cashKnown}
           startingCash={startingCash}
           closingCash={closingCash}
           loading={loading}
@@ -2599,10 +2615,13 @@ function CashierWorkspace({
             money={MONEY_TOOLS}
             sale={displaySale}
             cashSession={cashSession}
+            branchId={branchId}
+            cashKnown={cashKnown}
             chargeBlocked={paymentBlocked}
             attempt={checkoutAttempts[displaySale.saleId] ?? null}
             inFlight={checkoutInFlight}
             onAttempt={recordAttempt}
+            onDiscardAttempt={discardAttempt}
           />
         ) : (
           <>
@@ -2851,6 +2870,7 @@ function SaleTotals({
 function CashSessionPanel({
   register,
   session,
+  known,
   startingCash,
   closingCash,
   loading,
@@ -2864,6 +2884,7 @@ function CashSessionPanel({
 }: {
   register: CashRegister | null;
   session: CashSession | null;
+  known: boolean;
   startingCash: string;
   closingCash: string;
   loading: boolean;
@@ -2879,7 +2900,7 @@ function CashSessionPanel({
     <section className={session ? "cash-session open" : "cash-session"}>
       <div>
         <p className="eyebrow">Estado de caja</p>
-        <h2>{session ? "Caja abierta" : "Caja cerrada"}</h2>
+        <h2>{session ? "Caja abierta" : known ? "Caja cerrada" : "Verificando caja..."}</h2>
         <p>{register ? register.name : "Buscando caja de la sucursal..."}</p>
       </div>
       {session ? (

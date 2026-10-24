@@ -1259,10 +1259,18 @@ export function parseCheckoutReservation(
 // Production V1 — estado durable del intento en el cliente
 // ---------------------------------------------------------------------------
 
+// El contexto operativo en el que nació el intento. La confirmación no lleva
+// sesión ni sucursal en su cuerpo, así que se registra acá para poder comparar.
+export type AttemptContext = {
+  branchId: string;
+  cashSessionId: string;
+};
+
 export type ProductionCheckoutAttempt =
   | {
       phase: "RESERVATION";
       state: "PENDING" | "UNCERTAIN";
+      context: AttemptContext;
       saleId: string;
       reserveKey: string;
       body: CheckoutReservationBody;
@@ -1273,6 +1281,7 @@ export type ProductionCheckoutAttempt =
   | {
       phase: "CONFIRMATION";
       state: "PENDING" | "UNCERTAIN";
+      context: AttemptContext;
       saleId: string;
       reserveKey: string;
       operationKey: string;
@@ -1284,6 +1293,7 @@ export type ProductionCheckoutAttempt =
   | {
       phase: "CONFIRMATION";
       state: "CONFIRMED";
+      context: AttemptContext;
       saleId: string;
       reserveKey: string;
       operationKey: string;

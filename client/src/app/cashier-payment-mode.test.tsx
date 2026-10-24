@@ -48,6 +48,12 @@ type ConfirmationBody = {
 type Row = Record<string, unknown>;
 type ServerState = {
   queue: Row[];
+  cashOpen?: boolean;
+  // Retiene la PRÓXIMA lectura de /cash/current (se consume al usarla).
+  cashGate?: Promise<void>;
+  cashFail?: boolean;
+  branchIds?: string[];
+  quoteGate?: Promise<void>;
   quoteFail?: { status: number; body: unknown };
   reservationFailures?: number;
   confirmationFailures?: number;
@@ -127,10 +133,11 @@ function createRouter(state: ServerState) {
     const method = init?.method ?? "GET";
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
     if (method !== "GET") state.requests.push({ url, method, body });
-    if (url.includes("/auth/me")) return jsonResponse({ user: cashier });
+    if (url.includes("/auth/me")) return jsonResponse({ user: { ...cashier, branchIds: state.branchIds ?? cashier.branchIds } });
     if (url.includes("/sales/pending")) return jsonResponse({ items: state.queue });
     if (url.endsWith("/checkout/quote")) {
       if (state.quoteFail) return jsonResponse(state.quoteFail.body, state.quoteFail.status);
+      if (state.quoteGate) await state.quoteGate;
       return jsonResponse(quoteFor(state.queue[0]!, body as unknown as QuoteRequest, state));
     }
 
@@ -286,6 +293,12 @@ function createRouter(state: ServerState) {
       );
     }
     if (url.includes("/cash/current")) {
+      const cashGate = state.cashGate;
+      state.cashGate = undefined;
+      if (cashGate) await cashGate;
+      if (state.cashFail) return jsonResponse({ error: { code: "CASH_UNAVAILABLE", message: "No se pudo leer la caja." } }, 500);
+      if (state.cashOpen === false) return jsonResponse(null);
+
       return jsonResponse({
         sessionId: SESSION_ID, registerId: "reg-1", branchId: "CEN", openedById: "u1", closedById: null,
         startingCash: "0", status: "OPEN", openedAt: "2030-01-01T00:00:00.000Z", closedAt: null,
@@ -751,6 +764,345 @@ describe("Caja — tipo de cobro", () => {
   });
 
 
+
+
+
+  it("PROD-CASH-PERF-01 escribir evidencia no vuelve a cotizar si no cambia la composición", async () => {
+    const state = await renderCashier();
+
+    await chooseSimple(/Transferencia.*47\.500/, "47.500");
+
+    const before = quotes(state).length;
+
+    fireEvent.change(
+      screen.getByLabelText("Referencia"),
+      { target: { value: "TRF-000123" } },
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Institución"),
+      { target: { value: "MACRO" } },
+    );
+
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+
+    expect(quotes(state)).toHaveLength(before);
+  });
+
+  it("PROD-CASH-UX-03 con caja cerrada no permite preparar ningún cobro", async () => {
+    const state = await renderCashier({ cashOpen: false });
+
+    const closed = await screen.findByTestId("cash-session-closed");
+    expect(closed).toHaveTextContent("Caja cerrada");
+    expect(closed).toHaveTextContent("Abrí una caja para poder cobrar.");
+
+    expect(
+      screen.queryByRole("group", { name: "Tipo de cobro" }),
+    ).toBeNull();
+
+    expect(
+      screen.queryByRole("button", { name: /^Cobrar/ }),
+    ).toBeNull();
+
+    await new Promise((resolve) => window.setTimeout(resolve, 300));
+
+    expect(quotes(state)).toHaveLength(0);
+    expect(reservations(state)).toHaveLength(0);
+    expect(checkouts(state)).toHaveLength(0);
+  });
+
+  it("PROD-CASH-UX-04 explica exactamente qué falta en una transferencia combinada", async () => {
+    await renderCashier();
+
+    await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Pago combinado" }),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Agregar pago/i }),
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Medio del importe fijo 1"),
+      { target: { value: "TRANSFER" } },
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Importe fijo 1"),
+      { target: { value: "2650" } },
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Institución del importe fijo 1"),
+      { target: { value: "MACRO" } },
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Recibido del saldo"),
+      { target: { value: "42350" } },
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(
+          "Ingresá el N.º de operación de la transferencia del pago 1.",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    expect(
+      screen.getByRole("button", { name: /^Cobrar/ }),
+    ).toBeDisabled();
+  });
+
+  // --- Evidencia de cobro (paridad con el DTO del servidor y con nonCashIssues) ---
+
+  const openCombinedMode = async () => {
+    await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
+    fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
+  };
+  const addFixed = (method: Method, amount: string) => {
+    fireEvent.click(screen.getByRole("button", { name: /Agregar pago/i }));
+    fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: method } });
+    fireEvent.change(screen.getByLabelText("Importe fijo 1"), { target: { value: amount } });
+  };
+  const blockerText = () => screen.getByTestId("proportional-blocker");
+  const expectBlocked = async (message: string) => {
+    await waitFor(() => expect(blockerText()).toHaveTextContent(message));
+    expect(button(/^Cobrar/)).toBeDisabled();
+  };
+
+  it("PROD-CASH-EV-01 importe fijo por transferencia: referencia, institución y «Otra» se exigen en ese orden", async () => {
+    const state = await renderCashier();
+    await openCombinedMode();
+    addFixed("TRANSFER", "2650");
+    fireEvent.change(screen.getByLabelText("Recibido del saldo"), { target: { value: "42350" } });
+
+    await expectBlocked("Ingresá el N.º de operación de la transferencia del pago 1.");
+
+    fireEvent.change(screen.getByLabelText("Referencia del importe fijo 1"), { target: { value: "TRF-000123" } });
+    await expectBlocked("Elegí la institución de la transferencia del pago 1.");
+
+    fireEvent.change(screen.getByLabelText("Institución del importe fijo 1"), { target: { value: "OTHER" } });
+    await expectBlocked("Ingresá el nombre de la institución de la transferencia del pago 1.");
+
+    fireEvent.change(screen.getByLabelText("Institución alternativa del importe fijo 1"), { target: { value: "Banco Provincia" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    expect(screen.queryByTestId("proportional-blocker")).toBeNull();
+    expect(checkouts(state)).toHaveLength(0);
+  });
+
+  it("PROD-CASH-EV-02 una referencia en blanco no cuenta como evidencia", async () => {
+    await renderCashier();
+    await openCombinedMode();
+    addFixed("TRANSFER", "2650");
+    fireEvent.change(screen.getByLabelText("Referencia del importe fijo 1"), { target: { value: "   " } });
+    fireEvent.change(screen.getByLabelText("Institución del importe fijo 1"), { target: { value: "MACRO" } });
+    fireEvent.change(screen.getByLabelText("Recibido del saldo"), { target: { value: "42350" } });
+    await expectBlocked("Ingresá el N.º de operación de la transferencia del pago 1.");
+  });
+
+  it.each(["CARD_DEBIT", "QR"] as const)("PROD-CASH-EV-03 importe fijo %s sin referencia queda bloqueado y no pide institución", async (method) => {
+    await renderCashier();
+    await openCombinedMode();
+    addFixed(method, "2650");
+    fireEvent.change(screen.getByLabelText("Recibido del saldo"), { target: { value: "42350" } });
+    await expectBlocked("Ingresá el N.º de operación del pago 1.");
+    expect(screen.queryByLabelText("Institución del importe fijo 1")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Referencia del importe fijo 1"), { target: { value: "OP-998877" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+  });
+
+  it("PROD-CASH-EV-04 pago restante por transferencia: referencia, institución y «Otra» se exigen", async () => {
+    await renderCashier();
+    await openCombinedMode();
+    fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "TRANSFER" } });
+
+    await expectBlocked("Ingresá el N.º de operación de la transferencia del pago restante.");
+
+    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "TRF-445566" } });
+    await expectBlocked("Elegí la institución de la transferencia del pago restante.");
+
+    fireEvent.change(screen.getByLabelText("Institución del saldo"), { target: { value: "OTHER" } });
+    await expectBlocked("Ingresá el nombre de la institución de la transferencia del pago restante.");
+
+    fireEvent.change(screen.getByLabelText("Institución alternativa del saldo"), { target: { value: "Banco Provincia" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+  });
+
+  it.each(["CARD_DEBIT", "QR"] as const)("PROD-CASH-EV-05 pago restante %s sin referencia queda bloqueado", async (method) => {
+    await renderCashier();
+    await openCombinedMode();
+    fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: method } });
+    await expectBlocked("Ingresá el N.º de operación del pago restante.");
+    expect(screen.queryByLabelText("Institución del saldo")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "OP-112233" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+  });
+
+  it("PROD-CASH-EV-06 el efectivo no exige referencia ni institución (simple, fijo y saldo)", async () => {
+    await renderCashier();
+    await chooseSimple(/Efectivo.*45\.000/, "45.000");
+    expect(screen.queryByLabelText("Referencia")).toBeNull();
+    expect(screen.queryByLabelText("Institución")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Recibido"), { target: { value: "45000" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    expect(screen.queryByTestId("proportional-blocker")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
+    addFixed("CASH", "1000");
+    fireEvent.change(screen.getByLabelText("Recibido del importe fijo 1"), { target: { value: "1000" } });
+    fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "CARD_DEBIT" } });
+    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "DEB-554433" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    expect(screen.queryByTestId("proportional-blocker")).toBeNull();
+  });
+
+  it("PROD-CASH-EV-07 el formato de la referencia lo decide el contrato (sin alfanuméricos o demasiado corta)", async () => {
+    await renderCashier();
+    await openCombinedMode();
+    fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "CARD_DEBIT" } });
+    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "---" } });
+    await expectBlocked("La referencia no tiene un formato válido.");
+    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "ab" } });
+    await expectBlocked("La referencia no tiene un formato válido.");
+    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "OP-12" } });
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+  });
+
+  // --- Caja cerrada / abierta y cotización ---
+
+  it("PROD-CASH-UX-05 cerrar la caja suelta la cotización, deja de cotizar y al reabrir vuelve a cotizar", async () => {
+    const state = await renderCashier();
+    await chooseSimple(/Efectivo.*45\.000/, "45.000");
+    const before = quotes(state).length;
+
+    state.cashOpen = false;
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar" }));
+    expect(await screen.findByTestId("cash-session-closed")).toBeInTheDocument();
+    expect(button(/^Cobrar/)).toBeNull();
+    expect(screen.queryByTestId("simple-total")).toBeNull();
+
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    expect(quotes(state)).toHaveLength(before);
+    expect(checkouts(state)).toHaveLength(0);
+
+    state.cashOpen = true;
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar" }));
+    await waitFor(() => expect(screen.queryByTestId("cash-session-closed")).toBeNull());
+    await waitFor(() => expect(quotes(state).length).toBeGreaterThan(before));
+    await waitForTotal("45.000");
+  });
+
+  it("PROD-CASH-UX-06 una cotización en vuelo que llega con la caja ya cerrada se descarta", async () => {
+    let release!: () => void;
+    const state = await renderCashier({ quoteGate: new Promise<void>((resolve) => { release = resolve; }) });
+    // La cotización inicial queda retenida en el servidor.
+    await waitFor(() => expect(quotes(state)).toHaveLength(1));
+
+    state.cashOpen = false;
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar" }));
+    expect(await screen.findByTestId("cash-session-closed")).toBeInTheDocument();
+
+    // Llega tarde la respuesta vieja y se reabre la caja: no puede quedar una cotización fantasma.
+    release();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    state.cashOpen = true;
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar" }));
+    await waitFor(() => expect(screen.queryByTestId("cash-session-closed")).toBeNull());
+    expect(screen.queryByRole("button", { name: /Efectivo.*45\.000/ })).toBeNull();
+    expect(button(/^Cobrar/)).toBeNull();
+    // La cotización vigente es la nueva, no la vieja.
+    expect(await screen.findByRole("button", { name: /Efectivo.*45\.000/ })).toBeInTheDocument();
+  });
+
+  it("PROD-CASH-PERF-02 refrescar la caja sin cambios no vuelve a cotizar ni suelta la cotización vigente", async () => {
+    const state = await renderCashier();
+    await chooseSimple(/Transferencia.*47\.500/, "47.500");
+    const before = quotes(state).length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Actualizar" }));
+    await waitFor(() => expect(state.requests.length).toBeGreaterThan(0));
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+
+    expect(quotes(state)).toHaveLength(before);
+    expect(screen.getByTestId("simple-total")).toHaveTextContent("47.500");
+  });
+
+  // --- Caja: cargando ≠ cerrada ---
+
+  const gated = () => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  };
+
+  it("PROD-CASH-LOAD-01 mientras se consulta la caja no afirma «Caja cerrada», no deja cobrar y no cotiza", async () => {
+    const gate = gated();
+    const state = await renderCashier({ cashGate: gate.promise });
+
+    expect(screen.getByTestId("cash-session-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("cash-session-closed")).toBeNull();
+    expect(screen.queryByText("Caja cerrada")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Tipo de cobro" })).toBeNull();
+    expect(button(/^Cobrar/)).toBeNull();
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    expect(quotes(state)).toHaveLength(0);
+
+    gate.release();
+    expect(await screen.findByRole("group", { name: "Tipo de cobro" })).toBeInTheDocument();
+    expect(screen.queryByTestId("cash-session-loading")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Caja abierta" })).toBeInTheDocument();
+  });
+
+  it("PROD-CASH-LOAD-02 la respuesta que confirma que no hay sesión sí muestra «Caja cerrada»", async () => {
+    const gate = gated();
+    await renderCashier({ cashOpen: false, cashGate: gate.promise });
+    expect(screen.queryByText("Caja cerrada")).toBeNull();
+
+    gate.release();
+    expect(await screen.findByTestId("cash-session-closed")).toHaveTextContent("Abrí una caja para poder cobrar.");
+    expect(screen.queryByTestId("cash-session-loading")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Caja cerrada" })).toBeInTheDocument();
+  });
+
+  it("PROD-CASH-LOAD-03 si la lectura de la caja falla no afirma que está cerrada ni deja cobrar", async () => {
+    await renderCashier({ cashFail: true });
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    expect(screen.queryByText("Caja cerrada")).toBeNull();
+    expect(screen.queryByTestId("cash-session-closed")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Tipo de cobro" })).toBeNull();
+    expect(button(/^Cobrar/)).toBeNull();
+  });
+
+  it("PROD-CASH-LOAD-04 al cambiar de sucursal la sesión anterior no sirve y no aparece una caja cerrada falsa", async () => {
+    const state = await renderCashier({ branchIds: ["CEN", "SUR"] });
+    expect(await screen.findByRole("group", { name: "Tipo de cobro" })).toBeInTheDocument();
+    await waitFor(() => expect(quotes(state).length).toBeGreaterThan(0));
+    const before = quotes(state).length;
+
+    const gate = gated();
+    state.cashGate = gate.promise;
+    fireEvent.change(screen.getByLabelText("Sucursal autorizada"), { target: { value: "SUR" } });
+
+    // Mientras se lee la caja de SUR: ni la sesión de CEN ni un cartel de cerrada.
+    await waitFor(() => expect(screen.queryByRole("heading", { name: "Caja abierta" })).toBeNull());
+    expect(screen.queryByText("Caja cerrada")).toBeNull();
+    expect(screen.queryByTestId("cash-session-closed")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Tipo de cobro" })).toBeNull();
+    expect(button(/^Cobrar/)).toBeNull();
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    expect(quotes(state)).toHaveLength(before);
+    expect(reservations(state)).toHaveLength(0);
+
+    gate.release();
+    expect(await screen.findByRole("heading", { name: "Caja abierta" })).toBeInTheDocument();
+    expect(await screen.findByRole("group", { name: "Tipo de cobro" })).toBeInTheDocument();
+  });
 
   it("PROD-CASH-UX-02 muestra cuánto efectivo falta y bloquea Cobrar", async () => {
     await renderCashier();

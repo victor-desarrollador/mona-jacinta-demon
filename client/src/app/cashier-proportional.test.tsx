@@ -46,11 +46,18 @@ type Collection = {
 };
 
 type QuoteRequest = { balanceMethod: string; tenders: Array<{ method: string; amount: string }> };
-type CheckoutBody = {
-  operationKey: string; cashSessionId: string; balanceMethod: string;
+// Fase 1 (POST /checkout/reservations): el plan del cobro, sin evidencia.
+type ReservationBody = {
+  reserveKey: string; cashSessionId: string; balanceMethod: string;
   expectedTotal: string; expectedBalanceAmount: string;
   tenders: Array<Record<string, unknown>>;
 };
+// Fase 2 (POST /checkout): la evidencia, con la operationKey que dio el servidor.
+type CheckoutBody = {
+  reserveKey: string; operationKey: string;
+  tenders: Array<Record<string, unknown>>;
+};
+const RESERVED_OPERATION_KEY = "66666666-6666-4666-8666-666666666666";
 
 type Reply = { status: number; body: unknown };
 
@@ -62,12 +69,20 @@ type ServerState = {
   reservationExpiresAt?: string | null;
   quoteFail?: Reply | "network";
   checkoutFail?: Reply | "network";
-  // La venta se corrigió mientras el cajero confirmaba: el checkout vigente ya
-  // no coincide con el total cotizado.
-  quoteChanged?: { total: string; balance: string };
+  // La venta se corrigió antes de reservar: el servidor, que cotiza dentro de la
+  // transacción de la reserva y antes de escribir nada, rechaza UNA reserva con
+  // CHECKOUT_QUOTE_CHANGED. Las siguientes ya cotizan el total nuevo.
+  reservationQuoteChanged?: { total: string; balance: string };
+  // Retiene la PRÓXIMA cotización (se consume al usarla) para ordenar respuestas tardías.
+  quoteGate?: Promise<void>;
   replayed?: boolean;
   checkoutChange?: string;
   hold?: Promise<void>;
+  lastReservation?: ReservationBody;
+  // Contexto operativo: sesión de caja devuelta por /cash/current y sucursales del usuario.
+  sessionId?: string;
+  branchIds?: string[];
+  reservationFail?: "network";
   requests: Array<{ url: string; method: string; body: unknown }>;
 };
 
@@ -170,19 +185,20 @@ function quoteFor(row: QueueRow, body: QuoteRequest, state: ServerState) {
   };
 }
 
-function checkoutFor(row: QueueRow, body: CheckoutBody, state: ServerState) {
-  const payments = body.tenders.map((tender, index) => {
-    const amount = tender.role === "FIXED" ? (tender.amount as string) : body.expectedBalanceAmount;
-    const cash = tender.method === "CASH";
-    const received = cash ? ((tender.receivedAmount as string | null) ?? "0") : null;
+function checkoutFor(row: QueueRow, reservation: ReservationBody, confirmation: CheckoutBody, state: ServerState) {
+  const payments = reservation.tenders.map((reserved, index) => {
+    const evidence = confirmation.tenders[index] ?? {};
+    const amount = reserved.role === "FIXED" ? (reserved.amount as string) : reservation.expectedBalanceAmount;
+    const cash = reserved.method === "CASH";
+    const received = cash ? ((evidence.receivedAmount as string | undefined) ?? amount) : null;
     return {
       id: `pay-${index + 1}`,
-      method: tender.method,
-      tenderRole: tender.role,
+      method: reserved.method,
+      tenderRole: reserved.role,
       amount,
       methodFullPrice: amount,
       adjustmentBps: 0,
-      externalCollectionId: (tender.externalCollectionId as string | null) ?? null,
+      externalCollectionId: (reserved.externalCollectionId as string | undefined) ?? null,
       receivedAmount: received,
       changeAmount: received === null ? null : (BigInt(received) - BigInt(amount)).toString(),
     };
@@ -197,11 +213,42 @@ function checkoutFor(row: QueueRow, body: CheckoutBody, state: ServerState) {
     status: "COMPLETED",
     checkoutId: "checkout-1",
     replayed: state.replayed === true,
-    total: body.expectedTotal,
+    total: reservation.expectedTotal,
     changeAmount: state.checkoutChange ?? change.toString(),
     payments,
     lines: row.items.map((line) => ({ saleItemId: line.id, sku: line.sku, quantity: line.quantity, finalAmount: line.subtotal })),
     completedAt: "2030-01-01T00:00:00.000Z",
+  };
+}
+
+function reservationFor(reservation: ReservationBody) {
+  return {
+    reserveKey: reservation.reserveKey,
+    operationKey: RESERVED_OPERATION_KEY,
+    status: "RESERVED",
+    startedBy: { id: "u1", name: "Cajero" },
+    startedAt: "2030-01-01T00:00:00.000Z",
+    plan: {
+      cashSessionId: reservation.cashSessionId,
+      balanceMethod: reservation.balanceMethod,
+      expectedTotal: reservation.expectedTotal,
+      expectedBalanceAmount: reservation.expectedBalanceAmount,
+      tenderCount: reservation.tenders.length,
+      tenders: reservation.tenders.map((tender) => ({
+        method: tender.method,
+        role: tender.role,
+        source: tender.source,
+        amount: (tender.amount as string | undefined) ?? null,
+        externalCollectionId: (tender.externalCollectionId as string | undefined) ?? null,
+      })),
+      fullPrices: {},
+    },
+    recovery: null,
+    rejection: null,
+    declaration: null,
+    declared: false,
+    stockState: "VALID",
+    stockExpiresAt: "2030-01-01T01:00:00.000Z",
   };
 }
 
@@ -213,35 +260,49 @@ function createRouter(state: ServerState) {
     const method = init?.method ?? "GET";
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
     if (method !== "GET") state.requests.push({ url, method, body });
-    if (url.includes("/auth/me")) return jsonResponse({ user: cashier });
+    if (url.includes("/auth/me")) return jsonResponse({ user: { ...cashier, branchIds: state.branchIds ?? cashier.branchIds } });
     if (url.includes("/sales/pending")) return jsonResponse({ items: state.queue });
     if (url.endsWith("/checkout/quote")) {
       if (state.quoteFail === "network") throw new TypeError("fetch failed");
       if (state.quoteFail) return jsonResponse(state.quoteFail.body, state.quoteFail.status);
+      const gate = state.quoteGate;
+      state.quoteGate = undefined;
+      if (gate) await gate;
       return jsonResponse(quoteFor(rowOf(state, url), body as unknown as QuoteRequest, state));
+    }
+    if (url.endsWith("/checkout/reservations") && method === "POST") {
+      if (state.reservationFail === "network") throw new TypeError("fetch failed");
+      if (state.reservationQuoteChanged) {
+        const changed = state.reservationQuoteChanged;
+        state.reservationQuoteChanged = undefined;
+        const row = rowOf(state, url);
+        row.subtotal = changed.total;
+        row.total = changed.total;
+        row.remainingBalance = changed.total;
+        return jsonResponse(
+          { error: { code: "CHECKOUT_QUOTE_CHANGED", message: "La cotización cambió; vuelva a cotizar.", details: { total: changed.total, balance: changed.balance } } },
+          409,
+        );
+      }
+      state.lastReservation = body as unknown as ReservationBody;
+      return jsonResponse(reservationFor(state.lastReservation), 201);
     }
     if (url.endsWith("/checkout") && method === "POST") {
       const row = rowOf(state, url);
       if (state.hold) await state.hold;
       if (state.checkoutFail === "network") throw new TypeError("fetch failed");
       if (state.checkoutFail) return jsonResponse(state.checkoutFail.body, state.checkoutFail.status);
-      if (state.quoteChanged) {
-        row.subtotal = state.quoteChanged.total;
-        row.total = state.quoteChanged.total;
-        row.remainingBalance = state.quoteChanged.total;
-        return jsonResponse(
-          { error: { code: "CHECKOUT_QUOTE_CHANGED", message: "La cotización cambió; vuelva a confirmar.", details: { total: state.quoteChanged.total, balance: state.quoteChanged.balance } } },
-          409,
-        );
+      if (!state.lastReservation) {
+        return jsonResponse({ error: { code: "TEST_FIXTURE_ERROR", message: "Falta la reserva previa." } }, 500);
       }
-      return jsonResponse(checkoutFor(row, body as unknown as CheckoutBody, state), 201);
+      return jsonResponse(checkoutFor(row, state.lastReservation, body as unknown as CheckoutBody, state), 201);
     }
     if (url.includes("/cash/current")) {
       return jsonResponse(
         state.session === "NONE"
           ? null
           : {
-              sessionId: SESSION_ID, registerId: "reg-1", branchId: "CEN", openedById: "u1", closedById: null,
+              sessionId: state.sessionId ?? SESSION_ID, registerId: "reg-1", branchId: "CEN", openedById: "u1", closedById: null,
               startingCash: "0", status: "OPEN", openedAt: "2030-01-01T00:00:00.000Z", closedAt: null,
             },
       );
@@ -266,12 +327,18 @@ async function renderCashier(partial: Partial<ServerState> & { queue: QueueRow[]
   render(<OperationsPage />);
   expect(await screen.findByText("Ventas pendientes")).toBeInTheDocument();
   await screen.findByRole("heading", { name: heading });
-  if (combined) openCombined();
+  if (combined) {
+    // Sin caja abierta el panel no ofrece ningún cobro: esperar a que cargue la sesión.
+    await screen.findByRole("heading", { name: "Caja abierta" });
+    openCombined();
+  }
   return state;
 }
 
 const button = (name: RegExp) => screen.queryByRole("button", { name });
 const posted = (state: ServerState, suffix: string) => state.requests.filter((request) => request.url.endsWith(suffix));
+const reservationBodies = (state: ServerState, saleId = SALE_ID) =>
+  posted(state, `/sales/${saleId}/checkout/reservations`).map((request) => request.body as ReservationBody);
 const checkoutBodies = (state: ServerState, saleId = SALE_ID) =>
   posted(state, `/sales/${saleId}/checkout`).map((request) => request.body as CheckoutBody);
 const queueCards = () => screen.getAllByRole("button").filter((element) => element.className.includes("queue-card"));
@@ -288,7 +355,7 @@ async function changeBalanceMethod(method: string) {
 }
 
 async function addCashFixed(amount: string, received: string) {
-  fireEvent.click(button(/Agregar importe fijo/)!);
+  fireEvent.click(button(/Agregar pago/)!);
   fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "CASH" } });
   fireEvent.change(screen.getByLabelText("Importe fijo 1"), { target: { value: amount } });
   fireEvent.change(screen.getByLabelText("Recibido del importe fijo 1"), { target: { value: received } });
@@ -408,15 +475,24 @@ describe("R3-A4.2b — confirmación", () => {
     expect(screen.getByTestId("proportional-change-preview")).toHaveTextContent("100");
     fireEvent.click(button(/Cobrar/)!);
     await screen.findByTestId("proportional-result");
+    // Fase 1: el plan, con el total y el saldo cotizados por el servidor y sin evidencia.
+    const reservation = reservationBodies(state)[0]!;
+    expect(reservation.cashSessionId).toBe(SESSION_ID);
+    expect(reservation.balanceMethod).toBe("CARD_DEBIT");
+    expect(reservation.expectedTotal).toBe(TOTAL);
+    expect(reservation.expectedBalanceAmount).toBe(BALANCE);
+    expect(reservation.reserveKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(reservation.tenders).toEqual([
+      { method: "CASH", role: "FIXED", source: "NEW", amount: "20037" },
+      { method: "CARD_DEBIT", role: "BALANCE", source: "NEW" },
+    ]);
+    // Fase 2: la evidencia, con la operationKey que dio el servidor.
     const body = checkoutBodies(state)[0]!;
-    expect(body.cashSessionId).toBe(SESSION_ID);
-    expect(body.balanceMethod).toBe("CARD_DEBIT");
-    expect(body.expectedTotal).toBe(TOTAL);
-    expect(body.expectedBalanceAmount).toBe(BALANCE);
-    expect(body.operationKey).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(body.reserveKey).toBe(reservation.reserveKey);
+    expect(body.operationKey).toBe(RESERVED_OPERATION_KEY);
     expect(body.tenders).toEqual([
-      { method: "CASH", role: "FIXED", amount: "20037", receivedAmount: "30037" },
-      { method: "CARD_DEBIT", role: "BALANCE", reference: "D009" },
+      { method: "CASH", receivedAmount: "30037" },
+      { method: "CARD_DEBIT", reference: "D009" },
     ]);
     // El vuelto definitivo es el del servidor, aunque difiera de la resta local.
     expect(screen.getByTestId("proportional-result-change")).toHaveTextContent("12,34");
@@ -434,9 +510,11 @@ describe("R3-A4.2b — confirmación", () => {
       cobrar.click();
       cobrar.click();
     });
-    expect(checkoutBodies(state)).toHaveLength(1);
+    // El segundo clic del mismo tick no abre una segunda reserva.
+    expect(reservationBodies(state)).toHaveLength(1);
     hold.release();
     await screen.findByTestId("proportional-result");
+    expect(reservationBodies(state)).toHaveLength(1);
     expect(checkoutBodies(state)).toHaveLength(1);
   });
 
@@ -448,19 +526,19 @@ describe("R3-A4.2b — confirmación", () => {
     await waitFor(() => expect(button(/Cobrar/)).toBeEnabled());
     fireEvent.click(button(/Cobrar/)!);
     await screen.findByTestId("proportional-result");
-    expect(checkoutBodies(state)[0]!.tenders).toEqual([
-      { method: "CASH", role: "BALANCE", receivedAmount: "60000" },
-    ]);
+    expect(reservationBodies(state)[0]!.tenders).toEqual([{ method: "CASH", role: "BALANCE", source: "NEW" }]);
+    expect(checkoutBodies(state)[0]!.tenders).toEqual([{ method: "CASH", receivedAmount: "60000" }]);
   });
 
   it("exige una sesión de caja abierta incluso para un cobro sin efectivo", async () => {
-    await renderCashier({ queue: [proportionalRow()], session: "NONE" }, "CEN-V-000042");
-    await waitFor(() => expect(proportionalTotal()).toHaveTextContent("515,37"));
-    await changeBalanceMethod("CARD_DEBIT");
-    fireEvent.change(screen.getByLabelText("Referencia del saldo"), { target: { value: "D009" } });
-    await waitForBalance("515,37");
-    expect(screen.getByTestId("proportional-session-note")).toHaveTextContent(/Abrí caja antes de cobrar/i);
-    expect(button(/Cobrar/)).toBeDisabled();
+    const state = await renderCashier({ queue: [proportionalRow()], session: "NONE" }, "CEN-V-000042", false);
+    expect(await screen.findByTestId("cash-session-closed")).toHaveTextContent("Abrí una caja para poder cobrar.");
+    expect(screen.queryByRole("button", { name: "Pago combinado" })).toBeNull();
+    expect(button(/Cobrar/)).toBeNull();
+    // Sin caja tampoco se cotiza.
+    await new Promise((resolve) => window.setTimeout(resolve, 350));
+    expect(posted(state, "/checkout/quote")).toHaveLength(0);
+    expect(checkoutBodies(state)).toHaveLength(0);
   });
 
   it("imputa un cobro externo pendiente como importe fijo", async () => {
@@ -472,7 +550,7 @@ describe("R3-A4.2b — confirmación", () => {
       "CEN-V-000042",
     );
     await waitFor(() => expect(proportionalTotal()).toHaveTextContent("515,37"));
-    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.click(button(/Agregar pago/)!);
     fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "TRANSFER" } });
     fireEvent.change(screen.getByLabelText("Cobro pendiente del importe fijo 1"), { target: { value: COLLECTION_ID } });
     // El importe del cobro registrado es el suyo: el panel no lo deja inventar.
@@ -482,9 +560,15 @@ describe("R3-A4.2b — confirmación", () => {
     await waitFor(() => expect(button(/Cobrar/)).toBeEnabled());
     fireEvent.click(button(/Cobrar/)!);
     await screen.findByTestId("proportional-result");
+    // El cobro externo es dueño de su evidencia: se reserva por su id y la
+    // confirmación no repite referencia ni institución manuales.
+    expect(reservationBodies(state)[0]!.tenders).toEqual([
+      { method: "TRANSFER", role: "FIXED", source: "COLLECTION", amount: "31500", externalCollectionId: COLLECTION_ID },
+      { method: "CASH", role: "BALANCE", source: "NEW" },
+    ]);
     expect(checkoutBodies(state)[0]!.tenders).toEqual([
-      { method: "TRANSFER", role: "FIXED", amount: "31500", externalCollectionId: COLLECTION_ID },
-      { method: "CASH", role: "BALANCE", receivedAmount: "20037" },
+      { method: "TRANSFER" },
+      { method: "CASH", receivedAmount: "20037" },
     ]);
   });
 
@@ -495,9 +579,10 @@ describe("R3-A4.2b — confirmación", () => {
     await addCashFixed("200,37", "300,37");
     await waitForBalance("315");
     expect(button(/Cobrar/)).toBeDisabled();
-    expect(screen.getByTestId("proportional-blocker")).toHaveTextContent(/referencia o un cobro registrado/i);
-    // Y aun forzando el clic no sale ningún checkout.
+    expect(screen.getByTestId("proportional-blocker")).toHaveTextContent("Ingresá el N.º de operación del pago restante.");
+    // Y aun forzando el clic no sale ninguna reserva ni checkout.
     fireEvent.click(button(/Cobrar/) ?? screen.getByTestId("proportional-panel"));
+    expect(reservationBodies(state)).toHaveLength(0);
     expect(checkoutBodies(state)).toHaveLength(0);
   });
 });
@@ -573,20 +658,211 @@ describe("R3-A4.2b — intentos", () => {
     expect(second).toEqual(first);
   });
 
-  it("ante CHECKOUT_QUOTE_CHANGED invalida la cotización, muestra el importe nuevo y no reenvía solo", async () => {
-    const state = await renderCashier(
-      { queue: [proportionalRow()], quoteChanged: { total: "60000", balance: "39963" } },
-      "CEN-V-000042",
+  describe("CHECKOUT_QUOTE_CHANGED (rechazo definitivo de la reserva, sin escrituras)", () => {
+    const changed = { total: "60000", balance: "39963" };
+    const disabledOrAbsent = () => button(/Cobrar/)?.hasAttribute("disabled") ?? true;
+
+    it("suelta la cotización, recotiza el total nuevo y exige un nuevo Cobrar explícito", async () => {
+      const state = await renderCashier({ queue: [proportionalRow()], reservationQuoteChanged: changed }, "CEN-V-000042");
+      await composePinned();
+      fireEvent.click(button(/Cobrar/)!);
+      // El rechazo no es un intento incierto: no hay nada que reintentar.
+      expect(await screen.findByTestId("proportional-quote-changed")).toHaveTextContent("600");
+      expect(button(/Reintentar el mismo cobro/)).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      // La cotización vieja ya no se puede confirmar.
+      expect(disabledOrAbsent()).toBe(true);
+      // Se recotiza con el draft actual y se muestra el total nuevo.
+      await waitFor(() => expect(proportionalTotal()).toHaveTextContent("600"));
+      await waitForBalance("399,63");
+      // Recotizar jamás reserva ni cobra por su cuenta.
+      await new Promise((resolve) => window.setTimeout(resolve, 400));
+      expect(reservationBodies(state)).toHaveLength(1);
+      expect(checkoutBodies(state)).toHaveLength(0);
+      // Sólo una acción explícita sobre la cotización nueva cobra, con otra reserveKey.
+      await waitFor(() => expect(button(/Cobrar/)).toBeEnabled());
+      fireEvent.click(button(/Cobrar/)!);
+      await screen.findByTestId("proportional-result");
+      const [first, second] = reservationBodies(state);
+      expect(reservationBodies(state)).toHaveLength(2);
+      expect(second!.reserveKey).not.toBe(first!.reserveKey);
+      expect(second!.expectedTotal).toBe("60000");
+      expect(second!.expectedBalanceAmount).toBe("39963");
+      expect(checkoutBodies(state)).toHaveLength(1);
+      expect(checkoutBodies(state)[0]!.reserveKey).toBe(second!.reserveKey);
+    });
+
+    it("una cotización vieja que llega tarde no restaura la anterior", async () => {
+      const gate = deferred();
+      const state = await renderCashier({ queue: [proportionalRow()], reservationQuoteChanged: changed }, "CEN-V-000042");
+      await composePinned();
+      state.quoteGate = gate.promise;
+      const quotesBefore = posted(state, "/checkout/quote").length;
+      fireEvent.click(button(/Cobrar/)!);
+      await screen.findByTestId("proportional-quote-changed");
+      // La recotización queda retenida; el cajero cambia el importe fijo y esa lectura llega primero.
+      await waitFor(() => expect(posted(state, "/checkout/quote").length).toBeGreaterThan(quotesBefore));
+      fireEvent.change(screen.getByLabelText("Importe fijo 1"), { target: { value: "250" } });
+      await waitForBalance("350");
+      // Ahora llega la respuesta retenida (importe fijo 200,37 => saldo 399,63): se descarta.
+      gate.release();
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+      expect(proportionalBalance()).toHaveTextContent("350");
+      expect(reservationBodies(state)).toHaveLength(1);
+      expect(checkoutBodies(state)).toHaveLength(0);
+    });
+
+    it("cerrar la caja durante la recotización descarta la respuesta", async () => {
+      const gate = deferred();
+      const state = await renderCashier({ queue: [proportionalRow()], reservationQuoteChanged: changed }, "CEN-V-000042");
+      await composePinned();
+      state.quoteGate = gate.promise;
+      const quotesBefore = posted(state, "/checkout/quote").length;
+      fireEvent.click(button(/Cobrar/)!);
+      await screen.findByTestId("proportional-quote-changed");
+      await waitFor(() => expect(posted(state, "/checkout/quote").length).toBeGreaterThan(quotesBefore));
+      state.session = "NONE";
+      fireEvent.click(button(/Actualizar/)!);
+      expect(await screen.findByTestId("cash-session-closed")).toBeInTheDocument();
+      gate.release();
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+      // Reabierta la caja, no reaparece la cotización retenida: se lee de nuevo.
+      state.session = "OPEN";
+      fireEvent.click(button(/Actualizar/)!);
+      await waitFor(() => expect(screen.queryByTestId("cash-session-closed")).toBeNull());
+      expect(screen.queryByTestId("proportional-total")).toBeNull();
+      await waitFor(() => expect(proportionalTotal()).toHaveTextContent("600"));
+      expect(reservationBodies(state)).toHaveLength(1);
+      expect(checkoutBodies(state)).toHaveLength(0);
+    });
+
+    it("cambiar de venta durante la recotización descarta la respuesta y no deja intento", async () => {
+      const gate = deferred();
+      const state = await renderCashier(
+        { queue: [proportionalRow(), otherRow()], reservationQuoteChanged: changed },
+        "CEN-V-000042",
+      );
+      await composePinned();
+      state.quoteGate = gate.promise;
+      const quotesBefore = posted(state, "/checkout/quote").length;
+      fireEvent.click(button(/Cobrar/)!);
+      await screen.findByTestId("proportional-quote-changed");
+      await waitFor(() => expect(posted(state, "/checkout/quote").length).toBeGreaterThan(quotesBefore));
+      fireEvent.click(screen.getByRole("button", { name: /CEN-V-000043/ }));
+      await screen.findByRole("heading", { name: "CEN-V-000043" });
+      openCombined();
+      await waitFor(() => expect(proportionalTotal()).toHaveTextContent("100"));
+      gate.release();
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+      expect(proportionalTotal()).toHaveTextContent("100");
+      // La primera venta vuelve sin intento incierto: cotiza de nuevo y cobra con una reserva nueva.
+      fireEvent.click(screen.getByRole("button", { name: /CEN-V-000042/ }));
+      await screen.findByRole("heading", { name: "CEN-V-000042" });
+      expect(button(/Reintentar el mismo cobro/)).toBeNull();
+      openCombined();
+      await waitFor(() => expect(proportionalTotal()).toHaveTextContent("600"));
+      expect(reservationBodies(state)).toHaveLength(1);
+    });
+  });
+
+  describe("contexto del intento incierto (misma venta, sucursal y sesión de caja)", () => {
+    const OTHER_SESSION_ID = "77777777-7777-4777-8777-777777777777";
+    const retryButton = () => button(/Reintentar el mismo cobro/);
+    const contextNote = () => screen.queryByTestId("proportional-attempt-context");
+    const traffic = (state: ServerState) => [reservationBodies(state).length, checkoutBodies(state).length];
+    const settle = () => new Promise((resolve) => window.setTimeout(resolve, 150));
+
+    // Deja un intento UNCERTAIN en la fase pedida, con la sesión SESSION_ID de CEN.
+    async function uncertain(phase: "RESERVATION" | "CONFIRMATION", partial: Partial<ServerState> = {}) {
+      const state = await renderCashier(
+        {
+          queue: [proportionalRow()],
+          branchIds: ["CEN", "SUR"],
+          ...(phase === "RESERVATION" ? { reservationFail: "network" as const } : { checkoutFail: "network" as const }),
+          ...partial,
+        },
+        "CEN-V-000042",
+      );
+      await composePinned();
+      fireEvent.click(button(/Cobrar/)!);
+      await screen.findByRole("alert");
+      expect(retryButton()).toBeEnabled();
+      return state;
+    }
+    const heal = (state: ServerState) => {
+      state.reservationFail = undefined;
+      state.checkoutFail = undefined;
+      state.replayed = true;
+    };
+
+    it.each(["RESERVATION", "CONFIRMATION"] as const)(
+      "%s: si se cierra la caja y se abre otra sesión no se puede reintentar el intento viejo",
+      async (phase) => {
+        const state = await uncertain(phase);
+        const before = traffic(state);
+
+        state.session = "NONE";
+        fireEvent.click(button(/Actualizar/)!);
+        await screen.findByRole("heading", { name: "Caja cerrada" });
+        state.session = "OPEN";
+        state.sessionId = OTHER_SESSION_ID;
+        fireEvent.click(button(/Actualizar/)!);
+        await screen.findByRole("heading", { name: "Caja abierta" });
+
+        // El intento sigue a la vista (puede ser un cobro real), pero no se reenvía.
+        expect(screen.getByRole("alert")).toBeInTheDocument();
+        expect(contextNote()).toHaveTextContent(/otra caja o sucursal/i);
+        expect(retryButton()).toBeDisabled();
+        heal(state);
+        fireEvent.click(retryButton()!);
+        await settle();
+        expect(traffic(state)).toEqual(before);
+        expect(screen.queryByTestId("proportional-result")).toBeNull();
+      },
     );
-    await composePinned();
-    fireEvent.click(button(/Cobrar/)!);
-    expect(await screen.findByRole("alert")).toHaveTextContent(/cotización cambió/i);
-    // El importe nuevo es el del servidor, y no se reenvió nada por su cuenta.
-    expect(screen.getByTestId("proportional-server-total")).toHaveTextContent("600");
-    expect(checkoutBodies(state)).toHaveLength(1);
-    expect(button(/Cobrar/)).toBeNull();
-    // La cotización vieja se invalidó y se recotiza: el nuevo total es el vigente.
-    await waitFor(() => expect(proportionalTotal()).toHaveTextContent("600"));
+
+    it.each(["RESERVATION", "CONFIRMATION"] as const)(
+      "%s: al cambiar de sucursal no se reintenta, y al volver al mismo contexto sí",
+      async (phase) => {
+        const state = await uncertain(phase);
+        const before = traffic(state);
+
+        fireEvent.change(screen.getByLabelText("Sucursal autorizada"), { target: { value: "SUR" } });
+        await screen.findByRole("heading", { name: "Caja abierta" });
+        await screen.findByRole("heading", { name: "CEN-V-000042" });
+        expect(contextNote()).toHaveTextContent(/otra caja o sucursal/i);
+        expect(retryButton()).toBeDisabled();
+        heal(state);
+        await settle();
+        expect(traffic(state)).toEqual(before);
+
+        // Mismo branch y misma sesión: el reintento vuelve a estar permitido, con el mismo cuerpo.
+        fireEvent.change(screen.getByLabelText("Sucursal autorizada"), { target: { value: "CEN" } });
+        await waitFor(() => expect(contextNote()).toBeNull());
+        await waitFor(() => expect(retryButton()).toBeEnabled());
+        fireEvent.click(retryButton()!);
+        await screen.findByTestId("proportional-result");
+        expect(reservationBodies(state)[0]!.reserveKey).toBe(reservationBodies(state).at(-1)!.reserveKey);
+      },
+    );
+
+    it.each(["RESERVATION", "CONFIRMATION"] as const)(
+      "%s: refrescar la misma sesión de caja (objeto nuevo) no invalida el reintento",
+      async (phase) => {
+        const state = await uncertain(phase);
+        fireEvent.click(button(/Actualizar/)!);
+        await settle();
+        fireEvent.click(button(/Actualizar/)!);
+        await settle();
+        expect(contextNote()).toBeNull();
+        expect(retryButton()).toBeEnabled();
+        heal(state);
+        fireEvent.click(retryButton()!);
+        await screen.findByTestId("proportional-result");
+        // Misma reserveKey en todo el intento: nunca una reserva nueva.
+        expect(new Set(reservationBodies(state).map((reservation) => reservation.reserveKey)).size).toBe(1);
+      },
+    );
   });
 
   it("un vencimiento de reserva deja el intento incierto y sin cobro nuevo", async () => {

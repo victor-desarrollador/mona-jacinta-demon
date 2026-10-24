@@ -82,12 +82,23 @@ export type ProportionalChargePanelProps = {
   money: MoneyTools;
   sale: ProportionalSale;
   cashSession: { sessionId: string } | null;
+  // La sucursal elegida: junto con la sesión de caja, el contexto de un intento.
+  branchId: string;
+  // false mientras se lee la caja de la sucursal: `cashSession === null` todavía
+  // no quiere decir «cerrada».
+  cashKnown: boolean;
   chargeBlocked: boolean;
   attempt: ProductionCheckoutAttempt | null;
   // El bloqueo síncrono del doble clic vive en el workspace, no en el panel.
   inFlight: { current: Set<string> };
   onAttempt: (attempt: ProductionCheckoutAttempt) => void;
+  // Un rechazo definitivo y sin efectos del servidor (la reserva no escribió
+  // nada) no deja un intento que reintentar: se descarta el de esa venta.
+  onDiscardAttempt: (saleId: string) => void;
 };
+
+const ATTEMPT_OTHER_CONTEXT_NOTE =
+  "Este cobro quedó incierto en otra caja o sucursal. No se puede reintentar desde esta: volvé a la caja y sucursal originales o consultá a un supervisor.";
 
 const METHOD_LABELS: Record<ProportionalMethod, string> = {
   CASH: "Efectivo",
@@ -225,6 +236,62 @@ function quoteBody(draft: CheckoutDraft): string | null {
   }
 }
 
+// Redacción operativa de la evidencia que falta en un cobro no-efectivo, con el
+// número del pago. NO decide si el cobro se puede armar: eso es de nonCashIssues
+// (paridad con el DTO del servidor), que bloquea todo lo que esto nombra.
+function evidenceBlocker(draft: CheckoutDraft): string | null {
+  for (let index = 0; index < draft.fixed.length; index += 1) {
+    const tender = draft.fixed[index]!;
+    const paymentNumber = index + 1;
+
+    if (tender.externalCollectionId != null && tender.externalCollectionId !== "") {
+      continue;
+    }
+
+    if (tender.method !== "CASH" && !tender.reference?.trim()) {
+      if (tender.method === "TRANSFER") {
+        return `Ingresá el N.º de operación de la transferencia del pago ${paymentNumber}.`;
+      }
+
+      return `Ingresá el N.º de operación del pago ${paymentNumber}.`;
+    }
+
+    if (tender.method === "TRANSFER" && !tender.institution) {
+      return `Elegí la institución de la transferencia del pago ${paymentNumber}.`;
+    }
+
+    if (
+      tender.method === "TRANSFER" &&
+      tender.institution === "OTHER" &&
+      !tender.institutionOther?.trim()
+    ) {
+      return `Ingresá el nombre de la institución de la transferencia del pago ${paymentNumber}.`;
+    }
+  }
+
+  if (draft.balanceMethod !== "CASH" && !draft.balanceReference?.trim()) {
+    if (draft.balanceMethod === "TRANSFER") {
+      return "Ingresá el N.º de operación de la transferencia del pago restante.";
+    }
+
+    return "Ingresá el N.º de operación del pago restante.";
+  }
+
+  if (draft.balanceMethod === "TRANSFER" && !draft.balanceInstitution) {
+    return "Elegí la institución de la transferencia del pago restante.";
+  }
+
+  if (
+    draft.balanceMethod === "TRANSFER" &&
+    draft.balanceInstitution === "OTHER" &&
+    !draft.balanceInstitutionOther?.trim()
+  ) {
+    return "Ingresá el nombre de la institución de la transferencia del pago restante.";
+  }
+
+  return null;
+}
+
 // El motivo exacto por el que el cobro todavía no se puede armar, con el texto
 // que usaría el propio contrato: se llama al constructor puro con una sesión y
 // una clave de reemplazo y se descarta el cuerpo. Así el panel no inventa ni
@@ -258,9 +325,11 @@ type FailureView = {
   balance: string | null;
 };
 
-// Nada de lo que llega acá libera un intento: sólo se usa `message` para
-// mostrar y, cuando el servidor informa el importe vigente, para poder
-// mostrarlo. El status y el código viajan tal como llegaron.
+// Un fallo de transporte o de la confirmación nunca libera un intento: sólo se
+// usa `message` para mostrar y, cuando el servidor informa el importe vigente,
+// para poder mostrarlo. La única excepción es CHECKOUT_QUOTE_CHANGED en la
+// reserva, un rechazo definitivo sin escrituras (ver sendReservation). El status
+// y el código viajan tal como llegaron.
 function failureView(cause: unknown): FailureView {
   if (cause instanceof CodedApiError) {
     return {
@@ -287,10 +356,13 @@ export default function ProportionalChargePanel({
   money,
   sale,
   cashSession,
+  branchId,
+  cashKnown,
   chargeBlocked,
   attempt,
   inFlight,
   onAttempt,
+  onDiscardAttempt,
 }: ProportionalChargePanelProps) {
   const [draftState, setDraftState] = useState<DraftState>(INITIAL_DRAFT);
   const [quote, setQuote] = useState<CheckoutQuote | null>(null);
@@ -300,6 +372,9 @@ export default function ProportionalChargePanel({
   const [knownCollections, setKnownCollections] = useState<QuoteCollection[]>([]);
   const [quoteNote, setQuoteNote] = useState("");
   const [quoteLoading, setQuoteLoading] = useState(false);
+  // Fuerza una cotización nueva con el mismo draft (la clave del efecto no cambia).
+  const [quoteEpoch, setQuoteEpoch] = useState(0);
+  const [quoteChangedNotice, setQuoteChangedNotice] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [panelError, setPanelError] = useState("");
   const [serverTotal, setServerTotal] = useState<string | null>(null);
@@ -315,6 +390,17 @@ export default function ProportionalChargePanel({
   const draft = toDraft(draftState, money);
   const body = quoteBody(draft);
   const confirmed = attempt?.state === "CONFIRMED";
+  // Un intento sólo se reintenta en el contexto en que nació: misma sucursal y
+  // misma sesión de caja, comparadas por id (no por identidad de objeto, así un
+  // refresco de la misma sesión no lo invalida).
+  const attemptInContext =
+    attempt === null ||
+    (cashSession !== null &&
+      attempt.context.branchId === branchId &&
+      attempt.context.cashSessionId === cashSession.sessionId);
+  // La cotización no depende de la sesión, sólo de que haya una caja abierta:
+  // un refresco que devuelve la misma sesión como objeto nuevo no la reinicia.
+  const cashOpen = cashSession !== null;
 
   // UX Production V1: si el pago restante es en efectivo, mostramos cuánto
   // falta realmente. Todo se calcula en centavos enteros; nunca Number/float.
@@ -340,7 +426,7 @@ export default function ProportionalChargePanel({
   // cuando la composición cambia hay que marcar la lectura en curso.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (confirmed || body === null) {
+    if (!cashOpen || confirmed || body === null) {
       quoteRequest.current += 1;
       setQuote(null);
       setQuoteNote("");
@@ -368,13 +454,17 @@ export default function ProportionalChargePanel({
       })();
     }, QUOTE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [body, sale.saleId, request, confirmed]);
+  }, [body, sale.saleId, request, confirmed, cashOpen, quoteEpoch]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const availability = quote === null ? null : methodAvailability(quote);
   const methods = quote === null ? [...PROPORTIONAL_METHODS] : availableMethods(quote);
   const change = quote === null ? null : previewChange(draft, quote);
-  const blocker = quoteLoading || quote === null ? null : checkoutBlocker(draft, quote, sale.saleId);
+  // Una sola regla: el contrato decide SI el cobro está bloqueado; la evidencia
+  // sólo elige el texto operativo (con el número de pago) cuando ese bloqueo es
+  // por una referencia o institución que falta.
+  const contractBlocker = quoteLoading || quote === null ? null : checkoutBlocker(draft, quote, sale.saleId);
+  const blocker = contractBlocker === null ? null : evidenceBlocker(draft) ?? contractBlocker;
   const locked = inFlight.current.has(sale.saleId);
 
   function changeBalanceMethod(method: ProportionalMethod) {
@@ -556,6 +646,7 @@ export default function ProportionalChargePanel({
         body: confirmationBody,
         quotedTotal: started.quote.total,
         quotedBalance: started.quote.balance.amount,
+        context: started.context,
       };
 
       onAttempt(confirming);
@@ -564,11 +655,26 @@ export default function ProportionalChargePanel({
     } catch (cause) {
       const failure = failureView(cause);
 
-      onAttempt({
-        ...started,
-        state: "UNCERTAIN",
-        message: failure.message,
-      });
+      if (failure.code === "CHECKOUT_QUOTE_CHANGED") {
+        // El servidor cotiza dentro de la reserva y antes de escribir: este
+        // rechazo es definitivo y no dejó nada bajo esta reserveKey. La
+        // cotización vieja ya no sirve: se suelta, se recotiza con el draft
+        // actual y el cobro nuevo sólo sale de un Cobrar explícito.
+        onDiscardAttempt(started.saleId);
+        setQuote(null);
+        setQuoteEpoch((epoch) => epoch + 1);
+        setQuoteChangedNotice(
+          failure.total === null
+            ? failure.message
+            : `La cotización cambió: el total vigente es ${money.format(failure.total)}. Revisá el cobro y tocá Cobrar de nuevo.`,
+        );
+      } else {
+        onAttempt({
+          ...started,
+          state: "UNCERTAIN",
+          message: failure.message,
+        });
+      }
 
       inFlight.current.delete(sale.saleId);
       setSubmitting(false);
@@ -591,6 +697,7 @@ export default function ProportionalChargePanel({
     inFlight.current.add(sale.saleId);
     setSubmitting(true);
     setPanelError("");
+    setQuoteChangedNotice("");
 
     try {
       // Si una reserva anterior quedó incierta, se reenvía EXACTAMENTE
@@ -600,6 +707,7 @@ export default function ProportionalChargePanel({
         attempt.phase === "RESERVATION" &&
         attempt.state === "UNCERTAIN"
       ) {
+        if (!attemptInContext) throw new CheckoutContractError("ATTEMPT_IN_FLIGHT", ATTEMPT_OTHER_CONTEXT_NOTE);
         await sendReservation(attempt);
         return;
       }
@@ -624,6 +732,7 @@ export default function ProportionalChargePanel({
       const reserving: ProductionCheckoutAttempt = {
         phase: "RESERVATION",
         state: "PENDING",
+        context: { branchId, cashSessionId: cashSession.sessionId },
         saleId: sale.saleId,
         reserveKey,
         body: reservationBody,
@@ -644,6 +753,8 @@ export default function ProportionalChargePanel({
 
   async function retry() {
     if (attempt === null || attempt.state === "CONFIRMED" || submitting) return;
+    // Nunca se reenvía un intento a nombre de otra caja o sucursal.
+    if (!attemptInContext) return;
     if (inFlight.current.has(sale.saleId)) return;
 
     inFlight.current.add(sale.saleId);
@@ -674,6 +785,32 @@ export default function ProportionalChargePanel({
     !locked &&
     simpleReady;
 
+  if (!cashKnown && cashSession === null && attempt === null) {
+    return (
+      <section className="proportional-panel" data-testid="proportional-panel">
+        <div className="payment-summary" data-testid="cash-session-loading">
+          <div className="total-line">
+            <span>Caja</span>
+            <strong>Verificando el estado de la caja...</strong>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  if (cashSession === null && attempt === null) {
+    return (
+      <section className="proportional-panel" data-testid="proportional-panel">
+        <div className="payment-summary" data-testid="cash-session-closed">
+          <div className="total-line">
+            <span>Caja cerrada</span>
+            <strong>Abrí una caja para poder cobrar.</strong>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <section className="proportional-panel" data-testid="proportional-panel">
       {attempt === null ? (
@@ -701,6 +838,10 @@ export default function ProportionalChargePanel({
         <p className="cart-note" data-testid="proportional-session-note">
           Abrí caja antes de cobrar: el cobro exige una sesión de caja abierta.
         </p>
+      ) : null}
+
+      {quoteChangedNotice !== "" ? (
+        <p className="cart-note" data-testid="proportional-quote-changed">{quoteChangedNotice}</p>
       ) : null}
 
       {chargeBlocked ? (
@@ -815,8 +956,11 @@ export default function ProportionalChargePanel({
                 {serverBalance === null ? "" : ` y un saldo de ${money.format(serverBalance)}`}.
               </p>
             ) : null}
+            {attempt.state === "UNCERTAIN" && !attemptInContext ? (
+              <p className="cart-note" data-testid="proportional-attempt-context">{ATTEMPT_OTHER_CONTEXT_NOTE}</p>
+            ) : null}
             {attempt.state === "UNCERTAIN" ? (
-              <button className="secondary-button retry-button" onClick={() => void retry()} disabled={submitting || locked}>
+              <button className="secondary-button retry-button" onClick={() => void retry()} disabled={submitting || locked || !attemptInContext}>
                 {submitting ? "Reintentando..." : "Reintentar el mismo cobro"}
               </button>
             ) : null}
