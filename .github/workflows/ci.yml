@@ -248,26 +248,19 @@ jobs:
       - name: Runner prerequisites (user namespaces, PostgreSQL 17 client)
         uses: ./.github/actions/runner-prerequisites
 
-      # The migration payload, config and descriptor pins live in the reviewed
-      # tooling; the workflow only forwards the digest the dry run computed.
-      - name: Prepare LOCAL_TEST baseline
+      # CI-only fixture: the job's disposable database is FRESH by construction,
+      # so it gets the pinned migrations plus the minimal synthetic bootstrap the
+      # integration tests need (canonical seed + Company/Location backfill), with
+      # no human backup/authorization step. Not local-test-prepare, which stays the
+      # manual workflow. The tool refuses anything but this exact CI target.
+      - name: Prepare LOCAL_TEST fixture
         run: |
           set -a; . "${RUNNER_TEMP}/mona-local-test.env"; set +a
-          run_prepare() {
-            env -i PATH="${PATH}" HOME="${HOME}" \
-              LOCAL_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
-              LOCAL_TEST_DATABASE_MARKER_ID="${LOCAL_TEST_DATABASE_MARKER_ID}" \
-              node scripts/database/local-test-prepare.mjs "$@"
-          }
-          dry_run="$(run_prepare --dry-run --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}")"
-          printf '%s\n' "${dry_run}"
-          plan="$(printf '%s\n' "${dry_run}" | sed -n 's/^  plan digest: \([0-9a-f]\{64\}\)$/\1/p')"
-          test "$(printf '%s\n' "${plan}" | wc -l)" -eq 1
-          [[ "${plan}" =~ ^[0-9a-f]{64}$ ]]
-          run_prepare --execute --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}" \
-            --confirm-local-target=mona_local_test@127.0.0.1:5432/mona_local_test \
-            --plan="${plan}"
-          run_prepare --check --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}"
+          env -i PATH="${PATH}" HOME="${HOME}" \
+            CI=true GITHUB_ACTIONS=true RUNNER_TEMP="${RUNNER_TEMP}" \
+            LOCAL_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
+            LOCAL_TEST_DATABASE_MARKER_ID="${LOCAL_TEST_DATABASE_MARKER_ID}" \
+            node scripts/database/ci-local-test-fixture.mjs --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}"
 
       # MONA_TEST_DATABASE_TARGET=local selects the marker-proven LOCAL_TEST
       # target. TEST_DATABASE_URL is only the NODE_ENV=test schema requirement
