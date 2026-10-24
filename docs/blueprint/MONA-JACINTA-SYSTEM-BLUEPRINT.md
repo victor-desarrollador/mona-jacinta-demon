@@ -133,7 +133,7 @@ Cancel (DRAFT / PENDING_PAYMENT with no accepted payment) ──► CANCELLED
 Expired zero-payment holds ──authoritative release──► RELEASED (Sale stays PENDING_PAYMENT)
 ```
 
-### 1.3 Pilot objective `[PILOT DECISION]`
+### 1.3 Historical pilot objective `[HISTORICAL PILOT DECISION]`
 
 Pilot V1.1 is an operational safety overlay. It makes the transitional
 seller → cashier technical hold safe to run in a real store before the frozen
@@ -145,6 +145,13 @@ Production V1 codebase with this Pilot V1.1 overlay and Pilot Pricing V2, agains
 environment only (C2). Demo V2 stays historical (§1.5).
 
 ### 1.4 Production V1 direction `[FROZEN REQUIREMENT]`
+
+> **Current operational authority — 2026-10-23.**
+> Mona Jacinta is operating as **Production V1**, not as a pilot.
+> The former one-store PILOT/G11 rollout and Pilot V1.1 records are historical deployment evidence only.
+> The canonical integration branch is `integration/system-v2`; the Production database baseline completed the G14 cut-over.
+> Historical sections, commit ledgers and dated verification snapshots below are preserved as evidence and MUST NOT be interpreted as the current environment or current next action.
+> `docs/production-v1/*` remains frozen and is not modified by this status correction.
 
 - Five roles (OWNER, ADMIN, CASHIER, SELLER, WAREHOUSE) with COMPANY/LOCATION
   scopes (`03-role-permission-matrix.md`).

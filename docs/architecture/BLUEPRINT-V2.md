@@ -294,7 +294,7 @@ Se agrega `QR` a `PROPORTIONAL_METHODS` con su `qrAdjustmentBps` y columnas de s
 - ExternalCollection: QR exige referencia, no admite institución, y su referencia es única por sucursal en su propio índice parcial `ExternalCollection_qr_ref_key` (otro espacio de nombres que transferencia, débito y crédito). Un cobro QR nunca escribe `CashMovement`; la conciliación de caja sigue contando solo `CASH`.
 - Gate de arranque: `checkout-readiness.ts` exige G14 (m14 con su sha256 y los objetos de catálogo de QR).
 
-**Rollout de P0-B:** el código requiere simultáneamente (1) base de datos >= G14, (2) PROPORTIONAL_V1 activo en el local y (3) `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` activo (la bandera cubre todos los medios externos, QR incluido). Sin cualquiera de las tres, QR no se ofrece o la API no arranca. El despliegue a PILOT (hoy en G11) es un bloque aparte.
+**Rollout de P0-B:** el código requiere simultáneamente (1) base de datos >= G14, (2) PROPORTIONAL_V1 activo en el local y (3) `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` activo (la bandera cubre todos los medios externos, QR incluido). Sin cualquiera de las tres, QR no se ofrece o la API no arranca. Production ya atravesó el cut-over a G14; cualquier evolución posterior mantiene readiness fail-closed y requiere su gate de despliegue específico.
 
 #### BP-12.3 · Tender interno (separado de PaymentMethod)
 Para el anticipo de Seña (OR-052), el Voucher de Seña (`FR-VOUCH-011`) y el valor reconocido de un cambio (OR-053) se introduce el **tender interno**: una forma de aplicar valor que **no es un medio de pago**.
@@ -592,7 +592,7 @@ El anticipo es de **uso único y exclusivo de esta operación**: `UNIQUE(senaId)
 Se conservan: una sesión abierta por caja (índice parcial), lock de sesión compartido con el cobro en efectivo, `expectedCash`/`countedCash`/`difference` materializados al cerrar, transacción Serializable con reintento acotado. Se re-apuntan a Location (sección 6).
 
 #### BP-30.2 · CashMovement
-Ledger append-only. Existen: `OPENING`, `SALE_INCOME`, `CLOSING`, `WITHDRAWAL`, `EXPENSE`, `WITHDRAWAL_REVERSAL`, `EXPENSE_REVERSAL` (reversa única por original y de la misma sesión, FK compuesta). `MANUAL` existe en el enum pero no hay API que lo cree y **no hay CHECK que lo prohíba**: una fila `MANUAL` bloquea el cierre. V2: CHECK que prohíba `MANUAL`, más un camino supervisado de remediación para filas existentes (resultado de la consulta a PILOT: PRD Apéndice D).
+Ledger append-only. Existen: `OPENING`, `SALE_INCOME`, `CLOSING`, `WITHDRAWAL`, `EXPENSE`, `WITHDRAWAL_REVERSAL`, `EXPENSE_REVERSAL` (reversa única por original y de la misma sesión, FK compuesta). `MANUAL` existe en el enum pero no hay API que lo cree y **no hay CHECK que lo prohíba**: una fila `MANUAL` bloquea el cierre. V2: CHECK que prohíba `MANUAL`, más un camino supervisado de remediación para filas existentes (resultado de la consulta a Production: PRD Apéndice D).
 
 #### BP-30.3 · Tipos nuevos
 `EMPLOYEE_PAYMENT_INCOME` (sección 26), `SENA_INCOME` (sección 28) y, si se implementa, un ingreso manual de efectivo auditado distinto de `MANUAL`. Cada uno tiene su FK única al documento de origen y su regla de signo. Los tenders internos (`InternalTenderType`: `SENA_ADVANCE`, `EXCHANGE_RECOGNITION`, `SENA_VOUCHER`) **no tienen CashMovement**.
@@ -747,7 +747,7 @@ Ante `40001`/`40P01` el servicio reintenta un número fijo de veces con backoff 
 - **No se modifica ninguna migración aplicada.** Toda evolución es aditiva (nuevas migraciones).
 - Cambios destructivos solo por expand/contract en migraciones separadas.
 - `ALTER TYPE … ADD VALUE` va en migración propia y los valores nuevos se usan recién en migraciones posteriores.
-- Cada migración se valida en un cluster descartable (suites PG) antes de pasar a PILOT.
+- Cada migración se valida en un cluster descartable (suites PG) antes de promoverse a Production.
 
 #### BP-45.2 · Numeración
 Las migraciones usan timestamp UTC `YYYYMMDDHHMMSS_nombre`, estrictamente crecientes y únicos (hoy la última es `20261021140000_r3_qr`, m14, P0-B). Antes de la Seña hay varias migraciones P0/P1 (QR, ledgers, Location, aprobaciones, empleados, tender interno, cambios, transferencias, clientes). Por eso la Seña **no** se llama "la próxima migración": se designa **migration set S12** (Apéndice D) y recibirá su gate y timestamp reales cuando llegue su implementación. El WIP descartado (`20261021130000_sena_deposit`) no se usa ni se reutiliza.
@@ -788,10 +788,10 @@ Customer ya existe (S11), el tender interno ya existe (S8), la configuración ya
 #### BP-49.2 · WIP histórico
 `feat/sena-five-day-expiry` y su migración no son fuente de verdad. Pueden consultarse como ideas (sweeper, estructura de pruebas), pero nada se copia sin pasar por este diseño. Su plazo de 5 días queda reemplazado por 120 h exactas.
 
-## 50. PILOT G11 → G actual
+## 50. Production G14 → evolución posterior
 
-#### BP-50.1 · Plan
-`pilot` está en G11; faltan m12 `r3_card_credit`, m13 `warehouse_stock_adjustment`, m14 `r3_qr` y todo lo de V2 posterior. Pasos: (1) backup verificado; (2) dry-run en LOCAL_TEST; (3) aprobación del OWNER; (4) migración G11→G14; (5) migraciones V2 por conjuntos, cada una con su pin; (6) verificación de readiness. Se decide en bloques de despliegue aparte; **no se ejecuta aquí**.
+#### BP-50.1 · Estado y plan
+Production se encuentra en G14 para el baseline de Production V1. El cut-over G11→G14 es histórico y ya fue ejecutado. Toda evolución posterior se realiza por conjuntos aditivos de migraciones con: (1) backup verificado; (2) dry-run en LOCAL_TEST; (3) aprobación del OWNER; (4) ejecución controlada; (5) verificación de readiness; y (6) camino de retorno según el runbook aplicable. **Este Blueprint no autoriza por sí solo ninguna operación sobre Production.**
 
 # Parte M — Operabilidad
 
@@ -817,7 +817,7 @@ El CI corre además los tests de `admin` y las suites PG con sus flags en un clu
 ## 54. Despliegue y retorno
 
 #### BP-54.1 · Promoción
-Promoción reproducible System V2 → PILOT con gate de readiness y camino de retorno ensayado en LOCAL_TEST (runbook por conjunto de migraciones). Nada se despliega sin respaldo verificado y aprobación del OWNER.
+Promoción reproducible hacia Production con gate de readiness y camino de retorno ensayado en LOCAL_TEST (runbook por conjunto de migraciones). Nada se despliega sin respaldo verificado y aprobación del OWNER.
 
 ## 55. Seguridad
 

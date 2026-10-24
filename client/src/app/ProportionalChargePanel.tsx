@@ -5,23 +5,21 @@ import {
   CheckoutContractError,
   PROPORTIONAL_METHODS,
   TRANSFER_INSTITUTIONS,
-  attemptAfterFailure,
-  attemptConfirmed,
   availableMethods,
-  beginCheckout,
   buildCheckoutRequest,
+  buildConfirmationRequest,
   buildQuoteRequest,
+  buildReservationRequest,
   methodAvailability,
   parseCheckoutQuote,
+  parseCheckoutReservation,
   parseCheckoutResult,
   previewChange,
-  retryCheckout,
-  type CheckoutAttempt,
   type CheckoutDraft,
   type CheckoutQuote,
-  type CheckoutRequestBody,
   type FixedTenderDraft,
   type PaymentMethod,
+  type ProductionCheckoutAttempt,
   type ProportionalMethod,
   type QuoteCollection,
   type TransferInstitution,
@@ -85,10 +83,10 @@ export type ProportionalChargePanelProps = {
   sale: ProportionalSale;
   cashSession: { sessionId: string } | null;
   chargeBlocked: boolean;
-  attempt: CheckoutAttempt | null;
+  attempt: ProductionCheckoutAttempt | null;
   // El bloqueo síncrono del doble clic vive en el workspace, no en el panel.
   inFlight: { current: Set<string> };
-  onAttempt: (attempt: CheckoutAttempt) => void;
+  onAttempt: (attempt: ProductionCheckoutAttempt) => void;
 };
 
 const METHOD_LABELS: Record<ProportionalMethod, string> = {
@@ -302,7 +300,6 @@ export default function ProportionalChargePanel({
   const [knownCollections, setKnownCollections] = useState<QuoteCollection[]>([]);
   const [quoteNote, setQuoteNote] = useState("");
   const [quoteLoading, setQuoteLoading] = useState(false);
-  const [quoteEpoch, setQuoteEpoch] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [panelError, setPanelError] = useState("");
   const [serverTotal, setServerTotal] = useState<string | null>(null);
@@ -318,6 +315,21 @@ export default function ProportionalChargePanel({
   const draft = toDraft(draftState, money);
   const body = quoteBody(draft);
   const confirmed = attempt?.state === "CONFIRMED";
+
+  // UX Production V1: si el pago restante es en efectivo, mostramos cuánto
+  // falta realmente. Todo se calcula en centavos enteros; nunca Number/float.
+  const cashShortage =
+    quote !== null && draftState.balanceMethod === "CASH"
+      ? (() => {
+          const received = money.parse(draftState.balanceReceived);
+          if (received === null) return null;
+
+          const receivedCents = BigInt(received);
+          return receivedCents < quote.balance.amount
+            ? quote.balance.amount - receivedCents
+            : null;
+        })()
+      : null;
 
   // La cotización vigente es la del servidor para ESTA composición. Una
   // respuesta que ya no corresponde al draft actual se descarta.
@@ -356,7 +368,7 @@ export default function ProportionalChargePanel({
       })();
     }, QUOTE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [body, sale.saleId, request, quoteEpoch, confirmed]);
+  }, [body, sale.saleId, request, confirmed]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const availability = quote === null ? null : methodAvailability(quote);
@@ -446,28 +458,47 @@ export default function ProportionalChargePanel({
     });
   }
 
-  // El cuerpo viaja tal cual lo armó el contrato, con su clave incluida: acá no
-  // se reconstruye ni se recalcula ningún importe.
-  async function send(started: CheckoutAttempt, checkoutBody: CheckoutRequestBody) {
+  // Production V1: cada fase conserva SU cuerpo exacto.
+  // Una respuesta perdida nunca genera reserveKey u operationKey nuevas.
+  async function sendConfirmation(
+    started: Extract<ProductionCheckoutAttempt, { phase: "CONFIRMATION"; state: "PENDING" | "UNCERTAIN" }>,
+  ) {
     try {
       const response = await request(`/sales/${sale.saleId}/checkout`, {
         method: "POST",
-        body: JSON.stringify(checkoutBody),
+        body: JSON.stringify(started.body),
       });
-      onAttempt(attemptConfirmed(started, parseCheckoutResult(response)));
+
+      const result = parseCheckoutResult(response);
+
+      if (result.saleId !== started.saleId) {
+        throw new CheckoutContractError(
+          "RESULT_SALE_MISMATCH",
+          "El resultado del cobro no corresponde a esta venta.",
+        );
+      }
+
+      onAttempt({
+        ...started,
+        state: "CONFIRMED",
+        result,
+      });
+
       setPanelError("");
       setServerTotal(null);
       setServerBalance(null);
     } catch (cause) {
       const failure = failureView(cause);
-      onAttempt(attemptAfterFailure(started, failure));
-      // La cotización vigente ya no sirve. Se muestra el importe que informa el
-      // servidor y se pide una nueva; NADA se reenvía por cuenta propia.
+
+      onAttempt({
+        ...started,
+        state: "UNCERTAIN",
+        message: failure.message,
+      });
+
       if (failure.code === "CHECKOUT_QUOTE_CHANGED") {
         setServerTotal(failure.total);
         setServerBalance(failure.balance);
-        setQuote(null);
-        setQuoteEpoch((epoch) => epoch + 1);
       }
     } finally {
       inFlight.current.delete(sale.saleId);
@@ -475,44 +506,156 @@ export default function ProportionalChargePanel({
     }
   }
 
+  async function sendReservation(
+    started: Extract<ProductionCheckoutAttempt, { phase: "RESERVATION" }>,
+  ) {
+    try {
+      const payload = await request(
+        `/sales/${sale.saleId}/checkout/reservations`,
+        {
+          method: "POST",
+          body: JSON.stringify(started.body),
+        },
+      );
+
+      const reservation = parseCheckoutReservation(payload);
+
+      if (reservation.reserveKey !== started.reserveKey) {
+        throw new CheckoutContractError(
+          "INVALID_RESERVATION_RESPONSE",
+          "La reserva recibida no corresponde al intento enviado.",
+        );
+      }
+
+      if (
+        reservation.plan.cashSessionId !== started.body.cashSessionId ||
+        reservation.plan.balanceMethod !== started.body.balanceMethod ||
+        reservation.plan.expectedTotal.toString() !== started.body.expectedTotal ||
+        reservation.plan.expectedBalanceAmount.toString() !==
+          started.body.expectedBalanceAmount
+      ) {
+        throw new CheckoutContractError(
+          "INVALID_RESERVATION_RESPONSE",
+          "La reserva recibida no coincide con la cotización confirmada.",
+        );
+      }
+
+      const confirmationBody = buildConfirmationRequest({
+        reserveKey: reservation.reserveKey,
+        operationKey: reservation.operationKey,
+        draft: started.draft,
+        reservedTenders: reservation.plan.tenders,
+      });
+
+      const confirming: ProductionCheckoutAttempt = {
+        phase: "CONFIRMATION",
+        state: "PENDING",
+        saleId: started.saleId,
+        reserveKey: reservation.reserveKey,
+        operationKey: reservation.operationKey,
+        body: confirmationBody,
+        quotedTotal: started.quote.total,
+        quotedBalance: started.quote.balance.amount,
+      };
+
+      onAttempt(confirming);
+
+      await sendConfirmation(confirming);
+    } catch (cause) {
+      const failure = failureView(cause);
+
+      onAttempt({
+        ...started,
+        state: "UNCERTAIN",
+        message: failure.message,
+      });
+
+      inFlight.current.delete(sale.saleId);
+      setSubmitting(false);
+    }
+  }
+
   async function confirm() {
-    if (quote === null || blocker !== null || cashSession === null || chargeBlocked || submitting) return;
-    // Bloqueo síncrono: dos clics del mismo tick llegan antes de que React
-    // vuelva a renderizar (y de que el botón quede deshabilitado).
+    if (
+      quote === null ||
+      blocker !== null ||
+      cashSession === null ||
+      chargeBlocked ||
+      submitting
+    ) {
+      return;
+    }
+
     if (inFlight.current.has(sale.saleId)) return;
+
     inFlight.current.add(sale.saleId);
     setSubmitting(true);
     setPanelError("");
-    let pending: CheckoutAttempt;
+
     try {
-      pending = beginCheckout({
+      // Si una reserva anterior quedó incierta, se reenvía EXACTAMENTE
+      // la misma reserveKey y el mismo cuerpo.
+      if (
+        attempt !== null &&
+        attempt.phase === "RESERVATION" &&
+        attempt.state === "UNCERTAIN"
+      ) {
+        await sendReservation(attempt);
+        return;
+      }
+
+      if (attempt !== null) {
+        throw new CheckoutContractError(
+          "ATTEMPT_IN_FLIGHT",
+          "Ya existe un intento de cobro para esta venta.",
+        );
+      }
+
+      const reserveKey = crypto.randomUUID();
+
+      const reservationBody = buildReservationRequest({
         saleId: sale.saleId,
+        reserveKey,
         cashSessionId: cashSession.sessionId,
-        operationKey: crypto.randomUUID(),
         draft,
         quote,
-        current: attempt,
       });
+
+      const reserving: ProductionCheckoutAttempt = {
+        phase: "RESERVATION",
+        state: "PENDING",
+        saleId: sale.saleId,
+        reserveKey,
+        body: reservationBody,
+        draft,
+        quote,
+      };
+
+      // Se registra ANTES de tocar la red.
+      onAttempt(reserving);
+
+      await sendReservation(reserving);
     } catch (cause) {
       inFlight.current.delete(sale.saleId);
       setSubmitting(false);
       setPanelError(noteOf(cause, "No se pudo preparar el cobro."));
-      return;
     }
-    onAttempt(pending);
-    await send(pending, pending.body);
   }
 
   async function retry() {
     if (attempt === null || attempt.state === "CONFIRMED" || submitting) return;
     if (inFlight.current.has(sale.saleId)) return;
+
     inFlight.current.add(sale.saleId);
     setSubmitting(true);
     setPanelError("");
-    // Misma clave, mismo cuerpo: si el primer envío sí cobró, el servidor
-    // responde el mismo resultado como reintento.
-    const repeat = retryCheckout(attempt);
-    await send(attempt, repeat.body);
+
+    if (attempt.phase === "RESERVATION") {
+      await sendReservation(attempt);
+      return;
+    }
+
+    await sendConfirmation(attempt);
   }
 
   // El resumen técnico (total, saldo, medios) es del combinado, o de un intento que ya
@@ -521,8 +664,15 @@ export default function ProportionalChargePanel({
   const simpleReady = mode === "COMBINED" || simpleMethod !== null;
 
   const canConfirm =
-    quote !== null && !quoteLoading && blocker === null && cashSession !== null && !chargeBlocked
-    && !submitting && !locked && simpleReady;
+    quote !== null &&
+    !quoteLoading &&
+    blocker === null &&
+    cashSession !== null &&
+    !chargeBlocked &&
+    cashShortage === null &&
+    !submitting &&
+    !locked &&
+    simpleReady;
 
   return (
     <section className="proportional-panel" data-testid="proportional-panel">
@@ -582,7 +732,7 @@ export default function ProportionalChargePanel({
                 <strong data-testid="proportional-total">{money.format(quote.total.toString())}</strong>
               </div>
               <div>
-                <span>Saldo ({methodLabel(quote.balance.method)})</span>
+                <span>Falta pagar</span>
                 <strong data-testid="proportional-balance">{money.format(quote.balance.amount.toString())}</strong>
               </div>
             </div>
@@ -775,7 +925,7 @@ export default function ProportionalChargePanel({
           ) : (
             <>
           <label>
-            Medio de saldo
+            Medio del pago restante
             <select
               aria-label="Medio de saldo"
               value={draftState.balanceMethod}
@@ -796,7 +946,7 @@ export default function ProportionalChargePanel({
 
           {draftState.balanceMethod === "CASH" ? (
             <label>
-              Recibido del saldo
+              Recibido
               <input
                 inputMode="decimal"
                 aria-label="Recibido del saldo"
@@ -808,7 +958,7 @@ export default function ProportionalChargePanel({
           ) : (
             <>
               <label>
-                Referencia del saldo
+                N.º de operación
                 <input
                   aria-label="Referencia del saldo"
                   value={draftState.balanceReference}
@@ -819,7 +969,7 @@ export default function ProportionalChargePanel({
               {draftState.balanceMethod === "TRANSFER" ? (
                 <>
                   <label>
-                    Institución del saldo
+                    Institución
                     <select
                       aria-label="Institución del saldo"
                       value={draftState.balanceInstitution}
@@ -839,7 +989,7 @@ export default function ProportionalChargePanel({
                   </label>
                   {draftState.balanceInstitution === "OTHER" ? (
                     <label>
-                      Institución alternativa del saldo
+                      Otra institución
                       <input
                         aria-label="Institución alternativa del saldo"
                         value={draftState.balanceInstitutionOther}
@@ -861,7 +1011,7 @@ export default function ProportionalChargePanel({
             return (
               <div className="proportional-tender" key={tender.key}>
                 <label>
-                  Medio del importe fijo {index + 1}
+                  Pago {index + 1}
                   <select
                     aria-label={`Medio del importe fijo ${index + 1}`}
                     value={tender.method}
@@ -893,7 +1043,7 @@ export default function ProportionalChargePanel({
                 </label>
 
                 <label>
-                  Importe fijo {index + 1}
+                  Importe
                   <input
                     inputMode="decimal"
                     aria-label={`Importe fijo ${index + 1}`}
@@ -999,7 +1149,7 @@ export default function ProportionalChargePanel({
                   }))}
                   disabled={submitting}
                 >
-                  Quitar importe fijo {index + 1}
+                  Quitar pago {index + 1}
                 </button>
               </div>
             );
@@ -1010,7 +1160,7 @@ export default function ProportionalChargePanel({
             onClick={addFixedTender}
             disabled={submitting || draftState.fixed.length >= 2}
           >
-            Agregar importe fijo
+            Agregar pago
           </button>
 
             </>
@@ -1033,10 +1183,26 @@ export default function ProportionalChargePanel({
           {/* Sin cotización vigente no hay un cobro que confirmar: no se ofrece
               un botón que no pueda hacer nada. */}
           {quote !== null && simpleReady ? (
-            <button className="send-button" onClick={() => void confirm()} disabled={!canConfirm}>
-              {submitting ? "Cobrando..." : "Cobrar"}
-              <span>-&gt;</span>
-            </button>
+            <>
+              {mode === "COMBINED" && cashShortage !== null ? (
+                <p
+                  className="cart-note"
+                  role="alert"
+                  data-testid="cash-shortage"
+                >
+                  Faltan {money.format(cashShortage.toString())} en efectivo.
+                </p>
+              ) : null}
+
+              <button
+                className="send-button"
+                onClick={() => void confirm()}
+                disabled={!canConfirm}
+              >
+                {submitting ? "Cobrando..." : "Cobrar"}
+                <span>-&gt;</span>
+              </button>
+            </>
           ) : null}
         </>
       )}

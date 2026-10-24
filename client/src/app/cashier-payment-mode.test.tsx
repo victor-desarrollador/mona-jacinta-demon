@@ -25,10 +25,33 @@ type CheckoutBody = {
   operationKey: string; cashSessionId: string; balanceMethod: string; expectedTotal: string; expectedBalanceAmount: string;
   tenders: Array<Record<string, unknown>>;
 };
+type ReservationBody = {
+  reserveKey: string;
+  cashSessionId: string;
+  balanceMethod: Method;
+  expectedTotal: string;
+  expectedBalanceAmount: string;
+  tenders: Array<{
+    method: Method;
+    role: "FIXED" | "BALANCE";
+    source: "NEW" | "COLLECTION";
+    amount?: string;
+    externalCollectionId?: string;
+  }>;
+};
+
+type ConfirmationBody = {
+  reserveKey: string;
+  operationKey: string;
+  tenders: Array<Record<string, unknown>>;
+};
 type Row = Record<string, unknown>;
 type ServerState = {
   queue: Row[];
   quoteFail?: { status: number; body: unknown };
+  reservationFailures?: number;
+  confirmationFailures?: number;
+  lastReservation?: ReservationBody;
   unavailable?: Method[];
   requests: Array<{ url: string; method: string; body: unknown }>;
 };
@@ -110,7 +133,158 @@ function createRouter(state: ServerState) {
       if (state.quoteFail) return jsonResponse(state.quoteFail.body, state.quoteFail.status);
       return jsonResponse(quoteFor(state.queue[0]!, body as unknown as QuoteRequest, state));
     }
-    if (url.endsWith("/checkout") && method === "POST") return jsonResponse(checkoutFor(state.queue[0]!, body as unknown as CheckoutBody), 201);
+
+    if (url.endsWith("/checkout/reservations") && method === "POST") {
+      if ((state.reservationFailures ?? 0) > 0) {
+        state.reservationFailures = (state.reservationFailures ?? 0) - 1;
+        return jsonResponse({
+          error: {
+            code: "TEMPORARY_FAILURE",
+            message: "Se perdió la respuesta de la reserva.",
+          },
+        }, 503);
+      }
+
+      const reservation = body as {
+        reserveKey: string;
+        cashSessionId: string;
+        balanceMethod: Method;
+        expectedTotal: string;
+        expectedBalanceAmount: string;
+        tenders: Array<{
+          method: Method;
+          role: "FIXED" | "BALANCE";
+          source: "NEW" | "COLLECTION";
+          amount?: string;
+          externalCollectionId?: string;
+        }>;
+      };
+
+      state.lastReservation = reservation as ReservationBody;
+
+      return jsonResponse({
+        reserveKey: reservation.reserveKey,
+        operationKey: "44444444-4444-4444-8444-444444444444",
+        status: "RESERVED",
+        startedBy: { id: "u1", name: "Cajero" },
+        startedAt: "2030-01-01T00:00:00.000Z",
+        plan: {
+          cashSessionId: reservation.cashSessionId,
+          balanceMethod: reservation.balanceMethod,
+          expectedTotal: reservation.expectedTotal,
+          expectedBalanceAmount: reservation.expectedBalanceAmount,
+          tenderCount: reservation.tenders.length,
+          tenders: reservation.tenders.map((tender) => ({
+            method: tender.method,
+            role: tender.role,
+            source: tender.source,
+            amount: tender.amount ?? null,
+            externalCollectionId: tender.externalCollectionId ?? null,
+          })),
+          fullPrices: { ...PRICES },
+        },
+        recovery: null,
+        rejection: null,
+        declaration: null,
+        declared: false,
+        stockState: "VALID",
+        stockExpiresAt: "2030-01-01T01:00:00.000Z",
+      }, 201);
+    }
+
+    if (url.endsWith("/checkout") && method === "POST") {
+      if ((state.confirmationFailures ?? 0) > 0) {
+        state.confirmationFailures = (state.confirmationFailures ?? 0) - 1;
+
+        return jsonResponse({
+          error: {
+            code: "TEMPORARY_FAILURE",
+            message: "Se perdió la respuesta de la confirmación.",
+          },
+        }, 503);
+      }
+
+      const confirmation = body as {
+        reserveKey?: string;
+        operationKey?: string;
+        tenders?: Array<Record<string, unknown>>;
+      };
+
+      if (confirmation.reserveKey && confirmation.operationKey) {
+        const reservation = state.lastReservation;
+
+        if (!reservation) {
+          return jsonResponse({
+            error: { code: "TEST_FIXTURE_ERROR", message: "Falta la reserva previa." },
+          }, 500);
+        }
+
+        const sale = state.queue[0]!;
+        const confirmationBody = confirmation as ConfirmationBody;
+
+        const payments = reservation.tenders.map((reserved, index) => {
+          const evidence = confirmationBody.tenders[index] ?? {};
+          const amount =
+            reserved.role === "FIXED"
+              ? reserved.amount!
+              : reservation.expectedBalanceAmount;
+
+          const receivedAmount =
+            reserved.method === "CASH"
+              ? typeof evidence.receivedAmount === "string"
+                ? evidence.receivedAmount
+                : amount
+              : null;
+
+          const changeAmount =
+            receivedAmount === null
+              ? null
+              : (BigInt(receivedAmount) - BigInt(amount)).toString();
+
+          return {
+            id: `pay-${index + 1}`,
+            method: reserved.method,
+            tenderRole: reserved.role,
+            amount,
+            methodFullPrice: amount,
+            adjustmentBps: 0,
+            externalCollectionId: reserved.externalCollectionId ?? null,
+            receivedAmount,
+            changeAmount,
+          };
+        });
+
+        const changeAmount = payments
+          .reduce(
+            (sum, payment) => sum + BigInt(payment.changeAmount ?? "0"),
+            BigInt(0),
+          )
+          .toString();
+
+        return jsonResponse({
+          saleId: SALE_ID,
+          saleNumber: sale.saleNumber,
+          status: "COMPLETED",
+          checkoutId: "checkout-1",
+          replayed: false,
+          total: reservation.expectedTotal,
+          changeAmount,
+          payments,
+          lines: (sale.items as Row[]).map((line) => ({
+            saleItemId: line.id,
+            sku: line.sku,
+            quantity: line.quantity,
+            finalAmount: reservation.expectedTotal,
+          })),
+          completedAt: "2030-01-01T00:00:00.000Z",
+        }, 201);
+      }
+
+      return jsonResponse(
+        checkoutFor(state.queue[0]!, body as unknown as CheckoutBody),
+        201,
+      );
+    }
     if (url.includes("/cash/current")) {
       return jsonResponse({
         sessionId: SESSION_ID, registerId: "reg-1", branchId: "CEN", openedById: "u1", closedById: null,
@@ -135,7 +309,22 @@ async function renderCashier(partial: Partial<ServerState> = {}) {
 
 const button = (name: RegExp) => screen.queryByRole("button", { name });
 const quotes = (state: ServerState) => state.requests.filter((request) => request.url.endsWith("/checkout/quote"));
-const checkouts = (state: ServerState) => state.requests.filter((request) => request.url.endsWith(`/sales/${SALE_ID}/checkout`));
+const reservations = (state: ServerState) =>
+  state.requests.filter((request) =>
+    request.url.endsWith(`/sales/${SALE_ID}/checkout/reservations`)
+  );
+
+const checkouts = (state: ServerState) =>
+  state.requests.filter((request) =>
+    request.url.endsWith(`/sales/${SALE_ID}/checkout`)
+  );
+
+const lastReservation = (state: ServerState) =>
+  reservations(state).at(-1)!.body as ReservationBody;
+
+const lastConfirmation = (state: ServerState) =>
+  checkouts(state).at(-1)!.body as ConfirmationBody;
+
 const lastQuote = (state: ServerState) => quotes(state).at(-1)!.body as QuoteRequest;
 // El panel cotiza con un pequeño retardo: espera a que el total mostrado sea el pedido.
 const waitForTotal = (text: string) => waitFor(() => expect(screen.getByTestId("simple-total")).toHaveTextContent(text));
@@ -155,7 +344,7 @@ describe("Caja — tipo de cobro", () => {
     expect(within(group).getByRole("button", { name: "Pago combinado" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByRole("heading", { name: "Cobro proporcional" })).toBeNull();
     expect(screen.queryByLabelText("Medio de saldo")).toBeNull();
-    expect(button(/Agregar importe fijo/)).toBeNull();
+    expect(button(/Agregar pago/)).toBeNull();
   });
 
   it("UI-2 en Pago simple ofrece Efectivo, Transferencia y Débito con su precio y nada del constructor combinado", async () => {
@@ -187,7 +376,7 @@ describe("Caja — tipo de cobro", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
     const balance = screen.getByLabelText("Medio de saldo");
     expect(within(balance).getByRole("option", { name: "Tarjeta de crédito" })).toBeInTheDocument();
-    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.click(button(/Agregar pago/)!);
     expect(within(screen.getByLabelText("Medio del importe fijo 1")).getByRole("option", { name: "Tarjeta de crédito" })).toBeInTheDocument();
   });
 
@@ -210,11 +399,23 @@ describe("Caja — tipo de cobro", () => {
     await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
-    const [body] = checkouts(state).map((request) => request.body as CheckoutBody);
-    expect(body).toMatchObject({ balanceMethod: "CARD_CREDIT", expectedTotal: PRICES.CARD_CREDIT, cashSessionId: SESSION_ID });
-    expect(body!.tenders).toHaveLength(1);
-    expect(body!.tenders[0]).toMatchObject({ method: "CARD_CREDIT", role: "BALANCE", reference: "CRD0042" });
-    expect(body!.tenders[0]).not.toHaveProperty("institution");
+    const reservation = lastReservation(state);
+    const confirmation = lastConfirmation(state);
+    expect(reservation).toMatchObject({
+      balanceMethod: "CARD_CREDIT",
+      expectedTotal: PRICES.CARD_CREDIT,
+      cashSessionId: SESSION_ID,
+    });
+    expect(reservation.tenders[0]).toMatchObject({
+      method: "CARD_CREDIT",
+      role: "BALANCE",
+      source: "NEW",
+    });
+    expect(confirmation.tenders[0]).toMatchObject({
+      method: "CARD_CREDIT",
+      reference: "CRD0042",
+    });
+    expect(confirmation.tenders[0]).not.toHaveProperty("institution");
   });
 
   it("UI-CREDIT-4 Pago combinado permite Crédito: efectivo fijo + saldo en crédito (y crédito fijo con saldo en efectivo)", async () => {
@@ -222,7 +423,7 @@ describe("Caja — tipo de cobro", () => {
     await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
     fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "CARD_CREDIT" } });
-    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.click(button(/Agregar pago/)!);
     fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "CASH" } });
     fireEvent.change(screen.getByLabelText("Importe fijo 1"), { target: { value: "100" } });
     fireEvent.change(screen.getByLabelText("Recibido del importe fijo 1"), { target: { value: "100" } });
@@ -254,7 +455,7 @@ describe("Caja — tipo de cobro", () => {
     await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
-    expect((checkouts(state)[0]!.body as CheckoutBody).expectedTotal).toBe(WHOLESALE_PRICES.CARD_CREDIT);
+    expect(lastReservation(state).expectedTotal).toBe(WHOLESALE_PRICES.CARD_CREDIT);
   });
 
   it("UI-QR-1 aparece QR en Pago simple y como opción dentro de Pago combinado (saldo e importe fijo)", async () => {
@@ -262,7 +463,7 @@ describe("Caja — tipo de cobro", () => {
     expect(await screen.findByRole("button", { name: /QR.*50\.400/ })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
     expect(within(screen.getByLabelText("Medio de saldo")).getByRole("option", { name: "QR" })).toBeInTheDocument();
-    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.click(button(/Agregar pago/)!);
     expect(within(screen.getByLabelText("Medio del importe fijo 1")).getByRole("option", { name: "QR" })).toBeInTheDocument();
   });
 
@@ -277,12 +478,24 @@ describe("Caja — tipo de cobro", () => {
     await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
-    const [body] = checkouts(state).map((request) => request.body as CheckoutBody);
-    expect(body).toMatchObject({ balanceMethod: "QR", expectedTotal: PRICES.QR, cashSessionId: SESSION_ID });
-    expect(body!.tenders).toHaveLength(1);
-    expect(body!.tenders[0]).toMatchObject({ method: "QR", role: "BALANCE", reference: "QR0042" });
-    expect(body!.tenders[0]).not.toHaveProperty("institution");
-    expect(body!.tenders[0]).not.toHaveProperty("receivedAmount");
+    const reservation = lastReservation(state);
+    const confirmation = lastConfirmation(state);
+    expect(reservation).toMatchObject({
+      balanceMethod: "QR",
+      expectedTotal: PRICES.QR,
+      cashSessionId: SESSION_ID,
+    });
+    expect(reservation.tenders[0]).toMatchObject({
+      method: "QR",
+      role: "BALANCE",
+      source: "NEW",
+    });
+    expect(confirmation.tenders[0]).toMatchObject({
+      method: "QR",
+      reference: "QR0042",
+    });
+    expect(confirmation.tenders[0]).not.toHaveProperty("institution");
+    expect(confirmation.tenders[0]).not.toHaveProperty("receivedAmount");
   });
 
   it("UI-QR-3 Pago combinado permite QR: efectivo fijo + saldo en QR (y QR fijo con saldo en efectivo)", async () => {
@@ -290,7 +503,7 @@ describe("Caja — tipo de cobro", () => {
     await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
     fireEvent.change(screen.getByLabelText("Medio de saldo"), { target: { value: "QR" } });
-    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.click(button(/Agregar pago/)!);
     fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "CASH" } });
     fireEvent.change(screen.getByLabelText("Importe fijo 1"), { target: { value: "100" } });
     fireEvent.change(screen.getByLabelText("Recibido del importe fijo 1"), { target: { value: "100" } });
@@ -321,7 +534,137 @@ describe("Caja — tipo de cobro", () => {
     await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
-    expect((checkouts(state)[0]!.body as CheckoutBody).expectedTotal).toBe(WHOLESALE_PRICES.QR);
+    expect(lastReservation(state).expectedTotal).toBe(WHOLESALE_PRICES.QR);
+  });
+
+
+
+
+  it("PROD-CASH-03 reutiliza reserveKey, operationKey y body si falla la confirmación", async () => {
+    const state = await renderCashier({ confirmationFailures: 1 });
+
+    await chooseSimple(/Efectivo.*45\.000/, "45.000");
+
+    fireEvent.change(screen.getByLabelText("Recibido"), {
+      target: { value: "50000" },
+    });
+
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+
+    fireEvent.click(button(/^Cobrar/)!);
+
+    const retryButton = await screen.findByRole("button", {
+      name: "Reintentar el mismo cobro",
+    });
+
+    const confirmationsBefore = state.requests.filter(
+      (request) =>
+        request.method === "POST" &&
+        request.url.endsWith(`/sales/${SALE_ID}/checkout`)
+    );
+
+    expect(confirmationsBefore).toHaveLength(1);
+
+    const firstBody = confirmationsBefore[0]!.body as Record<string, unknown>;
+
+    fireEvent.click(retryButton);
+
+    await screen.findByTestId("proportional-result");
+
+    const confirmationsAfter = state.requests.filter(
+      (request) =>
+        request.method === "POST" &&
+        request.url.endsWith(`/sales/${SALE_ID}/checkout`)
+    );
+
+    expect(confirmationsAfter).toHaveLength(2);
+
+    const secondBody = confirmationsAfter[1]!.body as Record<string, unknown>;
+
+    expect(secondBody).toEqual(firstBody);
+    expect(secondBody.reserveKey).toBe(firstBody.reserveKey);
+    expect(secondBody.operationKey).toBe(firstBody.operationKey);
+  });
+
+  it("PROD-CASH-02 reutiliza la misma reserveKey si falla la respuesta de la reserva", async () => {
+    const state = await renderCashier({ reservationFailures: 1 });
+
+    await chooseSimple(/Efectivo.*45\.000/, "45.000");
+    fireEvent.change(screen.getByLabelText("Recibido"), {
+      target: { value: "50000" },
+    });
+
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+
+    fireEvent.click(button(/^Cobrar/)!);
+
+    await waitFor(() => {
+      const reservations = state.requests.filter((request) =>
+        request.url.endsWith(`/sales/${SALE_ID}/checkout/reservations`)
+      );
+      expect(reservations).toHaveLength(1);
+    });
+
+    const retryButton = await screen.findByRole("button", {
+      name: "Reintentar el mismo cobro",
+    });
+
+    fireEvent.click(retryButton);
+
+    await screen.findByTestId("proportional-result");
+
+    const reservations = state.requests.filter((request) =>
+      request.url.endsWith(`/sales/${SALE_ID}/checkout/reservations`)
+    );
+
+    expect(reservations).toHaveLength(2);
+
+    const first = reservations[0]!.body as { reserveKey: string };
+    const second = reservations[1]!.body as { reserveKey: string };
+
+    expect(second.reserveKey).toBe(first.reserveKey);
+  });
+
+  it("PROD-CASH-01 reserva el cobro antes de confirmarlo", async () => {
+    const state = await renderCashier();
+
+    await chooseSimple(/Efectivo.*45\.000/, "45.000");
+    fireEvent.change(screen.getByLabelText("Recibido"), {
+      target: { value: "50000" },
+    });
+
+    await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
+    fireEvent.click(button(/^Cobrar/)!);
+
+    await waitFor(() => {
+      const writes = state.requests.filter((request) =>
+        request.url.includes(`/sales/${SALE_ID}/checkout`)
+      );
+
+      expect(
+        writes.some((request) =>
+          request.url.endsWith(`/sales/${SALE_ID}/checkout/reservations`)
+        ),
+      ).toBe(true);
+    });
+
+    const writes = state.requests.filter((request) =>
+      request.url.includes(`/sales/${SALE_ID}/checkout`)
+    );
+
+    const quoteIndex = writes.findIndex((request) =>
+      request.url.endsWith("/checkout/quote")
+    );
+    const reservationIndex = writes.findIndex((request) =>
+      request.url.endsWith("/checkout/reservations")
+    );
+    const confirmationIndex = writes.findIndex((request) =>
+      request.url.endsWith(`/sales/${SALE_ID}/checkout`)
+    );
+
+    expect(quoteIndex).toBeGreaterThanOrEqual(0);
+    expect(reservationIndex).toBeGreaterThan(quoteIndex);
+    expect(confirmationIndex).toBeGreaterThan(reservationIndex);
   });
 
   it("UI-3 Pago simple + Efectivo cotiza sin importes fijos, pide lo recibido y cobra con balanceMethod CASH", async () => {
@@ -333,10 +676,22 @@ describe("Caja — tipo de cobro", () => {
     await waitFor(() => expect(screen.getByTestId("proportional-change-preview")).toHaveTextContent("5.000"));
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
-    const [body] = checkouts(state).map((request) => request.body as CheckoutBody);
-    expect(body).toMatchObject({ balanceMethod: "CASH", expectedTotal: PRICES.CASH, cashSessionId: SESSION_ID });
-    expect(body!.tenders).toHaveLength(1);
-    expect(body!.tenders[0]).toMatchObject({ method: "CASH", role: "BALANCE", receivedAmount: "5000000" });
+    const reservation = lastReservation(state);
+    const confirmation = lastConfirmation(state);
+    expect(reservation).toMatchObject({
+      balanceMethod: "CASH",
+      expectedTotal: PRICES.CASH,
+      cashSessionId: SESSION_ID,
+    });
+    expect(reservation.tenders[0]).toMatchObject({
+      method: "CASH",
+      role: "BALANCE",
+      source: "NEW",
+    });
+    expect(confirmation.tenders[0]).toMatchObject({
+      method: "CASH",
+      receivedAmount: "5000000",
+    });
   });
 
   it("UI-4 Pago simple + Transferencia exige institución y referencia, y las envía", async () => {
@@ -350,10 +705,22 @@ describe("Caja — tipo de cobro", () => {
     await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
-    const [body] = checkouts(state).map((request) => request.body as CheckoutBody);
-    expect(body).toMatchObject({ balanceMethod: "TRANSFER", expectedTotal: PRICES.TRANSFER });
-    expect(body!.tenders).toHaveLength(1);
-    expect(body!.tenders[0]).toMatchObject({ method: "TRANSFER", role: "BALANCE", reference: "TRF12345", institution: "GALICIA" });
+    const reservation = lastReservation(state);
+    const confirmation = lastConfirmation(state);
+    expect(reservation).toMatchObject({
+      balanceMethod: "TRANSFER",
+      expectedTotal: PRICES.TRANSFER,
+    });
+    expect(reservation.tenders[0]).toMatchObject({
+      method: "TRANSFER",
+      role: "BALANCE",
+      source: "NEW",
+    });
+    expect(confirmation.tenders[0]).toMatchObject({
+      method: "TRANSFER",
+      reference: "TRF12345",
+      institution: "GALICIA",
+    });
   });
 
   it("UI-5 Pago simple + Débito exige solo la referencia (sin institución) y la envía", async () => {
@@ -366,19 +733,103 @@ describe("Caja — tipo de cobro", () => {
     await waitFor(() => expect(button(/^Cobrar/)).toBeEnabled());
     fireEvent.click(button(/^Cobrar/)!);
     await screen.findByTestId("proportional-result");
-    const [body] = checkouts(state).map((request) => request.body as CheckoutBody);
-    expect(body).toMatchObject({ balanceMethod: "CARD_DEBIT", expectedTotal: PRICES.CARD_DEBIT });
-    expect(body!.tenders[0]).toMatchObject({ method: "CARD_DEBIT", role: "BALANCE", reference: "DEB0099" });
+    const reservation = lastReservation(state);
+    const confirmation = lastConfirmation(state);
+    expect(reservation).toMatchObject({
+      balanceMethod: "CARD_DEBIT",
+      expectedTotal: PRICES.CARD_DEBIT,
+    });
+    expect(reservation.tenders[0]).toMatchObject({
+      method: "CARD_DEBIT",
+      role: "BALANCE",
+      source: "NEW",
+    });
+    expect(confirmation.tenders[0]).toMatchObject({
+      method: "CARD_DEBIT",
+      reference: "DEB0099",
+    });
   });
+
+
+
+  it("PROD-CASH-UX-02 muestra cuánto efectivo falta y bloquea Cobrar", async () => {
+    await renderCashier();
+
+    await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Pago combinado" }),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Agregar pago/i }),
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Medio del importe fijo 1"),
+      { target: { value: "CARD_DEBIT" } },
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Importe fijo 1"),
+      { target: { value: "1059" } },
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Referencia del importe fijo 1"),
+      { target: { value: "DEB1059" } },
+    );
+
+    fireEvent.change(
+      screen.getByLabelText("Recibido del saldo"),
+      { target: { value: "43940" } },
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/faltan \$ 1/i),
+      ).toBeInTheDocument();
+    });
+
+    expect(
+      screen.getByRole("button", { name: /^Cobrar/ }),
+    ).toBeDisabled();
+  });
+
+  it("PROD-CASH-UX-01 Pago combinado usa lenguaje de caja y muestra cuánto falta pagar", async () => {
+    await renderCashier();
+
+    await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Pago combinado" }),
+    );
+
+    expect(screen.queryByText(/medio de saldo/i)).toBeNull();
+    expect(screen.queryByText(/importe fijo/i)).toBeNull();
+
+    expect(
+      screen.getByText("Falta pagar"),
+    ).toBeInTheDocument();
+
+    expect(
+      screen.getByTestId("proportional-total"),
+    ).toHaveTextContent("$ 45.000");
+
+    expect(
+      screen.getByRole("button", { name: /Agregar pago/i }),
+    ).toBeInTheDocument();
+  });
+
 
   it("UI-6 recién al elegir Pago combinado aparece el constructor de varios medios", async () => {
     await renderCashier();
     await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
-    expect(button(/Agregar importe fijo/)).toBeNull();
+    expect(button(/Agregar pago/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
     expect(screen.getByRole("button", { name: "Pago combinado" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByLabelText("Medio de saldo")).toBeInTheDocument();
-    expect(button(/Agregar importe fijo/)).toBeEnabled();
+    expect(button(/Agregar pago/)).toBeEnabled();
     expect(screen.queryByRole("button", { name: /Efectivo.*45\.000/ })).toBeNull();
   });
 
@@ -387,7 +838,7 @@ describe("Caja — tipo de cobro", () => {
     await chooseSimple(/Transferencia.*47\.500/, "47.500");
     fireEvent.change(screen.getByLabelText("Referencia"), { target: { value: "TRF12345" } });
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
-    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.click(button(/Agregar pago/)!);
     fireEvent.click(screen.getByRole("button", { name: "Pago simple" }));
     // Vuelve a Simple sin medio elegido, sin la referencia anterior y sin Cobrar.
     expect(await screen.findByRole("button", { name: /Efectivo.*45\.000/ })).toBeInTheDocument();
@@ -404,7 +855,7 @@ describe("Caja — tipo de cobro", () => {
     await screen.findByRole("button", { name: /Efectivo.*45\.000/ });
     fireEvent.click(screen.getByRole("button", { name: "Pago combinado" }));
     // Importe fijo por transferencia + saldo por transferencia.
-    fireEvent.click(button(/Agregar importe fijo/)!);
+    fireEvent.click(button(/Agregar pago/)!);
     fireEvent.change(screen.getByLabelText("Medio del importe fijo 1"), { target: { value: "TRANSFER" } });
     fireEvent.change(screen.getByLabelText("Importe fijo 1"), { target: { value: "100" } });
     fireEvent.change(screen.getByLabelText("Referencia del importe fijo 1"), { target: { value: "TRF11111" } });

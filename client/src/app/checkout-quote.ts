@@ -257,6 +257,7 @@ export type DraftIssue =
 export type CheckoutErrorCode =
   | DraftIssue
   | "INVALID_QUOTE_RESPONSE"
+  | "INVALID_RESERVATION_RESPONSE"
   | "INVALID_CHECKOUT_RESULT"
   | "INVALID_SALE_ID"
   | "INVALID_SESSION_ID"
@@ -918,3 +919,376 @@ export function canBeginCheckout(current: CheckoutAttempt | null, saleId: string
   if (current.state === "UNCERTAIN") return { allowed: false, reason: "UNCERTAIN" };
   return { allowed: false, reason: "ALREADY_CONFIRMED" };
 }
+
+// ---------------------------------------------------------------------------
+// Production V1 — reserva durable + confirmación
+// ---------------------------------------------------------------------------
+
+export type ReservationTenderBody = {
+  method: ProportionalMethod;
+  role: "FIXED" | "BALANCE";
+  source: "NEW" | "COLLECTION";
+  amount?: string;
+  externalCollectionId?: string;
+};
+
+export type CheckoutReservationBody = {
+  reserveKey: string;
+  cashSessionId: string;
+  balanceMethod: ProportionalMethod;
+  expectedTotal: string;
+  expectedBalanceAmount: string;
+  tenders: ReservationTenderBody[];
+};
+
+export type BuildReservationInput = {
+  saleId: string;
+  reserveKey: string;
+  cashSessionId: string;
+  draft: CheckoutDraft;
+  quote: CheckoutQuote;
+};
+
+export type ReservedTender = {
+  method: ProportionalMethod;
+  role: "FIXED" | "BALANCE";
+  source: "NEW" | "COLLECTION";
+  amount: bigint | null;
+  externalCollectionId: string | null;
+};
+
+export type ConfirmationTenderBody = {
+  method: ProportionalMethod;
+  receivedAmount?: string;
+  reference?: string;
+  institution?: TransferInstitution;
+  institutionOther?: string;
+};
+
+export type CheckoutConfirmationBody = {
+  reserveKey: string;
+  operationKey: string;
+  tenders: ConfirmationTenderBody[];
+};
+
+export type BuildConfirmationInput = {
+  reserveKey: string;
+  operationKey: string;
+  draft: CheckoutDraft;
+  reservedTenders: readonly ReservedTender[];
+};
+
+export function buildReservationRequest(
+  input: BuildReservationInput,
+): CheckoutReservationBody {
+  const { saleId, reserveKey, cashSessionId, draft, quote } = input;
+
+  if (!UUID.test(saleId)) throw draftFailure("INVALID_SALE_ID");
+  if (!UUID.test(reserveKey)) throw draftFailure("INVALID_OPERATION_KEY");
+  if (!UUID.test(cashSessionId)) throw draftFailure("INVALID_SESSION_ID");
+
+  if (!quoteMatchesDraft(quote, draft, saleId)) {
+    throw draftFailure(
+      "QUOTE_DOES_NOT_MATCH_DRAFT",
+      "La cotización cambió: volvé a cotizar antes de confirmar.",
+    );
+  }
+
+  throwFirstIssue(draftIssues(draft, quote));
+
+  const tenders: ReservationTenderBody[] = draft.fixed.map((tender) => {
+    if (tender.externalCollectionId != null) {
+      return {
+        method: tender.method,
+        role: "FIXED",
+        source: "COLLECTION",
+        amount: tender.amount,
+        externalCollectionId: tender.externalCollectionId,
+      };
+    }
+
+    return {
+      method: tender.method,
+      role: "FIXED",
+      source: "NEW",
+      amount: tender.amount,
+    };
+  });
+
+  tenders.push({
+    method: draft.balanceMethod,
+    role: "BALANCE",
+    source: "NEW",
+  });
+
+  return {
+    reserveKey,
+    cashSessionId,
+    balanceMethod: draft.balanceMethod,
+    expectedTotal: quote.total.toString(),
+    expectedBalanceAmount: quote.balance.amount.toString(),
+    tenders,
+  };
+}
+
+function confirmationEvidenceFor(
+  method: ProportionalMethod,
+  draftTender: FixedTenderDraft | null,
+  draft: CheckoutDraft,
+): ConfirmationTenderBody {
+  if (method === "CASH") {
+    const received =
+      draftTender?.receivedAmount ?? draft.receivedAmount ?? null;
+
+    return received == null
+      ? { method: "CASH" }
+      : { method: "CASH", receivedAmount: received };
+  }
+
+  const reference =
+    draftTender?.reference ?? draft.balanceReference ?? null;
+
+  if (method !== "TRANSFER") {
+    return reference == null
+      ? { method }
+      : { method, reference };
+  }
+
+  const institution =
+    draftTender?.institution ?? draft.balanceInstitution ?? null;
+  const institutionOther =
+    draftTender?.institutionOther ?? draft.balanceInstitutionOther ?? null;
+
+  return {
+    method,
+    ...(reference == null ? {} : { reference }),
+    ...(institution == null ? {} : { institution }),
+    ...(institution === "OTHER" && institutionOther != null
+      ? { institutionOther: institutionOther.trim() }
+      : {}),
+  };
+}
+
+export function buildConfirmationRequest(
+  input: BuildConfirmationInput,
+): CheckoutConfirmationBody {
+  const { reserveKey, operationKey, draft, reservedTenders } = input;
+
+  if (!UUID.test(reserveKey)) throw draftFailure("INVALID_OPERATION_KEY");
+  if (!UUID_V4.test(operationKey)) {
+    throw draftFailure("INVALID_OPERATION_KEY");
+  }
+
+  throwFirstIssue(draftIssues(draft));
+
+  const tenders = reservedTenders.map((reserved) => {
+    if (reserved.source === "COLLECTION") {
+      return { method: reserved.method };
+    }
+
+    const draftTender =
+      reserved.role === "FIXED"
+        ? draft.fixed.find((tender) => tender.method === reserved.method) ?? null
+        : null;
+
+    return confirmationEvidenceFor(
+      reserved.method,
+      draftTender,
+      draft,
+    );
+  });
+
+  return {
+    reserveKey,
+    operationKey,
+    tenders,
+  };
+}
+
+
+export type CheckoutReservationView = {
+  reserveKey: string;
+  operationKey: string;
+  status: "RESERVED";
+  plan: {
+    cashSessionId: string;
+    balanceMethod: ProportionalMethod;
+    expectedTotal: bigint;
+    expectedBalanceAmount: bigint;
+    tenders: ReservedTender[];
+  };
+};
+
+export function parseCheckoutReservation(
+  value: unknown,
+): CheckoutReservationView {
+  if (typeof value !== "object" || value === null) {
+    throw draftFailure(
+      "INVALID_RESERVATION_RESPONSE",
+      "La reserva de cobro recibida del servidor no es válida.",
+    );
+  }
+
+  const row = value as Record<string, unknown>;
+  const plan = row.plan;
+
+  if (
+    typeof row.reserveKey !== "string" ||
+    !UUID.test(row.reserveKey) ||
+    typeof row.operationKey !== "string" ||
+    !UUID_V4.test(row.operationKey) ||
+    row.status !== "RESERVED" ||
+    typeof plan !== "object" ||
+    plan === null
+  ) {
+    throw draftFailure(
+      "INVALID_RESERVATION_RESPONSE",
+      "La reserva de cobro recibida del servidor no es válida.",
+    );
+  }
+
+  const p = plan as Record<string, unknown>;
+
+  if (
+    typeof p.cashSessionId !== "string" ||
+    !UUID.test(p.cashSessionId) ||
+    !PROPORTIONAL_METHODS.includes(p.balanceMethod as ProportionalMethod) ||
+    typeof p.expectedTotal !== "string" ||
+    typeof p.expectedBalanceAmount !== "string" ||
+    !Array.isArray(p.tenders)
+  ) {
+    throw draftFailure(
+      "INVALID_RESERVATION_RESPONSE",
+      "La reserva de cobro recibida del servidor no es válida.",
+    );
+  }
+
+  const tenders: ReservedTender[] = p.tenders.map((raw) => {
+    if (typeof raw !== "object" || raw === null) {
+      throw draftFailure(
+        "INVALID_RESERVATION_RESPONSE",
+        "La reserva contiene un medio de pago inválido.",
+      );
+    }
+
+    const tender = raw as Record<string, unknown>;
+
+    if (
+      !PROPORTIONAL_METHODS.includes(tender.method as ProportionalMethod) ||
+      (tender.role !== "FIXED" && tender.role !== "BALANCE") ||
+      (tender.source !== "NEW" && tender.source !== "COLLECTION")
+    ) {
+      throw draftFailure(
+        "INVALID_RESERVATION_RESPONSE",
+        "La reserva contiene un medio de pago inválido.",
+      );
+    }
+
+    const amount =
+      tender.amount === null || tender.amount === undefined
+        ? null
+        : typeof tender.amount === "string" && CENTAVOS.test(tender.amount)
+          ? BigInt(tender.amount)
+          : null;
+
+    if (tender.amount !== null && tender.amount !== undefined && amount === null) {
+      throw draftFailure(
+        "INVALID_RESERVATION_RESPONSE",
+        "La reserva contiene un importe inválido.",
+      );
+    }
+
+    const externalCollectionId =
+      tender.externalCollectionId === null ||
+      tender.externalCollectionId === undefined
+        ? null
+        : typeof tender.externalCollectionId === "string" &&
+            UUID.test(tender.externalCollectionId)
+          ? tender.externalCollectionId
+          : null;
+
+    if (
+      tender.externalCollectionId !== null &&
+      tender.externalCollectionId !== undefined &&
+      externalCollectionId === null
+    ) {
+      throw draftFailure(
+        "INVALID_RESERVATION_RESPONSE",
+        "La reserva contiene un cobro registrado inválido.",
+      );
+    }
+
+    return {
+      method: tender.method as ProportionalMethod,
+      role: tender.role as "FIXED" | "BALANCE",
+      source: tender.source as "NEW" | "COLLECTION",
+      amount,
+      externalCollectionId,
+    };
+  });
+
+  let expectedTotal: bigint;
+  let expectedBalanceAmount: bigint;
+
+  try {
+    expectedTotal = BigInt(p.expectedTotal);
+    expectedBalanceAmount = BigInt(p.expectedBalanceAmount);
+  } catch {
+    throw draftFailure(
+      "INVALID_RESERVATION_RESPONSE",
+      "La reserva contiene importes inválidos.",
+    );
+  }
+
+  return {
+    reserveKey: row.reserveKey,
+    operationKey: row.operationKey,
+    status: "RESERVED",
+    plan: {
+      cashSessionId: p.cashSessionId,
+      balanceMethod: p.balanceMethod as ProportionalMethod,
+      expectedTotal,
+      expectedBalanceAmount,
+      tenders,
+    },
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// Production V1 — estado durable del intento en el cliente
+// ---------------------------------------------------------------------------
+
+export type ProductionCheckoutAttempt =
+  | {
+      phase: "RESERVATION";
+      state: "PENDING" | "UNCERTAIN";
+      saleId: string;
+      reserveKey: string;
+      body: CheckoutReservationBody;
+      draft: CheckoutDraft;
+      quote: CheckoutQuote;
+      message?: string;
+    }
+  | {
+      phase: "CONFIRMATION";
+      state: "PENDING" | "UNCERTAIN";
+      saleId: string;
+      reserveKey: string;
+      operationKey: string;
+      body: CheckoutConfirmationBody;
+      quotedTotal: bigint;
+      quotedBalance: bigint;
+      message?: string;
+    }
+  | {
+      phase: "CONFIRMATION";
+      state: "CONFIRMED";
+      saleId: string;
+      reserveKey: string;
+      operationKey: string;
+      body: CheckoutConfirmationBody;
+      quotedTotal: bigint;
+      quotedBalance: bigint;
+      result: CheckoutResult;
+    };

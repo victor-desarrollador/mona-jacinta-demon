@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { catalogCashPrice } from "./catalog-price";
 import ProportionalChargePanel, { CodedApiError } from "./ProportionalChargePanel";
 import WarehouseWorkspace from "./WarehouseWorkspace";
-import type { CheckoutAttempt } from "./checkout-quote";
+import type { ProductionCheckoutAttempt } from "./checkout-quote";
 
 type User = {
   id: string;
@@ -1405,13 +1405,13 @@ function CashierWorkspace({
   // persiste en localStorage/sessionStorage (ver los riesgos en el informe de
   // R3-A4.2b): una copia en el navegador quedaría fuera del ciclo de vida de la
   // sesión y del token, y sobreviviría al cierre de sesión.
-  const [checkoutAttempts, setCheckoutAttempts] = useState<Record<string, CheckoutAttempt>>({});
+  const [checkoutAttempts, setCheckoutAttempts] = useState<Record<string, ProductionCheckoutAttempt>>({});
   const checkoutInFlight = useRef<Set<string>>(new Set());
   const codedRequest = useCallback(
     (path: string, options: RequestInit) => apiRequestCoded(path, token, options),
     [token],
   );
-  const recordAttempt = useCallback((next: CheckoutAttempt) => {
+  const recordAttempt = useCallback((next: ProductionCheckoutAttempt) => {
     setCheckoutAttempts((current) => ({ ...current, [next.saleId]: next }));
   }, []);
   // M1: payment lists are kept per sale (the last validated list of each), so

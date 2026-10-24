@@ -41,8 +41,7 @@ movimiento de stock, retiro de empleado, seña y operación de abastecimiento qu
 de forma verificable, auditable y conciliable, sin depender de planillas, papel ni ajustes
 manuales fuera del sistema.
 
-El sistema reemplaza el sistema anterior y cubre la operación completa, no solamente el
-piloto actual.
+El sistema reemplaza el sistema anterior y cubre la operación completa de Production V1 y su evolución hacia System V2.
 
 ## 2. Alcance y fuera de alcance
 
@@ -357,8 +356,8 @@ las ubicaciones; alcance de local = opera solo sobre las ubicaciones que tiene a
 - **Prioridad:** P1 · **Origen:** Matrix 9
 - **Regla:** El sistema NO DEBE permitir movimientos de caja de tipo manual genérico, y DEBE ofrecer un camino supervisado de remediación si existieran.
 - **Aceptación:** Registrar un movimiento manual genérico falla; una sesión con uno existente se puede remediar sin quedar bloqueada.
-- **Dependencias:** Apéndice D (consulta read-only en PILOT).
-- **Excepciones:** Si PILOT tiene filas de ese tipo, la prioridad de este requisito sube a P0 (Matrix 9).
+- **Dependencias:** Apéndice D (consulta read-only sobre la base de Production).
+- **Excepciones:** Si Production contiene filas de ese tipo, la prioridad de este requisito sube a P0 (Matrix 9).
 
 #### FR-CASH-008 · Reversas únicas
 - **Prioridad:** P1 · **Origen:** Matrix 9
@@ -1517,10 +1516,10 @@ no son requisitos de este PRD hasta que se decida.
 No se fijan métricas de disponibilidad ni tiempos de respuesta: no hay umbrales de negocio
 verificables.
 
-#### NFR-OPS-001 · Esquema de PILOT alineado antes del despliegue
+#### NFR-OPS-001 · Esquema de Production alineado antes del despliegue
 - **Prioridad:** P1 · **Origen:** Matrix 42
-- **Regla:** El despliegue de System V2 en PILOT DEBE hacerse sobre una base migrada al mismo nivel de esquema que el producto, con respaldo previo, ensayo en seco y aprobación del OWNER.
-- **Aceptación:** El chequeo de arranque pasa contra PILOT migrado; existe respaldo verificado previo a la migración.
+- **Regla:** Todo despliegue a Production DEBE hacerse sobre una base migrada al mismo nivel de esquema que el producto, con respaldo previo, ensayo en seco y aprobación del OWNER.
+- **Aceptación:** El chequeo de arranque pasa contra Production con el esquema requerido; existe respaldo verificado previo a cualquier migración.
 
 #### NFR-OPS-002 · Verificación de preparación al arrancar
 - **Prioridad:** P2 · **Origen:** Matrix 43
@@ -1534,7 +1533,7 @@ verificables.
 
 #### NFR-OPS-004 · Despliegue reproducible con retorno
 - **Prioridad:** P1 · **Origen:** Matrix 45
-- **Regla:** La promoción de System V2 a PILOT DEBE ser reproducible, con verificación de preparación y camino de retorno ensayado.
+- **Regla:** La promoción de una nueva versión de System V2 a Production DEBE ser reproducible, con verificación de preparación y camino de retorno ensayado.
 - **Aceptación:** El procedimiento de despliegue y retorno se ensaya en un entorno de prueba antes de aplicarse.
 
 #### NFR-OPS-005 · Recuperación de datos
@@ -1778,7 +1777,7 @@ Son datos de configuración o de migración, **no** decisiones de producto.
 | 2 | Saldos iniciales reales de cada empleado | FR-EMPACC-004, FR-MIG-001 | OWNER / administración |
 | 3 | Valor inicial de `qrAdjustmentBps` | FR-PRICE-005 | OWNER |
 | 4 | Monto mínimo inicial de Seña | FR-SENA-008 | OWNER |
-| 5 | Resultado de la consulta read-only de `CashMovement.MANUAL` en PILOT | FR-CASH-007 | OWNER (la consulta no se ejecutó en este bloque) |
+| 5 | Resultado de la consulta read-only de `CashMovement.MANUAL` en Production | FR-CASH-007 | OWNER (la consulta no se ejecutó en este bloque) |
 | 6 | Umbral de diferencia de caja para exigir aprobación | FR-CASH-011 | OWNER — **TBD** |
 | 7 | Umbral de ajuste de stock que exige autorización ADMIN/OWNER | FR-ADJ-004 | OWNER — **TBD** |
 
