@@ -237,6 +237,27 @@ jobs:
             --confirm-local-target=mona_local_test@127.0.0.1:5432/mona_local_test
           run_marker --check --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}"
 
+      # TEMPORARY DIAGNOSTIC (feat/ci-green): read-only. Prints only runner
+      # facts, never a credential. It confirms whether the contained child of
+      # local-test-prepare.mjs (unshare --user ...) can run on this runner and
+      # which PostgreSQL client tools the host carries. Remove once resolved.
+      - name: Diagnose runner user namespaces and PostgreSQL tools
+        continue-on-error: true
+        run: |
+          uname -a
+          cat /etc/os-release
+          sysctl kernel.apparmor_restrict_unprivileged_userns 2>&1 || true
+          sysctl kernel.unprivileged_userns_clone 2>&1 || true
+          sysctl user.max_user_namespaces 2>&1 || true
+          /usr/bin/unshare --user --map-current-user --pid --fork --kill-child -- /usr/bin/id \
+            || echo "unshare exit code: $?"
+          node --version
+          npm --version
+          ls -d /usr/lib/postgresql/*/bin 2>&1 || true
+          ls -l /usr/lib/postgresql/17/bin/pg_dump /usr/lib/postgresql/17/bin/pg_restore 2>&1 || true
+          psql --version 2>&1 || true
+          pg_dump --version 2>&1 || true
+
       # The migration payload, config and descriptor pins live in the reviewed
       # tooling; the workflow only forwards the digest the dry run computed.
       - name: Prepare LOCAL_TEST baseline
