@@ -20,6 +20,10 @@ rules:
       exclude:
         - /scripts/database/**
         - /api/tests/**
+        - /scripts/dev/repo-scope-guard.mjs
+        - /scripts/dev/repo-scope-guard.test.mjs
+        - /scripts/dev/safe-nodb-run.mjs
+        - /scripts/dev/safe-nodb-run.test.mjs
     pattern-either:
       - pattern: require("node:child_process")
       - pattern: require("child_process")
