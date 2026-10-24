@@ -1151,6 +1151,65 @@ function finiteToolWrapper(call: ts.CallExpression, api: string, sourceFile: ts.
   return proven && sites > 0;
 }
 
+// Injected-exec class. The ONLY accepted use of a child_process API as a value is `execFile` passed as the second
+// argument of `createBoundPsqlRunner`, imported from the reviewed tests/helpers/r3-psql.ts, and only while that file
+// structurally proves the injected function can launch nothing but /usr/bin/psql:
+//   - PSQL_BIN is a const string literal equal to /usr/bin/psql;
+//   - every `command:` property of the helper is exactly `command: PSQL_BIN` (no spread/shorthand/other value);
+//   - inside createBoundPsqlRunner the injected parameter is referenced only as a direct call whose first argument
+//     is `invocation.command` (no alias, no other argument position, no other call).
+// Anything else (another helper, another module, another argument position, an alias, a missing or altered helper)
+// stays a fail-closed violation, because an alias of the API could run the Prisma CLI.
+const PSQL_RUNNER_MODULE = 'tests/helpers/r3-psql.ts';
+function psqlOnlyInjection(use: ts.Identifier, path: string, suite: Source[]): boolean {
+  const call = use.parent;
+  if (!ts.isCallExpression(call) || call.arguments[1] !== use) return false;
+  if (!ts.isIdentifier(call.expression) || call.expression.text !== 'createBoundPsqlRunner') return false;
+  const imported = resolve(call.expression);
+  if (!imported || !ts.isImportSpecifier(imported) || (imported.propertyName ?? imported.name).text !== 'createBoundPsqlRunner') return false;
+  if (resolveImportedPath(path, moduleOf(imported) ?? '') !== PSQL_RUNNER_MODULE) return false;
+  const helper = suite.find((candidate) => candidate.path === PSQL_RUNNER_MODULE);
+  if (!helper) return false;
+  const file = parsedSource(helper);
+
+  let binOk = false;
+  let runner: ts.FunctionDeclaration | undefined;
+  for (const statement of file.statements) {
+    if (ts.isVariableStatement(statement) && (statement.declarationList.flags & ts.NodeFlags.Const) !== 0) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (!isIdent(declaration.name, 'PSQL_BIN') || !declaration.initializer) continue;
+        const init = unwrap(declaration.initializer);
+        binOk = ts.isStringLiteralLike(init) && init.text === '/usr/bin/psql';
+      }
+    }
+    if (ts.isFunctionDeclaration(statement) && statement.name?.text === 'createBoundPsqlRunner') runner = statement;
+  }
+  if (!binOk || !runner?.body) return false;
+
+  let commandSites = 0;
+  let commandsOk = true;
+  each(file, (node) => {
+    if (ts.isShorthandPropertyAssignment(node) && node.name.text === 'command') commandsOk = false;
+    if (!ts.isPropertyAssignment(node)) return;
+    const name = ts.isIdentifier(node.name) || ts.isStringLiteralLike(node.name) ? node.name.text : undefined;
+    if (name !== 'command') return;
+    commandSites += 1;
+    if (!isIdent(unwrap(node.initializer), 'PSQL_BIN')) commandsOk = false;
+  });
+  if (!commandsOk || commandSites === 0) return false;
+
+  const param = runner.parameters[1];
+  if (!param || !ts.isIdentifier(param.name)) return false;
+  const uses = references(runner.body, param.name.text);
+  if (uses.length === 0) return false;
+  return uses.every((ref) => {
+    const parent = ref.parent;
+    if (!ts.isCallExpression(parent) || parent.expression !== ref) return false;
+    const first = parent.arguments[0] ? unwrap(parent.arguments[0]) : undefined;
+    return !!first && ts.isPropertyAccessExpression(first) && isIdent(first.expression, 'invocation') && first.name.text === 'command';
+  });
+}
+
 function prismaCliLaunches({ path, text }: Source, suite: Source[] = []): string[] {
   // Every static or dynamic child_process load names the module literally.
   if (!text.includes('child_process')) return [];
@@ -1215,7 +1274,10 @@ function prismaCliLaunches({ path, text }: Source, suite: Source[] = []): string
     if (ts.isImportSpecifier(decl)) {
       const api = (decl.propertyName ?? decl.name).text;
       if (!CHILD_PROCESS_APIS.has(api)) return;
-      if (!ts.isCallExpression(p) || p.expression !== node) return at(node, `child_process ${api} used as a value`);
+      if (!ts.isCallExpression(p) || p.expression !== node) {
+        if (api === 'execFile' && psqlOnlyInjection(node, path, suite)) return;
+        return at(node, `child_process ${api} used as a value`);
+      }
       return classify(p, api);
     }
     // Namespace or default import: only `ns.api(...)` is recognised.
@@ -1275,6 +1337,47 @@ describe('suite tests never invoke the Prisma migration CLI', () => {
     const sources = testSources();
     expect(sources.length).toBeGreaterThan(40);
     expect(sources.flatMap((source) => prismaCliLaunches(source, sources))).toEqual([]);
+  });
+
+  // Injected-exec class: `execFile` handed to the psql runner of tests/helpers/r3-psql.ts. Accepted ONLY when that
+  // reviewed helper structurally proves the injected function can launch nothing but /usr/bin/psql; every other
+  // use of the API as a value stays rejected (an alias could run the Prisma CLI).
+  const PSQL_HELPER_PATH = 'tests/helpers/r3-psql.ts';
+  const psqlHelper = (overrides: { bin?: string; command?: string; call?: string; extra?: string } = {}): Source => ({
+    path: PSQL_HELPER_PATH,
+    text:
+      `export const PSQL_BIN = '${overrides.bin ?? '/usr/bin/psql'}';\n` +
+      `export function buildPsqlInvocation(url: string) {\n  return { command: ${overrides.command ?? 'PSQL_BIN'}, args: [url] as string[], env: {} };\n}\n` +
+      `export function createBoundPsqlRunner(verifiedUrl: string, exec: ExecFileLike) {\n` +
+      `  return (sqlFile: string) => new Promise((resolve) => {\n    const invocation = buildPsqlInvocation(verifiedUrl);\n` +
+      `    ${overrides.call ?? 'exec(invocation.command, invocation.args, { env: invocation.env, timeout: 1 }, () => resolve(sqlFile));'}\n  });\n}\n` +
+      (overrides.extra ?? ''),
+  });
+  const psqlCaller = (body = `export const run = createBoundPsqlRunner('u', execFile);\n`, from = '../helpers/r3-psql.js'): Source => ({
+    path: 'tests/payments/caller.test.ts',
+    text: `import { execFile } from 'node:child_process';\nimport { createBoundPsqlRunner } from '${from}';\n${body}`,
+  });
+  const injected = (caller: Source, helper: Source | null = psqlHelper()) =>
+    prismaCliLaunches(caller, helper ? [caller, helper] : [caller]);
+
+  it('accepts execFile injected into the psql runner when the helper only ever launches /usr/bin/psql', () => {
+    expect(injected(psqlCaller())).toEqual([]);
+  });
+
+  it.each([
+    ['helper launches a literal other than psql', psqlCaller(), psqlHelper({ call: `exec('npx', ['prisma', 'migrate', 'deploy'], { env: {}, timeout: 1 }, () => resolve(sqlFile));` })],
+    ['helper launches a non-literal command', psqlCaller(), psqlHelper({ call: `exec(process.argv[2]!, [], { env: {}, timeout: 1 }, () => resolve(sqlFile));` })],
+    ['helper aliases the injected function', psqlCaller(), psqlHelper({ call: `const run = exec; run(invocation.command, [], { env: {}, timeout: 1 }, () => resolve(sqlFile));` })],
+    ['helper command is not PSQL_BIN', psqlCaller(), psqlHelper({ command: `process.argv[2]!` })],
+    ['PSQL_BIN is not psql', psqlCaller(), psqlHelper({ bin: '/usr/bin/node' })],
+    ['helper spreads over the invocation command', psqlCaller(), psqlHelper({ extra: `export const other = { ...{ command: 'npx' }, command: PSQL_BIN };\n` })],
+    ['no helper source in the suite', psqlCaller(), null],
+    ['a same-named runner from another module', psqlCaller(undefined, '../helpers/other-psql.js'), psqlHelper()],
+    ['execFile in the wrong argument position', psqlCaller(`export const run = createBoundPsqlRunner(execFile, 'u');\n`), psqlHelper()],
+    ['execFile handed to an unrelated function', psqlCaller(`import { launch } from '../helpers/r3-psql.js';\nexport const run = launch('u', execFile);\n`), psqlHelper()],
+    ['execFile aliased before the injection', psqlCaller(`const alias = execFile;\nexport const run = createBoundPsqlRunner('u', alias);\n`), psqlHelper()],
+  ])('rejects execFile as a value: %s', (_name, caller, helper) => {
+    expect(injected(caller, helper).length).toBeGreaterThan(0);
   });
 
   // D4B: the hermetic child_process sentinel class (dynamic imports).
