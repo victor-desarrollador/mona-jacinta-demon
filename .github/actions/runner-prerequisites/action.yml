@@ -1,0 +1,55 @@
+name: Runner prerequisites for the database tooling
+description: >-
+  Gives an ubuntu-24.04 runner the two things the reviewed database tooling
+  pins: unprivileged user namespaces (its process containment) and the
+  PostgreSQL 17 binaries at /usr/lib/postgresql/17/bin. Nothing in the tooling
+  or its tests is relaxed; the runner is an ephemeral, job-local VM.
+
+inputs:
+  postgresql-packages:
+    description: Debian packages that provide the PostgreSQL 17 binaries.
+    required: false
+    default: postgresql-client-17
+
+runs:
+  using: composite
+  steps:
+    # ubuntu-24.04 sets kernel.apparmor_restrict_unprivileged_userns=1, which
+    # makes an unprivileged `unshare --user` fail writing /proc/self/uid_map. The
+    # tooling's containment (local-test-prepare.mjs CONTAIN_ARGS) is neither
+    # changed nor bypassed: it still runs every child under `unshare --user --pid
+    # --kill-child`. The validation runs the exact containment arguments with no
+    # fallback, so the job fails here if they still do not work.
+    - name: Enable unprivileged user namespaces for process containment
+      shell: bash
+      run: |
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        /usr/bin/unshare --user --map-current-user --pid --fork --kill-child -- /usr/bin/id
+
+    # The tooling pins /usr/lib/postgresql/17/bin/*, but the runner image ships
+    # PostgreSQL 16 client tools only. Packages come from the official PGDG apt
+    # repository; its signing key is checked against the published fingerprint
+    # before it is trusted. No piped installer. create_main_cluster=false keeps
+    # a server package from creating or starting a cluster on the runner.
+    - name: Install PostgreSQL 17 binaries
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.postgresql-packages }}
+      run: |
+        if ! grep -rqs 'apt.postgresql.org' /etc/apt/sources.list /etc/apt/sources.list.d; then
+          key_fingerprint="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+          curl --fail --silent --show-error --location \
+            --output "${RUNNER_TEMP}/pgdg.asc" https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          test "$(gpg --show-keys --with-colons "${RUNNER_TEMP}/pgdg.asc" | awk -F: '/^fpr:/ {print $10; exit}')" = "${key_fingerprint}"
+          sudo install -d -m 0755 /etc/apt/keyrings
+          sudo gpg --dearmor --yes --output /etc/apt/keyrings/pgdg.gpg "${RUNNER_TEMP}/pgdg.asc"
+          . /etc/os-release
+          echo "deb [signed-by=/etc/apt/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+        fi
+        sudo install -d -m 0755 /etc/postgresql-common
+        echo 'create_main_cluster = false' | sudo tee /etc/postgresql-common/createcluster.conf >/dev/null
+        sudo apt-get update
+        # shellcheck disable=SC2086
+        sudo apt-get install --yes --no-install-recommends ${PACKAGES}
+        for tool in psql pg_dump pg_restore; do "/usr/lib/postgresql/17/bin/${tool}" --version; done
