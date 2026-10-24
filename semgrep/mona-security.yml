@@ -18,8 +18,8 @@ rules:
     severity: ERROR
     paths:
       exclude:
-        - scripts/database/**
-        - api/tests/**
+        - /scripts/database/**
+        - /api/tests/**
     pattern-either:
       - pattern: require("node:child_process")
       - pattern: require("child_process")

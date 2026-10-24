@@ -171,6 +171,7 @@ describe('R3-A4.3 S1 — psql stays bound to the verified LOCAL_TEST target', ()
   };
 
   it('H10 a change of LOCAL_TEST_DATABASE_URL after binding never redirects psql', async () => {
+    // nosemgrep: generic.secrets.security.detected-username-and-password-in-uri.detected-username-and-password-in-uri
     const verified = 'postgresql://verified_user:verified%3Apw@127.0.0.1:5432/mona_local_test';
     const swapped = 'postgresql://evil_user:evil_pw@evil-host.invalid:6666/evil_db';
     const previous = process.env.LOCAL_TEST_DATABASE_URL;

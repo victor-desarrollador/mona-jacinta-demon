@@ -17,6 +17,7 @@ describe('Prisma database TLS classification', () => {
     'postgresql://user:password@[::2]:5432/database',
     'postgresql://user:password@127.0.0.1:5432/database?host=remote.example.com',
     'postgresql://user:password@localhost:5432/database#remote',
+    // nosemgrep: semgrep.mona-basic-auth-url
     'https://user:password@localhost:5432/database',
     'not-a-database-url',
   ])('keeps verified TLS for remote, ambiguous or malformed input: %s', (url) => {
