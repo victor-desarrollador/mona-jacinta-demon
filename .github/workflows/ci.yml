@@ -237,26 +237,41 @@ jobs:
             --confirm-local-target=mona_local_test@127.0.0.1:5432/mona_local_test
           run_marker --check --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}"
 
-      # TEMPORARY DIAGNOSTIC (feat/ci-green): read-only. Prints only runner
-      # facts, never a credential. It confirms whether the contained child of
-      # local-test-prepare.mjs (unshare --user ...) can run on this runner and
-      # which PostgreSQL client tools the host carries. Remove once resolved.
-      - name: Diagnose runner user namespaces and PostgreSQL tools
-        continue-on-error: true
+      # ubuntu-24.04 sets kernel.apparmor_restrict_unprivileged_userns=1, which makes
+      # an unprivileged `unshare --user` fail writing /proc/self/uid_map. The
+      # tooling's process containment (local-test-prepare.mjs CONTAIN_ARGS) is NOT
+      # changed or bypassed: it still runs every child under `unshare --user --pid
+      # --kill-child`. This only re-enables that kernel primitive on the ephemeral,
+      # job-local runner VM. The validation below runs the exact containment
+      # arguments and has no fallback: if they still fail, the job fails here.
+      - name: Enable unprivileged user namespaces for process containment
         run: |
-          uname -a
-          cat /etc/os-release
-          sysctl kernel.apparmor_restrict_unprivileged_userns 2>&1 || true
-          sysctl kernel.unprivileged_userns_clone 2>&1 || true
-          sysctl user.max_user_namespaces 2>&1 || true
-          /usr/bin/unshare --user --map-current-user --pid --fork --kill-child -- /usr/bin/id \
-            || echo "unshare exit code: $?"
-          node --version
-          npm --version
-          ls -d /usr/lib/postgresql/*/bin 2>&1 || true
-          ls -l /usr/lib/postgresql/17/bin/pg_dump /usr/lib/postgresql/17/bin/pg_restore 2>&1 || true
-          psql --version 2>&1 || true
-          pg_dump --version 2>&1 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          /usr/bin/unshare --user --map-current-user --pid --fork --kill-child -- /usr/bin/id
+
+      # The tooling pins /usr/lib/postgresql/17/bin/{pg_dump,pg_restore}, but the
+      # runner image carries PostgreSQL 16 client tools only. Install ONLY the
+      # PostgreSQL 17 client (the server is the postgres:17 container above) from
+      # the official PGDG apt repository, with its signing key checked against the
+      # published fingerprint before it is trusted. No piped installer.
+      - name: Install PostgreSQL 17 client tools
+        run: |
+          if ! grep -rqs 'apt.postgresql.org' /etc/apt/sources.list /etc/apt/sources.list.d; then
+            key_fingerprint="B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"
+            curl --fail --silent --show-error --location \
+              --output "${RUNNER_TEMP}/pgdg.asc" https://www.postgresql.org/media/keys/ACCC4CF8.asc
+            test "$(gpg --show-keys --with-colons "${RUNNER_TEMP}/pgdg.asc" | awk -F: '/^fpr:/ {print $10; exit}')" = "${key_fingerprint}"
+            sudo install -d -m 0755 /etc/apt/keyrings
+            sudo gpg --dearmor --yes --output /etc/apt/keyrings/pgdg.gpg "${RUNNER_TEMP}/pgdg.asc"
+            . /etc/os-release
+            echo "deb [signed-by=/etc/apt/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+              | sudo tee /etc/apt/sources.list.d/pgdg.list >/dev/null
+          fi
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends postgresql-client-17
+          /usr/lib/postgresql/17/bin/psql --version
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          /usr/lib/postgresql/17/bin/pg_restore --version
 
       # The migration payload, config and descriptor pins live in the reviewed
       # tooling; the workflow only forwards the digest the dry run computed.
