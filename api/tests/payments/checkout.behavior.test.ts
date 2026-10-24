@@ -59,12 +59,7 @@ import { AppError } from '../../src/shared/errors.js';
 import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matrix.js';
 import { PRODUCTION_PERMISSIONS } from '../../src/modules/rbac/permissions.js';
 import { confirmationHash } from '../../src/modules/payments/checkout-canonical.js';
-import {
-  checkoutRequestHash,
-  createCheckoutService,
-  type CheckoutRequest,
-  type CheckoutTender,
-} from '../../src/modules/payments/checkout.service.js';
+import { createCheckoutService } from '../../src/modules/payments/checkout.service.js';
 import type { CheckoutConfirmationRequest } from '../../src/modules/payments/dto/checkout.dto.js';
 import { createInMemorySalesDb, type Row } from '../helpers/in-memory-sales-db.js';
 
@@ -353,7 +348,7 @@ function setup(options: SaleOptions = {}) {
     planSealed: options.planSealed ?? true,
     status: options.attemptStatus ?? 'RESERVED',
     startedById: options.attemptStartedById ?? ids.cashier,
-    confirmationHash: null,
+    confirmationHash: null as string | null,
     confirmedById: null,
     confirmedAt: null,
     confirmReason: null,
@@ -395,7 +390,7 @@ function setup(options: SaleOptions = {}) {
     externalCollectionId: null,
   });
   const addCollection = (data: Row) => {
-    const row: Row = { id: randomUUID(), ...data };
+    const row: Row & { id: string } = { id: randomUUID(), ...data };
     db.extra.externalCollection.push(row);
     return row;
   };
@@ -496,37 +491,6 @@ function setup(options: SaleOptions = {}) {
 
 type Harness = ReturnType<typeof setup>;
 
-function fixedTender(method: 'CASH' | 'TRANSFER' | 'CARD_DEBIT', amount: bigint, extra: Partial<CheckoutTender> = {}): CheckoutTender {
-  return {
-    method, role: 'FIXED', amount, receivedAmount: null, reference: null,
-    institution: null, institutionOther: null, externalCollectionId: null, ...extra,
-  };
-}
-
-function balanceTender(method: 'CASH' | 'TRANSFER' | 'CARD_DEBIT', extra: Partial<CheckoutTender> = {}): CheckoutTender {
-  return {
-    method, role: 'BALANCE', amount: null, receivedAmount: null, reference: null,
-    institution: null, institutionOther: null, externalCollectionId: null, ...extra,
-  };
-}
-
-// The four commercial cases all price one unit of 40000 centavos with a 1000 bps
-// transfer and 500 bps debit adjustment: P_CASH 40000, P_TRANSFER 44000, P_DEBIT 42000.
-function request(t: Harness, overrides: Partial<CheckoutRequest> = {}): CheckoutRequest {
-  return {
-    operationKey: randomUUID(),
-    cashSessionId: t.sessionId,
-    balanceMethod: 'TRANSFER',
-    expectedTotal: 42000n,
-    expectedBalanceAmount: 22000n,
-    tenders: [
-      fixedTender('CASH', 20000n, { receivedAmount: 20000n }),
-      balanceTender('TRANSFER', { reference: 'OP 88123', institution: 'GALICIA' }),
-    ],
-    ...overrides,
-  };
-}
-
 async function expectAppError(promise: Promise<unknown>, status: number, code: string) {
   const error = await promise.then(() => null, (cause: unknown) => cause);
   expect(error, `expected AppError ${status} ${code}`).toBeInstanceOf(AppError);
@@ -536,409 +500,6 @@ async function expectAppError(promise: Promise<unknown>, status: number, code: s
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-// ---------------------------------------------------------------------------
-// SUPERSEDED (R3-A4.3 S5-D). The `describe.skip` blocks below encode the R3-A2
-// contract: ONE stateless request that carried the operation key, the cash
-// session, the balance method, the expected total/balance and the tender matrix
-// and was priced inline. S5-D replaces that with the sealed-attempt T-C
-// settlement (`checkout()` above), where the request contributes only the
-// reserveKey, the operation key, the CASH received money, new external evidence
-// and the optional supervisor justification.
-//
-// They are kept verbatim as the R3-A2 specification record, not deleted, and
-// SKIPPED because the request shape they exercise no longer exists. Their useful
-// coverage is re-encoded against T-C in the `R3-A4.3 S5-D` suite:
-//   A (four commercial cases)      -> S5D-01..03 (settlement shapes), S5D-09 (CASH change)
-//   B (external collections)       -> S5C-05/S5C-07, S5D-05, S5D1-04 (not applicable)
-//   C (authorization)              -> S5B-08..12, S5D-10 (supervisor justification)
-//   D (state and idempotency)      -> S5D-05, S5C-11..13, S5D-07, S5D1-05/S5D1-06 (rejected replay)
-//   E (cash session)               -> S5D-04, S5D1-15 (unknown session)
-//   F (reservations and stock)     -> S5D-04 (stock hold + inventory coverage)
-//   G (request/engine validation)  -> S5C-02..09, S5D1-07 (raw reference > 64 in the service)
-//   P (P2002 collision resolution) -> S5D1-01/S5D1-02 (the concurrent reference race);
-//                                     the sealed plan cannot collide on itself
-//   H (atomicity, no duplicated)   -> S5D-02, S5D-06 (invariant read), S5D1-08..S5D1-10 (multi-method)
-// ---------------------------------------------------------------------------
-describe.skip('R3 checkout — the four commercial cases', () => {
-  it('A1 CASH fixed + TRANSFER balance writes one coherent settlement', async () => {
-    const t = setup();
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t));
-
-    expect(result).toMatchObject({
-      saleId: t.saleId, saleNumber: 'S1-000001', status: 'COMPLETED', replayed: false,
-      total: 42000n, changeAmount: 0n,
-    });
-    expect(result.payments.map((p) => [p.method, p.tenderRole, p.amount])).toEqual([
-      ['CASH', 'FIXED', 20000n], ['TRANSFER', 'BALANCE', 22000n],
-    ]);
-    expect(result.lines).toEqual([{ saleItemId: t.saleItemId, sku: 'REM-01', quantity: 1n, finalAmount: 42000n }]);
-
-    // One checkout, two payments, two allocations, one stock movement, one cash movement.
-    expect(t.counts()).toEqual({
-      checkouts: 1, collections: 1, allocations: 2, payments: 2, stockMovements: 1, cashMovements: 1, audits: 5,
-    });
-    expect(t.db.extra.saleCheckout[0]).toMatchObject({
-      saleId: t.saleId, branchId: BRANCH, pricingModel: 'PROPORTIONAL_V1', balanceMethod: 'TRANSFER',
-      referenceSubtotal: 40000n, total: 42000n, changeAmount: 0n,
-      fullPriceCash: 40000n, fullPriceTransfer: 44000n, fullPriceDebit: 42000n,
-      transferAdjustmentBps: 1000, debitAdjustmentBps: 500, algorithmVersion: 1,
-    });
-    expect(String(t.db.extra.saleCheckout[0]!.requestHash)).toMatch(/^[0-9a-f]{64}$/);
-    expect(t.db.extra.saleCheckout[0]!.pricingConfigId).toBe(t.table('companyPricingConfig')[0]!.id);
-
-    // Sale is COMPLETED and its total is the proportional total.
-    expect(t.sale()).toMatchObject({ status: 'COMPLETED', total: 42000n });
-    // Stock deducted once, reservation consumed.
-    expect(t.table('inventory')[0]).toMatchObject({ physical: 9n, reserved: 0n });
-    expect(t.table('stockReservation')[0]).toMatchObject({ status: 'CONSUMED' });
-    expect(t.table('stockMovement')[0]).toMatchObject({ type: 'SALE', quantityDelta: -1n });
-    // Audit trail.
-    expect(t.audits('PAYMENT_REGISTERED')).toHaveLength(2);
-    expect(t.audits('SALE_CHECKOUT_COMPLETED')).toHaveLength(1);
-    expect(t.audits('EXTERNAL_COLLECTION_APPLIED')).toHaveLength(1);
-    expect(t.audits('SALE_COMPLETED')).toHaveLength(1);
-    // Lock order is deterministic (no external collection is referenced here).
-    expect(t.lockOrder().slice(0, 4)).toEqual(['Sale', 'CashSession', 'StockReservation', 'Inventory']);
-  });
-
-  it('A2 TRANSFER fixed + CASH balance records the change', async () => {
-    const t = setup();
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CASH',
-      expectedTotal: 41000n,
-      expectedBalanceAmount: 30000n,
-      tenders: [
-        fixedTender('TRANSFER', 11000n, { reference: 'TR-1', institution: 'MACRO' }),
-        balanceTender('CASH', { receivedAmount: 35000n }),
-      ],
-    }));
-
-    expect(result).toMatchObject({ total: 41000n, changeAmount: 5000n });
-    // Persisted in the engine's canonical method order (CASH, TRANSFER, CARD_DEBIT).
-    expect(result.payments.map((p) => [p.method, p.tenderRole, p.amount, p.changeAmount])).toEqual([
-      ['CASH', 'BALANCE', 30000n, 5000n], ['TRANSFER', 'FIXED', 11000n, null],
-    ]);
-    // Only the net cash becomes a cash movement.
-    expect(t.table('cashMovement')).toHaveLength(1);
-    expect(t.table('cashMovement')[0]).toMatchObject({ type: 'SALE_INCOME', amount: 30000n });
-  });
-
-  it('A3 CASH fixed + CARD_DEBIT balance uses the debit adjustment', async () => {
-    const t = setup();
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CARD_DEBIT',
-      expectedTotal: 41500n,
-      expectedBalanceAmount: 31500n,
-      tenders: [
-        fixedTender('CASH', 10000n, { receivedAmount: 10000n }),
-        balanceTender('CARD_DEBIT', { reference: 'L12-C0456' }),
-      ],
-    }));
-
-    expect(result).toMatchObject({ total: 41500n, changeAmount: 0n });
-    expect(t.db.extra.saleCheckout[0]).toMatchObject({ balanceMethod: 'CARD_DEBIT' });
-    expect(t.table('salePayment').find((row) => row.method === 'CARD_DEBIT')).toMatchObject({ amount: 31500n, adjustmentBps: 500, methodFullPrice: 42000n });
-  });
-
-  it('A4 three methods settle exactly to the proportional total', async () => {
-    const t = setup();
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CARD_DEBIT',
-      expectedTotal: 42000n,
-      expectedBalanceAmount: 21000n,
-      tenders: [
-        fixedTender('CASH', 10000n, { receivedAmount: 10000n }),
-        fixedTender('TRANSFER', 11000n, { reference: 'TR-2', institution: 'BBVA' }),
-        balanceTender('CARD_DEBIT', { reference: 'D003' }),
-      ],
-    }));
-
-    expect(result.payments.map((p) => [p.method, p.tenderRole, p.amount])).toEqual([
-      ['CASH', 'FIXED', 10000n], ['TRANSFER', 'FIXED', 11000n], ['CARD_DEBIT', 'BALANCE', 21000n],
-    ]);
-    // Σ payments = Σ allocations = checkout.total = Sale.total.
-    const paymentSum = t.table('salePayment').reduce((sum, row) => sum + (row.amount as bigint), 0n);
-    const allocationSum = t.db.extra.saleLineAllocation.reduce((sum, row) => sum + (row.amount as bigint), 0n);
-    expect(paymentSum).toBe(42000n);
-    expect(allocationSum).toBe(42000n);
-    expect(t.db.extra.saleCheckout[0]!.total).toBe(42000n);
-    expect(t.sale().total).toBe(42000n);
-    expect(t.counts().allocations).toBe(3);
-    expect(t.counts().collections).toBe(2);
-  });
-
-  it('A5 a CASH fixed amount may carry centavos and is applied exactly', async () => {
-    const t = setup();
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'TRANSFER',
-      expectedTotal: 42037n,
-      expectedBalanceAmount: 22000n,
-      tenders: [
-        fixedTender('CASH', 20037n, { receivedAmount: 20037n }),
-        balanceTender('TRANSFER', { reference: 'OP 88123', institution: 'GALICIA' }),
-      ],
-    }));
-
-    expect(result).toMatchObject({ total: 42037n, changeAmount: 0n });
-    expect(result.payments.map((p) => [p.method, p.tenderRole, p.amount, p.changeAmount])).toEqual([
-      ['CASH', 'FIXED', 20037n, 0n], ['TRANSFER', 'BALANCE', 22000n, null],
-    ]);
-    // The received centavos are never rounded away.
-    expect(t.db.extra.saleLineAllocation.find((row) => row.method === 'CASH')).toMatchObject({
-      amount: 20037n, unitPrice: 40000n, lineFullPrice: 40000n, baseUnitPrice: 40000n,
-    });
-    expect(t.table('cashMovement')[0]).toMatchObject({ type: 'SALE_INCOME', amount: 20037n });
-    expect(t.sale().total).toBe(42037n);
-    expect(t.counts().allocations).toBe(2);
-  });
-
-  it('A6 a CARD_DEBIT fixed amount may carry centavos and keeps the debit adjustment', async () => {
-    const t = setup();
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CASH',
-      expectedTotal: 41037n,
-      expectedBalanceAmount: 20000n,
-      tenders: [
-        fixedTender('CARD_DEBIT', 21037n, { reference: 'D900' }),
-        balanceTender('CASH', { receivedAmount: 20000n }),
-      ],
-    }));
-
-    expect(result).toMatchObject({ total: 41037n, changeAmount: 0n });
-    expect(t.table('salePayment').find((row) => row.method === 'CARD_DEBIT')).toMatchObject({
-      amount: 21037n, methodFullPrice: 42000n, adjustmentBps: 500,
-    });
-    expect(t.db.extra.saleLineAllocation.find((row) => row.method === 'CARD_DEBIT')).toMatchObject({ amount: 21037n, unitPrice: 42000n });
-    expect(t.db.extra.externalCollection[0]).toMatchObject({ method: 'CARD_DEBIT', amount: 21037n, status: 'APPLIED' });
-    expect(t.sale().total).toBe(41037n);
-  });
-});
-
-describe.skip('R3 checkout — external collections [SUPERSEDED by S5-D T-C]', () => {
-  it('B1 a new transfer reference is recorded APPLIED and linked to its payment', async () => {
-    const t = setup();
-    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t));
-
-    const [collection] = t.db.extra.externalCollection;
-    expect(collection).toMatchObject({
-      branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'OP 88123', referenceKey: 'OP88123',
-      institution: 'GALICIA', institutionOther: null, status: 'APPLIED', appliedSaleId: t.saleId, originSaleId: t.saleId,
-      cashSessionId: t.sessionId, recordedById: t.ids.cashier,
-    });
-    const transfer = t.table('salePayment').find((row) => row.method === 'TRANSFER')!;
-    expect(transfer.externalCollectionId).toBe(collection!.id);
-  });
-
-  it('B2 an existing UNAPPLIED collection is applied instead of charged again', async () => {
-    const t = setup();
-    const existing = t.addCollection({
-      branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'OP 88123', referenceKey: 'OP88123',
-      institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', originSaleId: t.saleId,
-      recordedById: t.ids.seller, cashSessionId: null, appliedCheckoutId: null, appliedSaleId: null,
-    });
-
-    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CASH',
-      expectedBalanceAmount: 20000n,
-      tenders: [
-        fixedTender('TRANSFER', 22000n, { externalCollectionId: existing.id as string }),
-        balanceTender('CASH', { receivedAmount: 20000n }),
-      ],
-    }));
-
-    expect(t.db.extra.externalCollection).toHaveLength(1);
-    expect(t.db.extra.externalCollection[0]).toMatchObject({ id: existing.id, status: 'APPLIED', appliedSaleId: t.saleId, appliedCheckoutId: t.db.extra.saleCheckout[0]!.id });
-    expect(t.table('salePayment').find((row) => row.method === 'TRANSFER')!.externalCollectionId).toBe(existing.id);
-    // The full global lock order, with the external collection between sale and cash session.
-    expect(t.lockOrder().slice(0, 5)).toEqual(['Sale', 'ExternalCollection', 'CashSession', 'StockReservation', 'Inventory']);
-  });
-
-  it('B3 a collection that carries centavos is applied for precisely its amount', async () => {
-    const t = setup();
-    const existing = t.addCollection({
-      branchId: BRANCH, method: 'TRANSFER', amount: 22037n, reference: 'OP 88', referenceKey: 'OP88',
-      institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', originSaleId: t.saleId,
-      recordedById: t.ids.seller, cashSessionId: null, appliedCheckoutId: null, appliedSaleId: null,
-    });
-
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CASH',
-      expectedTotal: 42037n,
-      expectedBalanceAmount: 20000n,
-      tenders: [
-        fixedTender('TRANSFER', 22037n, { externalCollectionId: existing.id as string }),
-        balanceTender('CASH', { receivedAmount: 20000n }),
-      ],
-    }));
-
-    // 22037 is applied as-is: never rounded to 22000 nor to 22100.
-    expect(result).toMatchObject({ total: 42037n, changeAmount: 0n });
-    expect(result.payments.map((p) => [p.method, p.tenderRole, p.amount])).toEqual([
-      ['CASH', 'BALANCE', 20000n], ['TRANSFER', 'FIXED', 22037n],
-    ]);
-    expect(t.db.extra.externalCollection).toHaveLength(1);
-    expect(t.db.extra.externalCollection[0]).toMatchObject({ id: existing.id, amount: 22037n, status: 'APPLIED', appliedSaleId: t.saleId });
-    expect(t.table('salePayment').find((row) => row.method === 'TRANSFER')).toMatchObject({ amount: 22037n, externalCollectionId: existing.id });
-    expect(t.db.extra.saleLineAllocation.find((row) => row.method === 'TRANSFER')).toMatchObject({ amount: 22037n, unitPrice: 44000n, lineFullPrice: 44000n });
-  });
-
-  it('B3c a collection whose amount differs by centavos is refused', async () => {
-    const t = setup();
-    const existing = t.addCollection({
-      branchId: BRANCH, method: 'TRANSFER', amount: 22038n, reference: 'OP 88', referenceKey: 'OP88',
-      institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', originSaleId: t.saleId,
-      recordedById: t.ids.seller, cashSessionId: null, appliedCheckoutId: null, appliedSaleId: null,
-    });
-    const before = t.counts();
-
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CASH',
-      expectedTotal: 42037n,
-      expectedBalanceAmount: 20000n,
-      tenders: [
-        fixedTender('TRANSFER', 22037n, { externalCollectionId: existing.id as string }),
-        balanceTender('CASH', { receivedAmount: 20000n }),
-      ],
-    })), 409, 'EXTERNAL_COLLECTION_NOT_APPLICABLE');
-    expect(t.counts()).toEqual(before);
-    expect(t.db.extra.externalCollection[0]).toMatchObject({ status: 'UNAPPLIED' });
-  });
-
-  it('B3b an already applied collection cannot be applied twice', async () => {
-    const t = setup();
-    const applied = t.addCollection({
-      branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'OP 99', referenceKey: 'OP99',
-      institution: 'GALICIA', institutionOther: null, status: 'APPLIED',
-      appliedCheckoutId: randomUUID(), appliedSaleId: t.saleId, recordedById: t.ids.seller,
-    });
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CASH',
-      expectedBalanceAmount: 20000n,
-      tenders: [
-        fixedTender('TRANSFER', 22000n, { externalCollectionId: applied.id as string }),
-        balanceTender('CASH', { receivedAmount: 20000n }),
-      ],
-    })), 409, 'EXTERNAL_COLLECTION_NOT_APPLICABLE');
-  });
-
-  it('B5 a new reference that already exists is refused with its status', async () => {
-    const t = setup();
-    t.addCollection({
-      branchId: BRANCH, method: 'TRANSFER', amount: 11000n, reference: 'OP 88123', referenceKey: 'OP88123',
-      institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
-    });
-    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      balanceMethod: 'CARD_DEBIT',
-      expectedTotal: 42000n,
-      expectedBalanceAmount: 31500n,
-      tenders: [
-        fixedTender('TRANSFER', 11000n, { reference: 'OP 88123', institution: 'GALICIA' }),
-        balanceTender('CARD_DEBIT', { reference: 'D009' }),
-      ],
-    })), 409, 'EXTERNAL_REFERENCE_ALREADY_RECORDED');
-    expect(error.details).toEqual({ status: 'UNAPPLIED' });
-  });
-});
-
-describe.skip('R3 checkout — authorization [SUPERSEDED by S5-D T-C]', () => {
-  it('C1 a cashier of another branch is refused with no effects', async () => {
-    const t = setup();
-    const before = t.counts();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier2, t.ids.cashier2, t.saleId, request(t)), 403, 'FORBIDDEN');
-    expect(t.counts()).toEqual(before);
-    expect(t.sale().status).toBe('PENDING_PAYMENT');
-  });
-
-  it('C2 SALE_CHARGE without SALE_COMPLETE is refused', async () => {
-    const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.seller, t.ids.seller, t.saleId, request(t)), 403, 'FORBIDDEN');
-    await expectAppError(t.checkout.checkout(t.reqs.warehouse, t.ids.warehouse, t.saleId, request(t)), 403, 'FORBIDDEN');
-  });
-
-  it('C3 OWNER holds implicit authority', async () => {
-    const t = setup();
-    await expect(t.checkout.checkout(t.reqs.owner, t.ids.owner, t.saleId, request(t))).resolves.toMatchObject({ status: 'COMPLETED' });
-  });
-});
-
-describe.skip('R3 checkout — state and idempotency [SUPERSEDED by S5-D T-C]', () => {
-  it('D1 a FIXED_TOTAL sale is refused', async () => {
-    const t = setup({ pricingModel: 'FIXED_TOTAL' });
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'INVALID_SALE_STATE');
-  });
-
-  it('D2 a sale that is not PENDING_PAYMENT is refused', async () => {
-    const t = setup({ status: 'DRAFT' });
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'INVALID_SALE_STATE');
-  });
-
-  it('D3 a sale with previous payments is refused', async () => {
-    const t = setup({ withPayment: true });
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'INVALID_SALE_STATE');
-    expect(t.table('salePayment')).toHaveLength(1);
-  });
-
-  it('D4 the same key and payload replays without new rows', async () => {
-    const t = setup();
-    const payload = request(t);
-    const first = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload);
-    const afterFirst = t.counts();
-
-    const replay = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload);
-    expect(replay.replayed).toBe(true);
-    expect(replay.checkoutId).toBe(first.checkoutId);
-    expect(replay.total).toBe(first.total);
-    expect(t.counts()).toEqual(afterFirst);
-  });
-
-  it('D5 the same key with a different payload is refused', async () => {
-    const t = setup();
-    const payload = request(t);
-    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload);
-    const before = t.counts();
-
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, {
-      ...payload,
-      tenders: [
-        fixedTender('CASH', 20000n, { receivedAmount: 25000n }),
-        balanceTender('TRANSFER', { reference: 'OP 88123', institution: 'GALICIA' }),
-      ],
-    }), 409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD');
-    expect(t.counts()).toEqual(before);
-  });
-
-  it('D6 the same key on another sale is refused', async () => {
-    const t = setup();
-    const payload = request(t);
-    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload);
-    const other = t.addSale();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, other.saleId, payload), 409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD');
-  });
-
-  it('D7 a second checkout with another key is refused', async () => {
-    const t = setup();
-    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t));
-    const before = t.counts();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'SALE_ALREADY_CHECKED_OUT');
-    expect(t.counts()).toEqual(before);
-  });
-
-  it('D8 a checkout whose sale is not COMPLETED fails closed', async () => {
-    const t = setup();
-    const payload = request(t);
-    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload);
-    t.sale().status = 'PAID';
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload), 500, 'CHECKOUT_STATE_INCONSISTENT');
-  });
-
-  it('D9 a stale quote is refused with the recalculated amounts', async () => {
-    const t = setup();
-    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, { expectedBalanceAmount: 21000n })), 409, 'CHECKOUT_QUOTE_CHANGED');
-    expect(error.details).toEqual({ total: 42000n, balance: 22000n });
-    expect(t.counts().payments).toBe(0);
-  });
 });
 
 describe('R3-A4.3 S5-B — reserved attempt identity and authority', () => {
@@ -1221,7 +782,7 @@ describe('R3-A4.3 S5-C — sealed plan and confirmation replay', () => {
       expect(t.attempt.status).toBe('CONFIRMED');
     });
 
-    it.each([
+    it.each<[string, Partial<CheckoutConfirmationRequest['tenders'][number]>]>([
       ['reference', { reference: 'OP 123', referenceKey: 'OP123' }],
       ['institution', { institution: 'GALICIA' }],
       ['institutionOther', { institutionOther: 'Banco X' }],
@@ -1267,7 +828,7 @@ describe('R3-A4.3 S5-C — sealed plan and confirmation replay', () => {
       expect(t.audits('EXTERNAL_COLLECTION_APPLIED')).toHaveLength(1);
     });
 
-    it.each([
+    it.each<[string, Partial<CheckoutConfirmationRequest['tenders'][number]>]>([
       ['missing reference', { institution: 'GALICIA' }],
       ['missing institution', { reference: 'OP 123', referenceKey: 'OP123' }],
       ['OTHER missing institutionOther', { reference: 'OP 123', referenceKey: 'OP123', institution: 'OTHER' }],
@@ -1307,7 +868,7 @@ describe('R3-A4.3 S5-C — sealed plan and confirmation replay', () => {
       });
     });
 
-    it.each([
+    it.each<[string, Partial<CheckoutConfirmationRequest['tenders'][number]>]>([
       ['missing reference', {}],
       ['institution', { reference: 'DEBIT 123', referenceKey: 'DEBIT123', institution: 'GALICIA' }],
     ])('S5C-08 NEW CARD_DEBIT rejects %s', async (_label, fields) => {
@@ -2297,434 +1858,196 @@ describe('R3-A4.3 S5-D — atomic T-C settlement', () => {
     expect(t.audits('CHECKOUT_RESERVATION_REJECTED')).toHaveLength(1);
     expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0, allocations: 0, cashMovements: 0 });
   });
-});
 
-
-describe.skip('R3 checkout — cash session [SUPERSEDED by S5-D T-C]', () => {
-  it('E1 a closed session is refused', async () => {
+  // Behavior of the retired R3-A2 request-shape suite that had no T-C equivalent:
+  // authority by branch/OWNER, CASH/debit centavos, a collection amount mismatch and
+  // the P2002 cases whose peer row is not the proposed reference.
+  it('S5D2-01 a cashier of ANOTHER branch is refused with no effects (was C1)', async () => {
     const t = setup();
-    t.table('cashSession').find((row) => row.id === t.sessionId)!.status = 'CLOSED';
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'NO_OPEN_CASH_SESSION');
-  });
-
-  it('E2 a session of another branch is refused', async () => {
-    const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, { cashSessionId: t.otherSessionId })), 409, 'CASH_SESSION_BRANCH_MISMATCH');
-  });
-
-  it('E3 an unknown session is refused', async () => {
-    const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, { cashSessionId: randomUUID() })), 409, 'NO_OPEN_CASH_SESSION');
-  });
-});
-
-describe.skip('R3 checkout — reservations and stock [SUPERSEDED by S5-D T-C]', () => {
-  it('F1 an expired reservation is refused', async () => {
-    const t = setup({ expiresInMs: -1000 });
     const before = t.counts();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'RESERVATION_EXPIRED');
+
+    await expectAppError(t.checkout.checkout(t.reqs.cashier2, t.ids.cashier2, t.saleId, t.confirmation()), 403, 'FORBIDDEN');
+
     expect(t.counts()).toEqual(before);
+    expect(t.sale().status).toBe('PENDING_PAYMENT');
+    expect(t.storedAttempt()).toMatchObject({ status: 'RESERVED', confirmationHash: null });
   });
 
-  it('F2 no active hold is refused', async () => {
-    const t = setup({ withReservation: false });
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'INVALID_RESERVATION');
-  });
-
-  it('F3 a hold that does not match the items is refused', async () => {
-    const t = setup({ reservationQuantity: 2n });
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'INVALID_RESERVATION');
-  });
-
-  it('F4 insufficient physical stock is refused', async () => {
-    const t = setup({ physical: 0n });
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'INSUFFICIENT_PHYSICAL');
-    expect(t.table('inventory')[0]).toMatchObject({ physical: 0n, reserved: 1n });
-  });
-
-  it('F5 insufficient reserved stock is refused', async () => {
-    const t = setup({ reserved: 0n });
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'INSUFFICIENT_RESERVED');
-  });
-});
-
-describe.skip('R3 checkout — request and engine validation [SUPERSEDED by S5-D T-C]', () => {
-  it('G1 exactly one balance tender is required', async () => {
+  it('S5D2-02 an OWNER holds implicit supervisor authority and settles with a justification (was C3)', async () => {
     const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [balanceTender('TRANSFER', { reference: 'REFA' }), balanceTender('CASH', { receivedAmount: 1000n })],
-    })), 400, 'VALIDATION_ERROR');
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [fixedTender('CASH', 20000n, { receivedAmount: 20000n })],
-    })), 400, 'VALIDATION_ERROR');
+
+    const result = await t.checkout.checkout(t.reqs.owner, t.ids.owner, t.saleId, t.confirmation({
+      supervisor: { reason: 'Confirmación del propietario', evidence: 'Ticket POS 1' },
+    }));
+
+    expect(result).toMatchObject({ status: 'COMPLETED', total: 40000n });
+    expect(t.storedAttempt()).toMatchObject({ status: 'CONFIRMED', confirmedById: t.ids.owner });
   });
 
-  it('G2 the balance method must match the balance tender', async () => {
+  it('S5D2-03 a CASH FIXED amount with centavos is settled exactly, with no rounding (was A5)', async () => {
     const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
+    t.sealPlan([
+      planTender('CASH', 'FIXED', 'NEW', 20037n),
+      planTender('TRANSFER', 'BALANCE', 'NEW', null),
+    ], { expectedBalanceAmount: 22000n, balanceMethod: 'TRANSFER' });
+
+    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
       tenders: [
-        fixedTender('CASH', 20000n, { receivedAmount: 20000n }),
-        balanceTender('CARD_DEBIT', { reference: 'D001' }),
-      ],
-    })), 400, 'VALIDATION_ERROR');
-  });
-
-  it('G3 a fixed amount is mandatory and positive; CASH needs received money', async () => {
-    const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [fixedTender('CASH', 20000n), balanceTender('TRANSFER', { reference: 'REF1', institution: 'GALICIA' })],
-    })), 400, 'VALIDATION_ERROR');
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [
-        fixedTender('CASH', 20000n, { receivedAmount: 1000n }),
-        balanceTender('TRANSFER', { reference: 'REF1', institution: 'GALICIA' }),
-      ],
-    })), 409, 'CASH_RECEIVED_INSUFFICIENT');
-  });
-
-  it('G4 credit and QR are not enabled methods', async () => {
-    const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [fixedTender('CASH', 20000n, { receivedAmount: 20000n }), balanceTender('TRANSFER', { reference: 'REF1', institution: 'GALICIA' }), {
-        // A method the R3 opening policy excludes; the cast lets the case reach the engine.
-        method: 'CREDIT_CARD', role: 'FIXED', amount: 1000n, receivedAmount: null, reference: 'REFX',
-        institution: null, institutionOther: null, externalCollectionId: null,
-      } as unknown as CheckoutTender],
-    })), 409, 'PAYMENT_METHOD_NOT_ENABLED');
-  });
-
-  it('G5 the engine rejects fixed tenders that cover the sale and a sub-peso balance', async () => {
-    const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [fixedTender('CASH', 40000n, { receivedAmount: 40000n }), balanceTender('TRANSFER', { reference: 'REF1', institution: 'GALICIA' })],
-    })), 409, 'FIXED_TENDERS_COVER_SALE');
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [fixedTender('CASH', 10000n, { receivedAmount: 10000n }), balanceTender('CASH', { receivedAmount: 10000n })],
-    })), 400, 'VALIDATION_ERROR');
-  });
-
-  it('G6 transfer and debit references are validated', async () => {
-    const t = setup();
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [fixedTender('CASH', 20000n, { receivedAmount: 20000n }), balanceTender('TRANSFER', { institution: 'GALICIA' })],
-    })), 400, 'VALIDATION_ERROR');
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [fixedTender('CASH', 20000n, { receivedAmount: 20000n }), balanceTender('TRANSFER', { reference: 'REF1', institution: 'OTHER' })],
-    })), 400, 'VALIDATION_ERROR');
-  });
-
-  it('G7 a reference longer than 64 characters is rejected before it is normalised', async () => {
-    const t = setup();
-    // 69 characters whose normalised key is the valid 'OP123': only the RAW length
-    // check can reject it (chk_ec_reference is 1..64 --- not just the key pattern).
-    const tooLong = `OP${'-'.repeat(64)}123`;
-    expect(tooLong).toHaveLength(69);
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [
-        fixedTender('CASH', 20000n, { receivedAmount: 20000n }),
-        balanceTender('TRANSFER', { reference: tooLong, institution: 'GALICIA' }),
-      ],
-    })), 400, 'VALIDATION_ERROR');
-    // An empty reference is refused too (1..64).
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [
-        fixedTender('CASH', 20000n, { receivedAmount: 20000n }),
-        balanceTender('TRANSFER', { reference: '', institution: 'GALICIA' }),
-      ],
-    })), 400, 'VALIDATION_ERROR');
-
-    // 64 characters is the boundary the database accepts, and it is stored whole.
-    const exact = `TRA${'-'.repeat(61)}`;
-    expect(exact).toHaveLength(64);
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
-      tenders: [
-        fixedTender('CASH', 20000n, { receivedAmount: 20000n }),
-        balanceTender('TRANSFER', { reference: exact, institution: 'GALICIA' }),
+        sealedTender('CASH', { receivedAmount: 20037n }),
+        sealedTender('TRANSFER', { reference: 'OP 88123', referenceKey: 'OP88123', institution: 'GALICIA' }),
       ],
     }));
-    expect(result.status).toBe('COMPLETED');
-    expect(t.db.extra.externalCollection[0]).toMatchObject({ reference: exact, referenceKey: 'TRA' });
+
+    expect(result).toMatchObject({ total: 42037n, changeAmount: 0n });
+    expect(result.payments.map((p) => [p.method, p.tenderRole, p.amount, p.changeAmount]))
+      .toEqual([['CASH', 'FIXED', 20037n, 0n], ['TRANSFER', 'BALANCE', 22000n, null]]);
+    expect(t.table('cashMovement')[0]).toMatchObject({ type: 'SALE_INCOME', amount: 20037n });
+    expect(t.sale().total).toBe(42037n);
   });
 
-  it('G8 the reference length is counted in Unicode code points, like char_length', async () => {
+  it('S5D2-04 a CARD_DEBIT FIXED amount with centavos keeps the sealed debit adjustment (was A6)', async () => {
     const t = setup();
-    // 64 code points but 125 UTF-16 units: byte/unit counting would reject it.
-    const astral64 = `ABC${'👍'.repeat(61)}`;
-    expect([...astral64]).toHaveLength(64);
-    expect(astral64.length).toBe(125);
+    t.sealPlan([
+      planTender('CARD_DEBIT', 'FIXED', 'NEW', 21037n),
+      planTender('CASH', 'BALANCE', 'NEW', null),
+    ], { expectedBalanceAmount: 20000n });
 
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
+    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
       tenders: [
-        fixedTender('CASH', 20000n, { receivedAmount: 20000n }),
-        balanceTender('TRANSFER', { reference: astral64, institution: 'GALICIA' }),
+        sealedTender('CARD_DEBIT', { reference: 'D900', referenceKey: 'D900' }),
+        sealedTender('CASH', { receivedAmount: 20000n }),
       ],
     }));
-    expect(result.status).toBe('COMPLETED');
-    expect(t.db.extra.externalCollection[0]).toMatchObject({ reference: astral64, referenceKey: 'ABC' });
 
-    // 65 code points: over the database's limit.
-    const astral65 = `ABC${'👍'.repeat(62)}`;
-    expect([...astral65]).toHaveLength(65);
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t, {
+    expect(result).toMatchObject({ total: 41037n, changeAmount: 0n });
+    expect(t.table('salePayment').find((row) => row.method === 'CARD_DEBIT')).toMatchObject({
+      amount: 21037n, methodFullPrice: 42000n, adjustmentBps: 500,
+    });
+    expect(t.db.extra.externalCollection[0]).toMatchObject({ method: 'CARD_DEBIT', amount: 21037n, status: 'APPLIED' });
+  });
+
+  it('S5D2-05 a COLLECTION whose amount differs from the sealed amount terminally rejects, applying nothing (was B3c)', async () => {
+    const t = setup();
+    const collection = t.addCollection({
+      branchId: BRANCH, method: 'TRANSFER', amount: 22001n, reference: 'OP 556', referenceKey: 'OP556',
+      institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', originSaleId: t.saleId,
+      claimAttemptId: String(t.storedAttempt().id),
+    });
+    t.sealPlan([
+      planTender('CASH', 'BALANCE', 'NEW', null),
+      planTender('TRANSFER', 'FIXED', 'COLLECTION', 22000n, collection.id),
+    ], { expectedBalanceAmount: 20000n });
+
+    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+      tenders: [sealedTender('CASH', { receivedAmount: 20000n }), sealedTender('TRANSFER')],
+    })), 409, 'EXTERNAL_COLLECTION_NOT_APPLICABLE');
+
+    expect(t.storedAttempt()).toMatchObject({ status: 'REJECTED', rejectionCode: 'EXTERNAL_COLLECTION_NOT_APPLICABLE' });
+    expect(t.db.extra.externalCollection[0]).toMatchObject({ status: 'UNAPPLIED' });
+    expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0, allocations: 0, cashMovements: 0 });
+  });
+
+  describe('P2002 on an external reference whose peer row is NOT the proposed one (was P4/P5/P7/P8)', () => {
+    const transferPlan = (t: Harness) => t.sealPlan([
+      planTender('CASH', 'BALANCE', 'NEW', null),
+      planTender('TRANSFER', 'FIXED', 'NEW', 22000n),
+    ], { expectedBalanceAmount: 20000n });
+    const transferConfirmation = (t: Harness) => t.confirmation({
       tenders: [
-        fixedTender('CASH', 20000n, { receivedAmount: 20000n }),
-        balanceTender('TRANSFER', { reference: astral65, institution: 'GALICIA' }),
+        sealedTender('CASH', { receivedAmount: 20000n }),
+        sealedTender('TRANSFER', { reference: 'OP 88123', referenceKey: 'OP88123', institution: 'GALICIA' }),
       ],
-    })), 400, 'VALIDATION_ERROR');
-    expect(t.db.extra.externalCollection).toHaveLength(1);
+    });
+    const settle = (t: Harness, payload: CheckoutConfirmationRequest) =>
+      t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload).then(() => null, (cause: unknown) => cause);
+
+    it('S5D2-06 the same reference at ANOTHER institution is not a collision: the original P2002 stands', async () => {
+      const t = setup();
+      transferPlan(t);
+      t.db.simulateConcurrentCommit(() => {
+        t.addCollection({
+          branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'OP 88123', referenceKey: 'OP88123',
+          institution: 'BBVA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
+        });
+      });
+      t.db.injectUniqueViolation('externalCollection', 'create', 'ExternalCollection_transfer_ref_key');
+
+      const error = await settle(t, transferConfirmation(t));
+
+      expect(error).not.toBeInstanceOf(AppError);
+      expect(error).toMatchObject({ code: 'P2002' });
+      expect(t.db.extra.externalCollection).toHaveLength(1);
+      expect(t.db.extra.externalCollection[0]).toMatchObject({ institution: 'BBVA', status: 'UNAPPLIED' });
+      expect(t.storedAttempt()).toMatchObject({ status: 'RESERVED', rejectionCode: null });
+    });
+
+    it('S5D2-07 a reference of ANOTHER branch is never read nor surfaced', async () => {
+      const t = setup();
+      transferPlan(t);
+      t.addCollection({
+        branchId: OTHER_BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'OP 88123', referenceKey: 'OP88123',
+        institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.cashier2,
+      });
+      t.db.injectUniqueViolation('externalCollection', 'create', 'ExternalCollection_transfer_ref_key');
+
+      const error = await settle(t, transferConfirmation(t));
+
+      expect(error).not.toBeInstanceOf(AppError);
+      expect(error).toMatchObject({ code: 'P2002' });
+      expect(t.db.extra.externalCollection).toHaveLength(1);
+      expect(t.db.extra.externalCollection[0]).toMatchObject({ branchId: OTHER_BRANCH, status: 'UNAPPLIED' });
+    });
+
+    it('S5D2-08 with several proposed references the colliding one is the one reported', async () => {
+      const t = setup();
+      t.sealPlan([
+        planTender('CASH', 'BALANCE', 'NEW', null),
+        planTender('TRANSFER', 'FIXED', 'NEW', 11000n),
+        planTender('CARD_DEBIT', 'FIXED', 'NEW', 11000n),
+      ], { expectedBalanceAmount: 20000n });
+      t.db.simulateConcurrentCommit(() => {
+        t.addCollection({
+          branchId: BRANCH, method: 'CARD_DEBIT', amount: 11000n, reference: 'D009', referenceKey: 'D009',
+          institution: null, institutionOther: null, status: 'REFUNDED', recordedById: t.ids.seller,
+          resolvedById: t.ids.cashier, resolvedAt: new Date(), refundReference: 'NC-001',
+        });
+      });
+      // 'OP88123' is proposed first and exists nowhere: only the debit reference collides.
+      t.db.injectUniqueViolation('externalCollection', 'create', 'ExternalCollection_debit_ref_key', (args) => (args.data as Row).method === 'CARD_DEBIT');
+
+      const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, t.confirmation({
+        tenders: [
+          sealedTender('CASH', { receivedAmount: 20000n }),
+          sealedTender('TRANSFER', { reference: 'OP 88123', referenceKey: 'OP88123', institution: 'GALICIA' }),
+          sealedTender('CARD_DEBIT', { reference: 'D009', referenceKey: 'D009' }),
+        ],
+      })), 409, 'EXTERNAL_REFERENCE_ALREADY_RECORDED');
+
+      expect(error.details).toEqual({ status: 'REFUNDED' });
+      expect(t.storedAttempt().status).toBe('RESERVED');
+    });
+
+    it('S5D2-09 an ambiguous collision (referenceKey alone) fails closed instead of guessing a status', async () => {
+      const t = setup();
+      transferPlan(t);
+      t.db.simulateConcurrentCommit(() => {
+        t.addCollection({
+          branchId: BRANCH, method: 'TRANSFER', amount: 22000n, reference: 'OP 88123', referenceKey: 'OP88123',
+          institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
+        });
+      });
+      t.db.injectUniqueViolation('externalCollection', 'create', 'referenceKey');
+
+      const error = await settle(t, transferConfirmation(t));
+
+      expect(error).not.toBeInstanceOf(AppError);
+      expect(error).toMatchObject({ code: 'P2002' });
+      expect(t.counts()).toMatchObject({ checkouts: 0, payments: 0 });
+      expect(t.db.extra.saleCheckout).toHaveLength(0);
+    });
   });
 });
 
-describe.skip('R3 checkout — P2002 unique-collision resolution [SUPERSEDED by S5-D T-C]', () => {
-  // The double cannot raise a real P2002, so each case injects exactly the error a
-  // concurrent peer's commit would raise; when the peer's row must exist, it is
-  // committed through simulateConcurrentCommit, applied after our transaction
-  // unwinds (the durable state PostgreSQL would leave).
-  const threeMethodRequest = (t: Harness, overrides: Partial<CheckoutRequest> = {}) => request(t, {
-    balanceMethod: 'CARD_DEBIT',
-    expectedTotal: 42500n,
-    expectedBalanceAmount: 31500n,
-    tenders: [
-      fixedTender('TRANSFER', 11000n, { reference: 'OP 88123', institution: 'GALICIA' }),
-      balanceTender('CARD_DEBIT', { reference: 'D009' }),
-    ],
-    ...overrides,
-  });
-
-  it('P1 an operationKey collision replays the checkout a peer committed', async () => {
-    const t = setup();
-    const payload = request(t);
-    const checkoutId = randomUUID();
-    const completedAt = new Date();
-    t.db.simulateConcurrentCommit(() => {
-      t.sale().status = 'COMPLETED';
-      t.sale().total = 42000n;
-      t.db.extra.saleCheckout.push({
-        id: checkoutId, saleId: t.saleId, branchId: BRANCH, pricingModel: 'PROPORTIONAL_V1',
-        operationKey: payload.operationKey, requestHash: checkoutRequestHash(t.saleId, payload),
-        cashSessionId: t.sessionId, balanceMethod: 'TRANSFER', total: 42000n, changeAmount: 0n, completedAt,
-      });
-      const cash = t.db.insert('salePayment', {
-        saleId: t.saleId, method: 'CASH', tenderRole: 'FIXED', amount: 20000n, methodFullPrice: 40000n,
-        adjustmentBps: 0, externalCollectionId: null, receivedAmount: 20000n, changeAmount: 0n,
-        cashSessionId: t.sessionId, idempotencyKey: `co:${payload.operationKey}:CASH`, paidAt: new Date(completedAt.getTime() - 1000),
-      });
-      const transfer = t.db.insert('salePayment', {
-        saleId: t.saleId, method: 'TRANSFER', tenderRole: 'BALANCE', amount: 22000n, methodFullPrice: 44000n,
-        adjustmentBps: 1000, externalCollectionId: null, receivedAmount: null, changeAmount: null,
-        cashSessionId: t.sessionId, idempotencyKey: `co:${payload.operationKey}:TRANSFER`, paidAt: completedAt,
-      });
-      t.db.extra.saleLineAllocation.push(
-        { id: randomUUID(), checkoutId, saleId: t.saleId, saleItemId: t.saleItemId, salePaymentId: cash.id, method: 'CASH', amount: 20000n },
-        { id: randomUUID(), checkoutId, saleId: t.saleId, saleItemId: t.saleItemId, salePaymentId: transfer.id, method: 'TRANSFER', amount: 22000n },
-      );
-    });
-    t.db.injectUniqueViolation('saleCheckout', 'create', 'operationKey');
-
-    const result = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload);
-    expect(result).toMatchObject({ replayed: true, checkoutId, status: 'COMPLETED', total: 42000n, changeAmount: 0n });
-    expect(result.payments.map((p) => [p.method, p.tenderRole, p.amount])).toEqual([['CASH', 'FIXED', 20000n], ['TRANSFER', 'BALANCE', 22000n]]);
-    expect(result.lines).toEqual([{ saleItemId: t.saleItemId, sku: 'REM-01', quantity: 1n, finalAmount: 42000n }]);
-    expect(t.counts().payments).toBe(2);
-  });
-
-  it('P2 a saleId collision is refused as an already checked-out sale', async () => {
-    const t = setup();
-    const before = t.counts();
-    t.db.injectUniqueViolation('saleCheckout', 'create', 'saleId');
-
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 409, 'SALE_ALREADY_CHECKED_OUT');
-    expect(t.counts()).toEqual(before);
-    expect(t.sale()).toMatchObject({ status: 'PENDING_PAYMENT', total: 40000n });
-  });
-
-  it('P3 the transfer index is reported with the transfer collection status', async () => {
-    const t = setup();
-    t.db.simulateConcurrentCommit(() => {
-      t.addCollection({
-        branchId: BRANCH, method: 'TRANSFER', amount: 11000n, reference: 'OP 88123', referenceKey: 'OP88123',
-        institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
-      });
-    });
-    t.db.injectUniqueViolation('externalCollection', 'create', 'ExternalCollection_transfer_ref_key');
-
-    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, threeMethodRequest(t)), 409, 'EXTERNAL_REFERENCE_ALREADY_RECORDED');
-    expect(error.details).toEqual({ status: 'UNAPPLIED' });
-    expect(t.counts().payments).toBe(0);
-    expect(t.db.extra.saleCheckout).toHaveLength(0);
-  });
-
-  it('P4 the same reference at ANOTHER institution is not reported as a collision', async () => {
-    const t = setup();
-    t.db.simulateConcurrentCommit(() => {
-      t.addCollection({
-        branchId: BRANCH, method: 'TRANSFER', amount: 11000n, reference: 'OP 88123', referenceKey: 'OP88123',
-        institution: 'BBVA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
-      });
-    });
-    // The transfer key is (branch, institution, referenceKey): a BBVA peer row does
-    // not collide with our GALICIA transfer, so no collision may be invented.
-    t.db.injectUniqueViolation('externalCollection', 'create', 'branchId,institution,referenceKey');
-
-    const error = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, threeMethodRequest(t)).then(() => null, (cause: unknown) => cause);
-    expect(error).not.toBeInstanceOf(AppError);
-    expect(error).toMatchObject({ code: 'P2002' });
-    // The peer row survives untouched.
-    expect(t.db.extra.externalCollection).toHaveLength(1);
-    expect(t.db.extra.externalCollection[0]).toMatchObject({ institution: 'BBVA', status: 'UNAPPLIED' });
-  });
-
-  it('P5 a reference of another branch is never read nor surfaced', async () => {
-    const t = setup();
-    t.addCollection({
-      branchId: OTHER_BRANCH, method: 'TRANSFER', amount: 11000n, reference: 'OP 88123', referenceKey: 'OP88123',
-      institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.cashier2,
-    });
-    t.db.injectUniqueViolation('externalCollection', 'create', 'branchId,institution,referenceKey');
-
-    const error = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, threeMethodRequest(t)).then(() => null, (cause: unknown) => cause);
-    expect(error).not.toBeInstanceOf(AppError);
-    expect(error).toMatchObject({ code: 'P2002' });
-    // The other branch's row is untouched and its data never surfaced.
-    expect(t.db.extra.externalCollection).toHaveLength(1);
-    expect(t.db.extra.externalCollection[0]).toMatchObject({ branchId: OTHER_BRANCH, status: 'UNAPPLIED' });
-  });
-
-  it('P6 a debit reference a peer committed is reported (index-name target)', async () => {
-    const t = setup();
-    t.db.simulateConcurrentCommit(() => {
-      t.addCollection({
-        branchId: BRANCH, method: 'CARD_DEBIT', amount: 31500n, reference: 'D009', referenceKey: 'D009',
-        institution: null, institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
-      });
-    });
-    // Only the debit insert collides: the first (transfer) insert must succeed.
-    t.db.injectUniqueViolation('externalCollection', 'create', 'ExternalCollection_debit_ref_key', (args) => (args.data as Row).method === 'CARD_DEBIT');
-
-    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, threeMethodRequest(t)), 409, 'EXTERNAL_REFERENCE_ALREADY_RECORDED');
-    expect(error.details).toEqual({ status: 'UNAPPLIED' });
-  });
-
-  it('P7 with several references the colliding one is the one reported', async () => {
-    const t = setup();
-    t.db.simulateConcurrentCommit(() => {
-      t.addCollection({
-        branchId: BRANCH, method: 'CARD_DEBIT', amount: 31500n, reference: 'D009', referenceKey: 'D009',
-        institution: null, institutionOther: null, status: 'REFUNDED', recordedById: t.ids.seller,
-        resolvedById: t.ids.cashier, resolvedAt: new Date(), refundReference: 'NC-001',
-      });
-    });
-    // 'OP88123' comes FIRST in the request and exists nowhere; only the debit
-    // reference collides. A lookup by the first reference would miss it.
-    t.db.injectUniqueViolation('externalCollection', 'create', 'branchId,referenceKey', (args) => (args.data as Row).method === 'CARD_DEBIT');
-
-    const error = await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, threeMethodRequest(t)), 409, 'EXTERNAL_REFERENCE_ALREADY_RECORDED');
-    expect(error.details).toEqual({ status: 'REFUNDED' });
-  });
-
-  it('P8 an ambiguous reference collision fails closed instead of guessing a status', async () => {
-    const t = setup();
-    t.db.simulateConcurrentCommit(() => {
-      t.addCollection({
-        branchId: BRANCH, method: 'TRANSFER', amount: 11000n, reference: 'OP 88123', referenceKey: 'OP88123',
-        institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
-      });
-    });
-    // 'referenceKey' alone does not say which partial index failed: the debit key is
-    // (branch, referenceKey), the transfer key is (branch, institution, referenceKey).
-    // An unverifiable collision must never be attributed an arbitrary status.
-    t.db.injectUniqueViolation('externalCollection', 'create', 'referenceKey');
-
-    const error = await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, threeMethodRequest(t)).then(() => null, (cause: unknown) => cause);
-    expect(error).not.toBeInstanceOf(AppError);
-    expect(error).toMatchObject({ code: 'P2002' });
-    expect(t.counts().payments).toBe(0);
-    expect(t.db.extra.saleCheckout).toHaveLength(0);
-  });
-
-  // The TRANSFER row and the CARD_DEBIT row carry DIFFERENT statuses, so the answer
-  // proves which one was read. Tender order is inverted in two of the four cases:
-  // the resolution must follow the index that failed, never the request order.
-  it.each([
-    { label: 'transfer index, tenders CASH/TRANSFER/CARD_DEBIT', target: 'ExternalCollection_transfer_ref_key', failing: 'TRANSFER', expected: 'UNAPPLIED', inverted: false },
-    { label: 'transfer index, inverted tenders (debit first)', target: 'ExternalCollection_transfer_ref_key', failing: 'TRANSFER', expected: 'UNAPPLIED', inverted: true },
-    { label: 'debit index, tenders CASH/TRANSFER/CARD_DEBIT', target: 'ExternalCollection_debit_ref_key', failing: 'CARD_DEBIT', expected: 'REFUNDED', inverted: false },
-    { label: 'debit index, inverted tenders (debit first)', target: 'ExternalCollection_debit_ref_key', failing: 'CARD_DEBIT', expected: 'REFUNDED', inverted: true },
-  ])('P9 $label reports only the method the index identifies', async ({ target, failing, expected, inverted }) => {
-    const t = setup();
-    t.db.simulateConcurrentCommit(() => {
-      t.addCollection({
-        branchId: BRANCH, method: 'TRANSFER', amount: 11000n, reference: 'OP 88123', referenceKey: 'OP88123',
-        institution: 'GALICIA', institutionOther: null, status: 'UNAPPLIED', recordedById: t.ids.seller,
-      });
-      t.addCollection({
-        branchId: BRANCH, method: 'CARD_DEBIT', amount: 31500n, reference: 'D009', referenceKey: 'D009',
-        institution: null, institutionOther: null, status: 'REFUNDED', recordedById: t.ids.seller,
-        resolvedById: t.ids.cashier, resolvedAt: new Date(), refundReference: 'NC-002',
-      });
-    });
-    // Only the create of the method named by the index collides.
-    t.db.injectUniqueViolation('externalCollection', 'create', target, (args) => (args.data as Row).method === failing);
-
-    const tenders = inverted
-      ? [balanceTender('CARD_DEBIT', { reference: 'D009' }), fixedTender('TRANSFER', 11000n, { reference: 'OP 88123', institution: 'GALICIA' })]
-      : undefined;
-    const error = await expectAppError(
-      t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, threeMethodRequest(t, tenders ? { tenders } : {})),
-      409,
-      'EXTERNAL_REFERENCE_ALREADY_RECORDED',
-    );
-    expect(error.details).toEqual({ status: expected });
-  });
-});
-
-describe.skip('R3 checkout — atomicity and no duplicated effects [SUPERSEDED by S5-D T-C]', () => {
-  it('H1 a failure during finalization rolls back every effect', async () => {
-    const t = setup();
-    const before = t.counts();
-    const inventoryBefore = { ...t.table('inventory')[0]! };
-    t.db.injectFailure('inventory', 'update');
-
-    await expect(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t))).rejects.toThrow('injected failure');
-
-    expect(t.counts()).toEqual(before);
-    expect(t.table('inventory')[0]).toMatchObject({ physical: inventoryBefore.physical, reserved: inventoryBefore.reserved });
-    expect(t.table('stockReservation')[0]).toMatchObject({ status: 'ACTIVE' });
-    expect(t.sale()).toMatchObject({ status: 'PENDING_PAYMENT', total: 40000n });
-    expect(t.audits('PAYMENT_REGISTERED')).toHaveLength(0);
-    expect(t.audits('SALE_COMPLETED')).toHaveLength(0);
-    expect(t.db.rawQueries.length).toBeGreaterThan(0);
-  });
-
-  it('H2 a successful replay never duplicates payments, movements or audits', async () => {
-    const t = setup();
-    const payload = request(t);
-    await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload);
-    const after = t.counts();
-    for (let index = 0; index < 3; index += 1) await t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, payload);
-    expect(t.counts()).toEqual(after);
-    expect(t.table('stockMovement')).toHaveLength(1);
-    expect(t.table('cashMovement')).toHaveLength(1);
-  });
-
-  it('H3 per-payment allocations that only cancel globally revert the whole transaction', async () => {
-    const t = setup();
-    const before = t.counts();
-    // CASH gains exactly what TRANSFER loses: Σ allocations stays 42000 = total,
-    // so only the per-payment reconciliation can catch the corruption.
-    t.db.addAllocationBias((data) => {
-      if (data.method === 'CASH') return { ...data, amount: (data.amount as bigint) + 1000n };
-      if (data.method === 'TRANSFER') return { ...data, amount: (data.amount as bigint) - 1000n };
-      return data;
-    });
-
-    await expectAppError(t.checkout.checkout(t.reqs.cashier, t.ids.cashier, t.saleId, request(t)), 500, 'CHECKOUT_STATE_INCONSISTENT');
-    expect(t.counts()).toEqual(before);
-    expect(t.sale()).toMatchObject({ status: 'PENDING_PAYMENT', total: 40000n });
-    expect(t.table('inventory')[0]).toMatchObject({ physical: 10n, reserved: 1n });
-    expect(t.table('stockReservation')[0]).toMatchObject({ status: 'ACTIVE' });
-  });
-});
 
 // R3-A4.3 S6.1: the CHECKOUT_RESERVATION_CLOSED fix must leave the two live
 // T-C paths untouched. Named under "S5" so the S5 gate runs them.

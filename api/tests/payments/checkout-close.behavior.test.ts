@@ -26,7 +26,7 @@ import { createCheckoutReservationFakeDb, p2002, p2002Adapter, type Row } from '
 
 const NOW = new Date('2026-10-16T12:00:00.000Z');
 const LATER = new Date(NOW.getTime() + 20 * 60_000);
-const OP_KEYS = ['0f8fad5b-d9cb-469f-a165-70867728950e', '7c9e6679-7425-40de-944b-e07fc1f90ae7', 'e4eaaaf2-d142-41b9-a1d4-3b6c1b6e0f0b'];
+const OP_KEYS = ['0f8fad5b-d9cb-469f-a165-70867728950e', '7c9e6679-7425-40de-944b-e07fc1f90ae7', 'e4eaaaf2-d142-41b9-a1d4-3b6c1b6e0f0b'] as const;
 const SERVICE_PATH = new URL('../../src/modules/payments/checkout-close.service.ts', import.meta.url);
 const CONTROLLER_PATH = new URL('../../src/modules/payments/checkout-close.controller.ts', import.meta.url);
 const uuid = () => randomUUID();
