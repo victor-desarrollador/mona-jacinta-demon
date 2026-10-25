@@ -77,6 +77,7 @@ export const CANONICAL_PERMISSION_IDS: Record<ProductionPermission, string> = {
   SALE_CORRECT_PENDING: canonicalId(9400, 34),
   SALE_CANCEL_PENDING: canonicalId(9400, 35),
   CASH_MOVEMENT_MANAGE: canonicalId(9400, 36),
+  SALE_VOID: canonicalId(9400, 37),
 };
 
 // Phase 1B (Production V1): additive Production RBAC catalog bootstrap.

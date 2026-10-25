@@ -85,8 +85,19 @@ const QR_TREE_ENTRY = Object.freeze({
   bytes: 13048,
   sha256: '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a',
 });
-const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY, CARD_CREDIT_TREE_ENTRY, WAREHOUSE_TREE_ENTRY, QR_TREE_ENTRY]);
-const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11, the card-credit migration 12, the warehouse migration 13 and the QR migration 14';
+// Sale void v1 (G15, G16): two more additive migrations. D5H keeps its six pins; the reviewed tree only RECOGNIZES them.
+const SALE_VOID_ENUM_TREE_ENTRY = Object.freeze({
+  name: '20261024120000_sale_void_enum',
+  bytes: 604,
+  sha256: '82581170e1d9f5c2d4dd1d347e272f61b13cded2e20d623144ff72894c914c0f',
+});
+const SALE_VOID_SCHEMA_TREE_ENTRY = Object.freeze({
+  name: '20261024130000_sale_void_schema',
+  bytes: 11592,
+  sha256: '0f2841cadaffac4579cf7f096329f899a8b7211a8cb4eb817770b8ee4911182d',
+});
+const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY, CARD_CREDIT_TREE_ENTRY, WAREHOUSE_TREE_ENTRY, QR_TREE_ENTRY, SALE_VOID_ENUM_TREE_ENTRY, SALE_VOID_SCHEMA_TREE_ENTRY]);
+const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11, the card-credit migration 12, the warehouse migration 13, the QR migration 14 and the two sale void migrations 15 and 16';
 const REVIEWED_TREE_NAMES = Object.freeze([...EXPECTED_PINS.map(([name]) => name), ...REVIEWED_TREE_ENTRIES.map((e) => e.name)]);
 const NAMES = EXPECTED_PINS.map(([name]) => name);
 const row = (i, patch = {}) => ({ migration_name: EXPECTED_PINS[i][0], checksum: EXPECTED_PINS[i][1], finished: true, rolled_back: false, ...patch });
@@ -114,7 +125,7 @@ function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSy
   }
 }
 
-test('D5H v1 keeps six independent pins and verifies the fourteen-directory tree (no drift)', () => {
+test('D5H v1 keeps six independent pins and verifies the reviewed sixteen-directory tree (no drift)', () => {
   assert.equal(D5H_MIGRATIONS.length, 6);
   assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
   const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));

@@ -11,6 +11,9 @@ export const REALTIME_EVENTS = {
   salePaid: 'sale.paid',
   saleCompleted: 'sale.completed',
   saleCancelled: 'sale.cancelled',
+  // Sale void v1: a PAID | COMPLETED sale was voided after payment. A different event from the
+  // pre-payment saleCancelled on purpose: its consumers must not read a void as a cancel.
+  saleVoided: 'sale.voided',
   inventoryUpdated: 'inventory.updated',
 } as const;
 

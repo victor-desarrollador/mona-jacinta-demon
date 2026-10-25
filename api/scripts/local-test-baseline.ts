@@ -518,12 +518,17 @@ const PRESERVED_RELATIONS = new Set([
 const PRESERVED_CHECKOUT_RELATIONS = new Set([
   'CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation',
 ]);
+// Sale void v1 (G16): the two relations the sale void migration adds are operational void evidence, not seed content —
+// seed #2 writes none of them, so across the resume Q == P exactly. Classified EXPLICITLY as PRESERVED_FROM_BACKUP; an
+// unmentioned relation would fall through to CANONICAL_VALUE below, which is wrong for them.
+const PRESERVED_SALE_VOID_RELATIONS = new Set(['SaleVoid', 'SaleVoidExternalRefund']);
 const categoryOf = (relation: string, column: string) => {
   if (relation === 'ProductVariant' && column === 'wholesalePrice') return 'PRESERVED_FROM_BACKUP';
   if (relation === 'RolePermission') return 'RECREATED_SEMANTIC_SET';
   if (relation === 'User') return 'ROW_CLASS_RULES';
   if (relation === 'UserRoleScope') return 'PRESERVED_AND_CREATED';
   if (PRESERVED_CHECKOUT_RELATIONS.has(relation)) return 'PRESERVED_FROM_BACKUP';
+  if (PRESERVED_SALE_VOID_RELATIONS.has(relation)) return 'PRESERVED_FROM_BACKUP';
   return PRESERVED_RELATIONS.has(relation) ? 'PRESERVED_FROM_BACKUP' : 'CANONICAL_VALUE';
 };
 export const TRANSFORMATION_CATEGORIES: Readonly<Record<string, string>> = Object.freeze(

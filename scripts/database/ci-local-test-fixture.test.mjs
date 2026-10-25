@@ -5,8 +5,12 @@
 // targets are synthetic (*.invalid) and must never influence the run.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { main, parseCiArgs } from './ci-local-test-fixture.mjs';
+import { API_DIR } from './pilot-migrate.mjs';
+import { GENERATIONS } from './pilot-migration-generations.mjs';
 
 const MARKER = '6d2f9a41-8c3b-4e5d-9f7a-1b2c3d4e5f60';
 const OTHER_MARKER = '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
@@ -246,3 +250,104 @@ test('stops when a step does not produce the expected next state', async () => {
   assert.equal(await main(ARGS, h.deps), 1);
   assert.ok(!h.calls.includes('seed') && !h.calls.includes('backfill'));
 });
+
+
+// ---- migration generations: the REAL exact-tree verifier runs inside the fixture flow -----------------------------------
+//
+// The fixture applies and expects the LATEST generation (G16). These tests run the real staticGates + the real latest payload
+// verifier over synthetic copies of the repository tree (only the runtime, the migration child and the file hashes are fakes).
+const TMP = mkdtempSync(path.join(os.tmpdir(), 'ci-fixture-generations-'));
+const G14 = GENERATIONS.EXACT_G14;
+const G15 = GENERATIONS.EXACT_G15;
+const G16 = GENERATIONS.EXACT_G16;
+
+function treeOf(names) {
+  const root = mkdtempSync(path.join(TMP, 'api-'));
+  const from = path.join(API_DIR, 'prisma', 'migrations');
+  const to = path.join(root, 'prisma', 'migrations');
+  mkdirSync(to, { recursive: true });
+  for (const name of [...names, 'migration_lock.toml']) cpSync(path.join(from, name), path.join(to, name), { recursive: true });
+  return root;
+}
+const sqlOf = (root, name) => path.join(root, 'prisma', 'migrations', name, 'migration.sql');
+
+async function withTree(root, extra = {}) {
+  const h = harness();
+  const loaded = [];
+  const deps = {
+    ...h.deps,
+    apiDir: root,
+    resolvePrismaCli: () => ({ ok: true, cwd: root, script: '/repo/api/node_modules/prisma/build/index.js', version: '7.10.0' }),
+    hashFile: () => ({ ok: true, sha256: 'a'.repeat(64) }),
+    repoRoot: '/repo',
+    ...extra,
+  };
+  // No staticGates is injected: main falls back to the REAL gates of local-test-prepare (exact latest-generation tree).
+  delete deps.staticGates;
+  deps.loadRuntime = async (input) => {
+    loaded.push(input);
+    return (await h.deps.loadRuntime(input));
+  };
+  const code = await main(ARGS, deps);
+  return { code, loaded, calls: h.calls, err: h.err, out: h.out };
+}
+
+test('GN-F1 a G16 tree (the latest) is accepted: the runtime is handed exactly the sixteen approved migrations and the fixture reaches the bootstrap', async () => {
+  const r = await withTree(treeOf(G16));
+  assert.equal(r.code, 0, r.err.join('\n'));
+  assert.equal(r.loaded.length, 1);
+  assert.deepEqual(r.loaded[0].approvedMigrations.map((m) => m.name), G16);
+  assert.equal(r.loaded[0].approvedMigrations.length, 16);
+  assert.ok(r.calls.includes('migrate'));
+  assert.match(r.out.join('\n'), /exactly 16 approved migrations/);
+});
+
+test('GN-F2 fail closed: a G14 tree or a G15 tree (older generations) is refused before any runtime, connection or migration', async () => {
+  for (const names of [G14, G15]) {
+    const r = await withTree(treeOf(names));
+    assert.equal(r.code, 1, `${names.length} migrations`);
+    assert.match(r.err.join('\n'), /phase=payload/);
+    assert.equal(r.loaded.length, 0);
+    assertNoMutation(r.calls);
+    assert.ok(!r.calls.includes('load'));
+  }
+});
+
+test('GN-F3 fail closed: an unregistered extra migration, a missing sale void migration and a changed checksum are refused', async () => {
+  const extra = treeOf(G16);
+  mkdirSync(path.join(extra, 'prisma', 'migrations', '20261025000000_unregistered'));
+  writeFileSync(sqlOf(extra, '20261025000000_unregistered'), 'SELECT 1;\n');
+  const missing = treeOf(G16);
+  rmSync(path.join(missing, 'prisma', 'migrations', G16[15]), { recursive: true });
+  const changed = treeOf(G16);
+  const bytes = readFileSync(sqlOf(changed, G16[14]));
+  bytes[bytes.length - 2] ^= 0x01;
+  writeFileSync(sqlOf(changed, G16[14]), bytes);
+  const renamed = treeOf(G16);
+  renameSync(path.join(renamed, 'prisma', 'migrations', G16[15]), path.join(renamed, 'prisma', 'migrations', '20261024130001_sale_void_schema'));
+  for (const [label, root] of Object.entries({ extra, missing, changed, renamed })) {
+    const r = await withTree(root);
+    assert.equal(r.code, 1, label);
+    assert.match(r.err.join('\n'), /phase=payload/, label);
+    assert.equal(r.loaded.length, 0, label);
+    assertNoMutation(r.calls);
+  }
+});
+
+test('GN-F4 the fixture still demands the exact CI target even with a valid G16 tree (no generation unlocks another database)', async () => {
+  for (const env of [{ ...GOOD_ENV, CI: 'false' }, { ...GOOD_ENV, LOCAL_TEST_DATABASE_URL: HOSTILE_TEST }, { ...GOOD_ENV, DATABASE_URL: HOSTILE_DEV }]) {
+    const r = await withTree(treeOf(G16), { env });
+    assert.equal(r.code, 1);
+    assert.equal(r.loaded.length, 0);
+    assertNoMutation(r.calls);
+  }
+});
+
+test('GN-F5 the bootstrap after the migrations ends at POST_BACKFILL (seed #1 + Company/Location backfill), never seed #2', async () => {
+  const mod = await import('./ci-local-test-fixture.mjs');
+  assert.deepEqual(mod.BOOTSTRAP_STEPS.map(([method]) => method), ['seedDemo', 'backfillCompanyLocations']);
+  assert.equal(mod.BOOTSTRAP_STEPS.at(-1)[1], 'POST_BACKFILL');
+  assert.ok(!mod.BOOTSTRAP_STEPS.some(([method]) => /resume|seed2|verifyBaseline/i.test(method)));
+});
+
+test.after(() => rmSync(TMP, { recursive: true, force: true }));

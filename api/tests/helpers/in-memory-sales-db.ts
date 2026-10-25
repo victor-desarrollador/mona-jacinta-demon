@@ -28,7 +28,10 @@ const MODELS = [
   'salePayment', 'stockReservation', 'stockMovement', 'saleNumberCounter', 'auditLog',
   'cashRegister', 'cashSession', 'cashMovement',
 ] as const;
-type Model = (typeof MODELS)[number];
+// Sale void (post-payment): opt-in models, so the 18-table store that existing
+// tests assert on is unchanged unless a test asks for them (`withSaleVoid`).
+const SALE_VOID_MODELS = ['saleVoid', 'saleVoidExternalRefund', 'externalCollection'] as const;
+type Model = (typeof MODELS)[number] | (typeof SALE_VOID_MODELS)[number];
 
 type Relation = { model: Model; kind: 'one' | 'many'; local: string; foreign: string };
 const RELATIONS: Partial<Record<Model, Record<string, Relation>>> = {
@@ -38,6 +41,8 @@ const RELATIONS: Partial<Record<Model, Record<string, Relation>>> = {
     stockReservations: { model: 'stockReservation', kind: 'many', local: 'id', foreign: 'saleId' },
     branch: { model: 'branch', kind: 'one', local: 'branchId', foreign: 'id' },
     seller: { model: 'user', kind: 'one', local: 'sellerId', foreign: 'id' },
+    // Only with `withSaleVoid` (UNIQUE(saleId) on SaleVoid).
+    saleVoid: { model: 'saleVoid', kind: 'one', local: 'id', foreign: 'saleId' },
     wholesaleConfirmedBy: { model: 'user', kind: 'one', local: 'wholesaleConfirmedById', foreign: 'id' },
   },
   saleItem: {
@@ -49,6 +54,9 @@ const RELATIONS: Partial<Record<Model, Record<string, Relation>>> = {
   },
   stockReservation: {
     sale: { model: 'sale', kind: 'one', local: 'saleId', foreign: 'id' },
+  },
+  saleVoid: {
+    voidedBy: { model: 'user', kind: 'one', local: 'voidedById', foreign: 'id' },
   },
 };
 
@@ -71,6 +79,7 @@ const DEFAULTS: Partial<Record<Model, () => Row>> = {
   }),
   salePayment: () => ({ receivedAmount: null, changeAmount: null, cashSessionId: null, paidAt: new Date() }),
   auditLog: () => ({ before: null, after: null, timestamp: new Date() }),
+  saleVoid: () => ({ voidedAt: new Date() }),
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -81,8 +90,9 @@ function unsupported(what: string): never {
   throw new Error(`in-memory-sales-db: unsupported ${what}`);
 }
 
-export function createInMemorySalesDb() {
-  let tables: Tables = Object.fromEntries(MODELS.map((model) => [model, [] as Row[]]));
+export function createInMemorySalesDb(options: { withSaleVoid?: boolean } = {}) {
+  const models: readonly Model[] = options.withSaleVoid ? [...MODELS, ...SALE_VOID_MODELS] : MODELS;
+  let tables: Tables = Object.fromEntries(models.map((model) => [model, [] as Row[]]));
   const rawQueries: string[] = [];
 
   function rows(model: Model) {
@@ -257,6 +267,11 @@ export function createInMemorySalesDb() {
       return sort(rows('stockReservation').filter((row) => row.saleId === flat[0] && row.status === 'ACTIVE'), { id: 'asc' })
         .map((row) => ({ ...row }));
     }
+    // Sale void: Inventory locked by id (WHERE id IN (...) ORDER BY id ASC FOR UPDATE).
+    if (/FROM "Inventory" WHERE id IN/.test(normalized)) {
+      const ids = flat[0] as unknown[];
+      return sort(rows('inventory').filter((row) => ids.includes(row.id)), { id: 'asc' }).map((row) => ({ ...row }));
+    }
     if (/FROM "Inventory"/.test(sql)) {
       const variantIds = flat[1] as unknown[];
       return sort(rows('inventory').filter((row) => row.branchId === flat[0] && variantIds.includes(row.variantId)), { id: 'asc' })
@@ -282,10 +297,17 @@ export function createInMemorySalesDb() {
         .filter((row) => row.registerId === flat[0] && row.status === 'OPEN')
         .map((row) => ({ ...row }));
     }
+    // Sale void: one CashSession locked by id (any select list, optionally joined to its register
+    // for the branch). Returns the session plus the register's `branchId`.
+    if (/FROM "CashSession"/.test(normalized) && /FOR UPDATE/.test(normalized) && typeof flat[0] === 'string') {
+      return rows('cashSession').filter((row) => row.id === flat[0]).map((row) => ({
+        ...row, branchId: rows('cashRegister').find((register) => register.id === row.registerId)?.branchId ?? null,
+      }));
+    }
     return unsupported(`raw query: ${sql}`);
   }
 
-  const client: Record<string, unknown> = Object.fromEntries(MODELS.map((model) => [model, delegate(model)]));
+  const client: Record<string, unknown> = Object.fromEntries(models.map((model) => [model, delegate(model)]));
   client.$queryRaw = queryRaw;
   client.$transaction = async (operation: unknown) => {
     if (typeof operation !== 'function') return unsupported('array $transaction');
@@ -303,7 +325,7 @@ export function createInMemorySalesDb() {
     rawQueries,
     table: (model: Model) => rows(model),
     // Every simulated table (all models), for whole-store assertions.
-    allTables: () => Object.fromEntries(MODELS.map((model) => [model, rows(model)])) as Record<Model, Row[]>,
+    allTables: () => Object.fromEntries(models.map((model) => [model, rows(model)])) as Record<Model, Row[]>,
     insert: (model: Model, data: Row) => {
       const row: Row = { id: randomUUID(), ...(DEFAULTS[model]?.() ?? {}), ...data };
       rows(model).push(row);

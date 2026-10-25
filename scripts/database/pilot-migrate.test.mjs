@@ -787,22 +787,25 @@ test('H1/P30: the pinned manifest is self-consistent and in Prisma (lexicographi
   assert.ok(Object.isFrozen(APPROVED_MIGRATION_PAYLOAD) && Object.isFrozen(APPROVED_MIGRATION_PAYLOAD.migrations));
 });
 
-test('H1/P27: the synthetic G14 fixture and the real reviewed tree both verify against the pinned G14 payload (files only)', () => {
+test('H1/P27: the synthetic G14 fixture verifies against the pinned G14 payload and the real G16 tree is refused (files only)', () => {
   const fixture = verifyMigrationPayload(fakeApi());
   assert.equal(fixture.ok, true, fixture.reason);
   assert.deepEqual(fixture.migrations.map((m) => [m.name, m.sha256]), APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
   assert.equal(fixture.lock.sha256, APPROVED_MIGRATION_PAYLOAD.lock.sha256);
+  // The real repository tree now holds G16 (the sale void migrations follow m14): the G14 cut-over verifier refuses it.
   const real = verifyMigrationPayload(API_DIR);
-  assert.equal(real.ok, true, real.reason);
-  assert.equal(real.migrations.length, 14);
+  assert.equal(real.ok, false);
+  assert.match(real.reason, /does not hold exactly the OWNER-approved migrations/);
 });
 
-test('H1/P27b: the real tree is exactly the G14 payload — no extra and no missing migration directory', () => {
+test('H1/P27b: the real tree is the G14 payload plus ONLY the two sale void migrations — nothing else extra, nothing missing', () => {
   const dirs = readdirSync(path.join(API_DIR, 'prisma', 'migrations'), { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
     .sort();
-  assert.deepEqual(dirs, APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => m.name));
+  const g14 = APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => m.name);
+  assert.deepEqual(dirs.slice(0, g14.length), g14);
+  assert.deepEqual(dirs.slice(g14.length), ['20261024120000_sale_void_enum', '20261024130000_sale_void_schema']);
 });
 
 test('H1/P1: dry-run validates the payload and prints the names, digests and PASS lines', async () => {

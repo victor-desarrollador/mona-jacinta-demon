@@ -1,9 +1,8 @@
 // Zero-database unit tests for scripts/database/local-test-migration-payload.mjs
-// (U1 / R3-T): the LOCAL_TEST-only migration payload G11 (the seven PILOT-approved
-// pins of pilot-migrate.mjs plus the two reviewed R3 migrations plus the reviewed
-// cash-exit migration 10 plus the reviewed cash-reversal migration 11), its exact-tree
-// verifier, the P21 base projection G8 (migrations 1–8) and the private staged copy
-// of G8 that prisma.local-test-p21.config.ts points Prisma at.
+// (U1 / R3-T): the LOCAL_TEST-only migration payloads — the historical G14 (the shared
+// PILOT-approved pins of pilot-migrate.mjs), the intermediate G15 and the LATEST G16 (sale void v1)
+// the tooling applies — their exact-tree verifiers, the P21 base projection G8 (migrations 1–8)
+// and the private staged copy of G8 that prisma.local-test-p21.config.ts points Prisma at.
 // Run with: node --test scripts/database/local-test-migration-payload.test.mjs
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -37,6 +36,8 @@ const MIG12 = { name: CARD_CREDIT, bytes: 11413, sha256: 'ccec6685120cc9236c5c95
 const WAREHOUSE = '20261021130000_warehouse_stock_adjustment';
 const MIG13 = { name: WAREHOUSE, bytes: 3457, sha256: '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0' };
 const QR = '20261021140000_r3_qr';
+const SALE_VOID_ENUM = '20261024120000_sale_void_enum';
+const SALE_VOID_SCHEMA = '20261024130000_sale_void_schema';
 const MIG14 = { name: QR, bytes: 13048, sha256: '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a' };
 
 const fn = (name) => {
@@ -47,6 +48,11 @@ const fn = (name) => {
 const G11 = () => {
   assert.ok(payloadModule.LOCAL_TEST_MIGRATION_PAYLOAD, 'LOCAL_TEST_MIGRATION_PAYLOAD must be exported');
   return payloadModule.LOCAL_TEST_MIGRATION_PAYLOAD;
+};
+// The LATEST generation (G16): what the LOCAL_TEST tooling applies and verifies.
+const G16 = () => {
+  assert.ok(payloadModule.LOCAL_TEST_LATEST_PAYLOAD, 'LOCAL_TEST_LATEST_PAYLOAD must be exported');
+  return payloadModule.LOCAL_TEST_LATEST_PAYLOAD;
 };
 const G8 = () => {
   assert.ok(payloadModule.LOCAL_TEST_P21_BASE_PAYLOAD, 'LOCAL_TEST_P21_BASE_PAYLOAD must be exported');
@@ -62,6 +68,8 @@ function fakeApi(names = readdirSync(path.join(API_DIR, 'prisma', 'migrations'))
   for (const name of names) cpSync(path.join(from, name), path.join(to, name), { recursive: true });
   return root;
 }
+// A byte-exact copy of the first fourteen directories (the frozen G14 tree) or fifteen (G15) + lock.
+const generationTree = (count) => fakeApi([...APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => m.name), SALE_VOID_ENUM].slice(0, count).concat('migration_lock.toml'));
 const migDir = (api) => path.join(api, 'prisma', 'migrations');
 const sqlOf = (api, name) => path.join(migDir(api), name, 'migration.sql');
 const flipByte = (file) => {
@@ -150,16 +158,20 @@ test('U1-PIN-05 no digest is typed here: every pin comes from the shared literal
 
 // --- PILOT and LOCAL_TEST share one exact payload (E) ----------------------------------------
 
-test('U1-PILOT-01 pilot-migrate approves exactly the fourteen shared pins and the real G14 tree verifies for it', () => {
+test('U1-PILOT-01 pilot-migrate approves exactly the fourteen shared pins: a G14 tree verifies for it and the real G16 tree is refused (the cut-over runs from a G14 tree)', () => {
   assert.equal(APPROVED_MIGRATION_PAYLOAD.migrations.length, 14);
+  const g14 = verifyMigrationPayload(generationTree(14));
+  assert.equal(g14.ok, true, g14.reason);
+  assert.equal(g14.migrations.length, 14);
   const real = verifyMigrationPayload(API_DIR);
-  assert.equal(real.ok, true, real.reason);
+  assert.equal(real.ok, false, 'the G14 cut-over verifier never accepts a tree that holds the sale void migrations');
+  assert.match(real.reason, /does not hold exactly the OWNER-approved migrations/);
 });
 
 test('U1-PILOT-02 pilot-migrate.mjs never imports or names the LOCAL_TEST payload; the LOCAL_TEST module imports nothing PILOT-capable', () => {
   assert.doesNotMatch(PILOT_SOURCE, /local-test-migration-payload|LOCAL_TEST_MIGRATION_PAYLOAD|R3_MIGRATION_PINS/);
   const specifiers = [...SOURCE.matchAll(/\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]/g)].map((m) => m[1] ?? m[2]);
-  for (const s of specifiers) assert.ok(['node:fs', 'node:path', './pilot-migrate.mjs'].includes(s), `unexpected import ${s}`);
+  for (const s of specifiers) assert.ok(['node:fs', 'node:path', './pilot-migrate.mjs', './pilot-migration-generations.mjs'].includes(s), `unexpected import ${s}`);
   assert.doesNotMatch(SOURCE, /pilot-marker|pilot-backup|pilot-launch|PILOT_DATABASE_URL|\bmain\s*\(|process\.env/);
   // the only things borrowed from pilot-migrate are the shared G11 payload and the hardened single-file reader
   const fromPilot = SOURCE.match(/import\s*\{([^}]*)\}\s*from\s*'\.\/pilot-migrate\.mjs'/)?.[1].split(',').map((s) => s.trim()).filter(Boolean).sort();
@@ -168,11 +180,64 @@ test('U1-PILOT-02 pilot-migrate.mjs never imports or names the LOCAL_TEST payloa
 
 // --- the exact-tree verifier (A + D) ----------------------------------------------------------
 
-test('U1-VER-01 the real reviewed tree verifies as G14: fourteen migrations with their pinned digests and the pinned lock', () => {
+test('U1-VER-01 the real reviewed tree verifies as the LATEST generation G16: sixteen migrations with their pinned digests and the pinned lock', () => {
   const r = fn('verifyLocalTestMigrationPayload')(API_DIR);
   assert.equal(r.ok, true, r.reason);
-  assert.deepEqual(r.migrations.map((m) => [m.name, m.sha256]), G11().migrations.map((m) => [m.name, m.sha256]));
+  assert.equal(r.migrations.length, 16);
+  assert.deepEqual(r.migrations.map((m) => [m.name, m.sha256]), G16().migrations.map((m) => [m.name, m.sha256]));
+  assert.deepEqual(r.migrations.slice(0, 14).map((m) => [m.name, m.sha256]), G11().migrations.map((m) => [m.name, m.sha256]), 'the first fourteen are the frozen G14 pins');
   assert.deepEqual(r.lock, { sha256: APPROVED_MIGRATION_PAYLOAD.lock.sha256, provider: 'postgresql' });
+});
+
+// --- generations: G14 historical, G15 intermediate, G16 latest ------------------------------------
+
+test('U1-GEN-01 the payloads: G14 is the shared historical object, G15 = G14 + the enum migration, G16 = G15 + the schema migration, the latest is G16, same lock', () => {
+  const m = payloadModule;
+  assert.equal(m.LOCAL_TEST_G14_PAYLOAD, APPROVED_MIGRATION_PAYLOAD);
+  assert.deepEqual(m.LOCAL_TEST_G15_PAYLOAD.migrations.map((p) => p.name), [...APPROVED_MIGRATION_PAYLOAD.migrations.map((p) => p.name), SALE_VOID_ENUM]);
+  assert.deepEqual(m.LOCAL_TEST_G16_PAYLOAD.migrations.map((p) => p.name), [...APPROVED_MIGRATION_PAYLOAD.migrations.map((p) => p.name), SALE_VOID_ENUM, SALE_VOID_SCHEMA]);
+  assert.equal(m.LOCAL_TEST_LATEST_PAYLOAD, m.LOCAL_TEST_G16_PAYLOAD);
+  for (const payload of [m.LOCAL_TEST_G15_PAYLOAD, m.LOCAL_TEST_G16_PAYLOAD]) {
+    assert.ok(Object.isFrozen(payload) && Object.isFrozen(payload.migrations));
+    assert.equal(payload.lock, APPROVED_MIGRATION_PAYLOAD.lock);
+  }
+});
+
+test('U1-GEN-02 each generation verifies ITS OWN tree and refuses every other one (exact-tree, fail-closed)', () => {
+  const trees = { G14: generationTree(14), G15: generationTree(15), G16: API_DIR };
+  const verifiers = { G14: 'verifyLocalTestG14Payload', G15: 'verifyLocalTestG15Payload', G16: 'verifyLocalTestMigrationPayload' };
+  for (const [tree, api] of Object.entries(trees)) {
+    for (const [generation, name] of Object.entries(verifiers)) {
+      const r = fn(name)(api);
+      assert.equal(r.ok, tree === generation, `${generation} verifier on a ${tree} tree: ${r.reason ?? ''}`);
+      if (tree !== generation) assert.match(r.reason, /does not hold exactly the approved migrations/);
+    }
+  }
+});
+
+test('U1-GEN-03 fail closed on the latest generation: an unregistered extra migration, a missing, renamed or altered sale void migration is drift', () => {
+  const verify = fn('verifyLocalTestMigrationPayload');
+  const extra = fakeApi();
+  mkdirSync(path.join(migDir(extra), '20261025000000_unregistered'));
+  writeFileSync(sqlOf(extra, '20261025000000_unregistered'), 'SELECT 1;\n');
+  assert.match(verify(extra).reason ?? '', /does not hold exactly the approved migrations/);
+  for (const name of [SALE_VOID_ENUM, SALE_VOID_SCHEMA]) {
+    const missing = fakeApi();
+    rmSync(path.join(migDir(missing), name), { recursive: true });
+    assert.match(verify(missing).reason ?? '', /does not hold exactly the approved migrations/, name);
+    const flipped = fakeApi();
+    flipByte(sqlOf(flipped, name));
+    assert.match(verify(flipped).reason ?? '', new RegExp(`${name}/migration\\.sql does not match its approved SHA-256`), name);
+    const renamed = fakeApi();
+    renameSync(path.join(migDir(renamed), name), path.join(migDir(renamed), `${name.slice(0, 13)}1${name.slice(14)}`));
+    assert.match(verify(renamed).reason ?? '', /does not hold exactly the approved migrations/, name);
+  }
+});
+
+test('U1-GEN-04 the frozen G14 payload still verifies the historical tree byte for byte (history is not rewritten)', () => {
+  const r = fn('verifyLocalTestG14Payload')(generationTree(14));
+  assert.equal(r.ok, true, r.reason);
+  assert.deepEqual(r.migrations.map((m) => [m.name, m.sha256]), APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
 });
 
 const G10_DENY = {
@@ -216,7 +281,8 @@ test('U1-VER-14 a G7-only tree is drift for LOCAL_TEST (G11 is required, never a
 
 test('U1-VER-15 the generic verifier refuses a malformed payload object instead of trusting it', () => {
   const verify = fn('verifyMigrationTree');
-  assert.equal(verify(API_DIR, G11()).ok, true);
+  assert.equal(verify(API_DIR, G16()).ok, true);
+  assert.equal(verify(API_DIR, G11()).ok, false, 'the G14 payload does not describe the latest tree');
   for (const bad of [null, {}, { migrations: [], lock: G11().lock }, { migrations: G11().migrations }, { migrations: [{ name: 'x' }], lock: G11().lock }]) {
     assert.equal(verify(API_DIR, bad).ok, false);
   }
@@ -224,7 +290,7 @@ test('U1-VER-15 the generic verifier refuses a malformed payload object instead 
 
 // --- the P21 base projection (C) --------------------------------------------------------------
 
-test('U1-P21-01 the P21 base verifies the WHOLE real tree as G11 and returns only migrations 1–8', () => {
+test('U1-P21-01 the P21 base verifies the WHOLE real tree as the latest generation and returns only migrations 1–8', () => {
   const r = fn('verifyP21BasePayload')(API_DIR);
   assert.equal(r.ok, true, r.reason);
   assert.deepEqual(r.migrations.map((m) => [m.name, m.sha256]), G8().migrations.map((m) => [m.name, m.sha256]));

@@ -24,6 +24,10 @@ enum StockMovementType {
   INITIAL_STOCK
   // WAREHOUSE-MVP: manual stock adjustment (reason + idempotency key required).
   ADJUSTMENT
+  // Sale void v1: units returned to the shelf by the post-payment void of a COMPLETED
+  // sale (saleVoidId + saleId required, quantityDelta > 0; SQL CHECKs in the
+  // sale_void_schema migration). The original SALE rows are never touched.
+  SALE_VOID
 }
 
 // WAREHOUSE-MVP: why a manual adjustment was made (StockMovement.reason).
@@ -130,6 +134,10 @@ enum CashSessionStatus {
   CLOSED
 }
 
+// Sale void v1: SALE_REFUND is the append-only cash returned to the customer by the post-payment
+// void of a sale paid in CASH (refundOfSalePaymentId required; SQL CHECKs in the sale_void_schema
+// migration). SALE_INCOME is never touched. (Comment kept OUTSIDE the enum body: a static test
+// reads the member list.)
 enum CashMovementType {
   OPENING
   SALE_INCOME
@@ -139,6 +147,7 @@ enum CashMovementType {
   EXPENSE
   WITHDRAWAL_REVERSAL
   EXPENSE_REVERSAL
+  SALE_REFUND
 }
 
 enum LocationType {
@@ -233,6 +242,7 @@ model User {
   checkoutAttemptsRejected    CheckoutAttempt[] @relation("CheckoutAttemptRejectedBy")
   checkoutAttemptsAbandoned   CheckoutAttempt[] @relation("CheckoutAttemptAbandonedBy")
   checkoutAttemptsDeclared    CheckoutAttempt[] @relation("CheckoutAttemptDeclaredBy")
+  saleVoids                   SaleVoid[]
   checkoutDeclarations        CheckoutAttemptDeclaration[]
 }
 
@@ -326,6 +336,8 @@ model Branch {
   // R3 proportional checkout.
   saleCheckouts       SaleCheckout[]
   externalCollections ExternalCollection[]
+  // Sale void v1.
+  saleVoids           SaleVoid[]
 }
 
 // Phase 1C (Production V1) DEPRECATE step — transitional split, not a full
@@ -440,14 +452,24 @@ model StockMovement {
   reason         StockAdjustmentReason?
   note           String?
   idempotencyKey String?
+  // Sale void v1: only SALE_VOID rows carry it (SQL CHECKs in the sale_void_schema
+  // migration); such a row keeps the ORIGINAL saleId too. NULL for every other row.
+  saleVoidId    String?
   timestamp     DateTime          @default(now()) @db.Timestamptz(3)
   inventory     Inventory         @relation(fields: [inventoryId], references: [id], onDelete: Restrict)
   sale          Sale?             @relation(fields: [saleId], references: [id], onDelete: Restrict)
   user          User              @relation(fields: [userId], references: [id], onDelete: Restrict)
   branch        Branch            @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  // A return movement can only belong to the void of ITS OWN sale and branch
+  // (MATCH SIMPLE: not enforced while saleVoidId IS NULL, i.e. every other row).
+  saleVoid      SaleVoid?         @relation(fields: [saleVoidId, saleId, branchId], references: [id, saleId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "StockMovement_saleVoid_sale_branch_fkey")
 
   // NULL keys are distinct in PostgreSQL: historical rows never conflict.
   @@unique([userId, idempotencyKey])
+  // At most one return movement per inventory row per void (NULL saleVoidId is
+  // distinct, so SALE / INITIAL_STOCK / ADJUSTMENT rows never conflict).
+  @@unique([saleVoidId, inventoryId])
+  @@index([saleVoidId])
   @@index([inventoryId, timestamp])
   @@index([saleId])
   @@index([userId])
@@ -526,6 +548,8 @@ model Sale {
   checkouts         SaleCheckout[]
   checkoutAttempts  CheckoutAttempt[]
   externalOrigins   ExternalCollection[] @relation("ExternalCollectionOriginSale")
+  // Sale void v1: the single post-payment void of this sale (UNIQUE(saleId) on SaleVoid).
+  saleVoid          SaleVoid?
 
   @@unique([branchId, saleNumber])
   @@unique([id, branchId], map: "Sale_id_branchId_key")
@@ -534,6 +558,68 @@ model Sale {
   @@index([branchId, status, createdAt])
   @@index([sellerId, status, createdAt])
   @@index([status, createdAt])
+}
+
+// Sale void v1: append-only record of the one post-payment void (PAID|COMPLETED -> CANCELLED)
+// a sale can have. No updatedAt: rows are never changed. Idempotency is resolved against
+// the sale's single row (UNIQUE(saleId)), the sale keeps Sale.status = CANCELLED (no VOIDED).
+//
+// SQL-only constraints (migration sale_void_schema):
+//   chk_sale_void_previous_status           previousStatus IN ('PAID', 'COMPLETED')
+//   chk_sale_void_reason_not_blank          btrim(reason) <> ''
+//   chk_sale_void_reason_length             char_length(reason) <= 200
+//   chk_sale_void_idempotency_key_not_blank btrim(idempotencyKey) <> ''
+model SaleVoid {
+  id             String     @id @default(uuid())
+  saleId         String     @unique
+  branchId       String
+  previousStatus SaleStatus
+  reason         String
+  idempotencyKey String
+  voidedById     String
+  voidedAt       DateTime   @default(now()) @db.Timestamptz(3)
+
+  // Same-branch link (ON UPDATE RESTRICT), pattern of SaleCheckout.
+  sale     Sale   @relation(fields: [saleId, branchId], references: [id, branchId], onDelete: Restrict, onUpdate: Restrict, map: "SaleVoid_sale_branch_fkey")
+  branch   Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  voidedBy User   @relation(fields: [voidedById], references: [id], onDelete: Restrict)
+
+  stockMovements  StockMovement[]
+  externalRefunds SaleVoidExternalRefund[]
+
+  // Redundant with UNIQUE(saleId): Prisma demands a unique on the composite FK
+  // fields for a one-to-one (same trade-off as CashMovement.reverses).
+  @@unique([saleId, branchId], map: "SaleVoid_saleId_branchId_key")
+  // Candidate keys of the StockMovement and SaleVoidExternalRefund composite FKs.
+  @@unique([id, saleId, branchId], map: "SaleVoid_id_saleId_branchId_key")
+  @@unique([id, saleId], map: "SaleVoid_id_saleId_key")
+  @@index([branchId, voidedAt])
+  @@index([voidedById])
+}
+
+// Sale void v1: the explicit evidence that an EXTERNAL payment (TRANSFER, CARD_DEBIT,
+// CARD_CREDIT, QR) was returned outside the POS. The payment, its ExternalCollection and its
+// status are never touched: this row is added beside them. UNIQUE(salePaymentId): a payment is
+// evidenced at most once. method/amount are a snapshot the composite FK keeps equal to the
+// payment, and the FK pair with SaleVoid keeps payment and void on the same sale.
+//
+// SQL-only constraints (migration sale_void_schema):
+//   chk_sale_void_external_refund_method    method is not CASH (cash goes back as SALE_REFUND)
+//   chk_sale_void_external_refund_amount    amount > 0
+//   chk_sale_void_external_refund_evidence  btrim(evidence) <> '' and char_length(evidence) <= 200
+model SaleVoidExternalRefund {
+  id            String        @id @default(uuid())
+  saleVoidId    String
+  saleId        String
+  salePaymentId String        @unique
+  method        PaymentMethod
+  amount        BigInt
+  evidence      String
+
+  saleVoid    SaleVoid    @relation(fields: [saleVoidId, saleId], references: [id, saleId], onDelete: Restrict, onUpdate: Restrict, map: "SaleVoidExternalRefund_void_sale_fkey")
+  salePayment SalePayment @relation(fields: [salePaymentId, saleId, method, amount], references: [id, saleId, method, amount], onDelete: Restrict, onUpdate: Restrict, map: "SaleVoidExternalRefund_payment_fkey")
+
+  @@index([saleVoidId])
 }
 
 model SaleItem {
@@ -596,9 +682,17 @@ model SalePayment {
   externalCollection ExternalCollection? @relation(fields: [externalCollectionId, saleId, method, amount], references: [id, appliedSaleId, method, amount], onDelete: Restrict, onUpdate: Restrict, map: "SalePayment_external_collection_fkey")
 
   cashMovement CashMovement?
+  // Sale void v1: the append-only SALE_REFUND that returned this CASH payment (UNIQUE on
+  // CashMovement.refundOfSalePaymentId) and the evidence that returned this external one.
+  cashRefund   CashMovement? @relation("SalePaymentCashRefund")
+  // One-to-many for Prisma only (a one-to-one would demand a redundant composite UNIQUE); the
+  // database keeps at most one through UNIQUE(salePaymentId) on SaleVoidExternalRefund.
+  voidExternalRefunds SaleVoidExternalRefund[]
   allocations  SaleLineAllocation[]
 
   @@unique([saleId, idempotencyKey])
+  // Candidate key of SaleVoidExternalRefund_payment_fkey (same sale, same method, same amount).
+  @@unique([id, saleId, method, amount], map: "SalePayment_id_saleId_method_amount_key")
   @@unique([checkoutId, method], map: "SalePayment_checkoutId_method_key")
   @@unique([id, checkoutId, method], map: "SalePayment_id_checkoutId_method_key")
   @@index([cashSessionId])
@@ -667,8 +761,15 @@ model CashMovement {
   // reversal per original. The composite FK (with sessionId) makes a
   // cross-session reversal impossible in the database. NULL for every other row.
   reversesMovementId String? @unique
+  // Sale void v1 (SALE_REFUND): the CASH SalePayment this movement returns. UNIQUE: at
+  // most one refund per payment. Only SALE_REFUND carries it, and it always does (SQL
+  // CHECKs); salePaymentId stays NULL on a refund (that column belongs to SALE_INCOME).
+  // The database also guarantees that the payment is CASH and has exactly this amount (row
+  // triggers in the sale_void_schema migration); the void service checks the rest.
+  refundOfSalePaymentId String? @unique
   session       CashSession      @relation(fields: [sessionId], references: [id], onDelete: Restrict)
   salePayment   SalePayment?     @relation(fields: [salePaymentId], references: [id], onDelete: Restrict)
+  refundedPayment SalePayment?   @relation("SalePaymentCashRefund", fields: [refundOfSalePaymentId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CashMovement_refundOfSalePaymentId_fkey")
   user          User             @relation(fields: [userId], references: [id], onDelete: Restrict)
   reverses      CashMovement?    @relation("CashMovementReversal", fields: [reversesMovementId, sessionId], references: [id, sessionId], onDelete: Restrict, onUpdate: Restrict)
   // One-to-many for Prisma only (a one-to-one would demand a redundant

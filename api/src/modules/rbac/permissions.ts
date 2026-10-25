@@ -52,6 +52,11 @@ export const PRODUCTION_PERMISSIONS = {
   // OWNER only through its implicit authority.
   SALE_CORRECT_PENDING: 'SALE_CORRECT_PENDING',
   SALE_CANCEL_PENDING: 'SALE_CANCEL_PENDING',
+  // Sale void v1: post-payment void (PAID|COMPLETED -> CANCELLED). Additive catalog row
+  // (9400/37). Default grant: ADMIN only; OWNER only through its implicit authority. The
+  // service always exercises it through actsAsSupervisorAtLocation (OWNER / COMPANY-scoped
+  // ADMIN), never as a plain permission, and it is NOT SALE_CANCEL_PENDING.
+  SALE_VOID: 'SALE_VOID',
 } as const;
 
 export type ProductionPermission =

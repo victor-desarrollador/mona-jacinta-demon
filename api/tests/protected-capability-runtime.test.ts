@@ -245,9 +245,9 @@ describe('commit gate (C10)', () => {
 // G9: the runtime locks exactly the protected relation set. It is derived, never hard-coded, and the current
 // expected value is stated explicitly so an unchecked contract growth becomes a red test, not silent drift.
 const LOCKED_TABLES = PROTECTED_RELATIONS.length;
-const EXPECTED_LOCKED_TABLES = 32; // the 26 G7 relations + the 6 the ninth migration adds
+const EXPECTED_LOCKED_TABLES = 34; // the 26 G7 relations + the 6 the ninth migration adds + the 2 the sale void migration adds
 describe('protected relation count (G9)', () => {
-  it('the locked table count tracks the protected relation contract: 32 relations, 32 locks', () => {
+  it('the locked table count tracks the protected relation contract: 34 relations, 34 locks', () => {
     expect(PROTECTED_RELATIONS).toHaveLength(EXPECTED_LOCKED_TABLES);
     expect(LOCKED_TABLES).toBe(EXPECTED_LOCKED_TABLES);
   });

@@ -30,17 +30,22 @@ const RELATIONS_G7 = Object.freeze([
 ]);
 // G1-11: migrations 8–11 add exactly these six protected relations.
 const RELATIONS_ADDED_G11 = Object.freeze(['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation']);
+// G1-16 (sale void v1): migrations 15–16 add exactly these two protected relations.
+const RELATIONS_ADDED_G16 = Object.freeze(['SaleVoid', 'SaleVoidExternalRefund']);
 const rawCompare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
-// The CURRENT 32 protected relations (raw-byte order), mirrored from api/scripts/local-test-fingerprint.ts PROTECTED_RELATIONS; a vitest
+// The 32 protected relations of G1-11 .. G1-14 (raw-byte order). Frozen as reviewed: the generations G1-11..G1-14 keep recognising
+// the archives of exactly that schema.
+export const PROTECTED_RELATION_NAMES_G11 = Object.freeze([...RELATIONS_G7, ...RELATIONS_ADDED_G11].sort(rawCompare));
+// The CURRENT 34 protected relations (raw-byte order), mirrored from api/scripts/local-test-fingerprint.ts PROTECTED_RELATIONS; a vitest
 // test (protected-capability-static.test.ts, drift guard) pins the two lists against each other so they cannot drift.
-export const PROTECTED_RELATION_NAMES = Object.freeze([...RELATIONS_G7, ...RELATIONS_ADDED_G11].sort(rawCompare));
+export const PROTECTED_RELATION_NAMES = Object.freeze([...RELATIONS_G7, ...RELATIONS_ADDED_G11, ...RELATIONS_ADDED_G16].sort(rawCompare));
 
 // Historical backup verification contract: an EXPLICIT, versioned list of the schema generations whose backups
 // `local-test-backup.mjs --verify` still recognises. A generation is the exact ordered (name, sha256) migration set a manifest
 // binds, paired with the exact protected relation set that schema archived. Nothing here is derived from an archive, a
 // manifest or the migrations directory; an unlisted migration set (unknown, future, partial, reordered, altered) has no
-// generation and is refused. G1-11 is the current contract; adding a migration requires a new reviewed generation here (a test
-// pins G1-11 to the OWNER-approved migration payload). Backup creation and the resume always use the current contract only.
+// generation and is refused. G1-16 is the current contract; adding a migration requires a new reviewed generation here (a test
+// pins the generations to the reviewed migration payloads). Backup creation and the resume always use the current contract only.
 const pairs = (list) => Object.freeze(list.map((pair) => Object.freeze([...pair])));
 const RELATIONS_G5 = Object.freeze(RELATIONS_G7.filter((name) => name !== 'CompanyPricingConfig'));
 const MIGRATIONS_G5 = pairs([
@@ -70,7 +75,7 @@ export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([
       ['20261018120000_cash_movement_withdrawals_expenses', 'e37149442d1fb82ec87877e7b3e1f2e4311b36a9d47d314a3fd1843702c5adf9'],
       ['20261018180000_cash_movement_reversals', 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770'],
     ]),
-    relations: PROTECTED_RELATION_NAMES,
+    relations: PROTECTED_RELATION_NAMES_G11,
   }),
   Object.freeze({
     id: 'G1-12',
@@ -81,7 +86,7 @@ export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([
       ['20261018180000_cash_movement_reversals', 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770'],
       ['20261021120000_r3_card_credit', 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be'],
     ]),
-    relations: PROTECTED_RELATION_NAMES,
+    relations: PROTECTED_RELATION_NAMES_G11,
   }),
   Object.freeze({
     id: 'G1-13',
@@ -93,7 +98,7 @@ export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([
       ['20261021120000_r3_card_credit', 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be'],
       ['20261021130000_warehouse_stock_adjustment', '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0'],
     ]),
-    relations: PROTECTED_RELATION_NAMES,
+    relations: PROTECTED_RELATION_NAMES_G11,
   }),
   Object.freeze({
     id: 'G1-14',
@@ -105,6 +110,23 @@ export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([
       ['20261021120000_r3_card_credit', 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be'],
       ['20261021130000_warehouse_stock_adjustment', '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0'],
       ['20261021140000_r3_qr', '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a'],
+    ]),
+    relations: PROTECTED_RELATION_NAMES_G11,
+  }),
+  // G1-16 (sale void v1) is the CURRENT contract: the fourteen reviewed migrations plus the two sale void migrations and the 34
+  // protected relations. G1-15 (the enum labels alone) is intentionally NOT a generation: it is an intermediate state no backup is taken at.
+  Object.freeze({
+    id: 'G1-16',
+    migrations: pairs([...MIGRATIONS_G7,
+      ['20261016120000_r3_proportional_checkout', '217e87eb5b156a57a5edcfd73433e1e9558ce59caa019208d9df8c0268f08dc6'],
+      ['20261016130000_r3_checkout_attempts', '076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148'],
+      ['20261018120000_cash_movement_withdrawals_expenses', 'e37149442d1fb82ec87877e7b3e1f2e4311b36a9d47d314a3fd1843702c5adf9'],
+      ['20261018180000_cash_movement_reversals', 'd638559da376f5c4fb1f71136027c0af426906b8b8a2c582f388e73ffd1b3770'],
+      ['20261021120000_r3_card_credit', 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be'],
+      ['20261021130000_warehouse_stock_adjustment', '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0'],
+      ['20261021140000_r3_qr', '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a'],
+      ['20261024120000_sale_void_enum', '82581170e1d9f5c2d4dd1d347e272f61b13cded2e20d623144ff72894c914c0f'],
+      ['20261024130000_sale_void_schema', '0f2841cadaffac4579cf7f096329f899a8b7211a8cb4eb817770b8ee4911182d'],
     ]),
     relations: PROTECTED_RELATION_NAMES,
   }),

@@ -666,11 +666,18 @@ describe('R4 transformation verifier (seed #2: P → Q, in memory)', () => {
     expect(JSON.stringify([error?.message, error?.stack, Object.getOwnPropertyNames(error as object)])).not.toContain(TCANARY);
     expect((error as { cause?: unknown }).cause).toBeUndefined();
   });
-  it('AC-135 every one of the 312 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(312);
+  it('AC-135 every one of the 329 contract columns maps to exactly one transformation category and the contract digest is stable', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(329);
     const categories = new Set(['PRESERVED_FROM_BACKUP', 'CANONICAL_VALUE', 'RECREATED_SEMANTIC_SET', 'ROW_CLASS_RULES', 'PRESERVED_AND_CREATED']);
     for (const c of TYPE_CONTRACT_V3) expect(categories.has(TRANSFORMATION_CATEGORIES[`${c.relation}.${c.name}`] as string), `${c.relation}.${c.name}`).toBe(true);
-    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(312);
+    expect(Object.keys(TRANSFORMATION_CATEGORIES)).toHaveLength(329);
+    // Sale void v1 (G16): the two new relations are operational void evidence, classified EXPLICITLY as preserved (seed #2 writes none),
+    // and so are the two new columns of the existing ledgers; none of them may fall through to CANONICAL_VALUE.
+    for (const column of TYPE_CONTRACT_V3.filter((c) => c.relation === 'SaleVoid' || c.relation === 'SaleVoidExternalRefund')) {
+      expect(TRANSFORMATION_CATEGORIES[`${column.relation}.${column.name}`], `${column.relation}.${column.name}`).toBe('PRESERVED_FROM_BACKUP');
+    }
+    expect(TRANSFORMATION_CATEGORIES['CashMovement.refundOfSalePaymentId']).toBe('PRESERVED_FROM_BACKUP');
+    expect(TRANSFORMATION_CATEGORIES['StockMovement.saleVoidId']).toBe('PRESERVED_FROM_BACKUP');
     for (const name of ['expectedCash', 'countedCash', 'difference']) {
       expect(TRANSFORMATION_CATEGORIES[`CashSession.${name}`]).toBe('PRESERVED_FROM_BACKUP');
     }

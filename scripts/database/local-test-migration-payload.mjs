@@ -1,10 +1,18 @@
 // U1 (R3-T) + PILOT cash exits + cash reversals + card credit: the LOCAL_TEST migration payload.
 //
-// G14 cut-over (OWNER 2026-10-18, extended 2026-10-20/21): pilot-migrate.mjs approves exactly G14, so the
-// LOCAL_TEST payload IS that shared payload object (the fourteen literal pins of
-// pilot-migration-states.mjs); nothing is re-typed here. Only the disposable
-// LOCAL_TEST tooling (local-test-prepare.mjs) uses this module; it imports nothing
-// PILOT-capable. The per-group pin lists below are views of the shared pins by name.
+// G14 cut-over (OWNER 2026-10-18, extended 2026-10-20/21): pilot-migrate.mjs approves exactly G14, so
+// LOCAL_TEST_MIGRATION_PAYLOAD (G14) IS that shared payload object (the fourteen literal pins of
+// pilot-migration-states.mjs); nothing is re-typed here. It stays the HISTORICAL G14 payload.
+//
+// Generations after G14 (sale void v1; pilot-migration-generations.mjs holds their literal pins):
+//   G14 = m1..m14 (above), G15 = G14 + sale_void_enum (intermediate), G16 = G15 + sale_void_schema (LATEST).
+// What the LOCAL_TEST tooling APPLIES and VERIFIES is the LATEST generation: LOCAL_TEST_LATEST_PAYLOAD and
+// verifyLocalTestMigrationPayload (= exact G16). The older generations stay verifiable on their own
+// (verifyLocalTestG14Payload, verifyLocalTestG15Payload), each exact-tree and fail-closed: a G16 tree is drift
+// for the G14 verifier and the other way round.
+//
+// Only the disposable LOCAL_TEST tooling (local-test-prepare.mjs, ci-local-test-fixture.mjs) uses this module; it
+// imports nothing PILOT-capable. The per-group pin lists below are views of the shared pins by name.
 //
 // G8 = the first eight entries of G14 (migrations 1–8): the exact ledger the P21
 // suite (r3-attempts-schema.pg.test.ts Suite B) needs before migration 9. It is
@@ -15,6 +23,7 @@
 // symlinked or changed entry is drift.
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { pinsOf } from './pilot-migration-generations.mjs';
 import { APPROVED_MIGRATION_PAYLOAD, readPinned } from './pilot-migrate.mjs';
 
 const pinsNamed = (...names) => Object.freeze(names.map((name) => APPROVED_MIGRATION_PAYLOAD.migrations.find((m) => m.name === name)));
@@ -26,7 +35,14 @@ export const CARD_CREDIT_MIGRATION_PINS = pinsNamed('20261021120000_r3_card_cred
 export const WAREHOUSE_MIGRATION_PINS = pinsNamed('20261021130000_warehouse_stock_adjustment');
 export const QR_MIGRATION_PINS = pinsNamed('20261021140000_r3_qr');
 
+// HISTORICAL: the G14 payload shared with PILOT (the frozen cut-over target).
 export const LOCAL_TEST_MIGRATION_PAYLOAD = APPROVED_MIGRATION_PAYLOAD;
+export const LOCAL_TEST_G14_PAYLOAD = LOCAL_TEST_MIGRATION_PAYLOAD;
+// G15 is intermediate (the enum labels alone) and G16 is the latest; same lock, same exact-tree rules.
+export const LOCAL_TEST_G15_PAYLOAD = Object.freeze({ migrations: pinsOf('EXACT_G15'), lock: LOCAL_TEST_MIGRATION_PAYLOAD.lock });
+export const LOCAL_TEST_G16_PAYLOAD = Object.freeze({ migrations: pinsOf('EXACT_G16'), lock: LOCAL_TEST_MIGRATION_PAYLOAD.lock });
+// What the LOCAL_TEST tooling applies today.
+export const LOCAL_TEST_LATEST_PAYLOAD = LOCAL_TEST_G16_PAYLOAD;
 
 export const LOCAL_TEST_P21_BASE_PAYLOAD = Object.freeze({
   migrations: Object.freeze(LOCAL_TEST_MIGRATION_PAYLOAD.migrations.slice(0, 8)),
@@ -98,13 +114,22 @@ export function verifyMigrationTree(apiDir, payload) {
   }
 }
 
-// The LOCAL_TEST payload: the real reviewed tree must be exactly G11.
+// The LOCAL_TEST payload the tooling applies: the real reviewed tree must be exactly the LATEST generation (G16).
 export function verifyLocalTestMigrationPayload(apiDir) {
-  return verifyMigrationTree(apiDir, LOCAL_TEST_MIGRATION_PAYLOAD);
+  return verifyMigrationTree(apiDir, LOCAL_TEST_LATEST_PAYLOAD);
 }
 
-// The P21 base: the WHOLE real tree must still be exactly G11 (drift anywhere, migration 9 included, refuses); the result
-// is the G8 projection — what the P21 action applies and what its classifier expects in the ledger.
+// The older generations, each exact: a tree of another generation (a G16 tree included) is drift for them.
+export function verifyLocalTestG14Payload(apiDir) {
+  return verifyMigrationTree(apiDir, LOCAL_TEST_G14_PAYLOAD);
+}
+export function verifyLocalTestG15Payload(apiDir) {
+  return verifyMigrationTree(apiDir, LOCAL_TEST_G15_PAYLOAD);
+}
+
+// The P21 base: the WHOLE real tree must still be exactly the latest generation (drift anywhere, migration 9 and the
+// sale void migrations included, refuses); the result is the G8 projection — what the P21 action applies and what its
+// classifier expects in the ledger.
 export function verifyP21BasePayload(apiDir) {
   const full = verifyLocalTestMigrationPayload(apiDir);
   if (!full.ok) return full;

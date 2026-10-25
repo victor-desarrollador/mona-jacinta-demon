@@ -23,6 +23,8 @@ const MIN_SIGNED_BIGINT = -9223372036854775808n;
 // original (migration 11); a movement without them can never be paired.
 export type CashReconciliationMovement = {
   type: string; amount: bigint; salePaymentId: string | null; id?: string; reversesMovementId?: string | null;
+  // Sale void v1 (SALE_REFUND only): the CASH payment the refund returns.
+  refundOfSalePaymentId?: string | null;
 };
 export type CashReconciliationPayment = { id: string; amount: bigint };
 
@@ -49,6 +51,22 @@ const REVERSED_TYPE: Readonly<Record<string, string>> = Object.freeze({
   EXPENSE_REVERSAL: 'EXPENSE',
 });
 const isReversalType = (type: string) => Object.hasOwn(REVERSED_TYPE, type);
+
+// Sale void v1: a SALE_REFUND is the append-only cash returned to the customer by the void of a
+// CASH sale. Its shape is validated here, row by row (the exits convention): it must name the
+// payment it returns, must not carry a salePaymentId (that unique column belongs to the payment's
+// SALE_INCOME), must be a positive amount and may not repeat another refund's payment. The
+// correspondence with the original payment's exact CASH amount spans sessions (the refund may sit
+// in a LATER session than the income), so it is the void service's guarantee, not this pure
+// function's. `seen` carries the payment ids already refunded in this movement set.
+function refundFault(movement: CashReconciliationMovement, seen: Set<string>): CashReconciliationReason | null {
+  const link = movement.refundOfSalePaymentId ?? null;
+  if (movement.salePaymentId !== null || link === null) return 'PAYMENT_MOVEMENT_MISMATCH';
+  if (movement.amount <= 0n) return 'AMOUNT_OVERFLOW';
+  if (seen.has(link)) return 'PAYMENT_MOVEMENT_MISMATCH';
+  seen.add(link);
+  return null;
+}
 
 // PILOT reversal: true when any reversal of the session does not compensate
 // exactly one corresponding original of the SAME session movement set. Each
@@ -112,9 +130,18 @@ export function reconcileCashSession(input: {
   let income = 0n;
   let outgoing = 0n;
   let restored = 0n;
+  let refunded = 0n;
+  const refundedPayments = new Set<string>();
   const movementByPaymentId = new Map<string, bigint>();
   for (const movement of input.movements) {
     if (movement.type === 'OPENING' || movement.type === 'CLOSING') continue;
+    if (movement.type === 'SALE_REFUND') {
+      const fault = refundFault(movement, refundedPayments);
+      if (fault) return { ok: false, reason: fault };
+      refunded += movement.amount;
+      if (refunded > MAX_SIGNED_BIGINT) return { ok: false, reason: 'AMOUNT_OVERFLOW' };
+      continue;
+    }
     if (isReversalType(movement.type)) {
       // Validated by hasReversalMismatch: a positive amount equal to a
       // corresponding exit of this session, which it gives back to the drawer.
@@ -150,7 +177,7 @@ export function reconcileCashSession(input: {
     }
   }
 
-  const expectedCash = input.startingCash + income - outgoing + restored;
+  const expectedCash = input.startingCash + income - outgoing + restored - refunded;
   if (expectedCash > MAX_SIGNED_BIGINT || expectedCash < MIN_SIGNED_BIGINT) {
     return { ok: false, reason: 'AMOUNT_OVERFLOW' };
   }
@@ -184,9 +211,15 @@ export function projectExpectedCash(input: {
   let income = 0n;
   let outgoing = 0n;
   let restored = 0n;
+  let refunded = 0n;
+  const refundedPayments = new Set<string>();
   for (const movement of input.movements) {
     if (movement.type === 'OPENING' || movement.type === 'CLOSING') continue;
-    if (movement.type === 'SALE_INCOME') {
+    if (movement.type === 'SALE_REFUND') {
+      const fault = refundFault(movement, refundedPayments);
+      if (fault) return { ok: false, reason: fault };
+      refunded += movement.amount;
+    } else if (movement.type === 'SALE_INCOME') {
       if (movement.salePaymentId === null) return { ok: false, reason: 'PAYMENT_MOVEMENT_MISMATCH' };
       income += movement.amount;
     } else if (movement.type === 'WITHDRAWAL' || movement.type === 'EXPENSE') {
@@ -198,18 +231,19 @@ export function projectExpectedCash(input: {
     } else {
       return { ok: false, reason: 'MOVEMENT_TYPE_NOT_ALLOWED' };
     }
-    if (income > MAX_SIGNED_BIGINT || income < MIN_SIGNED_BIGINT || outgoing > MAX_SIGNED_BIGINT || restored > MAX_SIGNED_BIGINT) {
+    if (income > MAX_SIGNED_BIGINT || income < MIN_SIGNED_BIGINT || outgoing > MAX_SIGNED_BIGINT || restored > MAX_SIGNED_BIGINT
+      || refunded > MAX_SIGNED_BIGINT) {
       return { ok: false, reason: 'AMOUNT_OVERFLOW' };
     }
   }
-  const projected = input.startingCash + income - outgoing + restored;
+  const projected = input.startingCash + income - outgoing + restored - refunded;
   if (projected > MAX_SIGNED_BIGINT || projected < MIN_SIGNED_BIGINT) return { ok: false, reason: 'AMOUNT_OVERFLOW' };
   return { ok: true, projectedExpectedCash: projected };
 }
 
 // CASH-1: every reconciliation refusal is a fixed, detail-free 409 — the
 // movement/payment specifics are never exposed through the API.
-function reconciliationRefusal(reason: CashReconciliationReason) {
+export function reconciliationRefusal(reason: CashReconciliationReason) {
   if (reason === 'PAYMENT_MOVEMENT_MISMATCH') {
     return new AppError(409, 'CASH_PAYMENTS_INCONSISTENT', 'Los pagos en efectivo no coinciden con los movimientos de la sesión.');
   }
@@ -242,7 +276,9 @@ const REVERSAL_ACTION = Object.freeze({
 });
 const idempotencyReused = () => new AppError(409, 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD', 'La clave de idempotencia ya fue utilizada con otro movimiento.');
 // Every movement read the reconciliation/projection needs, reversal pairing included.
-const RECONCILIATION_SELECT = { id: true, type: true, amount: true, salePaymentId: true, reversesMovementId: true } as const;
+const RECONCILIATION_SELECT = {
+  id: true, type: true, amount: true, salePaymentId: true, reversesMovementId: true, refundOfSalePaymentId: true,
+} as const;
 
 // PILOT reversal: a P2002 of one of the two CashMovement unique indexes a
 // reversal can lose a race on — the one-reversal-per-original index or the

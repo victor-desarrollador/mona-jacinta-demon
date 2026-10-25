@@ -14,10 +14,11 @@ const schema = readFileSync(new URL('../../prisma/schema.prisma', import.meta.ur
 const code = sql.split('\n').filter((line) => !line.trimStart().startsWith('--')).join('\n');
 
 describe('QR migration 14 (static)', () => {
-  it('is the newest migration and sorts after the warehouse migration (m13)', () => {
+  it('sorts right after the warehouse migration (m13) and is followed only by the two sale void migrations', () => {
     const names = readdirSync(new URL('../../prisma/migrations/', import.meta.url)).filter((entry) => /^\d{14}_/.test(entry)).sort();
-    expect(names.at(-1)).toBe(NAME);
-    expect(names.at(-2)).toBe('20261021130000_warehouse_stock_adjustment');
+    expect(names.at(-3)).toBe(NAME);
+    expect(names.at(-4)).toBe('20261021130000_warehouse_stock_adjustment');
+    expect(names.slice(-2)).toEqual(['20261024120000_sale_void_enum', '20261024130000_sale_void_schema']);
   });
 
   it('is one atomic transaction: BEGIN first, COMMIT last, the LOCK before any DDL', () => {

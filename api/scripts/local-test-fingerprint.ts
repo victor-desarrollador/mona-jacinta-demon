@@ -30,10 +30,12 @@ export const DIGEST_SCHEME = 'MONA/V233/STATE-DIGEST/SD1';
 export const PROTECTED_SEARCH_PATH = 'pg_catalog, pg_temp';
 export const DEFAULT_MAX_RELATION_BYTES = 64 * 1024 * 1024; // UNPINNED parameter: pin from real LOCAL_TEST sizes (design SCOPE risk)
 
-// GENERATED from the R3-A4.3 mechanical derivation of the fourteen migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
-// by digest in tests/local-test-fingerprint.test.ts AC-150b): 312 columns of the 32 protected relations (31 Prisma models plus
+// GENERATED from the R3-A4.3 mechanical derivation of the sixteen migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
+// by digest in tests/local-test-fingerprint.test.ts AC-150b): 329 columns of the 34 protected relations (33 Prisma models plus
 // the Prisma-internal _prisma_migrations), by (relation, attnum). Pinned against schema.prisma and the migration set by
-// tests/local-test-fingerprint.test.ts.
+// tests/local-test-fingerprint.test.ts. G16 (sale void v1) added SaleVoid and SaleVoidExternalRefund, CashMovement.refundOfSalePaymentId
+// and StockMovement.saleVoidId (appended: ADD COLUMN takes the next attnum), the SALE_REFUND and SALE_VOID enum labels and the
+// functions fn_cash_movement_refund_guard / fn_sale_payment_refund_frozen; the first fourteen migrations are unchanged history.
 // Row: relation, attnum, column, field type, live format_type, notNull, hasDefault, enum type, primary-key position.
 type ContractRow = readonly [string, number, string, FieldType, string, 0 | 1, 0 | 1, string | null, number];
 const CONTRACT_ROWS: readonly ContractRow[] = [
@@ -63,6 +65,7 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["CashMovement", 8, "reason", "text", "text", 0, 0, null, 0],
   ["CashMovement", 9, "idempotencyKey", "text", "text", 0, 0, null, 0],
   ["CashMovement", 10, "reversesMovementId", "text", "text", 0, 0, null, 0],
+  ["CashMovement", 11, "refundOfSalePaymentId", "text", "text", 0, 0, null, 0],
   ["CashRegister", 1, "id", "text", "text", 1, 0, null, 1],
   ["CashRegister", 2, "branchId", "text", "text", 1, 0, null, 0],
   ["CashRegister", 3, "name", "text", "text", 1, 0, null, 0],
@@ -307,6 +310,21 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["SalePayment", 13, "methodFullPrice", "int8", "bigint", 0, 0, null, 0],
   ["SalePayment", 14, "adjustmentBps", "int4", "integer", 0, 0, null, 0],
   ["SalePayment", 15, "externalCollectionId", "text", "text", 0, 0, null, 0],
+  ["SaleVoid", 1, "id", "text", "text", 1, 0, null, 1],
+  ["SaleVoid", 2, "saleId", "text", "text", 1, 0, null, 0],
+  ["SaleVoid", 3, "branchId", "text", "text", 1, 0, null, 0],
+  ["SaleVoid", 4, "previousStatus", "enum", "public.\"SaleStatus\"", 1, 0, "SaleStatus", 0],
+  ["SaleVoid", 5, "reason", "text", "text", 1, 0, null, 0],
+  ["SaleVoid", 6, "idempotencyKey", "text", "text", 1, 0, null, 0],
+  ["SaleVoid", 7, "voidedById", "text", "text", 1, 0, null, 0],
+  ["SaleVoid", 8, "voidedAt", "tstz", "timestamp(3) with time zone", 1, 1, null, 0],
+  ["SaleVoidExternalRefund", 1, "id", "text", "text", 1, 0, null, 1],
+  ["SaleVoidExternalRefund", 2, "saleVoidId", "text", "text", 1, 0, null, 0],
+  ["SaleVoidExternalRefund", 3, "saleId", "text", "text", 1, 0, null, 0],
+  ["SaleVoidExternalRefund", 4, "salePaymentId", "text", "text", 1, 0, null, 0],
+  ["SaleVoidExternalRefund", 5, "method", "enum", "public.\"PaymentMethod\"", 1, 0, "PaymentMethod", 0],
+  ["SaleVoidExternalRefund", 6, "amount", "int8", "bigint", 1, 0, null, 0],
+  ["SaleVoidExternalRefund", 7, "evidence", "text", "text", 1, 0, null, 0],
   ["StockMovement", 1, "id", "text", "text", 1, 0, null, 1],
   ["StockMovement", 2, "inventoryId", "text", "text", 1, 0, null, 0],
   ["StockMovement", 3, "type", "enum", "public.\"StockMovementType\"", 1, 0, "StockMovementType", 0],
@@ -318,6 +336,7 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["StockMovement", 9, "reason", "enum", "public.\"StockAdjustmentReason\"", 0, 0, "StockAdjustmentReason", 0],
   ["StockMovement", 10, "note", "text", "text", 0, 0, null, 0],
   ["StockMovement", 11, "idempotencyKey", "text", "text", 0, 0, null, 0],
+  ["StockMovement", 12, "saleVoidId", "text", "text", 0, 0, null, 0],
   ["StockReservation", 1, "id", "text", "text", 1, 0, null, 1],
   ["StockReservation", 2, "saleId", "text", "text", 1, 0, null, 0],
   ["StockReservation", 3, "variantId", "text", "text", 1, 0, null, 0],
@@ -359,7 +378,7 @@ export const PROTECTED_RELATIONS: readonly string[] = Object.freeze([...new Set(
 export type ProtectedRelation = string;
 // Enum types ordered by (namespace, name) raw bytes: the index is the ordinal bound into every enum field.
 export const ENUM_TYPES: readonly Readonly<{ name: string; labels: readonly string[] }>[] = Object.freeze([
-  ["CashMovementType", ["OPENING","SALE_INCOME","CLOSING","MANUAL","WITHDRAWAL","EXPENSE","WITHDRAWAL_REVERSAL","EXPENSE_REVERSAL"]],
+  ["CashMovementType", ["OPENING","SALE_INCOME","CLOSING","MANUAL","WITHDRAWAL","EXPENSE","WITHDRAWAL_REVERSAL","EXPENSE_REVERSAL","SALE_REFUND"]],
   ["CashSessionStatus", ["OPEN","CLOSED"]],
   ["CheckoutAttemptStatus", ["RESERVED","CONFIRMED","REJECTED","ABANDONED"]],
   ["CheckoutDeclarationOutcome", ["NONE","CHARGED","RETURNED"]],
@@ -374,11 +393,11 @@ export const ENUM_TYPES: readonly Readonly<{ name: string; labels: readonly stri
   ["SaleStatus", ["DRAFT","PENDING_PAYMENT","PAID","COMPLETED","CANCELLED"]],
   ["ScopeKind", ["LOCATION","COMPANY"]],
   ["StockAdjustmentReason", ["DAMAGED","LOST","LOAD_ERROR","SURPLUS","OTHER"]],
-  ["StockMovementType", ["SALE","INITIAL_STOCK","ADJUSTMENT"]],
+  ["StockMovementType", ["SALE","INITIAL_STOCK","ADJUSTMENT","SALE_VOID"]],
   ["StockReservationStatus", ["ACTIVE","RELEASED","CONSUMED"]],
   ["TransferInstitution", ["MACRO","BBVA","NACION","GALICIA","MERCADO_PAGO","OTHER"]],
 ].map(([name, labels]) => Object.freeze({ name: name as string, labels: Object.freeze(labels as string[]) })));
-export const PROTECTED_FUNCTION_NAMES: readonly string[] = Object.freeze(['fn_checkout_attempt_commit_check', 'fn_checkout_attempt_declaration_guard', 'fn_checkout_attempt_guard', 'fn_checkout_attempt_tender_guard', 'fn_checkout_declaration_commit_check', 'fn_external_collection_guard', 'fn_sale_payment_history', 'fn_sale_payment_truncate_guard', 'fn_sale_wholesale_frozen_after_payment']);
+export const PROTECTED_FUNCTION_NAMES: readonly string[] = Object.freeze(['fn_cash_movement_refund_guard', 'fn_checkout_attempt_commit_check', 'fn_checkout_attempt_declaration_guard', 'fn_checkout_attempt_guard', 'fn_checkout_attempt_tender_guard', 'fn_checkout_declaration_commit_check', 'fn_external_collection_guard', 'fn_sale_payment_history', 'fn_sale_payment_refund_frozen', 'fn_sale_payment_truncate_guard', 'fn_sale_wholesale_frozen_after_payment']);
 
 // Canonical text of the protected-domain contract (relations, columns, enum types, functions); its sha256 is bound into witnesses.
 export function protectedDomainContractSha256(): string {

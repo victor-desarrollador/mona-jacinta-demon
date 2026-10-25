@@ -180,9 +180,14 @@ const exec = (state = 'EXACT_S4', plan = null) => ['--target=pilot', '--execute'
 test('MG-01 the approved payload is the exact G14 tree from the shared pins (14 migrations + lock)', () => {
   assert.deepEqual(APPROVED_MIGRATION_PAYLOAD.migrations, MIGRATION_PINS);
   assert.deepEqual(APPROVED_MIGRATION_PAYLOAD.lock, LOCK_PIN);
+  // A G14 tree (the synthetic fixture) verifies; the real repository tree now holds G16 (the sale void migrations
+  // follow m14) and is refused by this G14 cut-over verifier, which runs from a G14 tree.
+  const fixture = verifyMigrationPayload(API);
+  assert.equal(fixture.ok, true, fixture.reason);
+  assert.equal(fixture.migrations.length, 14);
   const real = verifyMigrationPayload(API_DIR);
-  assert.equal(real.ok, true, real.reason);
-  assert.equal(real.migrations.length, 14);
+  assert.equal(real.ok, false);
+  assert.match(real.reason, /does not hold exactly the OWNER-approved migrations/);
 });
 
 // --- CLI ------------------------------------------------------------------------------

@@ -87,7 +87,7 @@ describe('migration 11 — cash movement reversals (static)', () => {
 
   it('M11-06 schema.prisma mirrors the enum, the column, both unique keys and the composite relation', () => {
     const enumBody = schema.match(/enum CashMovementType \{([^}]*)\}/)?.[1] ?? '';
-    expect(enumBody.split(/\s+/).filter(Boolean)).toEqual(['OPENING', 'SALE_INCOME', 'CLOSING', 'MANUAL', 'WITHDRAWAL', 'EXPENSE', 'WITHDRAWAL_REVERSAL', 'EXPENSE_REVERSAL']);
+    expect(enumBody.split(/\s+/).filter(Boolean)).toEqual(['OPENING', 'SALE_INCOME', 'CLOSING', 'MANUAL', 'WITHDRAWAL', 'EXPENSE', 'WITHDRAWAL_REVERSAL', 'EXPENSE_REVERSAL', 'SALE_REFUND']);
     const model = (schema.match(/model CashMovement \{([\s\S]*?)\n\}/)?.[1] ?? '').replace(/\s+/g, ' ');
     expect(model).toMatch(/reversesMovementId String\? @unique/);
     expect(model).toMatch(/reverses CashMovement\? @relation\("CashMovementReversal", fields: \[reversesMovementId, sessionId\], references: \[id, sessionId\], onDelete: Restrict, onUpdate: Restrict\)/);

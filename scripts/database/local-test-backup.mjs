@@ -27,7 +27,8 @@ import {
   restoreChildEnv,
   runContained,
 } from './local-test-prepare.mjs';
-import { API_DIR, verifyMigrationPayload } from './pilot-migrate.mjs';
+import { verifyLocalTestMigrationPayload } from './local-test-migration-payload.mjs';
+import { API_DIR } from './pilot-migrate.mjs';
 import { runTool } from './local-test-safe-error.mjs';
 import { buildWitness, preWitnessSha256, resolveBackupGeneration } from './local-test-witness.mjs';
 
@@ -188,7 +189,8 @@ const DEFAULT_DEPS = Object.freeze({
   pgDump: PG_DUMP_PATH,
   pgRestore: PG_RESTORE_PATH,
   hashBinary: hashRegularFile,
-  verifyMigrationPayload,
+  // The LATEST LOCAL_TEST payload (G16), the same one local-test-prepare applies and binds into the checkpoint.
+  verifyMigrationPayload: verifyLocalTestMigrationPayload,
   loadRuntime: loadLocalTestRuntime,
   spawn,
   childTimeoutMs: CHILD_TIMEOUT_MS,
