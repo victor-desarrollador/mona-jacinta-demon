@@ -1,0 +1,403 @@
+import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
+import { assertPermissionAtLocation } from '../../middleware/authorization.js';
+import { authorizedLocationIds } from '../rbac/authorization-policy.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
+import { AppError } from '../../shared/errors.js';
+import { operatingDayBounds, parseOperatingDate } from '../../shared/operating-time.js';
+import {
+  effectiveAvailability,
+  loadReleasableExpiredHolds,
+} from '../sales/reservation-holds.js';
+
+type RequestLike = Parameters<typeof assertPermissionAtLocation>[0];
+type BackofficeDatabase = PrismaClient;
+
+export type ListSalesFilters = {
+  branchId?: string;
+  sellerId?: string;
+  // ISO timestamp (compatibilidad histórica) o fecha de negocio "YYYY-MM-DD"
+  // interpretada en la zona de America/Argentina/Tucuman.
+  dateFrom?: string | Date;
+  dateTo?: string | Date;
+  limit: number;
+  offset: number;
+};
+
+export type InventoryFilters = {
+  branchId?: string;
+  search?: string;
+  limit: number;
+  offset: number;
+};
+
+function scopeBranches(req: RequestLike, branchId?: string) {
+  if (branchId) {
+    assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.REPORT_VIEW, branchId);
+    return [branchId];
+  }
+  return req.auth ? authorizedLocationIds(req.auth, PRODUCTION_PERMISSIONS.REPORT_VIEW) : [];
+}
+
+const branchSelect = { id: true, name: true, code: true } as const;
+const sellerSelect = { id: true, name: true, email: true } as const;
+
+const saleItemSelect = {
+  id: true,
+  productId: true,
+  variantId: true,
+  productName: true,
+  variantName: true,
+  sku: true,
+  quantity: true,
+  unitPrice: true,
+  subtotal: true,
+  product: { select: { id: true, name: true, slug: true } },
+  variant: {
+    select: {
+      id: true,
+      sku: true,
+      barcode: true,
+      color: true,
+      size: true,
+      price: true,
+      productId: true,
+    },
+  },
+} satisfies Prisma.SaleItemSelect;
+
+const localDate = /^\d{4}-\d{2}-\d{2}$/;
+
+// Resuelve un filtro de fecha (string YYYY-MM-DD) a los limites del dia de
+// negocio en America/Argentina/Tucuman. Los Date se pasan tal cual (compatibilidad
+// con ISO timestamp historico).
+function asLocalDate(value: string): { start: Date; end: Date } {
+  if (!localDate.test(value)) {
+    throw new Error(`Fecha de negocio invalida: ${value}`);
+  }
+  return parseOperatingDate(value);
+}
+
+function saleWhere(branchIds: string[], filters: ListSalesFilters) {
+  return {
+    branchId: { in: branchIds },
+    ...(filters.sellerId ? { sellerId: filters.sellerId } : {}),
+    ...((filters.dateFrom || filters.dateTo)
+      ? {
+          createdAt: {
+            ...(filters.dateFrom
+              ? {
+                  gte:
+                    filters.dateFrom instanceof Date
+                      ? filters.dateFrom
+                      : asLocalDate(filters.dateFrom).start,
+                }
+              : {}),
+            ...(filters.dateTo
+              ? {
+                  // Date ISO: inclusivo (contrato historico). YYYY-MM-DD:
+                  // exclusivo (inicio del dia siguiente), sin ambigüedad.
+                  lt:
+                    filters.dateTo instanceof Date
+                      ? undefined
+                      : asLocalDate(filters.dateTo).end,
+                  lte: filters.dateTo instanceof Date ? filters.dateTo : undefined,
+                }
+              : {}),
+          },
+        }
+      : {}),
+  } satisfies Prisma.SaleWhereInput;
+}
+
+export function createBackofficeService(database: BackofficeDatabase) {
+  async function dashboard(req: RequestLike, now: Date = new Date()) {
+    const branchIds = scopeBranches(req);
+    const { start, end } = operatingDayBounds(now);
+    const todayWhere = {
+      branchId: { in: branchIds },
+      createdAt: { gte: start, lt: end },
+    } satisfies Prisma.SaleWhereInput;
+    const lowStockWhere = {
+      branchId: { in: branchIds },
+      physical: { gt: 0n, lte: 3n },
+    } satisfies Prisma.InventoryWhereInput;
+
+    const [salesToday, pendingSalesCount, revenue, lowStockCount] = await Promise.all([
+      database.sale.count({ where: todayWhere }),
+      database.sale.count({ where: { branchId: { in: branchIds }, status: 'PENDING_PAYMENT' } }),
+      database.sale.aggregate({
+        where: { ...todayWhere, status: { in: ['PAID', 'COMPLETED'] } },
+        _sum: { total: true },
+      }),
+      database.inventory.count({ where: lowStockWhere }),
+    ]);
+
+    return {
+      salesToday,
+      pendingSalesCount,
+      revenueToday: revenue._sum.total ?? 0n,
+      lowStockCount,
+    };
+  }
+
+  async function listSales(req: RequestLike, filters: ListSalesFilters) {
+    const branchIds = scopeBranches(req, filters.branchId);
+    const where = saleWhere(branchIds, filters);
+    const sales = await database.sale.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      skip: filters.offset,
+      take: filters.limit,
+      select: {
+        id: true,
+        saleNumber: true,
+        status: true,
+        subtotal: true,
+        discountTotal: true,
+        total: true,
+        createdAt: true,
+        branch: { select: branchSelect },
+        seller: { select: sellerSelect },
+        payments: {
+          select: { id: true, method: true, amount: true, receivedAmount: true, changeAmount: true },
+          orderBy: [{ paidAt: 'asc' }, { id: 'asc' }],
+        },
+      },
+    });
+    return {
+      items: sales.map((sale) => {
+        const paidAmount = sale.payments.reduce((sum, payment) => sum + payment.amount, 0n);
+        return {
+          id: sale.id,
+          saleNumber: sale.saleNumber,
+          branch: sale.branch,
+          seller: sale.seller,
+          status: sale.status,
+          subtotal: sale.subtotal,
+          discountTotal: sale.discountTotal,
+          total: sale.total,
+          createdAt: sale.createdAt,
+          paymentSummary: {
+            paidAmount,
+            remainingBalance: sale.total - paidAmount,
+            count: sale.payments.length,
+            methods: [...new Set(sale.payments.map((payment) => payment.method))],
+          },
+        };
+      }),
+      pagination: { limit: filters.limit, offset: filters.offset },
+    };
+  }
+
+  async function getSale(req: RequestLike, id: string) {
+    const sale = await database.sale.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        saleNumber: true,
+        branchId: true,
+        sellerId: true,
+        status: true,
+        subtotal: true,
+        discountTotal: true,
+        total: true,
+        createdAt: true,
+        updatedAt: true,
+        branch: { select: branchSelect },
+        seller: { select: sellerSelect },
+        items: { select: saleItemSelect, orderBy: { id: 'asc' } },
+        payments: {
+          select: {
+            id: true,
+            method: true,
+            amount: true,
+            receivedAmount: true,
+            changeAmount: true,
+            cashSessionId: true,
+            idempotencyKey: true,
+            paidAt: true,
+            cashMovement: {
+              select: { id: true, sessionId: true, type: true, amount: true, userId: true, timestamp: true },
+            },
+          },
+          orderBy: [{ paidAt: 'asc' }, { id: 'asc' }],
+        },
+        stockMovements: {
+          select: { id: true, type: true, quantityDelta: true, userId: true, timestamp: true },
+          orderBy: [{ timestamp: 'asc' }, { id: 'asc' }],
+        },
+      },
+    });
+    if (!sale) throw new AppError(404, 'NOT_FOUND', 'No se encontro la venta.');
+    assertPermissionAtLocation(req, PRODUCTION_PERMISSIONS.REPORT_VIEW, sale.branchId);
+    return { sale };
+  }
+
+  async function inventory(req: RequestLike, filters: InventoryFilters) {
+    const branchIds = scopeBranches(req, filters.branchId);
+    const where = {
+      branchId: { in: branchIds },
+      ...(filters.search
+        ? {
+            OR: [
+              { variant: { sku: { contains: filters.search, mode: 'insensitive' } } },
+              { variant: { barcode: { contains: filters.search, mode: 'insensitive' } } },
+              { variant: { color: { contains: filters.search, mode: 'insensitive' } } },
+              { variant: { size: { contains: filters.search, mode: 'insensitive' } } },
+              { variant: { product: { name: { contains: filters.search, mode: 'insensitive' } } } },
+            ],
+          }
+        : {}),
+    } satisfies Prisma.InventoryWhereInput;
+
+    const [rows, total] = await Promise.all([
+      database.inventory.findMany({
+        where,
+        orderBy: [
+          { branch: { code: 'asc' } },
+          { variant: { product: { name: 'asc' } } },
+          { variant: { sku: 'asc' } },
+        ],
+        skip: filters.offset,
+        take: filters.limit,
+        select: {
+          id: true,
+          physical: true,
+          reserved: true,
+          branch: { select: branchSelect },
+          variant: {
+            select: {
+              id: true,
+              sku: true,
+              barcode: true,
+              color: true,
+              size: true,
+              price: true,
+              product: { select: { id: true, name: true, slug: true } },
+            },
+          },
+        },
+      }),
+      database.inventory.count({ where }),
+    ]);
+    // Pilot P0.1-A: one grouped hold aggregate for this page's rows; raw
+    // `reserved` is kept for diagnostics, `available` is expiry-aware.
+    const releasable = await loadReleasableExpiredHolds(
+      database,
+      rows.map((row) => ({ branchId: row.branch.id, variantId: row.variant.id })),
+      new Date(),
+    );
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        branch: row.branch,
+        product: row.variant.product,
+        variant: {
+          id: row.variant.id,
+          sku: row.variant.sku,
+          barcode: row.variant.barcode,
+          color: row.variant.color,
+          size: row.variant.size,
+          price: row.variant.price,
+        },
+        physical: row.physical,
+        reserved: row.reserved,
+        available: effectiveAvailability(
+          row.physical,
+          row.reserved,
+          releasable(row.branch.id, row.variant.id),
+        ).effectiveAvailable,
+      })),
+      pagination: { limit: filters.limit, offset: filters.offset, total },
+    };
+  }
+
+  // Branch and Location share the same id (Phase 1A dual-write), so one
+  // statement reads both for a consistent snapshot. Type and state come from
+  // Location as stored; a Branch with no Location row is reported as
+  // `missing_location` with null type/state rather than guessed.
+  async function branches(req: RequestLike) {
+    const branchIds = scopeBranches(req);
+    if (branchIds.length === 0) return { items: [] };
+
+    const rows = await database.$queryRaw<
+      Array<{
+        id: string;
+        name: string;
+        code: string;
+        address: string | null;
+        pointOfSaleNumber: number | null;
+        type: 'RETAIL_BRANCH' | 'CENTRAL_WAREHOUSE' | null;
+        isActive: boolean | null;
+      }>
+    >`
+      SELECT b.id, b.name, b.code, b.address, b."pointOfSaleNumber", l.type, l."isActive"
+      FROM "Branch" b
+      LEFT JOIN "Location" l ON l.id = b.id
+      WHERE b.id IN (${Prisma.join(branchIds)})
+      ORDER BY b.code ASC, b.id ASC
+    `;
+
+    return {
+      items: rows.map((row) => ({
+        ...row,
+        locationConsistency: row.type === null ? ('missing_location' as const) : ('consistent' as const),
+      })),
+    };
+  }
+
+  // Phase 1D.4.6: reads live Production authority exclusively from
+  // UserRoleScope — never UserBranchRole (legacy/display compatibility
+  // only, per AGENTS.md's Phase 1C/1D checkpoint). A COMPANY-scoped row is
+  // explicitly admitted alongside a location match, since COMPANY has no
+  // locationId to filter on but is still live current state. locationIds
+  // here is scopeBranches(req)'s display/filter convenience
+  // (effectiveLocationIds by default) — USER_MANAGE authorization already
+  // happened at the route (backoffice.routes.ts), this is never a second
+  // permission authority.
+  async function users(req: RequestLike) {
+    const locationIds = scopeBranches(req);
+    const rows = await database.user.findMany({
+      where: {
+        roleScopes: {
+          some: {
+            OR: [{ locationId: { in: locationIds } }, { scopeKind: 'COMPANY' }],
+          },
+        },
+      },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        isActive: true,
+        roleScopes: {
+          select: {
+            scopeKind: true,
+            locationId: true,
+            role: { select: { id: true, code: true, name: true } },
+            location: { select: branchSelect },
+          },
+          orderBy: [{ role: { code: 'asc' } }],
+        },
+      },
+    });
+
+    return {
+      items: rows.map((user) => ({
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        isActive: user.isActive,
+        assignments: user.roleScopes.map((scope) => ({
+          roleCode: scope.role.code,
+          scopeKind: scope.scopeKind,
+          location: scope.location,
+        })),
+      })),
+    };
+  }
+
+  return { dashboard, listSales, getSale, inventory, branches, users };
+}

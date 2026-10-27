@@ -1,0 +1,97 @@
+import type { RequestHandler } from 'express';
+import type { PrismaClient } from '../../generated/prisma/client.js';
+import { sendJson } from '../../shared/json-safe.js';
+import { AppError } from '../../shared/errors.js';
+import { createSalesService } from './sales.service.js';
+import { createPendingCorrectionService } from './pending-correction.service.js';
+import { createWholesaleCodeVerifier, type WholesaleCodeVerifier } from './wholesale-authorization.service.js';
+import type { ActivateWholesaleInput } from './dto/sale.dto.js';
+import { env } from '../../config/env.js';
+import { logger } from '../../shared/logger.js';
+import type { RealtimeEmitter } from '../../realtime/socket.js';
+import { REALTIME_EVENTS } from '../../realtime/socket.js';
+import { authorizedLocationIds } from '../rbac/authorization-policy.js';
+import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
+
+export function createSalesController(
+  database: PrismaClient,
+  realtime?: RealtimeEmitter,
+  options: { wholesaleVerifier?: WholesaleCodeVerifier } = {},
+) {
+  const service = createSalesService(database, {
+    ...(realtime ? { realtime } : {}),
+    wholesaleVerifier: options.wholesaleVerifier ?? createWholesaleCodeVerifier(env.WHOLESALE_AUTH_CODE_HASH),
+  });
+  const correction = createPendingCorrectionService(database);
+  const userId = (req: Parameters<RequestHandler>[0]) => req.auth!.userId;
+  return {
+    correct: (async (req, res) => {
+      const result = await correction.correctPendingSale(req, String(req.params.saleId), req.body);
+      // Pilot P0.2-A: advisory, after commit. A notification failure is
+      // logged with a safe code and never turns the committed correction
+      // into an HTTP error; clients refetch authoritative state.
+      try {
+        realtime?.emit(REALTIME_EVENTS.inventoryUpdated, {
+          branchId: result.branchId, saleId: result.saleId, quantities: result.quantities,
+        });
+      } catch {
+        logger.warn({ event: 'sale_correction_notify_failed', saleId: result.saleId, code: 'NOTIFY_FAILED' });
+      }
+      sendJson(res, result);
+    }) as RequestHandler,
+    pending: (async (req, res) => {
+      // No client filters: branch scope comes exclusively from fresh authorization.
+      if (Object.keys(req.query).length > 0) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'La cola no admite parámetros de consulta.');
+      }
+      // The route gate is global, so the locations must be the ones where the
+      // SAME assignment grants SALE_QUEUE_VIEW, never the effectiveLocationIds union.
+      const locationIds = authorizedLocationIds(req.auth!, PRODUCTION_PERMISSIONS.SALE_QUEUE_VIEW);
+      sendJson(res, { items: await service.listPendingSales(locationIds, req.auth!) });
+    }) as RequestHandler,
+    create: (async (req, res) => {
+      const sale = await service.createDraftSale(req, userId(req), req.body.branchId);
+      sendJson(res.status(201), sale);
+    }) as RequestHandler,
+    list: (async (req, res) => {
+      // Same rule as the detail route: only locations where the SAME
+      // assignment grants SALE_VIEW, never the effectiveLocationIds union.
+      const locationIds = authorizedLocationIds(req.auth!, PRODUCTION_PERMISSIONS.SALE_VIEW);
+      sendJson(res, { items: await service.listDrafts(userId(req), locationIds) });
+    }) as RequestHandler,
+    get: (async (req, res) => {
+      sendJson(res, await service.getDraft(req, userId(req), String(req.params.saleId)));
+    }) as RequestHandler,
+    addItem: (async (req, res) => {
+      sendJson(res, await service.addItem(req, userId(req), String(req.params.saleId), req.body));
+    }) as RequestHandler,
+    updatePriceMode: (async (req, res) => {
+      sendJson(res, await service.updatePriceMode(req, userId(req), String(req.params.saleId), req.body.priceMode));
+    }) as RequestHandler,
+    updateItem: (async (req, res) => {
+      sendJson(res, await service.updateItem(req, userId(req), String(req.params.saleId), String(req.params.itemId), req.body));
+    }) as RequestHandler,
+    removeItem: (async (req, res) => {
+      sendJson(res, await service.removeItem(req, userId(req), String(req.params.saleId), String(req.params.itemId)));
+    }) as RequestHandler,
+    // Block 1: the response is the sale (prices, mode); the code is never echoed.
+    activateWholesale: (async (req, res) => {
+      const { code } = req.body as ActivateWholesaleInput;
+      sendJson(res, await service.activateWholesale(req, userId(req), String(req.params.saleId), code));
+    }) as RequestHandler,
+    confirmWholesale: (async (req, res) => {
+      sendJson(res, await service.confirmWholesale(req, userId(req), String(req.params.saleId)));
+    }) as RequestHandler,
+    sendToCashier: (async (req, res) => {
+      const sale = await service.sendToCashier(String(req.params.saleId), userId(req), req.auth!.effectiveLocationIds);
+      realtime?.emit(REALTIME_EVENTS.salePendingPayment, { branchId: sale.branchId, saleId: sale.id, saleNumber: sale.saleNumber, status: sale.status });
+      sendJson(res, sale);
+    }) as RequestHandler,
+    complete: (async (req, res) => {
+      const sale = await service.completeSale(req, userId(req), String(req.params.saleId));
+      realtime?.emit(REALTIME_EVENTS.saleCompleted, { branchId: sale.branchId, saleId: sale.id, saleNumber: sale.saleNumber, status: sale.status });
+      realtime?.emit(REALTIME_EVENTS.inventoryUpdated, { branchId: sale.branchId, saleId: sale.id, status: sale.status });
+      sendJson(res, sale);
+    }) as RequestHandler,
+  };
+}

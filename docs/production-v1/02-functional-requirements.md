@@ -1,0 +1,78 @@
+# 02-functional-requirements
+
+The following functional requirements (FR) are **traceable**, **testable**, and prioritized for Production V1.  Each FR includes a unique identifier, a brief description, and a priority flag.
+
+| ID | Description | Priority |
+|----|-------------|----------|
+| **FR-AUTH-001** | Employee login via email + password, returning a short-lived JWT (15 min) and user context (roles, branch assignments). | MUST |
+| **FR-AUTH-002** | Logout is client-side token discard; no server-side revocation required. | MUST |
+| **FR-RBAC-001** | Permission-based authorization middleware resolves roles/permissions per request from PostgreSQL; JWT carries only `sub`. | MUST |
+| **FR-RBAC-002** | Branch-scoped permission enforcement: users may only act on resources belonging to branches they are assigned to. | MUST |
+| **FR-RBAC-003** | Warehouse-scoped permission enforcement: users with `WAREHOUSE` role may only act on resources belonging to the central warehouse/depot (unless granted additional permissions). | MUST |
+| **FR-ORG-001** | System maintains company entity (Mona Jacinta) and supports five retail branches plus one central warehouse/depot. | MUST |
+| **FR-PROD-001** | Create, read, update, delete (soft-delete) for `Product` (global) with a unique internal barcode (Code 128). | MUST |
+| **FR-PROD-002** | CRUD for `ProductVariant` (branch-agnostic) with unique SKU, colour, size attributes. | MUST |
+| **FR-PROD-003** | Product barcode resolution: scanning barcode returns product; user then selects exact variant (colour/size). | MUST |
+| **FR-IMG-001** | Product may have an optional primary image. Product creation, editing, goods receiving, POS, and inventory workflows MUST continue to work when the Product has no image. | MUST |
+| **FR-IMG-002** | Authorized users may upload, replace, and remove the Product primary image. Removing an image must not delete or affect the Product itself. | MUST |
+| **FR-IMG-003** | Product image uploads must be validated server-side. Validation must include permitted image media type, permitted maximum file size, rejection of unsupported/invalid uploads. Exact limits and storage provider are deferred to Architecture/ERD. | MUST |
+| **FR-IMG-004** | Image upload/replacement/removal is protected by the PRODUCT_IMAGE_MANAGE permission. | MUST |
+| **FR-PRIC-001** | Pricing calculation based on customer code (01 = CONSUMER_FINAL, 02 = WHOLESALE). | MUST |
+| **FR-PRIC-002** | For CONSUMER_FINAL: `listPrice` minus `cashDiscount` (percentage or fixed monetary amount) equals `cashPrice`. | MUST |
+| **FR-PRIC-003** | For WHOLESALE: price equals `wholesalePrice`. | MUST |
+| **FR-PRIC-004** | Pricing rules are validated in the backend; frontend-provided totals/prices are never authoritative. | MUST |
+| **FR-PRIC-005** | For CONSUMER_FINAL: the authoritative price is finalized at the payment-finalization point using the **combined effective payment composition** = payment methods behind applied `SenaPayment`s + new `SalePayment`s for this Sale. If 100% of the combined amount uses cash-discount-eligible methods (`CASH` or `TRANSFER`; `TRANSFER` remains eligible even when `originInstitution = MERCADO_PAGO`), the `cashPrice` applies; if any amount uses `CARD_DEBIT`, `CARD_CREDIT`, or `QR`, the `listPrice` applies. WHOLESALE sales use the `wholesalePrice`. The backend/domain is authoritative; prices are never frozen before the final payment composition is known. PENDING `SaleItem`s carry candidate price snapshots (`listPrice`/`cashPrice`/`wholesalePrice`/`cost`); at finalization the authoritative `priceType` and monetary values are computed and the historical `SaleItem` monetary snapshot is written and made immutable. A `SenaItem` must not force an incorrect final price. | MUST |
+| **FR-INV-001** | Inventory is tracked per ProductVariant × Location (Branch or Warehouse). It distinguishes physical stock on hand and reserved/held stock (technical hold from seller→cashier flow). | MUST |
+| **FR-INV-002** | Sellable/available stock is a business invariant derived from physical stock, reserved/held stock, in-transit stock, and temporarily-out/publication stock. The exact persistence and computation method are deferred to Architecture/ERD. In-transit and temporarily-out stock are tracked authoritatively through the `StockTransfer`/`TransferItem` and `PublicationCheckout`/`PublicationItem` aggregates respectively; they are **not** columns on `InventoryBalance`. | MUST |
+| **FR-INV-003** | Explicitly track additional stock dimensions: `inTransit` (stock in transit between locations) and `temporarilyOut` (stock checked out for publication/photo merchandise). These are tracked authoritatively through the transfer and publication aggregates (and their external-custody reconciliation), not as `InventoryBalance` counter columns. | MUST |
+| **FR-INV-004** | Sellable/available stock is a business invariant that must be computed from physical stock, reserved/held stock, in-transit stock, and temporarily-out/publication stock. The exact persistence formula is deferred to Architecture/ERD. Because in-transit and temporarily-out units are already removed from `InventoryBalance.onHand` at dispatch/checkout, the canonical sellable = `onHand − active technical StockHold − active commercial SenaItem`; external custody is reconciled separately via domain aggregates. | MUST |
+| **FR-INV-005** | Inventory history (`StockMovement`) records every adjustment with: company, location, variant, qty change, before/after, operation type, related document, user, timestamp, notes. | MUST |
+| **FR-REC-001** | Warehouse creates a **Goods Receipt** before completion, attaching supplier, package count, photos/PDFs, and line items. Receipt is editable while `status = IN_PROGRESS`. | MUST |
+| **FR-REC-002** | Upon receipt `COMPLETED`, inventory is updated (`physical` increased), `StockMovement` entries of type `GOODS_RECEIPT` are generated, and the receipt becomes immutable. | MUST |
+| **FR-REC-003** | Goods receipt supports progressive loading of merchandise during receiving. | MUST |
+| **FR-SUP-001** | Supplier identity/contact management. | MUST |
+| **FR-SUP-002** | Supplier association with goods receipts/purchases, supplied products where needed, and basic operational history. | MUST |
+| **FR-SUP-003** | Supplier invoices, accounts payable, payment allocation, payable balance and supplier current-account depth. | SHOULD |
+| **FR-IMPORT-001** | Day 25 import foundation anticipates CSV/XLSX import with: column mapping, validation, preview, row-level errors, explicit confirmation, auditable initial stock import. Initial stock must ultimately produce INITIAL_STOCK inventory history. | MUST |
+| **FR-IMPORT-002** | Final real-business import/migration completion, cleanup and reconciliation may continue during Day 26-35. Creating Products/Variants during GoodsReceipt remains a receiving capability, not the import subsystem itself. | SHOULD |
+| **FR-TRANS-001** | Transfer workflow states: REQUESTED → APPROVED → PREPARING → DISPATCHED → RECEIVED → (RECEIVED_WITH_DIFFERENCE) → CANCELLED. | MUST |
+| **FR-TRANS-002** | Transfer tracks: requesting user, origin, destination, requested quantities, approved quantities, dispatched quantities, received quantities, timestamps, observations. | MUST |
+| **FR-TRANS-003** | At `DISPATCHED`: decrement origin `physical` stock, increment `inTransit`. | MUST |
+| **FR-TRANS-004** | At `RECEIVED`: decrement `inTransit`, increment destination `physical`. | MUST |
+| **FR-TRANS-005** | Transfer discrepancies (`RECEIVED_WITH_DIFFERENCE`) are recorded, generate audit entry, and notify administration/owner. | MUST |
+| **FR-PAY-004** | Transfer payment records customer-origin institution: MACRO, BBVA, NACION, GALICIA, MERCADO_PAGO, or OTHER (free-text name). This is required for reporting and audit. | MUST |
+| **FR-REMITO-001** | Transfer dispatch generates a delivery note/remito with: sequential number, origin, destination, items, quantities, date/time, responsible users, and link to transfer. | MUST |
+| **FR-LABEL-001** | Label generation for products: includes Code 128 barcode (product-level), human-readable barcode value, short product description, black border, approximately 70 mm × 37 mm. | MUST |
+| **FR-LABEL-002** | Labels print on ordinary self-adhesive A4 sheets, manual guillotine cutting, configurable quantity, reprinting allowed. | MUST |
+| **FR-LABEL-003** | Label layout supports configuration of top margin, lateral margin, horizontal gap, vertical gap, starting position (where feasible). | SHOULD |
+| **FR-POS-001** | Seller POS: scan product barcode (or search by name/SKU/legacyCode), select exact variant by colour/size, build sale cart, send to cashier. | MUST |
+| **FR-POS-002** | Seller can view own draft sales and status. | MUST |
+| **FR-PAY-001** | Split payments supported: cash, transfer, card debit, card credit. Each `SalePayment` stores `method`, `amount`, optional `receivedAmount` / `changeAmount` (cash), and a unique `idempotencyKey`. | MUST |
+| **FR-PAY-002** | Sale transitions to `PAID` only when `Sale.total = Σ(applied SenaSettlement.totalDepositApplied) + Σ(accepted SalePayment.amount)`. Partial sums never mark as paid. An already-collected `SenaPayment` is applied financially via `SenaSettlement`, never materialized as a new `SalePayment` and never producing a second `CashMovement` (the original `SenaPayment` remains the authoritative historical payment). Payment application is idempotent: a `SenaPayment` may never be applied twice, and `0 ≤ totalDepositApplied ≤ Sale.total`. | MUST |
+| **FR-PAY-003** | For cash payments: `SalePayment` distinguishes `amount` (counts toward sale), `receivedAmount` (gross handed over), and `changeAmount` (received − amount). Returned change is not revenue. | MUST |
+| **FR-CASH-001** | Cash register (`CashRegister`) per branch; cash sessions (`OPEN`/`CLOSE`) track opening amount, expected amount, counted amount, and difference. | MUST |
+| **FR-CASH-002** | Cash movements include `SALE_INCOME`, `SENA_DEPOSIT`, `MANUAL`, `DEPOSIT`, `WITHDRAWAL`, `ADJUSTMENT`. Each movement is auditable. A CASH `SenaPayment` requires an OPEN `CashSession` at the same Location and records exactly one positive `CashMovement` of type `SENA_DEPOSIT` referencing the `SenaPayment`; SEÑA fulfillment produces no second `CashMovement`. | MUST |
+| **FR-CASH-003** | At most one `OPEN` cash session per `CashRegister` (enforced by partial unique index). | MUST |
+| **FR-SENA-001** | Commercial SEÑA (customer reservation): exact duration 24 hours from creation, deposit amount free/manual, merchandise becomes unavailable for normal sale while held. | MUST |
+| **FR-SENA-002** | SEÑA default initial business policy: non-refundable (future policy may be configurable). | MUST |
+| **FR-SENA-003** | On expiry, SEÑA transitions from `ACTIVE` to `EXPIRED`; operational active list no longer shows it; reserved merchandise is released. Historical SEÑA/audit remains. | MUST |
+| **FR-SENA-004** | If deposit was accepted, financial movement/history must remain auditable. | MUST |
+| **FR-EXCH-001** | Exchange: link to original sale (even if sold at another branch), record returned item, create replacement sale item, handle price difference payment (customer pays difference if replacement price higher). | MUST |
+| **FR-EXCH-002** | Exchange does NOT rewrite original sale; generates inventory movements (return increases stock, replacement decreases stock). | MUST |
+| **FR-EXCH-003** | Exchange may occur in a different branch than the original sale; system must locate original sale across branches respecting permissions. | MUST |
+| **FR-PUB-001** | Publication / photo merchandise checkout: `PUBLICATION_CHECKOUT` reduces sellable stock, records purpose, operator, notes, optional media. | MUST |
+| **FR-PUB-002** | Publication return: `PUBLICATION_RETURN` with condition `GOOD` (stock becomes sellable again), `DAMAGED` (auditable damage/write-off), `LOSS` (auditable loss/missing). | MUST |
+| **FR-NOTIF-001** | Owner / Admin receive high-priority notifications for: manual stock adjustments, write-offs, damage/loss, transfer discrepancies, completed goods receipts, low stock (configurable), significant price modifications, sensitive inventory changes. | MUST |
+| **FR-NOTIF-002** | Normal sale activity generates only low-priority audit/events (e.g., `sale.pending_payment`, `sale.completed`); these do NOT create noisy high-priority admin notifications by default. | MUST |
+| **FR-NOTIF-003** | Sales greater than ARS 500,000 trigger an in‑app administrative notification to OWNER or appropriately authorized ADMIN users. Normal sales do not generate noisy high‑priority notifications. The threshold may later become configurable, but the approved initial threshold is ARS 500,000. | MUST |
+| **FR-PRIC-006** | Only OWNER or ADMIN with explicit PRICE_MANAGE permission and appropriate scope may change product prices (listPrice, cashDiscount, wholesalePrice). SELLER, CASHIER, and WAREHOUSE have no default price‑change authority. Price management covers individual price changes, category/group price changes, and bulk/mass price changes. Only OWNER and authorized ADMIN users may change prices. | MUST |
+| **FR-AUDIT-001** | Audit log records: user, role, branch, operation, entity type, entity id, timestamp, relevant before/after state (when appropriate). No passwords, tokens, secrets stored. | MUST |
+| **FR-DASH-001** | Essential dashboard/reports: sales summary, inventory alerts, cash session status, pending transfers. | MUST |
+| **FR-REPORT-001** | Transfer payment report filterable by date range and bank; export to XLSX or PDF. | MUST |
+| **FR-REPORT-002** | Report includes at minimum columns: date, bank, amount, aggregate total. | MUST |
+| **FR-ARCA-001** | ARCA integration capability: fiscal provider interface decoupled via FiscalProvider → ARCAProvider. ARCA is a required Production V1 project capability; it is not on the critical path for the Day 25 operational milestone; Day 26-35 targets real ARCA homologation when credentials/configuration are available. Never fabricate CAE; never begin testing against ARCA production. ARCA failure must not corrupt Sale, Payment, Cash, or Inventory state. | SHOULD |
+| **FR-ARCA-002** | ARCA homologation testing with provided credentials (Day 26-35). | SHOULD |
+| **FR-TREAS-001** | Treasury, accounts receivable/payable, operational accounting (Day 26-35). | SHOULD |
+| **FR-TRAIN-001** | Training and production preparation (Day 26-35). | SHOULD |
+ 
+**Notes**-All `MUST` items are required for the Day 25 milestone and must have automated tests. `SHOULD` items are targeted for the Day 26-35 milestone. `LATER` items are out of scope for the current release.

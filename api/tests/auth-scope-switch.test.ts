@@ -1,0 +1,164 @@
+import express from 'express';
+import request from 'supertest';
+import { SignJWT } from 'jose';
+import { describe, expect, it } from 'vitest';
+import type { PrismaClient } from '../src/generated/prisma/client.js';
+import { env } from '../src/config/env.js';
+import { createRequireAuth } from '../src/middleware/auth.js';
+import { assertBranchAccess, requirePermission } from '../src/middleware/authorization.js';
+import { PRODUCTION_PERMISSIONS } from '../src/modules/rbac/permissions.js';
+import { errorHandler } from '../src/middleware/errorHandler.js';
+import { sendJson } from '../src/shared/json-safe.js';
+
+const key = new TextEncoder().encode(env.JWT_SECRET);
+const now = Math.floor(Date.now() / 1000);
+
+function buildApp(database: PrismaClient) {
+  const app = express();
+  app.get('/private', createRequireAuth(database), (req, res) => {
+    sendJson(res, { effectiveLocationIds: req.auth?.effectiveLocationIds, roles: req.auth?.roles });
+  });
+  app.use(errorHandler);
+  return app;
+}
+
+async function token() {
+  return new SignJWT()
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject('test-user')
+    .setIssuedAt(now)
+    .setExpirationTime(now + 300)
+    .sign(key);
+}
+
+type StubRoleScope = {
+  roleId: string;
+  role: { code: string; permissions: Array<{ permission: { code: string } }> };
+  scopeKind: 'LOCATION' | 'COMPANY';
+  locationId: string | null;
+};
+
+function stubUser(branchIds: string[], roleScopes: StubRoleScope[] = []) {
+  return {
+    id: 'test-user',
+    isActive: true,
+    branchRoles: branchIds.map((branchId) => ({
+      branchId,
+      role: { code: 'SELLER', permissions: [] },
+    })),
+    roleScopes,
+  };
+}
+
+// Proves the real per-request path (middleware/auth.ts, which is what
+// authorization.ts's assertBranchAccess/requirePermission actually enforce
+// against) switches branchIds to UserRoleScope, not just auth.service.ts's
+// /login and /me response bodies. Uses a stub database (same style as the
+// existing api/tests/auth.test.ts) so this is fast and does not need a real
+// Postgres connection. UserRoleScope rows are stubbed as part of the single
+// `user.findUnique` result (its `roleScopes` selection) rather than a
+// separate `userRoleScope.findMany` call — middleware/auth.ts loads both in
+// one query and never queries UserRoleScope on its own (see
+// effective-branch-ids.ts).
+describe('middleware/auth.ts branchIds resolution (Phase 1C SWITCH)', () => {
+  it('prefers UserRoleScope over legacy UserBranchRole when it has been backfilled for this user', async () => {
+    const testDatabase = {
+      user: {
+        findUnique: async () =>
+          stubUser(['legacy-branch'], [
+            { roleId: 'r1', role: { code: 'SELLER', permissions: [{ permission: { code: 'CASH_SESSION_OPEN' } }] }, scopeKind: 'LOCATION', locationId: 'switched-location' },
+          ]),
+      },
+    } as unknown as PrismaClient;
+    const response = await request(buildApp(testDatabase))
+      .get('/private')
+      .auth(await token(), { type: 'bearer' });
+    expect(response.status).toBe(200);
+    expect(response.body.effectiveLocationIds).toEqual(['switched-location']);
+  });
+
+  it('returns empty branchIds when UserRoleScope is empty, even though legacy UserBranchRole still grants a branch (no per-user legacy fallback post-SWITCH)', async () => {
+    // An earlier version of this policy treated "zero UserRoleScope rows for
+    // this user" as "not yet migrated" and fell back to the legacy
+    // UserBranchRole-derived set — but that's ambiguous: it cannot tell
+    // "never migrated" apart from "administrator explicitly revoked every
+    // scope for this user", and the latter must not silently resurrect the
+    // user's old legacy branches. UserRoleScope is authoritative even when
+    // empty; UserBranchRole stays only as the legacy role/permission source
+    // (see stubUser's roles/permissions untouched below).
+    const testDatabase = {
+      user: { findUnique: async () => stubUser(['legacy-branch']) },
+    } as unknown as PrismaClient;
+    const response = await request(buildApp(testDatabase))
+      .get('/private')
+      .auth(await token(), { type: 'bearer' });
+    expect(response.status).toBe(200);
+    expect(response.body.effectiveLocationIds).toEqual([]);
+    expect(response.body.roles).toEqual(['SELLER']);
+  });
+
+  it('[Phase 1D.2] a COMPANY-scoped row now resolves — effectiveLocationIds expands to every active Location instead of throwing UNSUPPORTED_SCOPE', async () => {
+    const testDatabase = {
+      user: {
+        findUnique: async () =>
+          stubUser(['legacy-branch'], [
+            { roleId: 'r1', role: { code: 'ADMIN', permissions: [] }, scopeKind: 'COMPANY', locationId: null },
+          ]),
+      },
+      location: {
+        findMany: async () => [{ id: 'active-loc-1' }, { id: 'active-loc-2' }],
+      },
+    } as unknown as PrismaClient;
+    const response = await request(buildApp(testDatabase))
+      .get('/private')
+      .auth(await token(), { type: 'bearer' });
+    expect(response.status).toBe(200);
+    expect(response.body.effectiveLocationIds.sort()).toEqual(['active-loc-1', 'active-loc-2']);
+  });
+});
+
+// SECURITY-RBAC-01a: the real per-request path (createRequireAuth →
+// buildAuthorizationContext) feeding requirePermission(..., 'own') and
+// assertBranchAccess. COMPANY is valid only for OWNER/ADMIN; an invalid
+// CASHIER + COMPANY row must not extend the user's valid CASHIER @ loc-a.
+describe('COMPANY scope only for OWNER/ADMIN through requirePermission/assertBranchAccess (SECURITY-RBAC-01a)', () => {
+  function buildGuardedApp(database: PrismaClient) {
+    const app = express();
+    const ok: express.RequestHandler = (_req, res) => { sendJson(res, { ok: true }); };
+    app.get('/charge/:branchId', createRequireAuth(database), requirePermission(PRODUCTION_PERMISSIONS.SALE_CHARGE, {
+      branchScope: 'own', resolveResourceBranch: (req) => String(req.params.branchId),
+    }), ok);
+    app.get('/branch/:branchId', createRequireAuth(database), (req, _res, next) => {
+      assertBranchAccess(req, String(req.params.branchId));
+      next();
+    }, ok);
+    app.use(errorHandler);
+    return app;
+  }
+  const charge = { permission: { code: 'SALE_CHARGE' } };
+  const guardedDatabase = (roleScopes: StubRoleScope[]) => ({
+    user: { findUnique: async () => stubUser([], roleScopes) },
+    location: { findMany: async () => [{ id: 'loc-a' }, { id: 'loc-b' }] },
+  }) as unknown as PrismaClient;
+  const statusOf = async (database: PrismaClient, path: string) =>
+    (await request(buildGuardedApp(database)).get(path).auth(await token(), { type: 'bearer' })).status;
+
+  it('a valid CASHIER @ loc-a plus an invalid CASHIER + COMPANY row is authorized at loc-a only', async () => {
+    const database = guardedDatabase([
+      { roleId: 'r-cashier', role: { code: 'CASHIER', permissions: [charge] }, scopeKind: 'LOCATION', locationId: 'loc-a' },
+      { roleId: 'r-cashier', role: { code: 'CASHIER', permissions: [charge] }, scopeKind: 'COMPANY', locationId: null },
+    ]);
+    expect(await statusOf(database, '/charge/loc-a')).toBe(200);
+    expect(await statusOf(database, '/branch/loc-a')).toBe(200);
+    expect(await statusOf(database, '/charge/loc-b')).toBe(403);
+    expect(await statusOf(database, '/branch/loc-b')).toBe(403);
+  });
+
+  it('control: a valid ADMIN + COMPANY row is authorized at any location', async () => {
+    const database = guardedDatabase([
+      { roleId: 'r-admin', role: { code: 'ADMIN', permissions: [charge] }, scopeKind: 'COMPANY', locationId: null },
+    ]);
+    expect(await statusOf(database, '/charge/loc-b')).toBe(200);
+    expect(await statusOf(database, '/branch/loc-b')).toBe(200);
+  });
+});

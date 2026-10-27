@@ -1,0 +1,2000 @@
+# Mona Jacinta — Living System Blueprint
+
+> **MANDATORY UPDATE PROTOCOL.** A future block is not complete until it has
+> updated, where applicable:
+> Current Resume Pointer (§2) · Git Checkpoint Ledger (§3) · Capability Matrix (§14) ·
+> File Responsibility Index (§15) · Block Change Ledger (§16) ·
+> Failure & Learning Registry (§17) · Prevention Rules (§18) · Known Debt (§19) ·
+> Open Risks (§20) · Audit Trail (§22) · Next Work Queue (§23) · Blueprint Update Log (§25).
+>
+> Update after: (1) meaningful implementation, (2) a significant failure/root
+> cause, (3) an OpenCode review, (4) a Codex review, (5) a local checkpoint,
+> (6) an owner full-suite result, (7) push/deployment, (8) a major
+> architecture/business decision.
+>
+> **Git always outranks stale Blueprint status.** Verify before trusting.
+
+Status tags used throughout:
+
+| Tag | Meaning |
+| --- | --- |
+| `[FROZEN REQUIREMENT]` | From `docs/production-v1/*`. Target, not necessarily implemented. |
+| `[CURRENT IMPLEMENTATION]` | Verified in source/schema/tests at the HEAD in §2. |
+| `[PILOT DECISION]` | From `docs/pilot-v1.1/*`. Pilot-only overlay. |
+| `[TRANSITIONAL]` | Implemented, but scheduled to be replaced by the frozen target. |
+| `[UNVERIFIED — NEEDS CONFIRMATION]` | Could not be proven from the repository. Do not rely on it. |
+
+---
+
+## 0. Blueprint Protocol
+
+### 0.1 Purpose
+
+This file is the persistent engineering memory of Mona Jacinta: implementation
+state, checkpoints, module map, invariants, failures, root causes, lessons,
+deferred work, and the exact resume point. A future engineer or agent should be
+able to read it, verify it against git, and continue without rebuilding the
+project history from chat logs.
+
+It is a **ledger and map**, not a requirements document.
+
+### 0.2 Source-of-truth precedence
+
+1. `docs/production-v1/*` — `[FROZEN REQUIREMENT]`. The authoritative
+   Production V1 requirements and target architecture.
+2. Verified current source, schema, and tests — `[CURRENT IMPLEMENTATION]`.
+   What the system actually does.
+3. `docs/pilot-v1.1/*` — `[PILOT DECISION]`. The Pilot operational overlay.
+   It never modifies (1).
+4. `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` (this file) —
+   `[LIVING IMPLEMENTATION LEDGER]`. Status, map, checkpoints, lessons,
+   failures, handoff, and resume pointer.
+5. Older working and demo documents (`docs/working/*`, `docs/plans/*`,
+   `docs/architecture/mona-demo-v2.md`, `docs/superpowers/plans/*`) —
+   `[HISTORICAL]`.
+
+`AGENTS.md` (the tool-agnostic constitution) and `CLAUDE.md` (Claude Code
+operating rules) are process rules. They sit alongside this hierarchy and
+govern how work is done.
+
+**Never rewrite a frozen requirement to match transitional code.** When the
+frozen target and the implementation differ, record four things: the frozen
+target, the current implementation, the gap, and the intended future phase.
+§5, §6 and §14 do this.
+
+### 0.3 Verification-before-trust rule
+
+- Every status in this file was true at the HEAD recorded in §2, and only then.
+- Before acting on any statement here, check it against `git log`,
+  `git status`, and the named source files.
+- If this file disagrees with git or source, **git and source win**. Fix this
+  file in the same block and add an entry to §25.
+- Memory tools and earlier chat context are orientation only.
+
+### 0.4 Update requirements
+
+- Update in place. Keep the major section numbers 0–25 stable.
+- §3, §16, §17, §18, §19, §22 and §25 are append-mostly. Mark obsolete rows
+  `SUPERSEDED`/`CLOSED` instead of deleting them.
+- Give every failure (`F-###`), rule (`RULE-###`) and debt item (`DEBT-###`) a
+  stable ID. Never reuse an ID.
+- Use full SHAs in the ledgers where they are verified. Never invent a SHA.
+
+### 0.5 No-secrets rule
+
+Never write any of the following into this file: `DATABASE_URL`,
+`TEST_DATABASE_URL`, `DIRECT_URL`, JWT secrets, passwords (including deployed
+demo passwords), API keys, tokens, connection strings, Supabase project refs
+or hosts, or customer PII. Environment *names*, non-secret file paths and
+checksums are allowed.
+
+### 0.6 Frozen-doc rule
+
+`docs/production-v1/*` is frozen. Do not edit it to agree with code. Raise the
+conflict and record it here (§5/§6/§14 gap columns).
+
+### 0.7 Failure / learning policy
+
+A failed attempt is valuable project information when it teaches a reusable
+lesson.
+
+**Register in §17:** correctness defects; authorization defects; stock or
+financial invariant problems; concurrency mistakes; unsafe
+automation/deployment assumptions; review findings that changed the
+architecture; recurring infrastructure traps; errors likely to recur.
+
+**Do not register:** trivial typos, formatting corrections, harmless TypeScript
+typos fixed at once, or local command typos with no reusable lesson.
+
+---
+
+## 1. Executive System Definition
+
+### 1.1 Business purpose `[FROZEN REQUIREMENT]`
+
+Mona Jacinta is a multi-user, multi-branch retail commercial system for a
+single company (no SaaS tenancy). It covers the in-store POS flow (seller →
+cashier), inventory across branches and a central warehouse, cash sessions,
+audit, and realtime notifications. Later phases add catalog/pricing tiers,
+transfers, suppliers/goods receipts, commercial SEÑA holds,
+exchanges/publications, labels, reports, and ARCA fiscal integration
+(`docs/production-v1/01..08`).
+
+### 1.2 Operational flow `[CURRENT IMPLEMENTATION]`
+
+```text
+SELLER builds a DRAFT sale (cart)  ──send-to-cashier──►  PENDING_PAYMENT
+   (technical hold: StockReservation ACTIVE, TTL 30 min; Inventory.reserved += qty)
+CASHIER registers payment(s) (split allowed; CASH needs an OPEN cash session)
+   ──sum == total──►  PAID
+CASHIER completes  ──►  COMPLETED (physical -= qty, reserved -= qty,
+                                   StockMovement SALE, holds CONSUMED)
+Cancel (DRAFT / PENDING_PAYMENT with no accepted payment) ──► CANCELLED
+Expired zero-payment holds ──authoritative release──► RELEASED (Sale stays PENDING_PAYMENT)
+```
+
+### 1.3 Historical pilot objective `[HISTORICAL PILOT DECISION]`
+
+Pilot V1.1 is an operational safety overlay. It makes the transitional
+seller → cashier technical hold safe to run in a real store before the frozen
+`StockHold` model exists. P0.1 is technical-hold expiry
+(`docs/pilot-v1.1/00-pilot-safety-gate.md`).
+
+**C1 (owner decision, 2026-10-11, `AGENTS.md`):** the controlled one-store pilot runs the
+Production V1 codebase with this Pilot V1.1 overlay and Pilot Pricing V2, against the PILOT
+environment only (C2). Demo V2 stays historical (§1.5).
+
+### 1.4 Production V1 direction `[FROZEN REQUIREMENT]`
+
+> **Current operational authority — 2026-10-23.**
+> Mona Jacinta is operating as **Production V1**, not as a pilot.
+> The former one-store PILOT/G11 rollout and Pilot V1.1 records are historical deployment evidence only.
+> The canonical integration branch is `integration/system-v2`; the Production database baseline completed the G14 cut-over.
+> Historical sections, commit ledgers and dated verification snapshots below are preserved as evidence and MUST NOT be interpreted as the current environment or current next action.
+> `docs/production-v1/*` remains frozen and is not modified by this status correction.
+
+- Five roles (OWNER, ADMIN, CASHIER, SELLER, WAREHOUSE) with COMPANY/LOCATION
+  scopes (`03-role-permission-matrix.md`).
+- Dual balance + ledger inventory: `InventoryBalance.onHand` plus
+  `StockMovement`, with logical holds (`StockHold`, `SenaItem`) and
+  `effectiveSellable` computed at read time (`07-inventory-ledger.md` §3, §5).
+- Product-level Code 128 barcode, consumer/wholesale pricing tiers
+  (`01-product-scope.md`).
+- Phase roadmap 0A–10E (`08-implementation-roadmap.md`).
+
+The current implementation is a Production V1 authorization foundation layered
+over the Demo V2 commerce core. See §5 for the separation.
+
+### 1.5 Product vision, delivery contexts and Block A / Block B `[OWNER DECISION]` (C1–C4, 2026-10-11)
+
+Source: `AGENTS.md` "2026-10-11 — OWNER decisions C1–C4". The blocks below are a product-organization and delivery-planning view: they do **not** replace the frozen phase IDs (0A–10E, `08-implementation-roadmap.md`) or the frozen MUST/SHOULD classes (`02-functional-requirements.md`), and every status cell points to verified evidence (§14, §3, §16) or says UNVERIFIED / NOT STARTED. Nothing here is a completion claim.
+
+**Vision (owner-stated).** Mona Jacinta is an integrated management system for clothing retail, not only a POS or stock tool: size/color variants, branch-aware inventory, separate seller / cashier / warehouse / administration responsibilities, payment-method pricing, mixed-payment settlement with proportional repricing, operational reporting, administration and finance, employee current accounts, and accounting/fiscal integration including ARCA. Products such as GesHoy are UX inspiration only, never architecture or domain truth. The full vision is **not** implemented.
+
+| Delivery context | What it is | What it is NOT |
+| --- | --- | --- |
+| Historical Demo V2 | The completed, superseded predecessor (`feat/demo-v2` → `a5b7b1b`, an ancestor of `feat/production-v1`; `AGENTS.md` History). Its commerce core still underlies parts of Production V1 (§1.4, §5) | Not a current pilot, not an active implementation track (C1) |
+| One-store pilot | Production V1 codebase + Pilot V1.1 overlay (§1.3) + Pilot Pricing V2, against PILOT only (C1, C2); track PILOT (§23 rows 44–50) | Not evidence that Production V1 is complete; not a deployment authorization; not a database authorization |
+| Final Production V1 product | Block A + Block B below, integrated, released through separate gates | Not defined by what the pilot happens to exercise |
+
+**Block A — Operational / Commercial** (track PROD-A, §23 rows 51–55)
+
+| Capability | Frozen basis | Current status (evidence) |
+| --- | --- | --- |
+| Company and branch (Location) administration | Phase 1A | Company/Location foundation in place (§3 Phase 1A); admin UI completeness UNVERIFIED |
+| Users, roles, branch-aware authorization | Phases 1B–1E | RBAC YES / pilot-ready YES (§14); `client/` and `admin/` role-model migration UNVERIFIED (`AGENTS.md` Repository) |
+| Products and size/color variants | Phases 2A, 2D | Catalog and Variants YES / pilot-ready PARTIAL (§14) |
+| Categories, attributes, SKU/barcode | Phases 2A–2B (product-level Code 128) | UNVERIFIED |
+| Inventory and stock movements | Phases 3A–3E | Availability YES; technical reservations TRANSITIONAL; frozen `InventoryBalance`/`StockHold` model NOT STARTED (§14, §1.4) |
+| Multibranch stock and transfers | Phases 5A–5G (FR transfer set) | NO (§14) |
+| Seller workflow | Phase 6B | Seller draft and send-to-cashier YES (§14) |
+| Cashier checkout, sales and sale payments | Phases 6A, 6C, 6G; FR-PAY-001…004 | Payments, queue, completion YES (P0.1-C, §14); POS E2E (6G) UNVERIFIED |
+| Register / cash sessions, opening and closing | Phase 6E; FR-CASH-001…003 | Cash session YES at Demo V2 level / PARTIAL (§14) |
+| Payment methods and payment-method pricing | Phases 2C, 6D; superseded by Pilot Pricing V2 (`AGENTS.md` 2026-10-06) | Pricing V2 DONE (§23 row 12); §14 Pricing TRANSITIONAL / PARTIAL |
+| Mixed-payment proportional repricing | Final-product requirement (`AGENTS.md` 2026-10-06) | NOT IMPLEMENTED; acceptance criteria pending (see Pricing stages) |
+| Returns, cancellations, exchanges, SEÑA | Phases 7A–7E, 8A–8B; FR-EXCH-001…003 | Cancellation and correction YES (P0.2, §14); exchanges and SEÑA NO (§14); returns UNVERIFIED |
+| Publications, labels, notifications, realtime | Phases 8C–8E, 9A–9C | Realtime YES (advisory); labels and publications NO (§14) |
+| Operational dashboards, reports, audit | Phase 9D; audit throughout | Audit YES; reports NO (§14) |
+| Hardening and production readiness | Phases 10C–10E | NOT STARTED as phases; D5H in progress (§16) |
+
+**Block B — Administration, Accounting and ARCA** (track PROD-B, §23 rows 56–61). Frozen items keep their frozen class; everything else is **future scope with acceptance criteria pending** and needs owner approval for its release milestone.
+
+| Capability | Frozen basis | Current status |
+| --- | --- | --- |
+| Employees (staff identity, assignments) | Production V1 users and scopes (Phase 1) | Staff identity and scopes exist (§7); employment/payroll data NOT STARTED |
+| Employee current accounts | **None — C3 future-scope addition** | OWNER-APPROVED FUTURE SCOPE — NOT IMPLEMENTED — ACCEPTANCE CRITERIA PENDING |
+| Suppliers — operational foundation | Phase 4A; FR-SUP-001, FR-SUP-002 (MUST); `05-architecture.md` §27 Day 25 "Supplier operational foundation (identity, GoodsReceipt link)" | NO (§14) |
+| **Foundational receiving** (GoodsReceipt, completion into inventory, supplier link) | Phases 4B–4C; FR-REC-001…003 (MUST); `05-architecture.md` §27 Day 25 "GoodsReceipt (warehouse receiving)" | NO |
+| **Extended purchasing / supplier financial depth** (PurchaseOrder, SupplierInvoice, SupplierPayment, AccountsPayable) | `05-architecture.md` §27 Day 26-35 (SHOULD) and §26 (`PurchaseOrder*` = Day 26-35); FR-SUP-003 (SHOULD); **not** a Day 25 MUST | NOT STARTED |
+| Accounts payable, supplier balances, due dates | FR-SUP-003 (SHOULD); `05-architecture.md` §27 Day 26-35 (part of the extended purchasing row above) | NOT STARTED |
+| Treasury, banks, wallets, card settlement reconciliation, expenses | FR-TREAS-001 (SHOULD; "treasury, accounts receivable/payable, operational accounting") | NOT STARTED; detailed scope is future |
+| Chart of accounts, journal, periods and closing | Only "operational accounting" in FR-TREAS-001 (SHOULD) | Future scope; specification pending |
+| Financial and administrative reporting | Phase 9D (reports) partially | NOT STARTED |
+| IVA and fiscal concepts | Not specified in detail | Requires current official-source verification and professional accounting review before any implementation |
+| ARCA, electronic invoicing, CAE, fiscal outbox and error handling | Phases 10A–10B; FR-ARCA-001, FR-ARCA-002 (SHOULD — FR-ARCA-001 itself says ARCA is a required Production V1 capability that is not on the Day 25 critical path; Phase 10A is P1); `05-architecture.md` §23 (decoupled `FiscalProvider`, outbox in the sale-completion transaction) | NO (§14); regulatory requirements UNVERIFIED |
+| Accounting and fiscal audit trails | Audit requirements throughout | Future scope |
+
+**Cross-block dependencies.** Block A owns the commercial sale lifecycle and its invariants (sale, payments, cash and stock movements, completion). Block B owns downstream fiscal/accounting processing and external integrations, and reads authoritative persisted Block A records (`05-architecture.md` §4 rules: `fiscal` reads completed transactions and never mutates core state). The one deliberate transactional contract between the blocks is the fiscal outbox: where the approved fiscal requirement applies, the `FiscalOutbox` entry is inserted in the **same database transaction** as authoritative Sale completion; the asynchronous fiscal worker processes it only **after** that transaction commits; **no ARCA network call ever happens inside the Sale transaction**; and fiscal failure must not corrupt Sale/Payment/Cash/Inventory (`05-architecture.md` §23 "ARCA Boundary", Phase 10A). This contract does not create circular module dependencies (modules still depend only downward, `05-architecture.md` §4), and exact obligations follow the frozen architecture and Phase 10A, not this summary. Ledgers and postings must be built from authoritative persisted records, never from display-only frontend data, and each must stay traceable to its source sale, payment, refund, cash movement or stock movement. Employee current accounts depend on Block A sales and payments plus staff identity. ARCA depends on completed-sale atomicity (Phases 6A–6D) and the outbox (10A).
+
+**Pricing stages.** (1) Pilot (binding now): one price mode per sale, Pilot Pricing V2 (`AGENTS.md` 2026-10-06). (2) Final product (required, NOT implemented): mixed-payment proportional repricing — the cash/base total is allocated across the chosen payment methods and each allocation gets its method's approved adjustment. Illustration only, not an approved rate table: base 100,000 → cash 50,000 → 50,000; transfer 25,000 at +5% → 26,250; debit 25,000 at +10% → 27,500; charged 103,750. Precision, rounding, rate precedence, tender composition, refunds and reversal accounting need owner-approved acceptance criteria before implementation.
+
+**Employee current accounts (C3).** A bounded capability distinct from customer accounts receivable. Its future specification must cover at least: employee identity and employment relationship; eligible clothing purchases; account debits; employee payments/credits; a balance and movement ledger; authorization rules; payroll settlement/deduction workflow; reversals, refunds and corrections; audit and reconciliation; legal/payroll compliance; administrative permissions and confidentiality. No deduction rate, consent rule, payroll period, accounting entry or legal rule is decided. Not required for the pilot.
+
+**Release separation.** Pilot readiness, Block A readiness, Block B readiness, integration readiness, deployment readiness and commercial delivery commitments are separate gates. A pilot transaction does not make Production V1 ready; an unfinished optional later module does not by itself make Production V1 incomplete without an owner-approved release scope. Any phased commercial release is a proposed decision until the owner approves it. The architecture stays multi-branch even though the first operational rollout is one location.
+
+**Workstream traceability**
+
+| Track | Scope | Depends on | Verified milestones | Unverified / blockers | Next step | Evidence | Acceptance gate |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| PILOT | Production V1 + Pilot V1.1 + Pilot Pricing V2 on PILOT, one store | Block A pilot subset; D5H/TEST gates before PILOT data work; rows 26–28 | P0.1, P0.2, Pricing V2, pre-PILOT fixes (§3) | End-to-end journey, PILOT database readiness and isolation, deployment: UNVERIFIED; no pilot run | Row 44 (read-only review) — proposed | §3, §14, §16 | Owner pilot verdict (row 50) |
+| PROD-A | Block A | Frozen phases 1–3, 5–9, 10C–E | §14 YES rows | Transfers, SEÑA, exchanges, labels, reports, full ledger model, POS E2E, frontends | Row 51 (module inventory) — proposed | §14, frozen phases | Row 55 |
+| PROD-B | Block B | Block A authoritative records; official/professional review for fiscal | none | Everything (NOT STARTED / future) | Row 56 (specification) — proposed | frozen FR IDs, C3 | Row 61 |
+| SAFETY (D5H) | Full-suite live-evidence protocol | Owner authorizations per slice | I1a `ad18815`, I1b `830d595` | I1c-a blocked; P-B2 proposed; O1–O8 unapproved | Row 62 (P-B2 independent review) | §16 | Rows 40–41 |
+
+---
+
+## 2. Current Resume Pointer
+
+> THIS SECTION MUST ALWAYS BE CURRENT. Re-verify it with git before acting.
+
+| Field | Value |
+| --- | --- |
+| Last verified | 2026-10-11 (UTC), owner decisions C1–C4 governance record (documentation-only: `AGENTS.md` + this Blueprint; uncommitted when written; self-reference-safe). **Verification start (read-only against git):** branch `feat/production-v1`, `HEAD` = `ab8cfb23f0ea88e3b1fbc665bc7cfec3585c9fc9` (`docs(d5h): record I1c owner design decisions`) = `origin/feat/production-v1` (`0 0`, local remote-tracking ref); no tracked or staged change; untracked exactly `scripts/database/d5h-backup.mjs` and `scripts/database/d5h-backup.test.mjs` (I1c-a evidence, untouched). No database, test, tool, OS change or branch switch was used. Earlier verification starts are historical: `40b1515`, `830d595`, `3360026`, `3397ed3`, `ed504c6`, `ceaaa1e`. |
+| Branch | `feat/production-v1` |
+| Integrated implementation baseline | `05b30557b08f4edd7b74106a6ff9c609520c7000`: `chore(dev): add hermetic no-db tooling guards` (development-tooling pause; no product business behavior was intentionally changed); the documentation checkpoint on top of it is `2cf1a93` (see "Checkpoint roles" above). The last PRODUCT-source commit is now `3397ed3` (D5I-B2B1; see "Checkpoint roles"); `3220d0c` (D5I-DOC1) is documentation-only. Earlier heads (`9a3243f` Pricing V2/T4, `8a11585`) are historical (§3). |
+| Last PRODUCT-source checkpoint (full) | `3397ed3c180d91a8a6bfbee79a802ee34463348d` — `fix(api): harden sales transaction boundaries` (D5I-B2B1), committed and pushed; parent `08fd70f95ce4bb9343316256c4cfc8ee9f356bef` (A9 documentation checkpoint). This is a stable product checkpoint, NOT a claim about the repository tip: documentation-only commits (including this closeout) may sit on top of it. |
+| Last PRODUCT-source checkpoint (short) | `3397ed3` |
+| Last D5H tooling checkpoint (full) | `ad18815cca76fa4d35a708480242cf2661108a66` — `feat(db): add D5H hosted TEST preflight` (D5H-I1a: canonical hosted TEST config parser, caller-owned in-transaction marker proof primitive, read-only D5H preflight with migration-history and SalePayment guard-risk evidence). It changes ONLY repository database tooling under `scripts/database/` (6 files); it is NOT a PRODUCT-source commit (no `api/src`, no business behavior) and it is NOT a claim that D5H is complete. Committed and pushed. |
+| Last D5H tooling checkpoint (short) | `ad18815` |
+| Last D5H test-harness checkpoint (full) | `830d5950d6199549558d24e982d126a6d46581c0` — `fix(d5h): harden I1b test-target pin and error handling` (D5H-I1b + I1b.1: pinned gate-only hosted TEST target channel in the `api/` test harness, process-lifetime pin, fail-closed error-code extraction). It changes ONLY `api/scripts/demo-database.ts`, `api/tests/setup.ts` and `api/tests/test-db-guard.test.ts`; it is NOT a PRODUCT-source commit (no `api/src`, no business behavior) and it is NOT a claim that D5H is complete. Committed, pushed, remote SHA verified. |
+| Last D5H test-harness checkpoint (short) | `830d595` |
+| Checkpoint roles (read this before trusting any SHA) | **Last PRODUCT-source commit:** `3397ed3c180d91a8a6bfbee79a802ee34463348d` (D5I-B2B1: `REPRICE_C` + `RESERVE_C` transaction hardening; touches `api/src/modules/pricing` and `api/src/modules/sales`, two test files and the Blueprint). **Previous PRODUCT-source commit:** `8a1158528bb629f2b32b3bbbc9aaf6fb70d90c83` (D5I-B1/B1C). **Internal repository tooling:** `05b30557b08f4edd7b74106a6ff9c609520c7000`; and `ad18815cca76fa4d35a708480242cf2661108a66` (D5H-I1a, `scripts/database/` only; not product source); and `830d5950d6199549558d24e982d126a6d46581c0` (D5H-I1b, `api/` test harness and `api/scripts/demo-database.ts` only; not product source). **Later documentation-only closeouts:** `ed504c6` (D5I-B2B), `ceaaa1e` and `3360026` (F-018), `b2e2fe9` (D5H-I1a), `40b1515` (D5H-I1b), `ab8cfb2` (D5H-I1c decisions D1–D7). **Earlier Blueprint closeouts:** `2cf1a93` (tooling pause), `08fd70f` (A9). **This C1–C4 governance record:** the documentation-only commit that contains this row; its own SHA is intentionally not embedded because that would be self-referential. It is NOT a PRODUCT-source checkpoint, and it does not change the product state. |
+| User-level AI/dev tooling phase | **COMPLETE `[OWNER-REPORTED]`** — phases A0 → A8.1 (§16, "User-level AI/development tooling phase"). It changed user-level tooling and configuration only; there is no git checkpoint for it and no repository artifact proves it. Product behavior and product source are unchanged by it. |
+| Commit chain since the P0.2 record | `a04478c` (P0.2 Blueprint record) → **A1** `8a95f0d` → **A2** `41ee882` → **A3** `0d7ac5d` → **C** `3868e5a` → **D** `113c57a` → `13fee1e` → `4b04411` → `9e97aa9` → `bbc24c6` → `f3e5779` → `c8f61c5` → `ce0a6d5` → `4632b89` → `18b0731` → `9da09ab` → `3b623e9` → `441147a` → `a731f2f` → `b43d071` → `9a3243f` → `eddea12` → `18e2643` → `28c3ba4` → `c6b182c` → `3c6dfc4` → `29e5893` → `dbccdf1` → `38bac33` → `eab79a6` → `8a11585` → `3220d0c` (D5I-DOC1) → `05b3055` (tooling) → `2cf1a93` (Blueprint tooling closeout, documentation only) → `08fd70f` (A9 Blueprint closeout, documentation only) → `3397ed3` (D5I-B2B1 `REPRICE_C` + `RESERVE_C` hardening; last PRODUCT-source checkpoint) → `ed504c6` (D5I-B2B closeout, docs) → `ceaaa1e` (F-018 forensic findings, docs) → `3360026` (F-018 root cause resolved, docs) → `ad18815` (D5H-I1a tooling checkpoint) → `b2e2fe9` (D5H-I1a closeout, docs) → `830d595` (D5H-I1b test-harness checkpoint) → `40b1515` (D5H-I1b closeout, docs) → `ab8cfb2` (D5H-I1c decisions D1–D7, docs) → the documentation-only C1–C4 governance record containing this row (SHA intentionally not embedded; uncommitted when written). See §3. |
+| Origin branch | `origin/feat/production-v1` |
+| Origin at verification start | `origin/feat/production-v1` = `ab8cfb23f0ea88e3b1fbc665bc7cfec3585c9fc9` (the D5H-I1c decision record), `0 0` against the local `HEAD`, verified read-only on 2026-10-11 against the local remote-tracking ref (not re-fetched). This field makes no claim about the remote tip after the C1–C4 record is committed or pushed (it is uncommitted); check git. **Historical:** `40b1515` was the origin tip at the start of the D5H-I1c decision record (push `830d595..40b1515` confirmed with `git ls-remote` at that time). `origin/chore/dev-tooling-pilot` contains `05b3055`. The temporary `origin/feat/production-v1-pricing-wholesale-t4` still points at `9a3243f` and is historical. |
+| Current phase | Production V1 on `feat/production-v1` contains Pricing V2/T4, the pre-PILOT fixes (item-removal Sale lock, login and global rate limiting), the D5 remediation series (deterministic test runtime, scope-backfill batching, sales location-filter authorization), the **development tooling** (`05b3055`) and the **D5I-B2B1 transaction hardening** (`REPRICE_C` + `RESERVE_C`, product checkpoint `3397ed3`: implemented, independently reviewed, checkpointed and pushed; owner decision 2026-10-10: 15000 ms per transaction attempt, `maxWait` Prisma default). **Production V1 is NOT closed:** the D5H fresh full-suite gate is NOT COMPLETE: its protocol is designed and approved, its first two slices (D5H-I1a `ad18815`; D5H-I1b `830d595`) are implemented, Codex-approved, checkpointed and pushed, the D5H-I1c design is owner-approved (D1–D7, 2026-10-11; design only, split into I1c-a / I1c-b), D5H-I1c-a exists only as an implementation in two untracked, uncommitted files and is **BLOCKED** after independent Codex review (`[OWNER-REPORTED]`; not accepted, not committed, not approved for any live operation), the P-B2 storage architecture is PROPOSED and pending independent review, D5H-I1c-b is NOT AUTHORIZED and I2–I5 are pending, but no live D5H operation has run and no live gate is authorized, real PostgreSQL behavior of the new timeouts is NOT RUN / NOT PROVEN, and nothing is merged to `pilot`. Pilot intent: a controlled pilot in ONE real store first, owner testing targeted in about 3 days from 2026-10-09 (an intent, not a commitment). |
+| Last completed engineering block | **D5H-I1b — pinned gate-only hosted TEST target channel in the test harness (incl. corrective I1b.1)** (`830d595`; `api/scripts/demo-database.ts`, `api/tests/setup.ts`, `api/tests/test-db-guard.test.ts`; §16 "D5H-I1b"). Before it: **D5H-I1a** (`ad18815`, tooling under `scripts/database/`). The last completed PRODUCT block remains **D5I-B2B1 — `REPRICE_C` + `RESERVE_C` transaction hardening** (`3397ed3`, §16 "D5I-B2B1"). Earlier: the development-tooling pause (`05b3055`) and the PRODUCT block **D5I-B1/B1C** (`8a11585`, F-015). The user-level AI/dev tooling phase A0–A8.1 is `[OWNER-REPORTED]` and has no git checkpoint. |
+| Current engineering block | **No block is open.** Product organization: owner decisions **C1–C4** (2026-10-11) — the one-store pilot runs Production V1 + Pilot V1.1 + Pilot Pricing V2 on PILOT; Demo V2 is historical; employee current accounts are approved FUTURE scope; the product is organized into Block A / Block B (§1.5, tracks in §23 rows 44–61). **D5H:** I1a and I1b CLOSED; D1–D7 approved as design; **I1c-a implemented in two UNCOMMITTED untracked files and BLOCKED** (Codex I1c-a.1 `[OWNER-REPORTED]` BLOCKED; architecture revisions required; P-B2 proposed and READY FOR CODEX REVIEW; O1–O8 unapproved — §16 "D5H-I1c-a research"); I1c-b NOT AUTHORIZED; I2–I5 pending; **D5H NOT complete**. Earlier: D5I-B2B1 CLOSED (`3397ed3`). |
+| P0.2 status | Implemented, checkpointed and pushed as an ancestor of current `feat/production-v1`; OpenCode + Codex final 0/0/0/0; covered by the owner full suite at `113c57a`. |
+| P0.1-C status | **IMPLEMENTED · FOCUSED TESTS GREEN (9/9 files, 211/211) · STATIC GATES GREEN · OPENCODE REVIEWED (LOW resolved) · CODEX APPROVED (final 0/0/0/0) · CHECKPOINTED** at `421b58453b7de667cb3ad6a3467a051a14dd61f7` · OWNER FULL SUITE GREEN (aggregate) · PUSHED. Evidence: §16 P0.1-C. |
+| Current P0.1 aggregate status | **CLOSED AND PUSHED** — technical/block closeout complete and remote synchronization complete. A (`8e9699a`), B1 (`ab728be`), B2 (`e7b6cc7`) and C (`421b584`) are committed, pushed and audited (A/B1/B2 per owner; C in §22: OpenCode complete, Codex final 0/0/0/0). Final technical gate passed: OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Focused P0.1-C evidence stays 9/9 files, 211/211. Remote synchronization: done (see Push status). |
+| Working tree exceptions | `opencode.json` and `.claude/settings.json` are local-only excluded paths for this task; they were not inspected, diffed, staged or edited. |
+| Verification status | **D5H-I1b checkpoint (DB-free; NOT a product suite):** implementer (Claude, contained namespace-isolated scratch harness, synthetic env): focused `api/tests/test-db-guard.test.ts` 428 passed / 1 skipped, exit 0; `tsc -p tsconfig.json --noEmit` and `tsc -p tsconfig.check.json` exit 0; scoped ESLint on the 3 files exit 0; `git diff --check` clean. **Independently reproduced by Codex:** 428 passed / 1 skipped. No database was contacted; **no full suite has run**. **Earlier — D5H-I1a checkpoint (DB-free, observed at the checkpoint):** `node --test` on `d5h-preflight.test.mjs` 43/43, `hosted-test-config.test.mjs` 22/22, `test-marker.test.mjs` 60/60, `restore.test.mjs` 23/23 (aggregate 148/148, all exit 0, 0 failed); `git diff --check` clean; `node --check` on the three production modules exit 0; `npm run deps:check` exits NONZERO with the one KNOWN PRE-EXISTING violation (§16 D5H-I1a), never PASS. NOT a product suite; no database was contacted. **Earlier:** **Tooling at `05b3055` (NOT a product suite):** Gate A `251/251` PASS with 0 skipped (repo-local TypeScript 5.9.3) and Gate B PASS (real repo-local Vitest, 37/37) in the Production V1 worktree, `[OWNER-REPORTED]` operational observation with no repository artifact (§16, §22); no database contact and no external network during the gates were reported. **At `8a11585`:** the D5I-B1/B1C DB-free evidence is recorded in §16 (38 new tests plus the unchanged RBAC policy files; typecheck, lint, build and `git diff --check` exit 0). The D5I-B2A1 DB-free run covered 4 files, 124/124 tests (session-recorded evidence with no durable repository artifact; see §16/§22). **No full suite has run at this HEAD**; no live D5H gate has run or is authorized. The last owner full suites are historical (`113c57a`: 59/59 files, 1082/1082 tests; Task 4 at `bbc24c6`/`f3e5779`/`c8f61c5`: 65/65 files, 1652/1652 tests). *Historical, at `9a3243f`:* Pricing V2 owner validation on disposable LOCAL_TEST, focused real-DB suite **439/439 PASS**, return to `EXACT_BASELINE`; no DEV, TEST, DEMO or PILOT DB contact; frontend gates passed (admin lint + `tsc -b && vite build`; client lint, Vitest 5 files / 44 tests, `next build`); no browser/E2E validation is claimed. |
+| Pre-suite TEST backup (`113c57a` gate) | `test_manual_20260928T130605Z.dump`: 66797 bytes, SHA-256 `d84708690f8be67d14e000f5dea89f18c8f4ffc62122781a87fd7a1ec8d40934`, set id `8852ffc9-e5a2-42cb-888e-e9aa2b316d19`, 25 tables. The owner verified the manifest (artifact, SHA, set id, `environment=test`, `purpose=manual`) and `pg_restore --list`. During this reconciliation the local size and SHA-256 were re-checked read-only and matched. The backup was **not** restored. |
+| Full-suite ownership | **REPOSITORY OWNER ONLY** (§12). Agents never run it on their own initiative; the Task 4 hosted TEST run executed only under the owner's explicit Approval 11. |
+| Push status | **Stable fact:** the D5H-I1c decision record `ab8cfb2` is pushed (local `origin/feat/production-v1` = `ab8cfb2`, `0 0`, verified read-only 2026-10-11, not re-fetched). The C1–C4 governance record is **uncommitted** and makes no push claim. **Earlier:** the D5H-I1b test-harness checkpoint `830d595` is pushed (normal push `b2e2fe9..830d595`, no force; `git ls-remote` returned the same SHA; `0 0`). **Earlier:** the D5H-I1a tooling checkpoint `ad18815` is pushed (normal push, no force; `origin/feat/production-v1` contained it, `0 0`). **Earlier:** **Stable fact:** the D5I-B2B product checkpoint `3397ed3` is pushed (`origin/feat/production-v1` contained it at verification start, `0 0`, local ref, not re-fetched). It sits on top of `08fd70f` (A9) → `2cf1a93` → `05b3055`; `05b3055` was committed on `chore/dev-tooling-pilot` and fast-forward integrated (not a merge commit). This Blueprint-only closeout does not embed its own SHA or push pointer and makes no claim about its own push state; inspect git for the repository tip and the remote tip. `3397ed3` was NOT an ancestor of `origin/pilot` (local ref, as last verified): the Production V1 → pilot merge has NOT happened. |
+| Preservation status | The old dirty worktree was preserved externally at `~/.local/share/mona-jacinta/preservation/old-worktree-20261007`; it is not the source of truth. |
+| Exact next action | (1) Owner reviews this C1–C4 record (documentation only, uncommitted). (2) **Proposed, not authorized:** PILOT-A read-only pilot review (§23 row 44); PROD-A module inventory (row 51); PROD-B specification (row 56); independent review of the P-B2 design (row 62). Each needs its own owner authorization. (3) D5H: I1c-a stays blocked until the P-B2 review and owner decisions O1–O8 (row 63); I1c-b and I2–I5 not authorized. (4) **No live operation is authorized**: no DEV/TEST/LOCAL_TEST/DEMO/PILOT/production access, migration, seed, backup, restore, deployment, OS change or full suite. PILOT merge (row 26), PILOT DB preparation (row 27) and import/smoke (row 28) remain separate owner-only decisions. Owner decision (2026-10-10, applied by `3397ed3`): D5I-B2B transaction timeout **15000 ms** per transaction attempt; `maxWait` unchanged; pending-correction keeps `timeout: 30000`. See §23. |
+| R3-A4.3 status (appended 2026-10-16; does not re-verify the 2026-10-11 rows above) | `IMPLEMENTADO PARCIALMENTE — S1–S4 APROBADOS ESTÁTICAMENTE — NO DESPLEGADO — PostgreSQL PENDIENTE` (§16 "R3-A4.3"; contract doc `docs/architecture/r3-a4.3-checkout-contract.md`; `AGENTS.md` 2026-10-16). Branch `feat/production-v1`. The current uncommitted worktree additionally contains S5-A HTTP wiring, S5-B attempt identity/authority preflight, S5-C sealed-plan confirmation validation/hash plus confirmed-checkout replay, S5-D the real atomic T-C settlement, and S5-D.1 hardening (F1 concurrent external-reference `P2002` → 409 `EXTERNAL_REFERENCE_ALREADY_RECORDED` via a post-rollback read-only lookup, F2 idempotent `REJECTED` replay, F3 service-side raw-reference bound), and S6 (T-X close/declaration; DB-free evidence only, PostgreSQL pending), including the S6.3 write-order fix (every CHARGED `ExternalCollection` inserted before any `CheckoutAttemptDeclaration`; tests S6W-01..S6W-04). S5-D removes the dead R3-A2 inline-pricing settlement (`attempt`/`replay`/`resolveUniqueConflict`/`referenceCollisionStatus` and its collision resolver), so `501 CHECKOUT_CONFIRMATION_NOT_IMPLEMENTED` no longer exists: a valid RESERVED confirmation now settles the sale in one Serializable transaction using ONLY the sealed attempt (never `pricing.getSnapshot`/`computeProportionalQuote`). S6 (T-X close/declaration) is present in the current uncommitted worktree with DB-free evidence only. **Settlement is implemented, but S5 is NOT complete and NOT approved**; likewise **S6 is NOT complete and NOT approved**. S7–S11 remain pending; **S-REF is implemented DB-free** (`external-collections.service.ts`/`.controller.ts`/`.routes.ts`, the T-F refund and the branch listing; `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` implemented fail-closed; the S-REF.1 review fixes applied), and S5-D and S6 carry DB-free (in-memory double) evidence only — no PostgreSQL execution. The R3-A4.3 increment is undeployed and has **not been executed against any database**. No git-mutable working-tree counts or staging state are recorded here (they become stale on commit); inspect git. **No claim is made that the 2026-10-11 "Last verified" / integrated-baseline / current-phase rows above are current**; they describe the C1–C4 record's verification start and were not re-derived here. |
+| Cash withdrawals/expenses slice (appended 2026-10-18) | **IMPLEMENTED AND DB-FREE VERIFIED — PostgreSQL BLOCKED.** The current uncommitted worktree contains the pre-existing backend/RBAC/migration/tooling implementation plus the client UI for expense/withdrawal entry, explicit confirmation, transport-retry idempotency and current-session movement history. Client: 12 files / 244 tests, lint, TypeScript and webpack production build PASS. API/tooling DB-free gates covering cash behavior, authorization, schema/fingerprint and migration payload/prepare pins PASS; main API build PASS. `tsconfig.check.json` remains nonzero only in the separate in-progress R3 checkout test work. Migration 10 and PostgreSQL tests were **NOT RUN** because this environment has no `MONA_TEST_DATABASE_TARGET=local`, no LOCAL_TEST connection/marker configuration, no listening loopback PostgreSQL and no local provisioning binary/runtime. No DEV, hosted TEST, DEMO, PILOT or production database was contacted; no preparation, deploy, stage, commit or push occurred. Exact next action: provide the marker-proven disposable LOCAL_TEST target, then execute migration 10 and the focused PostgreSQL cash tests under the repository guard before any green verdict. |
+---
+
+## 3. Git Checkpoint Ledger
+
+Chronological. The block labels come from commit messages, test comments,
+`AGENTS.md`, and `docs/working/*`. The audit column records only what the
+repository proves. `pushed` means the commit is an ancestor of
+`origin/feat/production-v1` (local remote-tracking ref `13fee1e` as of 2026-10-01; earlier rows were recorded against `6aa8143`).
+
+| Block | Commit | Commit message | Purpose | Audit status | Local/remote | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| Demo V2 close | `a5b7b1b` | docs: finalize Demo V2 documentation | End of Demo V2 baseline | — | pushed | Demo V2 history ends before `11bf379` |
+| PV1 requirements | `11bf379` → `c7d381e` | docs: define/refine/finalize Production V1 requirements | Frozen requirements baseline | — | pushed | `docs/production-v1/00..04` |
+| PV1 architecture | `8a73ab7` → `6c6ab29` | docs: architecture, inventory model, roadmap | Frozen 05–08 | — | pushed | |
+| Phase 0 infra | `f10cffe` | test: stabilize hosted database integration suite | Remote-DB suite stability | — | pushed | See F-008 |
+| Phase 0B | `683be9c` | docs: define Production V1 migration safety conventions | Migration discipline | — | pushed | |
+| Phase 0C | `ed2300b` | feat: add safe database backup and restore workflow | Backup/restore tooling | — | pushed | |
+| Phase 0D | `66dd4c0` | docs: approve Production V1 migration readiness | Readiness gate | — | pushed | |
+| Phase 1A | `f1fdbfe` | feat: add company and location foundation | Company/Location; `Location.id == Branch.id` | — | pushed | |
+| Phase 1B | `5fd4048` | feat: add Production V1 RBAC scope foundation | Role/Permission/UserRoleScope catalog | — | pushed | |
+| Phase 1C | `7d0c2b637c07c4911d1d042651a1d8b16c28b96e` | feat: switch legacy branch scopes to UserRoleScope | UserRoleScope becomes the location authority | OpenCode done; Codex 0 blockers; full suite 37/37 files, 310/310 tests | pushed | Per `docs/working/production-v1-status-and-next-steps.md` |
+| Context | `d48c622`, `997645c`, `2b4f93d`, `d2bf230` | docs: AI context, security guidance, status, 1D plan | Agent context | — | pushed | |
+| Phase 1D | `20d6ce3` → `cefc70d` | Production authorization context/policy/switch | Assignment-based authorization; legacy permissions deleted | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | `e7ac788 "fg"` was reverted by `1d4bb77` (no net effect) |
+| Phase 1D.4–1D.5 | `4c382e6` → `8ebf9d4` | ADMIN COMPANY backfill, scope assignment service/endpoints, escalation suite, socket snapshot doc | Scope management | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | |
+| Phase 1E | `053f0b4` → `4eed1db` | RBAC/security test plan and matrix | Role × permission × scope proof | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | |
+| Phase 1 closeout fixes | `25832de`, `42367c3`, `c74b218`, `7a8e38f`, `c31e25f` | USER_MANAGE COMPANY scope; dry-run preflights; seed convergence; owner bootstrap | Closeout hardening | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | `25832de` = GC2 (F-006) |
+| Phase 1D (AGENTS.md checkpoint) | `ca4547569bb3a4b3778a9b6b3ed2c94d8472c52d` | fix(auth): project public roles from production scopes | **D1**: public roles projected from Production assignments only | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | `AGENTS.md` names this SHA as "Phase 1D implemented and pushed". Test comments label it D1 (F-007). |
+| A0.1 (?) | `f9f6b5b`, `30b1589` | chore/fix(tooling): Claude project guardrails / harden safety hooks | Tooling guardrails (`.claude/hooks`, `stage-review`) | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | The label "A0.1" appears nowhere in the repository. Mapping these commits to A0.1 is **unverified**. |
+| D2.1 | `db7e8a0457dfe5ec6b8cb5a8f0e18506b0dbe1b6` | docs(rbac): record deferred legacy manager decision | MANAGER → DEFERRED governance decision (2026-09-20) | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | `AGENTS.md` "Roles — Production V1" |
+| D2.2 | `b592d56ee6f462d697055f5c819ea163202acfcf` | fix(rbac): defer legacy manager and seed canonical scopes | Canonical-first seed; no UserBranchRole from seed | [UNVERIFIED — NEEDS CONFIRMATION] | pushed | |
+| D3 | `6aa8143069f5d4ac1558e9ee87bdf61c159bd475` | feat(demo): add admin catalog and initial stock flow | "Demo Operativa V1": admin catalog writes and additive `INITIAL_STOCK` | [UNVERIFIED — NEEDS CONFIRMATION] | **pushed (= origin HEAD)** | Migration `20260922210000_d3_initial_stock_and_global_audit` |
+| P0.1-A | `8e9699a585cea727c03cfd15c3ed61b9b233b752` | feat(pilot): add expiry-aware effective availability | Read-side effective availability | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **pushed** (`7b6fce8`) | |
+| P0.1-B1 | `ab728be6bc78e42918998b1de53f81395865170c` | fix(pilot): make reservation expiry authoritative | Authoritative per-Sale release, system actor | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **pushed** (`7b6fce8`) | |
+| P0.1-B2 | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | feat(pilot): automate expired reservation reconciliation | Pre-send reconciliation plus opt-in sweeper | OpenCode/Codex: [UNVERIFIED — NEEDS CONFIRMATION]; covered by the P0.1 owner full suite (55/55, 855/855) | **pushed** (`7b6fce8`) | |
+| Living Blueprint | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | docs(project): add living system blueprint | This ledger + `AGENTS.md` pointer (documentation only) | OpenCode approved for local checkpoint (per owner; not recorded in repo) | **pushed** (`7b6fce8`) | Written at `e7b6cc7`, committed on top of it |
+| P0.1-C | `421b58453b7de667cb3ad6a3467a051a14dd61f7` | feat(pilot): enforce payment and completion hold safety | Payment/completion/queue current-hold semantics | OpenCode reviewed (LOW test-evidence finding resolved); Codex: initial review (1 LOW documentation finding, corrected) + narrow recheck → final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`; P0.1 owner full suite 55/55, 855/855 | **pushed** (`7b6fce8`) | See §16 P0.1-C |
+| P0.1-C Blueprint record | `59e629f988e469c623a792f9867a8cf4f7a949b3` | docs(project): record P0.1-C checkpoint | Records the P0.1-C checkpoint and audit state (documentation only) | — | **pushed** (`7b6fce8`) | On top of `421b584`; owner full suite ran at this commit |
+| P0.1 closeout | `7b6fce805f11486b1f3a60081adfeaf0a545b7c4` | docs(project): close P0.1 pilot reservation safety | Records the owner aggregate full suite and closes P0.1 (documentation only) | Owner full suite 55/55, 855/855 | **pushed (= origin HEAD after `6aa8143..7b6fce8`)** | On top of `59e629f` |
+| P0.1 post-push record | *(this documentation commit; exact SHA is the containing Git commit)* | docs(project): record P0.1 remote closeout | Post-push synchronization record (documentation only) | — | **HEAD; pushed normally right after it is created** | On top of `7b6fce8` |
+| P0.2 | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` | feat(pilot): implement P0.2 cashier correction and cancellation | Cashier correction / cancellation / payment UX | OpenCode: complete — 0/0/0/6 LOW (L-1…L-5 deferred, L-6 fixed); Codex: initial 0/0/0/2 → corrections → narrow **0/0/0/0**, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`; covered by the owner full suite at `113c57a` (59/59, 1082/1082) | **pushed** (ancestor of `13fee1e`, local ref) | See §16 P0.2 |
+| P0.2 Blueprint record | `a04478c930a69cee6c0c3b174de7636a711b622d` | docs(project): record P0.2 local checkpoint | Records the P0.2 checkpoint and audit state (documentation only) | — | **pushed** (ancestor of `13fee1e`, local ref) | On top of `e3ce087` |
+| A1 — TEST backup/restore | `8a95f0d1d8b749cb523c703b3a7f30e14d5f6dad` | feat(db): add safe TEST backup and restore tooling | DEV-free TEST backup path (`mona-test-backup/v1` manifest), TEST-only restore gated on the live TEST marker, TEST marker installer | Independent OpenCode audit of A1–D: `APPROVED FOR OWNER FULL SUITE` (0/0/0/0); owner full suite at `113c57a` | **pushed** (ancestor of `13fee1e`, local ref) | 8 files: `scripts/database/*` + `docs/development/backup-restore-seed.md`. See §16 |
+| A2 — TEST-H1 | `41ee88231d309610816d6d01a467158226bcf0ac` | test(db): enforce TEST runtime identity guard | The `api/` test harness proves TEST from its own marker; it never reads or connects to `DATABASE_URL` (DEV) | Same audit; owner full suite at `113c57a` | **pushed** (ancestor of `13fee1e`, local ref) | 4 files under `api/`. See §16 |
+| A3 — TEST-H2 / H2.1 | `0d7ac5d179fe8b48a146339b935152ba53df69d9` | test(db): harden TEST cleanup lifecycle | Teardown can no longer replace a setup failure or leak a TEST handle; AST cleanup scanner | Same audit; owner full suite at `113c57a` | **pushed** (ancestor of `13fee1e`, local ref) | 21 files under `api/tests/`. See §16 |
+| C — PILOT database bootstrap | `3868e5a4b97c7404dd0e65a89b10d7be8a160934` | feat(db): add safe PILOT database bootstrap tooling | OWNER-only PILOT marker, guarded migrate, additive bootstrap (tooling only) | Same audit; owner full suite at `113c57a` | **pushed** (ancestor of `13fee1e`, local ref) | 6 new files in `scripts/database/`. No live PILOT execution recorded. See §16 |
+| D — PILOT catalog bootstrap | `113c57adf865268cf2df4add41d8090f5511ed2b` | feat(db): add PILOT catalog bootstrap tooling | OWNER-only additive synthetic PILOT catalog (tooling only) | Same audit; **owner full suite PASS at this commit (59/59, 1082/1082; wrapper exit NOT OBSERVED)** | **pushed** (ancestor of `13fee1e`, local ref); validated implementation baseline | 2 new files in `scripts/database/`. No live PILOT execution recorded. See §16 |
+| Validated checkpoint record | `13fee1e30aa25000304d0288a5cf1732ea3aa24d` | docs: reconcile Production V1 validated checkpoint | Records A1–D, the independent audit and the owner full suite (documentation only: `AGENTS.md` + this Blueprint) | Final read-only OpenCode audit: not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **pushed** | On top of `113c57a` |
+| Dev tooling | `4b0441152d7b5c060f7b6822a861b7403bbd5167` | chore(dev): add static analysis and harden database tooling | Static analysis and database-tooling hardening | Not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **pushed** | On top of `13fee1e` |
+| CI runtime pin | `9e97aa995569c80361b749fd09de5ae2c40f3290` | chore(ci): pin runtime and add hermetic checks | Pinned CI runtime and hermetic checks | Not recorded in this Blueprint [UNVERIFIED — NEEDS CONFIRMATION] | **pushed** | On top of `4b04411` |
+| Boundary A — Task 4 LOCAL_TEST target | `bbc24c68f3fe624be66e25b9086b352a13854874` | chore(test): add local PostgreSQL test target | LOCAL_TEST Prisma config, marker/prepare tools, baseline/runtime modules, shared TEST Company descriptor, test harness/tests, marker proof, CI `local-postgres`, `@prisma/config` declaration | Owner LOCAL_TEST gate and hosted TEST gate recorded in §16 Task 4 | **pushed** | On top of `9e97aa9` |
+| Boundary B — Task 4 policy/docs | `f3e57790ef6da54e39f454b31e56612aa57e2010` | docs: reconcile local test policy and Task 4 status | LOCAL_TEST policy and docs reconciliation | Task 4 audit record preserved in §16 | **pushed** | On top of `bbc24c6` |
+| Task 4 persistent checkpoint | `c8f61c5d8f4eb92edbc106c32e261d3afa13d2c1` | docs: record Task 4 final persistent checkpoint | Final Task 4 persistent documentation checkpoint | — | **pushed** | On top of `f3e5779` |
+| Block 1 wholesale | `ce0a6d5...` | feat(block1): add sale-scoped wholesale pricing | Sale-scoped wholesale authorization and cashier confirmation | Covered by later Pricing V2 validation; no live PILOT execution | **pushed** | On top of `c8f61c5` |
+| R4 LOCAL_TEST proof | `4632b89...` | test(db): add R4 LOCAL_TEST safety proof tooling | LOCAL_TEST safety proof tooling | — | **pushed** | On top of `ce0a6d5` |
+| Authorization read-scope hardening | `18b07310190674291e1e2202708679e72f05778c` | feat(auth): scope product and inventory reads by permission | Product/inventory read authorization hardening | Baseline for Pricing V2 work | **pushed** | On top of `4632b89` |
+| Pricing V2 implementation | `9da09ab` → `b43d071` | feat/pricing/db/test/ui/docs Pricing V2 | CASH base, company price modes, LOCAL_TEST/PILOT tooling sync, tests, UI, docs | LOCAL_TEST focused DB suite 439/439 PASS; frontend gates recorded in §2/§16 | **pushed** | On top of `18b0731` |
+| Pricing V2 pointer fix / integration head | `9a3243f912d8b0f929767978e97454d229acedda` | docs(blueprint): update section 2 pointer for committed Pricing V2 | Documentation pointer fix; pre-reconciliation Production V1 head | T4 fast-forward integrated and pushed to `origin/feat/production-v1` | **pushed** (superseded as head by `8a11585`) | On top of `b43d071` |
+| Docs reconciliation | `eddea12ad70a8d70571a68dcef10ea7dfe65f4c4` | docs: reconcile Production V1 after Pricing V2 integration | `AGENTS.md`, this Blueprint and `docs/working/production-v1-status-and-next-steps.md` (documentation only) | — | **pushed** | On top of `9a3243f` |
+| Pre-PILOT fix: item removal | `18e26439c0551aa66ac703535b62c4e1c853f082` | fix(sales): serialize item removal with sale transitions | `removeItem` takes the Sale row lock (`lockDraft`) before deleting (F-017); DB-free behavior test plus an opt-in LOCAL_TEST contention suite | No review record in this Blueprint; run results of the LOCAL_TEST suite are not recorded in the repository | **pushed** | 3 files; 2026-10-06 |
+| Pre-PILOT fix: login rate limit | `28c3ba4568dc51feffecea1de33f6d2648d26d93` | fix(auth): rate limit failed login attempts | In-memory limiter on `POST /auth/login`: 10 failed requests per normalized email per 15 min; per the commit message, a 22-case DB-free behavior test | No review record in this Blueprint | **pushed** | 3 files; 2026-10-07 |
+| Pre-PILOT fix: client IP source | `c6b182c6d56eda2b11a3a92b64ebaee836a656fa` | fix(api): add trusted client IP source for rate limiting | `CLIENT_IP_SOURCE` (`socket` default, or opt-in `x-real-ip`) for the global limiter; `trust proxy` stays unset | No review record in this Blueprint | **pushed** | 5 files; 2026-10-07 |
+| D5 test infrastructure | `3c6dfc4696a1659fadb0b748eef0e8d401c6dc13` | test(api): add backend pid attribution diagnostics | Test-pool attribution diagnostics (5 files) | Block label not recorded in the repository; no run record | **pushed** | 2026-10-08 |
+| D5 test infrastructure | `29e5893aafc1467c0585687adb1e49ed580d6d42` | test(api): align pricing fixture and cleanup scanner | Cleanup-scanner and fixture alignment (2 test files) | Block label not recorded; no run record | **pushed** | 2026-10-08 |
+| D5 test infrastructure | `dbccdf157eee5625c06183684c7b26bbadd035cb` | fix(api): harden hosted test connection timeout | Hosted TEST connection timeout hardening (`scripts/demo-database.ts`, one test) | Block label not recorded; no run record | **pushed** | 2026-10-08 |
+| D5F-A | `38bac33da96ab2b3aefd2d0685351ab01539f2e0` | test(api): make test env deterministic | Deterministic synthetic test runtime env (`tests/helpers/test-runtime-env.ts`, `tests/setup.ts`, `tests/test-runtime-env.test.ts`) | Files verified from git; no run record in this Blueprint | **pushed** | 2026-10-08 |
+| D5F-C2 | `eab79a6763629013c0a809f526feac2ba9d4f9c1` | fix(api): batch user role scope backfill | `syncUserRoleScopeFromUserBranchRole` made O(1) in DB operations (F-016); `tests/rbac/scope-backfill-batching.test.ts` | Files verified from git; no run record in this Blueprint | **pushed** | 2026-10-09 |
+| D5I-B1 / B1C | `8a1158528bb629f2b32b3bbbc9aaf6fb70d90c83` | fix(api): scope sales lists by permission assignment | Closes the sales location-filter authorization class (F-015) on `GET /sales/pending` and `GET /sales` | DB-free evidence in §16; independent review approved (owner-reported, §22) | **pushed (= origin/feat/production-v1 as of D5I-DOC1, local ref)** | 3 files; 2026-10-09 |
+| D5I-DOC1 | `3220d0cd1aa7bcbeaf60935837f890232c5748ce` | docs(blueprint): reconcile D5 pre-pilot state | Blueprint reconciliation to the exact repository state (documentation only; 1 file, 126 insertions, 25 deletions, verified from git) | Documentation only; no review record in this Blueprint | **pushed** (ancestor of `origin/feat/production-v1`, local ref) | On top of `8a11585`. §2/§3 name `8a11585` as the head because a commit cannot record its own SHA; this row is the post-commit record. |
+| Development tooling | `05b30557b08f4edd7b74106a6ff9c609520c7000` | chore(dev): add hermetic no-db tooling guards | Hermetic DB-free test execution guard (`safe-nodb-run`) + read-only exact repository scope guard (`repo-scope-guard`) + generic worktree-independent no-DB Vitest config (8 files, +6390/-14, verified from git; no product business behavior intentionally changed; the `scope-backfill-batching.test.ts` edit is a 2-line comment) | Mixed evidence: implementation and tests verified from git; iterative OpenCode/Codex independent review through a final Codex P0R of 0 BLOCKER / 0 HIGH / 0 MEDIUM, and Gate A/Gate B in the Production V1 worktree, are `[OWNER-REPORTED]` operational evidence with no repository artifact (§16, §22) | **pushed** | Committed on `chore/dev-tooling-pilot` (single parent `3220d0c`), then **fast-forward** integrated into `feat/production-v1` and pushed normally; not a merge commit. See §16 and F-019. |
+| Tooling closeout (TOOLING-P0S record) | `2cf1a937b53e83aecdb9cdc0132676a22fed41cb` | docs(blueprint): close development tooling pause | Blueprint closeout of the tooling pause (documentation only; 1 file, 64 insertions, 16 deletions; parent `05b3055`; all verified from git in A9) | Documentation only; no review record in this Blueprint | **pushed** (`origin/feat/production-v1` = `2cf1a93`, `0 0`, local ref) | Written before its own commit, so its text still described TOOLING-P0S as pending and `05b3055` as the head; corrected by A9 (an uncommitted successor documentation pass whose SHA is unknown and not recorded). The user-level AI/dev tooling phase A0–A8.1 produced NO git checkpoint (§16). |
+| A9 Blueprint closeout | `08fd70f95ce4bb9343316256c4cfc8ee9f356bef` | docs(blueprint): close ai development tooling phase | Corrected the stale self-referential tooling closeout and recorded the user-level AI/dev tooling phase (documentation only; 1 file, 105 insertions, 15 deletions, verified from git) | Documentation only | **pushed** | Backfilled in the D5H-I1a closeout from git. |
+| D5I-B2B1 | `3397ed3c180d91a8a6bfbee79a802ee34463348d` | fix(api): harden sales transaction boundaries | `REPRICE_C` + `RESERVE_C` transaction hardening (7 files, 343 insertions, 32 deletions, verified from git) | OpenCode approved for Codex; Codex final `D5I_B2B3_4_CODEX_APPROVED_FOR_CHECKPOINT` 0/0/0/0 (§16, §22) | **pushed** | Last PRODUCT-source commit. Backfilled in the D5H-I1a closeout from git. |
+| D5I-B2B closeout | `ed504c63abc606e64a563c5d12ed8077f50c976f` | docs(blueprint): close D5I-B2B checkpoint | Post-checkpoint Blueprint closeout (documentation only; 1 file, 29 insertions, 28 deletions) | Documentation only | **pushed** | Backfilled from git. |
+| F-018 forensic record | `ceaaa1e4fba2290c6157d9ff188926aab22c3343` | docs(blueprint): record F-018 forensic findings | F-018 forensic findings (documentation only; 1 file, 13 insertions, 6 deletions) | Documentation only | **pushed** | Backfilled from git. |
+| F-018 resolution | `336002612e6e41ba1fbd0405c1887e3e1806c748` | docs(blueprint): resolve F-018 root cause | F-018 historical root cause resolved under the owner K1 interpretation (documentation only; 1 file, 15 insertions, 13 deletions) | Documentation only | **pushed** | Repository head at the start of D5H-I1a. Backfilled from git. |
+| D5H-I1a | `ad18815cca76fa4d35a708480242cf2661108a66` | feat(db): add D5H hosted TEST preflight | Canonical hosted TEST config parser; caller-owned in-transaction marker proof primitive; read-only D5H preflight (marker + exact migration history + catalog phase + SalePayment guard risk in ONE snapshot). 6 files under `scripts/database/`, 1601 insertions, 3 deletions (verified from git); DB-free tests only | Claude Code implementation evidence + Codex final review `D5H_I1A_CODEX_APPROVED_FOR_CHECKPOINT` (0 BLOCKER / 0 HIGH / 0 MEDIUM / 1 LOW: DEBT-035) (§16, §22) | **pushed** (normal push `3360026..ad18815`, `0 0`) | Tooling only: NOT product source, NOT a live operation, NOT D5H completion. The Blueprint closeout is a later documentation-only commit whose SHA is intentionally not embedded here. |
+| D5H-I1a closeout | `b2e2fe96a2e52c4f6e12ea47697b5b10a7e589d5` | docs(blueprint): checkpoint D5H I1a | D5H-I1a Blueprint closeout (documentation only; 1 file, 71 insertions, 15 deletions, verified from git) | Documentation only | **pushed** | Backfilled in the D5H-I1b closeout from git. |
+| D5H-I1b | `830d5950d6199549558d24e982d126a6d46581c0` | fix(d5h): harden I1b test-target pin and error handling | Pinned gate-only hosted TEST target channel for the `api/` test harness (D5H-I1b) plus the corrective I1b.1 (process-lifetime pin; non-throwing, case-folded error-code sanitization; safe failure classification; marker/attempt id suppression). Exactly 3 files: `api/scripts/demo-database.ts` (+232/−15), `api/tests/setup.ts` (+36/−5), `api/tests/test-db-guard.test.ts` (+937/−3); 1205 insertions, 23 deletions; parent `b2e2fe9` (verified from git) | Codex `D5H_I1B1_CODEX_APPROVED` 0/0/0/4 LOW; independent GREEN 428 passed / 1 skipped (§16, §22) | **pushed** (normal push `b2e2fe9..830d595`; `git ls-remote` verified) | Not a PRODUCT-source commit; no full suite; no database contact. |
+| D5H-I1b closeout | `40b15156a196f4c85071dc48435c500c8db35545` | docs(d5h): record I1b approval and checkpoint | D5H-I1b Blueprint closeout (documentation only; 1 file, 51 insertions, 20 deletions, verified from git) | Documentation only | **pushed** (`git ls-remote` verified) | Backfilled in the D5H-I1c decision record from git. |
+| D5H-I1c decisions | `ab8cfb23f0ea88e3b1fbc665bc7cfec3585c9fc9` | docs(d5h): record I1c owner design decisions | D1–D7 design decisions recorded in `AGENTS.md` + this Blueprint (documentation only; 2 files, 100 insertions, 9 deletions, parent `40b1515`, verified from git) | Documentation only | **pushed** | Backfilled in the C1–C4 governance record. |
+
+---
+
+## 4. Repository / Module Map
+
+| Path | Responsibility | Important files | Current state |
+| --- | --- | --- | --- |
+| `api/` | Express + TypeScript backend; the only database boundary | `src/app.ts`, `src/server.ts` | Operational |
+| `admin/` | Backoffice (React 19 + Vite) for OWNER/ADMIN | `src/pages/Products.tsx`, `src/pages/Inventory.tsx`, `src/lib/api.ts` | D3 added catalog, price and initial-stock forms. Full Production V1 role migration not verified. |
+| `client/` | Operations POS (Next.js 16 / React 19) for SELLER/CASHIER | `src/app/page.tsx` | Demo V2-era seller/cashier UI; D1 changed role projection handling |
+| `api/prisma/` | Schema, migrations, deterministic seed | `schema.prisma`, `seed.ts`, `migrations/` (4) | Transitional inventory model (§6) |
+| `api/scripts/` | Explicit operator scripts (dry-run/execute) | `bootstrap-system-actor.ts`, `bootstrap-canonical-owner.ts`, `bootstrap-rbac-catalog.ts`, `backfill-*.ts`, `reset-demo.ts`, `seed-demo.ts`, `demo-database.ts` | Never run implicitly |
+| `scripts/database/` (root) | Backup/restore with identity proof; TEST marker installer; OWNER-only PILOT tooling | `backup.mjs`, `restore.mjs`, `lib.mjs`, `test-marker.mjs` (A1); `pilot-marker.mjs`, `pilot-migrate.mjs`, `pilot-bootstrap.mjs` (C); `pilot-catalog-bootstrap.mjs` (D); zero-DB `*.test.mjs` (`node --test`) | Manual only. Restore is TEST-only. PILOT tools read a private URL file, never `.env*`. No live PILOT run is recorded |
+| `scripts/dev/` (root) | Developer-side tooling: hermetic DB-free test runner and exact-scope guard (not part of the API/client/admin runtime artifact) | `safe-nodb-run.mjs`, `repo-scope-guard.mjs` and their `*.test.mjs` | `05b3055`; run through `npm run tooling:nodb` / `tooling:scope-guard`; see §16 and F-019 |
+| `api/src/config/` | Environment parsing, Prisma client | `env.ts`, `load-env.ts`, `prisma.ts` | Zod env; sweeper variables are opt-in |
+| `api/src/middleware/` | Auth, authorization gate, validation, rate limiting, errors | `auth.ts`, `authorization.ts`, `validation.ts`, `rateLimit.ts` | Production-only `requirePermission` |
+| `api/src/modules/auth/` | Login, `/me`, JWT, public user-context DTO | `auth.service.ts`, `tokens.ts`, `user-context.dto.ts` | Identity-only JWT (15 min); no refresh |
+| `api/src/modules/rbac/` | Authorization context/policy, role/permission catalog, scope tooling | `authorization-context.ts`, `authorization-policy.ts`, `permissions.ts`, `role-permission-matrix.ts`, `legacy-role-map.ts` | Production authority = UserRoleScope |
+| `api/src/modules/organization/` | Company/Location | `organization.service.ts` | Single company |
+| `api/src/modules/products/` | Catalog reads; D3 admin catalog writes | `products.service.ts`, `catalog-admin.service.ts` | Variant-level barcode and price `[TRANSITIONAL]` |
+| `api/src/modules/inventory/` | Availability reads/prechecks; initial stock | `inventory.service.ts`, `initial-stock.service.ts` | Expiry-aware reads (P0.1-A) |
+| `api/src/modules/sales/` | Draft/cart, send-to-cashier, holds, expiry, completion, cancellation | `sales.service.ts`, `reservation.service.ts`, `reservation-holds.ts`, `cancellation.service.ts`, `reservation-sweeper.ts` | P0.1-A/B1/B2 complete |
+| `api/src/modules/payments/` | Split payments, idempotency | `payments.service.ts` | P0.1-C gaps (§10) |
+| `api/src/modules/cash/` | Cash register/session open/close | `cash.service.ts` | Demo V2 level |
+| `api/src/modules/audit/` | Audit read route; system actor | `audit.routes.ts`, `system-actor.service.ts` | `shared/audit.ts` writes in-transaction |
+| `api/src/modules/backoffice/` | Reports, users, scope assignment | `backoffice.service.ts`, `scope-assignment.service.ts` | Partly legacy presentation (DEBT-011) |
+| `api/src/realtime/` | Socket.IO rooms/events (advisory) | `socket.ts` | Connection-time scope snapshot (DEBT-010) |
+| `api/src/shared/` | Errors, audit writer, logger, JSON-safe BigInt | `audit.ts`, `logger.ts`, `json-safe.ts` | |
+| `api/tests/` | Vitest + Supertest against hosted TEST | `setup.ts`, `globalSetup.ts`, `helpers/test-db.ts`, `sales/reservation-*.test.ts` | Slow remote suite (§12) |
+| `docs/production-v1/` | Frozen requirements | `00`–`08` | FROZEN |
+| `docs/pilot-v1.1/` | Pilot overlay | `00-pilot-safety-gate.md` | P0.1-A/B1/B2 documented |
+| `docs/api/` | Endpoint reference | `endpoints.md` | Includes the P0.1-B1/B2 contract |
+| `docs/development/` | Setup, database, migrations, backup | `getting-started.md`, `database.md`, `backup-restore-seed.md`, `migrations.md` | Authoritative for commands |
+| `.claude/` | Claude Code guardrails | `hooks/guard-dangerous-bash.mjs`, `hooks/protect-opencode.mjs`, `commands/stage-review.md`, `claude-security-guidance.md` | Active |
+
+---
+
+## 5. Runtime Architecture
+
+| Concern | `[CURRENT IMPLEMENTATION]` | `[FROZEN/TARGET PRODUCTION V1]` | Gap / phase |
+| --- | --- | --- | --- |
+| Frontends | `client/` (Next.js) and `admin/` (Vite) call the API over HTTP; no DB access | Same; deployed on Vercel (`05-architecture.md` §3) | Deployment not verified in repo |
+| API | One Express process (`server.ts`); `createApp()` has no timers | Long-lived container/VM (not serverless) | Deployment `[UNVERIFIED — NEEDS CONFIRMATION]` |
+| PostgreSQL | Hosted Supabase: `mona-jacinta-demo` (`DATABASE_URL`) and `mona-jacinta-test` (`TEST_DATABASE_URL`) | Supabase; demo + test (+ production later) | Production DB does not exist yet (`backup-restore-seed.md`) |
+| Prisma | Prisma 7 with the `pg` adapter; raw `SELECT … FOR UPDATE` for locks | Same | — |
+| Realtime | Socket.IO rooms per branch; events `sale.pending_payment`, `sale.paid`, `sale.completed`, `sale.cancelled`, `inventory.updated`; emitted after commit; advisory only | Notifications persisted (Phase 9B) + realtime (9C) | Notification persistence missing |
+| Auth | Login → HS256 JWT, identity-only (`sub`, `iat`, `exp`, `jti`), 15 min; every request rebuilds context from the DB | Same principle | No refresh token (DEBT-008) |
+| Authorization | `requirePermission` + `authorization-policy.ts` over `req.auth.assignments` (UserRoleScope) | Same (Phase 1D target) | Legacy `UserBranchRole` still read for the internal `roles` union only `[TRANSITIONAL]` |
+| Inventory | `Inventory.physical` / `Inventory.reserved` counters + `StockReservation` rows `[TRANSITIONAL]` | `InventoryBalance.onHand` + `StockMovement` ledger + `StockHold`/`SenaItem` | Phases 3A–3E (DEBT-012) |
+| Sales | DRAFT → PENDING_PAYMENT → PAID → COMPLETED / CANCELLED (§8) | Same states + StockHold, pricing finalization (6D) | Phases 6A–6G |
+| Payments | `SalePayment` split payments, idempotency key, CASH needs an open session | + transfer institution / installments (6C) | Phase 6C; P0.1-C gaps (§10) |
+| Audit | `AuditLog` written inside the business transaction; `branchId` nullable for COMPANY operations (D3); system actor for automation | Same principle | — |
+| Background maintenance | P0.1-B2 in-process sweeper, **opt-in, default OFF** `[PILOT DECISION]` | Frozen §5.1: "no sweeper required for sellable correctness"; lazy materialization | Sweeper is Pilot-only liveness, not a correctness dependency |
+
+Transitional components: the `Inventory`/`StockReservation` model, the
+variant-level barcode and price, `UserBranchRole` (legacy compatibility), and
+`Branch` (co-identified with `Location`, where `Location.id == Branch.id`).
+
+---
+
+## 6. Data / Inventory Model
+
+### 6.1 Current transitional model `[CURRENT IMPLEMENTATION]` `[TRANSITIONAL]`
+
+From `api/prisma/schema.prisma`:
+
+- `Inventory { variantId, branchId, physical BigInt, reserved BigInt }`, unique on
+  `(variantId, branchId)`.
+- `StockReservation { saleId, variantId, branchId, quantity, expiresAt timestamptz(3), status ACTIVE|RELEASED|CONSUMED }`,
+  indexed on `(status, expiresAt)`, `(saleId, status)` and `(variantId, branchId)`.
+- `StockMovement` types: `SALE`, `INITIAL_STOCK` (D3). A movement is written only
+  when physical stock changes.
+- `SaleStatus`: `DRAFT`, `PENDING_PAYMENT`, `PAID`, `COMPLETED`, `CANCELLED`.
+- Money is a `BigInt` in integer minor units everywhere.
+
+Stock semantics:
+
+- Raw available = `physical − reserved`.
+- `reserved` is a **persisted denormalized counter**. It includes contributions
+  from holds that have expired but are not yet released.
+- **Effective availability (P0.1-A), read side only:**
+
+```text
+releasableExpired = SUM(StockReservation.quantity) WHERE status = ACTIVE
+                    AND expiresAt <= now AND sale.status = PENDING_PAYMENT
+                    AND sale has zero SalePayment rows      (per branch, variant)
+effectiveReserved  = max(reserved − releasableExpired, 0)
+effectiveAvailable = physical − effectiveReserved           (never exceeds physical)
+```
+
+The raw `reserved` value is still returned for diagnostics.
+
+### 6.2 Frozen target model `[FROZEN REQUIREMENT]`
+
+From `07-inventory-ledger.md` §3 and §5:
+
+- `InventoryBalance { variantId, locationId, onHand }`, with `CHECK onHand >= 0`.
+  It has **no** `reserved` column.
+- `effectiveSellable = onHand − SUM(effective StockHold) − SUM(effective SenaItem)`,
+  where "effective" means `status = ACTIVE AND expiresAt > now()`.
+- Hold creation and any operational `onHand` decrement validate
+  `effectiveSellable >= qty` with the balance row locked `FOR UPDATE`.
+- Technical hold lifetime: "configurable, e.g. 2–4 hours". The Pilot uses
+  30 minutes (`TECHNICAL_HOLD_TTL_MS`). This is a recorded divergence, and
+  target phase 3C/6B decides it.
+
+### 6.3 Critical invariants
+
+1. **Final stock authority is the locked raw check.** Send-to-cashier reserves
+   only when `physical − reserved >= requested` holds under `Inventory … FOR UPDATE`
+   (`reservation.service.ts`). Effective availability is advisory UX and a
+   pre-check only.
+2. Releasing a hold decrements `reserved` by the **exact** held quantity. It
+   never clamps and writes no `StockMovement`.
+3. Completion decrements `physical` and `reserved` by the same quantity, writes
+   `StockMovement(SALE)`, and marks the holds `CONSUMED`. The ACTIVE holds must
+   match the sale items exactly.
+4. `INITIAL_STOCK` is additive (`physical += qty`), leaves `reserved` alone, and
+   writes exactly one movement and one audit row.
+5. `Location.id == Branch.id` (Phase 1A migration identity).
+6. No partial business state is ever committed. Multi-record operations run in
+   Serializable transactions with a bounded retry.
+
+---
+
+## 7. Authentication & Authorization
+
+`[CURRENT IMPLEMENTATION]`, verified in `api/src/modules/rbac/*`,
+`api/src/middleware/*` and `api/src/modules/auth/*`.
+
+- **Roles:** exactly `OWNER`, `ADMIN`, `CASHIER`, `SELLER`, `WAREHOUSE`
+  (`rbac/roles.ts`). `isProductionRoleCode` filters persisted rows at runtime,
+  so a `MANAGER` or unknown `UserRoleScope` row never becomes an assignment
+  (fail-closed per row).
+- **MANAGER:** legacy only. Classified `DEFERRED` with no automatic Production
+  role (`rbac/legacy-role-map.ts`; decision dated 2026-09-20, `AGENTS.md`). Not
+  seeded (D2.2).
+- **Scope kinds:** `COMPANY` (`locationId = null`) and `LOCATION`.
+- **Authority:** `UserRoleScope` is the sole Production role, permission and
+  location authority. An empty `UserRoleScope` means zero locations. There is
+  no fallback to `UserBranchRole`.
+- **Same-assignment rule:** `hasPermissionAtLocation` requires the permission
+  and the location to come from the **same** assignment
+  (`authorization-policy.ts`).
+- **COMPANY-required permissions:** `PRICE_MANAGE`, `PRODUCT_MANAGE`,
+  `PRODUCT_VARIANT_MANAGE`, `USER_MANAGE` (`COMPANY_SCOPE_REQUIRED_FOR_ADMIN`).
+  A LOCATION assignment never qualifies for these.
+- **OWNER:** implicit authority, recognized only in `authorization-policy.ts`
+  (`isOwner`), and only for a COMPANY-scoped OWNER assignment. A
+  LOCATION-scoped OWNER row is malformed and grants nothing.
+- **Policy contract:** the policy is a pure evaluator. Callers must pass a
+  persisted or validated `locationId`. A COMPANY assignment matches any
+  non-empty string. `effectiveLocationIds` is a display/filter convenience and
+  never an authorization authority.
+- **UserBranchRole:** legacy compatibility only. It adds `role.code` to the
+  internal `roles` union and grants no permission (a type-level guarantee
+  since 1D.3.6). Public roles are projected only from assignments
+  (`user-context.dto.ts`, D1).
+- **JWT:** identity-only (`sub`, `iat`, `exp`, `jti`), HS256, 15-minute
+  lifetime (`tokens.ts`). Each authenticated request rebuilds the authorization
+  context from the DB (`buildAuthorizationContext`), so revocations take effect
+  on the next HTTP request.
+- **Realtime exception:** Socket.IO computes scope once per connection and
+  keeps it until reconnect (DEBT-010).
+- **System actor:** an inactive `User` with zero scopes and zero legacy roles.
+  Login refuses it, and it resolves no permissions (§9.2).
+
+---
+
+## 8. Sale Lifecycle
+
+`[CURRENT IMPLEMENTATION]` (`sales.service.ts`, `reservation.service.ts`,
+`payments.service.ts`, `cancellation.service.ts`, `pending-correction.service.ts`)
+— includes P0.2 correction and controlled cancellation, now pushed as ancestors
+of the current Production V1 head.
+
+| State / transition | Who (permission) | Stock / hold effect | Payment requirement | Audit | Known Pilot limitation |
+| --- | --- | --- | --- | --- | --- |
+| → `DRAFT` (create) | `SALE_CREATE` at a validated active location | None | — | `SALE_CREATED` | — |
+| `DRAFT` cart edits | Owning seller (`SALE_CREATE` route; `SALE_VIEW` at the branch; `sellerId` match) | None; advisory `checkAvailability` uses effective availability (P0.1-A) | — | — | Advisory only; the reserve step decides |
+| `DRAFT` → `PENDING_PAYMENT` (send-to-cashier) | Owning seller; `SALE_CREATE` at the sale's branch | P0.1-B2 pre-send reconciliation, then a locked raw check; `reserved += qty`; `StockReservation` ACTIVE with TTL 30 min; sale number allocated | — | `SALE_SENT_TO_CASHIER` (+ `RESERVATION_RELEASED` per reconciled candidate) | Conservative `INSUFFICIENT_STOCK` if maintenance fails |
+| `PENDING_PAYMENT` payment (partial) | `SALE_CHARGE` at the branch | None (payment never releases or reserves) | Idempotent replay first; then exact current ACTIVE coverage; **first payment needs unexpired holds** (`RESERVATION_EXPIRED`); later payments may follow `expiresAt` (Policy A); amount ≤ remaining; CASH needs an OPEN session | `PAYMENT_REGISTERED` (none on rejection) | Abandoned partial payment stays a manual operational case (no refund model; DEBT-021) |
+| `PENDING_PAYMENT` → `PAID` | `SALE_CHARGE` | None | Accepted sum == total | `PAYMENT_REGISTERED` | `sale.paid` notification failure is isolated (P0.1-C) |
+| Expired-hold release (Sale stays `PENDING_PAYMENT`) | System actor (sweeper / pre-send) or a human with `INVENTORY_MANAGE` (manual endpoint) | Holds `RELEASED`; `reserved −= qty`; no `StockMovement` | Only when the sale has **zero** `SalePayment` rows | `RESERVATION_RELEASED` | Sale stays `PENDING_PAYMENT` and in the queue as `holdState: EXPIRED` (`canAcceptPayment: false`); payment is refused (`INVALID_RESERVATION`). It cannot be corrected (`RESERVATION_EXPIRED`); a cashier cancels it (P0.2-B). |
+| `PAID` → `COMPLETED` | `SALE_COMPLETE` at the branch | `physical −= qty`, `reserved −= qty`; `StockMovement SALE`; holds `CONSUMED` | Must be `PAID`; idempotent if already `COMPLETED`; exact current ACTIVE coverage; `expiresAt` ignored (P0.1-C) | `SALE_COMPLETED` | Consumes only current ACTIVE holds; historical rows ignored. The PAID sale stays in the cashier queue until completed (P0.1-C). |
+| `PENDING_PAYMENT` correction (P0.2-A) | `SALE_CORRECT_PENDING` at the sale's persisted location (CASHIER, ADMIN; OWNER implicit) | `reserved` moves by the exact per-variant delta; superseded holds `RELEASED`, one ACTIVE hold per changed variant on the **original `expiresAt`**; physical untouched; no `StockMovement` | **Zero `SalePayment` rows** (row existence); exact, unexpired current coverage | `SALE_CORRECTED` (before/after items) | Stays `PENDING_PAYMENT`; no return to `DRAFT`; empty result refused (cancel instead) |
+| `DRAFT` → `CANCELLED` (P0.2-B) | The **owning seller only** (persisted `sellerId`) who also holds `SALE_CREATE` at the sale's location; ADMIN/OWNER/CASHIER cannot cancel another seller's draft | None (a DRAFT has no ACTIVE hold) | Any `SalePayment` row blocks (row existence) | `SALE_CANCELLED` (structured `reason`, optional `note`) | — |
+| `PENDING_PAYMENT` → `CANCELLED` (P0.2-B) | `SALE_CANCEL_PENDING` at the sale's persisted location, live authorization (CASHIER, ADMIN; OWNER implicit); SELLER cannot | Releases the ACTIVE holds (expired or not) with a checked row count; exact `reserved` decrement; physical untouched; no `StockMovement` | **Any `SalePayment` row blocks** (row existence, never the sum) → `PAYMENT_ALREADY_ACCEPTED`; no refund, payment deletion or cash reversal | `SALE_CANCELLED` (`reason` ∈ WRONG_ITEM/WRONG_QUANTITY/CUSTOMER_CHANGED_MIND/DUPLICATE_SALE/OTHER; `note` required for OTHER) | Partially paid sales stay manual (Policy A; DEBT-021) |
+
+---
+
+## 9. Technical Reservation / Expiry Architecture
+
+`[PILOT DECISION]` overlay, all three slices `[CURRENT IMPLEMENTATION]`. The
+normative Pilot text is `docs/pilot-v1.1/00-pilot-safety-gate.md`.
+
+**Shared releasable predicate** (`reservation-holds.ts`, `releasableExpiredHoldWhere`):
+`StockReservation.status = ACTIVE ∧ expiresAt <= now ∧ Sale.status = PENDING_PAYMENT ∧ Sale has zero SalePayment rows`
+(Policy A: payment *row existence*, not the monetary sum). The read projection
+and release discovery both use it.
+
+### P0.1-A — Effective availability
+
+- **Commit:** `8e9699a585cea727c03cfd15c3ed61b9b233b752`
+- **Formula:** §6.1. `effectiveAvailability(physical, reserved, releasableExpired)`.
+- **Files:** `reservation-holds.ts` (new: TTL constant, predicate,
+  `loadReleasableExpiredHolds` with one grouped query over exact
+  `(branch, variant)` pairs, and the projection), `inventory.service.ts`
+  (`getInventoryByBranch`, `getAvailability`, `checkAvailability`),
+  `products.service.ts` (seller catalog), `backoffice.service.ts` (inventory report).
+- **Rules:** read-only (no writes on read or pre-check); raw `reserved` still
+  returned; the authoritative reserve transaction still uses raw
+  `physical − reserved`.
+- **Tests:** `tests/inventory/effective-availability.test.ts`, plus additions
+  in `products/variants.test.ts` and `backoffice/backoffice.test.ts`.
+
+### P0.1-B1 — Authoritative expiry release
+
+- **Commit:** `ab728be6bc78e42918998b1de53f81395865170c`
+- **Unit:** `releaseExpiredSaleHolds(saleId, { actor, now, branchIds? })` runs
+  **one Sale per Serializable transaction** with a 3-attempt transient retry
+  and a 30 s timeout.
+- **Lock order:** `Sale FOR UPDATE` → `StockReservation (id ASC) FOR UPDATE` →
+  `Inventory (id ASC) FOR UPDATE`. This is the same prefix as cancel and
+  payments. Send-to-cashier locks `Sale` → `Inventory (id ASC)` →
+  `SaleNumberCounter`.
+- **Checks under lock:** found → in scope (`OUT_OF_SCOPE`) → `PENDING_PAYMENT`
+  (`NOT_PENDING`) → zero payments (`PAYMENT_PROTECTED`) → expired ACTIVE rows
+  exist (`NOTHING_EXPIRED`) → same branch → quantity > 0 → inventory exists
+  and `reserved >= qty`. Any invariant failure throws and rolls back the whole
+  Sale. Writes are never clamped.
+- **Writes:** `reserved: { decrement: qty }` for each variant;
+  `updateMany ACTIVE → RELEASED` guarded by `status = ACTIVE` (the updated
+  count must equal the locked count); one `RESERVATION_RELEASED` audit per
+  Sale with `after = { saleId, reason: 'EXPIRED', trigger, triggeredByUserId?, released }`;
+  no `StockMovement`.
+- **Batch orchestration** (`reconcile`): discovery runs outside any
+  transaction with `groupBy saleId`, `ORDER BY saleId ASC`, and
+  `take = limit ?? 100` (`EXPIRED_HOLD_RELEASE_BATCH_LIMIT`). Each candidate is
+  released in its own transaction. A failure is recorded as `failed[]` with a
+  safe code and never blocks other Sales.
+- **Actors:** `ADMIN` = the invoking human; `SYSTEM` = the system actor;
+  `SEND_TO_CASHIER` = the system actor + `triggeredByUserId` (context only,
+  grants nothing). HTTP input never chooses the actor.
+- **System actor** (`audit/system-actor.service.ts`): fixed id/email/name,
+  inactive, zero `UserRoleScope`, zero `UserBranchRole`, unusable password
+  hash. `resolveSystemActorId` fails closed with
+  `503 SYSTEM_ACTOR_UNAVAILABLE` if the actor is absent or tampered with.
+  Bootstrap is explicit only (`scripts/bootstrap-system-actor.ts --target=<t> --dry-run|--execute`),
+  takes the maintenance advisory lock `506005`, and never repairs.
+- **Manual endpoint:** `POST /api/v1/admin/reservations/release-expired`,
+  gated by `requirePermission(INVENTORY_MANAGE)`. The controller narrows
+  `effectiveLocationIds` to locations where the **same assignment** grants
+  `INVENTORY_MANAGE` (F-002). It emits `inventory.updated` for each released Sale.
+- **Clock ownership:** `releaseExpiredHoldsAsSystem` and `reconcileBeforeSend`
+  read `new Date()` themselves and take no clock parameter (F-003). The manual
+  endpoint also uses the server clock.
+- **TTL:** `TECHNICAL_HOLD_TTL_MS = 30 min`, shared by reservation creation
+  (no duplicated literal).
+- **Tests:** `tests/sales/reservation-expiry.test.ts` (B1 section),
+  `tests/audit/system-actor.test.ts`.
+
+### P0.1-B2 — Automatic reconciliation
+
+- **Commit:** `e7b6cc7e17f551396efb89aae8f9a52862ff41a3`
+- **Pre-send read-only preflight** (`reservation.service.ts` `preflight`): the
+  same checks and errors as the locked transaction (not found, not the
+  seller's or out of scope, not `DRAFT`, empty). If any fails, the send stops
+  and **no** cleanup runs.
+- **Targeted discovery:** the target sale's branch plus its exact variant ids.
+- **Sale-level release:** each nominated candidate goes through the B1 unit.
+  **All** of its expired ACTIVE holds are released together, including
+  variants the target does not need. Discovery scope and release scope are
+  distinct (RULE-007).
+- **Limits:** `PRE_SEND_RECONCILE_LIMIT = 10` for the interactive path.
+  `EXPIRED_HOLD_RELEASE_BATCH_LIMIT = 100` for the sweeper and manual endpoint
+  (`RESERVATION_SWEEP_BATCH_SIZE` ≤ 100). Candidates beyond the cap stay
+  eligible.
+- **Failure degradation:** reconciliation failures are logged as
+  `reservation_pre_reconcile_failed` (`code`, optional `saleId`), and the send
+  continues to the authoritative locked check. The worst outcome is a
+  conservative `INSUFFICIENT_STOCK`, never an oversell.
+- **Post-commit realtime:** `sales.service.ts` emits `inventory.updated` for
+  each committed pre-send release. An emitter throw is logged as
+  `reservation_pre_reconcile_notify_failed` (`code: NOTIFY_FAILED`). It is not
+  added to `failed[]`, later notifications still go out, and the send proceeds
+  (F-005).
+- **Sweeper** (`reservation-sweeper.ts`):
+  - opt-in (`enabled=false` → inert, no timer);
+  - one boot sweep, then a chained `setTimeout` armed only after each run
+    settles, so runs never overlap; the timer is `unref`'d;
+  - no process-global state;
+  - `stop()` clears the timer and awaits any in-flight run;
+  - per-Sale failures log `reservation_sweep_sale_failed`;
+  - notify failures log `reservation_sweep_notify_failed`;
+  - a whole-run failure logs `reservation_sweep_failed` with a safe code, and
+    scheduling continues;
+  - `reservation_sweep_completed` logs `released`, `failed`, `batchSize` and
+    `durationMs`.
+- **Lifecycle** (`server.ts`): the server starts the sweeper after `listen`,
+  never `createApp()`, so tests and supertest create no timers. It logs
+  `reservation_sweeper_enabled|disabled`. Shutdown (SIGINT/SIGTERM, with a 10 s
+  timeout) awaits `sweeper.stop()`, then `io.close`, then `prisma.$disconnect()`.
+- **Environment** (`config/env.ts`):
+
+  | Variable | Default | Rule |
+  | --- | --- | --- |
+  | `RESERVATION_SWEEPER_ENABLED` | `false` | exactly `true` or `false` |
+  | `RESERVATION_SWEEP_INTERVAL_MS` | `60000` | integer ≥ 1000 |
+  | `RESERVATION_SWEEP_BATCH_SIZE` | `100` | integer 1–100 |
+
+- **Multi-instance:** safe through B1's Sale lock plus the guarded
+  `ACTIVE → RELEASED` update.
+- **Logging:** fixed event names, sale ids, stable codes and counts only. No
+  raw error objects or messages, and no PII.
+- **Tests:** `tests/sales/reservation-sweeper.test.ts` (DB-free lifecycle +
+  static wiring), `tests/sales/reservation-expiry.test.ts` (pre-send section),
+  `tests/env.test.ts` (sweeper settings).
+- **Known limitation:** batch starvation from permanently corrupt low-id Sales,
+  deferred to P0.5 (DEBT-003).
+
+### P0.1-C — Payment / completion / queue current-hold semantics
+
+- **Status:** implemented, audited (OpenCode + Codex), **locally checkpointed** at `421b584`.
+- **Pure evaluator** (`hold-coverage.ts`): `evaluateCurrentHoldCoverage` and
+  `cashierHoldState`. They take no DB and no global clock, and have no side
+  effects.
+  - **Coverage rule:** ACTIVE holds only, compared with the SaleItems per
+    variant. Holds must be on the sale's own branch and have a positive
+    quantity. No missing variant and no extra ACTIVE variant.
+  - **Check order:** coverage defects are reported before expiry.
+  - **Explicit expiry policy:**
+    - `FIRST_PAYMENT { now }`: every hold must satisfy `expiresAt > now`.
+    - `PAYMENT_PROTECTED`: expiry is ignored.
+    - `PAID_COMPLETION`: expiry is ignored.
+- **Callers:** payment (plain reads under the Sale lock), completion (ACTIVE
+  rows locked `FOR UPDATE`, `id ASC`) and the queue (informational only).
+- **Release authority:** unchanged. Only B1/B2 (and cancellation) release
+  holds. Payment only **detects** expiry.
+- **[PILOT DECISION / TRANSITIONAL DIVERGENCE]:** Policy A keeps a
+  payment-protected hold counted and backing the sale after `expiresAt`.
+  - Frozen 04 ("RELEASED on expiry … if no payments were made") and 07 §5.1
+    agree that such a hold is not released.
+  - Frozen 07 §5.4's sellable formula has no payment exception, so it would
+    make the merchandise sellable again after `expiresAt`.
+  - The Pilot is the more conservative of the two (it cannot oversell). The
+    frozen docs are unchanged; Phase 3C/6B must reconcile this (DEBT-017).
+
+---
+
+## 10. Payment / Cashier Model
+
+### 10.1 `[CURRENT IMPLEMENTATION]` (`payments.service.ts`, `payments.controller.ts`, `sales.service.ts`) — includes P0.1-C (`421b584`)
+
+- `POST /api/v1/sales/:saleId/payments` (`SALE_CHARGE`, re-checked against the
+  sale's own branch under the Sale lock). Methods: `CASH`, `TRANSFER`,
+  `CARD_DEBIT`, `CARD_CREDIT`, `QR`. Amount > 0. `receivedAmount` is required
+  (≥ amount) only for CASH.
+- **Order inside the transaction:**
+  1. `Sale FOR UPDATE`.
+  2. Authorization.
+  3. **Idempotent replay** (same key, same intent → `200` with the original
+     payment, in any status and after any expiry; a different payload →
+     `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD`).
+  4. Status must be `PENDING_PAYMENT` (else `INVALID_SALE_STATE`).
+  5. **Current coverage** (P0.1-C). Failure → `INVALID_RESERVATION`.
+     - Zero `SalePayment` rows: every current hold must be unexpired,
+       otherwise `RESERVATION_EXPIRED`.
+     - At least one row (Policy A, row existence): expiry is ignored.
+  6. `OVERPAYMENT` check.
+  7. CASH session check.
+  8. Insert the payment (+ `CashMovement`), `PAID` on exact equality, audit.
+- **Reserved error codes:**
+  - `RESERVATION_EXPIRED` (new, P0.1-C).
+  - `INVALID_RESERVATION` (existing code; message now "La venta no tiene
+    reservas vigentes que respalden sus artículos.").
+- **Clock:** `new Date()` inside the transaction, once per new-payment
+  decision. It never comes from the request.
+- **Rejected payment:** writes nothing (no payment, cash movement, status
+  change, audit or release).
+- **Realtime:** `sale.paid` is emitted after commit, only for a new payment
+  that made the sale PAID. An emitter throw is logged as
+  `payment_notify_failed` (`saleId`, `NOTIFY_FAILED`), and the response stays
+  `201` (F-013).
+- **Cashier queue:** `GET /api/v1/sales/pending` (`SALE_QUEUE_VIEW`).
+  - Rows: `PENDING_PAYMENT` **and** `PAID` in `effectiveLocationIds`, ordered
+    by `createdAt ASC, id ASC`.
+  - Fields: `paidAmount` and exact BigInt `remainingBalance` (never clamped),
+    plus `status`, `holdState` (`VALID` | `EXPIRED` | `PAYMENT_PROTECTED` |
+    `PAID` | `COVERAGE_INVALID`) and `canAcceptPayment`.
+  - Read-only, with a constant query count.
+- **Completion:** `POST /api/v1/sales/:saleId/complete` (`SALE_COMPLETE`); see
+  §8. Lock order: Sale → ACTIVE StockReservation (`id ASC`) → Inventory
+  (`id ASC`). The consumed count must equal the locked count.
+- **Client** (`client/src/app/page.tsx`):
+  - The payment action is disabled when `canAcceptPayment === false`, with a
+    Spanish note for EXPIRED and COVERAGE_INVALID.
+  - A PAID row stays selected, and completion uses the existing `isPaid`
+    logic.
+
+### 10.2 P0.1-C decisions (implemented)
+
+| Topic | Implemented behavior | Evidence |
+| --- | --- | --- |
+| Active-current hold validation before payment | Exact ACTIVE coverage required for every new payment | `paid-transition` "rejects a first payment with …" |
+| Zero-payment expired behavior | First payment rejected (`RESERVATION_EXPIRED`); no release from payment; queue `EXPIRED` | `paid-transition`, `pending-queue` |
+| Payment-protected behavior | Remaining payment allowed after `expiresAt`; coverage still exact | `paid-transition` Policy A cases |
+| Stale protection (`expectedSaleUpdatedAt` / `expectedRemaining`) | **Not implemented**: P0.2 or later | — |
+| Paid-before-expiry / completion-after-expiry | PAID completion ignores `expiresAt` | `complete-sale` P0.1-C cases |
+| PAID cashier queue visibility | PAID included; client keeps it selected | `pending-queue`, `client/src/app/cashier-queue.test.tsx` |
+| Payment remaining calculation | `total − SUM(amount)`, exact BigInt, unclamped | `pending-queue`, `paid-transition` |
+| Idempotency | Replay resolved before new-payment checks, also after PAID/COMPLETED/expiry | `paid-transition` replay cases |
+
+### 10.3 P0.2 — cashier correction / cancellation / payment UX (decision source: the owner's P0.2 brief, 2026-09-24; Pilot doc P0.2 section)
+
+**Implemented and pushed in P0.2 (see §16 P0.2):**
+
+- Pending-sale correction (`POST /sales/:saleId/correct`), permission
+  `SALE_CORRECT_PENDING`: zero payment rows, exact unexpired coverage,
+  original `expiresAt` kept, exact `reserved` delta, no physical change.
+- Controlled pending cancellation, permission `SALE_CANCEL_PENDING`: zero
+  payment rows (row existence), exact release, no refund.
+- Seller-own DRAFT cancellation (persisted `sellerId` + `SALE_CREATE` at the
+  location).
+- Structured cancellation reasons (`WRONG_ITEM`, `WRONG_QUANTITY`,
+  `CUSTOMER_CHANGED_MIND`, `DUPLICATE_SALE`, `OTHER` + required note).
+- Server-authoritative remaining balance shown read-only; queue flags
+  `paymentCount`/`canCorrect`/`canCancel`.
+- Split-payment toggle (OFF = exact remaining; ON = positive amount ≤
+  remaining); payment-entry/tender state re-derived from the server balance
+  after a same-sale correction (Codex P0.2 LOW #1).
+- Cashier correction and cancellation UX.
+
+**Deferred:** stale-client guards `expectedSaleUpdatedAt` / `expectedRemaining`
+(DEBT-020); refund/reversal model for abandoned partial payments (DEBT-021);
+add-new-variant in the cashier correction UI (DEBT-022); OpenCode LOW test
+gaps and notes L-1…L-5 (DEBT-023).
+
+---
+
+## 11. Database & Environment Safety
+
+> ⚠️ **READ BEFORE ANY DATABASE-TOUCHING COMMAND.** No credentials appear here.
+> They live only in untracked local env files (`.env*` is gitignored).
+
+| Environment | Identification (non-secret) | May | Must never |
+| --- | --- | --- | --- |
+| **Historical DEV / DEMO** | `DATABASE_URL`; Supabase project `mona-jacinta-demo` (`docs/development/database.md`) | Read-only inspection; the only intended backup *source* | Reset, seed, backfill, migrate, bootstrap or otherwise mutate it **without explicit human approval in the current conversation**; be an automated restore target |
+| **TEST** | `TEST_DATABASE_URL`; Supabase project `mona-jacinta-test` | Destructive integration tests (truncate per test; the default target and the OWNER full-suite gate), restore drills | Be used for anything the suite does not own; run two vitest processes at once (both truncate TEST) |
+| **LOCAL_TEST (Task 4)** | `LOCAL_TEST_DATABASE_URL`, exactly `mona_local_test@127.0.0.1:5432/mona_local_test` (loopback, PostgreSQL 17+); CI job `local-postgres` or owner-provisioned. Proven by `mona_local_test_guard.database_identity` = `LOCAL_TEST_DATABASE_MARKER_ID` | Destructive integration tests, only when explicitly selected with `MONA_TEST_DATABASE_TARGET=local`; marker/baseline only via `scripts/database/local-test-marker.mjs` and `local-test-prepare.mjs` | Be selected implicitly; fall back to TEST/DEV (or be fallen back to); replace the hosted TEST OWNER gate |
+| **DEMO / Pilot deployment DB** | `getting-started.md` refers to "the dedicated DEMO database", seeded with `DEMO_SEED_PASSWORD`. Untracked local files `.env.development.demo-candidate` and `.env.development.dev-backup.correct` exist (never read them). | [UNVERIFIED — NEEDS CONFIRMATION]: whether a distinct Pilot DB exists and which file targets it | Mutate without explicit approval; seed it with the public local/TEST demo credential |
+| **PILOT (tooling target, C/D)** | Addressed only by `scripts/database/pilot-*.mjs`, from a private URL file under `~/.config/mona-jacinta` with verified TLS. Never `.env*`, `DATABASE_URL` or `TEST_DATABASE_URL`. Proven by the canonical `mona_pilot_guard.database_identity` marker; a TEST marker is refused | OWNER-only marker install/check, guarded migrate, additive bootstrap and catalog bootstrap, via `--dry-run` → `--execute`. Migrate, bootstrap and catalog bootstrap are also bound to a plan digest | Be reached by agents or runtime code; fall back to TEST/DEV. Whether the live PILOT database exists and was bootstrapped is **not recorded in the repository** and is not claimed |
+| **Production** | Does not exist yet (`backup-restore-seed.md` §2) | — | — |
+
+Immutable operational rules:
+
+1. Never seed, reset, migrate, backfill or bootstrap without first proving the
+   target identity. Scripts take an explicit `--target` and a
+   `--dry-run`/`--execute` split.
+2. **TEST is the only destructive target.** `tests/setup.ts` runs
+   `assertTestDatabaseIsolation()` before any test file. Since A2 (`41ee882`,
+   TEST-H1) it proves TEST from TEST's own identity marker
+   (`mona_test_guard.database_identity`, pinned marker id). The check is
+   read-only, runs under `ACCESS SHARE`, and verifies the full canonical
+   structure. It fails closed on a missing, copied or malformed marker.
+   Destructive helpers accept only proven clients. *(Before A2 this was a
+   DEV-vs-TEST comparison. That wording is superseded.)*
+3. Since A2, the `api/` vitest harness (`setupFiles` + `globalSetup`) never
+   reads or connects to `DATABASE_URL` (DEV). `setup.ts` replaces it with an
+   unresolvable placeholder, so an accidental default-client query fails
+   loudly. *(Superseded: "every vitest run opens read-only metadata
+   connections to DEV".)*
+4. The system actor is bootstrapped explicitly, per target, and never at
+   startup or by the seed. Its bootstrap status on any environment is
+   [UNVERIFIED — NEEDS CONFIRMATION].
+5. Migration discipline: never modify an applied migration. Follow
+   ADD → BACKFILL → VERIFY → SWITCH → DEPRECATE → REMOVE
+   (`docs/development/migrations.md`). Applied migrations: `20260907015311_init`,
+   `20260912182432_add_company_location`, `20260912191702_add_user_role_scope`,
+   `20260922210000_d3_initial_stock_and_global_audit`.
+6. Seeds: Local/TEST seeds use a demo-only credential that is documented in the
+   repository's onboarding documentation; its value is intentionally not
+   reproduced in this Blueprint. A public demo must use
+   `DEMO_SEED_PASSWORD` (never recorded anywhere).
+
+**D5H hosted-TEST preflight tooling (D5H-I1a, `ad18815`; owner-only live use).** `scripts/database/hosted-test-config.mjs` is the canonical parser for the hosted TEST configuration (bytes in, secret-free evidence out, it never reads a file), and `scripts/database/d5h-preflight.mjs` is a read-only preflight (`--expect=<pre-deploy or post-deploy>`, optional `--require-guard-clear`). Its only statements are `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`, `SET LOCAL`, `LOCK … ACCESS SHARE`, `SELECT` and `ROLLBACK`. **It has never been run against any database**; running it against the real configuration is a live operation that needs its own owner authorization. It is not wired into the test harness (D5H-I1b consumes only the canonical parser, never the preflight) and it does not change any rule above. Details: §16 "D5H-I1a".
+
+**D5H pinned gate-only TEST target channel (D5H-I1b, `830d595`; consumed only by a future owner-run D5H gate).** A process started with the single variable `MONA_D5H_PINNED_TEST_TARGET` (canonical JSON `{v, url, markerId, attemptId}`, credential-bearing, never echoed) is a **gate process**: the `api/` test harness then takes its hosted TEST target ONLY from that pinned value (validated by the I1a parser; the URL must be the parser's canonical reconstruction), never reads `.env.development`, and refuses LOCAL_TEST, the demo target and any selector other than hosted TEST. The gate decision and its subject are captured once per PROCESS (they survive module re-evaluation); deleting or changing the variable later, or adding it to a process that started without it, fails closed. The TEST marker proof (rule 2) stays mandatory: pinning is not identity proof. Without the variable at start-up, the harness behaves as before. No live gate has used this channel; using it is a live operation that needs its own owner authorization. Details: §16 "D5H-I1b".
+
+**D5H durable TEST backup (D5H-I1c; DESIGN APPROVED 2026-10-11; I1c-a exists only as untracked, uncommitted code and is BLOCKED / NOT ACCEPTED; I1c-b NOT IMPLEMENTED — §16 "D5H-I1c-a implementation and architecture research").** The owner approved D1–D7 (`AGENTS.md` Database safety; §16). The existing `scripts/database/backup.mjs` stays exactly as it is: its TEST path remains the pre-marker, **attestation-only** bootstrap backup (`docs/development/backup-restore-seed.md`), and it is **not** a D5H recovery point. The future D5H backup is a separate, marker-proven, snapshot-bound path whose durable `mona-test-backup/v1` copy lives `OUTSIDE_WORKTREE_SAME_HOST`. Until I1c-a and I1c-b are implemented, reviewed and live-validated under their own authorizations, no backup may be described as a D5H durable, marker-proven or restorable recovery point.
+
+Local backup artifacts (gitignored `backups/database/`; manual Phase 0C
+tooling; SHA-256 from their sidecars):
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `test_drill_20260912T180544Z.dump` | `c9917ee129ec82a950d1a7e7fcfaac32d4ab787b604b5d6eef4c5742ba8427d7` |
+| `demo_pre-migration_20260912T182246Z.dump` | `c1a4bc1b1682159aa943f370f523d0c92c174e59082fdf9eba8235929e7c2358` |
+| `demo_pre-migration_20260912T191459Z.dump` | `5e72315836b0578aba94c6cd2ff313b226623d0b3a8a4700715f9f2ff1484b7f` |
+| `demo_manual_20260912T202029Z.dump` | `32a083ebda9bc111404d01f6e5a6ae9ce15bcf48d7ab904ebb9674df9af22cc6` |
+| `test_manual_20260928T130605Z.dump` (TEST, `mona-test-backup/v1` manifest; set id `8852ffc9-e5a2-42cb-888e-e9aa2b316d19`; 66797 bytes; 25 tables; taken before the owner full suite at `113c57a`) | `d84708690f8be67d14e000f5dea89f18c8f4ffc62122781a87fd7a1ec8d40934` |
+
+The newest local backup is the TEST pre-suite set from 2026-09-28. It was not
+restored, and no live restore was run as part of A1–D. The newest DEV/DEMO
+backup is still 2026-09-12. D3's migration
+(2026-09-22) has no matching local `pre-migration` artifact
+[UNVERIFIED — NEEDS CONFIRMATION whether one was taken elsewhere].
+
+---
+
+## 12. Testing / Verification Strategy
+
+- **Focused tests first:**
+  `cd api && NODE_ENV=test npx vitest run tests/<file>.test.ts --reporter=verbose`.
+- **Static gates:** `npm run lint`, `npx tsc --noEmit`, `npm run build`,
+  `git diff --check`.
+- **Pure/DB-free tests** that must not contact DEV: use a scratch vitest config
+  outside the repo with no `setupFiles`/`globalSetup` and synthetic env.
+  Since `05b3055` the canonical way is `npm run tooling:nodb -- api/tests/<dir>/<name>.test.ts` (explicit tracked files only; sanitized env; user+network+mount namespaces with `/run` masked; AST screening of the repo-local import closure; reporter evidence validated). It is defense in depth, **not** a database-identity proof (identity stays in `test-db.ts` / `demo-database.ts` / `check-databases.mjs`), and arbitrary filesystem AF_UNIX sockets outside the masked runtime directories remain `NOT_GUARANTEED` (DEBT-031). `npm run tooling:scope-guard -- --expect-branch … --expect-head … --expect-dirty …` verifies the exact working-tree state before editing/staging.
+- **Independent review:** OpenCode (broad, read-only, transversal audit), then
+  Codex (independent, adversarial final diff review).
+- **Local checkpoint:** an exact-file commit once reviews are resolved. Each
+  slice of an aggregate (e.g. P0.1-A, -B1, -B2, -C) gets its own local
+  checkpoint; none is pushed on its own.
+- **Owner full suite (aggregate gate):** run by the owner only once the
+  **whole aggregate** (for P0.1: A + B1 + B2 + C) is complete and
+  independently audited. `NODE_ENV=test npx vitest run --reporter=verbose`.
+  About 58m41s for 310 tests at `7d0c2b6`; 7777.98s (~2h10m) for 55 files /
+  855 tests at `59e629f` (P0.1 aggregate); 8461.73s (~2h21m) for 59 files /
+  1082 tests at `113c57a` (validated checkpoint). It is slow because it runs against
+  hosted TEST (~100 ms/round-trip, `fileParallelism: false`). Slow is not hung.
+  Task 4 (now pushed): hosted TEST 65/65 files, 1652/1652 tests,
+  exit 0, 8458.58s (Approval 11).
+- **LOCAL_TEST (Task 4):** the same suite can run against the disposable loopback
+  LOCAL_TEST database, only when `MONA_TEST_DATABASE_TARGET=local` is set explicitly
+  (CI job `local-postgres`; §11). It never falls back to TEST or DEV and does not
+  replace the hosted TEST owner gate. Task 4 LOCAL_TEST owner gate: 65/65 files,
+  1652/1652 tests, exit 0.
+- **Push** the aggregate's local checkpoints only after that owner full suite is green.
+
+> **FULL-SUITE GATE: OWNER ONLY.** Agents must not run the full suite unless the
+> repository owner explicitly changes this rule. (`CLAUDE.md` describes when
+> the suite runs. This Blueprint records the owner's rule for who runs it.)
+
+**Infrastructure behavior (not an application failure)**
+`[OPERATIONAL OBSERVATION — NOT REPOSITORY-VERIFIED]`: in prior development
+sessions, the existing read-only database safety/isolation check has
+intermittently timed out during focused test runs, and retries subsequently
+passed. No repository artifact records this. Probe reachability before blaming
+a change. See F-009.
+
+---
+
+## 13. Development Workflow
+
+```text
+inspect → understand source of truth → adversarial cases → RED
+→ minimal implementation → focused GREEN → static gates → full diff review
+→ OpenCode audit → Codex review → exact local checkpoint → Blueprint update
+→ (next slice of the same aggregate, same loop)
+→ when the whole aggregate is complete and audited:
+  OWNER-ONLY full suite → push (only if green) → remote verification → Blueprint update
+```
+
+For P0.1 the aggregate is P0.1-A + P0.1-B1 + P0.1-B2 + P0.1-C. The full suite
+and push come after P0.1-C, never between slices.
+
+- One editor at a time. Never run concurrent editing agents on the same working tree.
+- Never `git add .` / `-A` / `--all`. Stage exact files only (`.claude/commands/stage-review.md`).
+- No commit or push without an explicit request. No push before the approved gate.
+- `systematic-debugging` for defects, TDD for behavior changes,
+  `verification-before-completion` before any claim.
+- `opencode.json` is never staged (see also `383355f`, "exclude opencode config").
+
+### 13.1 Development tool authority model (A9, `[OWNER-REPORTED]`; the repository cannot reproduce it)
+
+The tools below live at user level, outside this repository. Their final state
+and evidence are in §16 ("User-level AI/development tooling phase"). Precedence
+is top to bottom; **generic third-party guidance never overrides Mona
+Jacinta-specific rules.**
+
+| Role | Tool | Boundary |
+| --- | --- | --- |
+| Project authority | `AGENTS.md`, `CLAUDE.md`, repository safety rules, frozen `docs/production-v1/*` where applicable | Always wins |
+| Primary implementer | Claude Code | — |
+| Planning / TDD / debugging / verification | Superpowers 6.4.1 (7.0.0 deferred) | Process skills |
+| Source grounding | `source-driven-development` | Addy skill, pinned |
+| API / interface review | `api-and-interface-design` | Addy skill, pinned |
+| Migration / deprecation guidance | `deprecation-and-migration` | Addy skill, pinned; never authorizes a Prisma `migrate`/`db` command |
+| Semantic code navigation | `serena-ro` | Read-only, 7 tools, pinned (§16) |
+| Public library documentation | Context7 | Public-docs-only data boundary (§16) |
+| Broad transversal review | OpenCode | Read-only by workflow |
+| Final independent / adversarial review | Codex | Reviewed execution policy (§16) |
+
+---
+
+## 14. Capability Matrix
+
+| Capability | Implemented | Pilot-ready | Production target | Evidence/files | Known gap | Next phase |
+| --- | --- | --- | --- | --- | --- | --- |
+| Authentication | YES | YES | Same | `auth.service.ts`, `tokens.ts` | 15-min token, no refresh | DEBT-008 |
+| Login and global rate limiting | YES (`28c3ba4`, `c6b182c`) | PARTIAL | Same | `middleware/rateLimit.ts`, `auth.routes.ts` | In-memory, per API process; `trust proxy` unset | — |
+| Sales list/queue location authorization | YES (`8a11585`) | YES (independent review approved, owner-reported) | Same | `sales.controller.ts`, `authorization-policy.ts` | — | F-015 |
+| Hermetic DB-free test execution (developer tooling) | YES (`05b3055`) | YES (not part of the runtime artifact) | Same | `scripts/dev/safe-nodb-run.mjs`, `api/vitest.nodb.config.mjs` | Defense in depth, not an identity proof; arbitrary filesystem AF_UNIX sockets outside the masked runtime directories are `NOT_GUARANTEED`; Gate A/B evidence is owner-reported | DEBT-031 |
+| Repository exact-scope guard (developer tooling) | YES (`05b3055`) | YES | Same | `scripts/dev/repo-scope-guard.mjs` | Verifies state; does not stage, restore, reset or clean; the 2 protected paths are always DENY; no dedicated linked-worktree test | — |
+| Canonical hosted TEST config parser (D5H, developer/owner tooling) | YES (`ad18815`) | N/A (not part of the runtime artifact) | Same | `scripts/database/hosted-test-config.mjs`, `hosted-test-config.test.mjs` | Pure (bytes in); consumed by the D5H-I1b runtime adapter (`830d595`) to validate the pinned gate target; not yet consumed by the TEST backup path (I1c) or any wrapper (I2–I5); 22/22 DB-free tests; never run against the real configuration | D5H-I1b/I1c |
+| D5H read-only hosted-TEST preflight (developer/owner tooling) | YES (`ad18815`) — implemented and DB-free tested only | N/A | Same | `scripts/database/d5h-preflight.mjs`, `d5h-preflight.test.mjs`, `test-marker.mjs` (`proveInstalledMarkerInTransaction`) | **Never run against any database.** Proves marker, exact recorded migration history (six pinned migrations), catalog phase and SalePayment guard risk in one snapshot; history proof is not a schema proof; DEBT-035 (count capacity); I3/I5 readiness and wrappers are NOT implemented | D5H-I1b–I5; DEBT-035 |
+| D5H pinned gate-only TEST target channel (test harness) | YES (`830d595`) — implemented and DB-free tested only | N/A (test harness; not part of the runtime artifact) | Same | `api/scripts/demo-database.ts` (`readD5hPinnedTarget`, process-lifetime pin), `api/tests/setup.ts`, `api/tests/test-db-guard.test.ts` | **Never used by a live gate.** Pinning is not identity proof (marker proof mandatory); fails closed on deleted/changed/late pin; 4 open LOW debts (DEBT-036…039) | D5H-I1c–I5 |
+| AI/dev tooling stack (user level, outside the repository) | YES `[OWNER-REPORTED]` | N/A (developer tooling; not part of the runtime artifact) | Same | §13.1, §16; no repository artifact | Safety rests on the reviewed defaults (Codex), on read-only `serena-ro` and on the Context7 data boundary; OpenCode/Codex skill discovery unverified; extra connected services add egress surface | DEBT-032, DEBT-033, DEBT-034 |
+| Interactive-transaction timeouts on send/reprice | IMPLEMENTED, REVIEWED, CHECKPOINTED and PUSHED (`3397ed3`) | DB-free tests only (not owner-gated) | — | D5I-B2B1 | `addItem`, `activateWholesale`, `updatePriceMode`, `sendToCashier` carry `timeout: 15000` (owner decision 2026-10-10; no `maxWait`); pricing is read through the transaction client in all four transactional call sites. Real PostgreSQL timing/pool behavior NOT proven | Real-DB timing/pool validation (owner gates, not run) |
+| RBAC (5 roles, COMPANY/LOCATION) | YES | YES | Same | `rbac/authorization-*.ts`, Phase 1E tests | Socket snapshot; legacy UBR read | DEBT-010/011 |
+| Catalog (products) | YES | PARTIAL | Product-level barcode, category/brand | `catalog-admin.service.ts` (D3) | Barcode on variant | 2A/2B |
+| Variants | YES | PARTIAL | Enumerated color/size families | `variant.dto.ts` | Free-text color/size | 2D |
+| Pricing | TRANSITIONAL | PARTIAL | CONSUMER_FINAL / WHOLESALE tiers | `ProductVariant.price`, `PriceEditor.tsx` | Single price | 2C / DEBT-013 |
+| Initial stock | YES | YES | `INITIAL_STOCK` movement | `initial-stock.service.ts` (`IMPORT_RUN`) | Single-row API, no file import | 4D |
+| Inventory availability | YES (expiry-aware) | YES | `effectiveSellable` over `InventoryBalance` | `reservation-holds.ts`, `inventory.service.ts` | Transitional counters | 3A–3C |
+| Seller draft/cart | YES | YES | Same | `sales.service.ts` | — | — |
+| Send-to-cashier | YES | YES | StockHold | `reservation.service.ts` | — | 6B |
+| Technical reservations | TRANSITIONAL | YES | `StockHold` | `StockReservation` | Model migration | 3C/6B |
+| Expiry reads | YES | YES | Effective predicate | P0.1-A | — | — |
+| Authoritative expiry release | YES | YES | Lazy materialization | P0.1-B1 | — | — |
+| Pre-send reconciliation | YES | YES | n/a (Pilot) | P0.1-B2 | — | — |
+| Background sweeper | YES (opt-in, default OFF) | PARTIAL — needs system actor + explicit enable | Not required by the frozen design | `reservation-sweeper.ts`, `server.ts` | Starvation; not enabled anywhere verified | P0.5 / DEBT-003 |
+| Payments (split, idempotent) | YES (P0.1-C, `421b584`) | YES (audited; P0.1 owner full suite green) | + transfer/installment metadata | `payments.service.ts`, `hold-coverage.ts` | Stale-correction guards are P0.2 | 6C |
+| Cashier queue | YES (P0.1-C, `421b584`; P0.2-C eligibility flags pushed) | YES (audited; P0.1 owner full suite green) | — | `listPendingSales`, `hold-coverage.ts` | Released/expired rows stay until cancelled | P0.2 |
+| Completion | YES (P0.1-C, `421b584`) | YES (audited; P0.1 owner full suite green) | + pricing finalization | `completeSaleInTransaction` | — | 6D |
+| Cancellation | YES (P0.2-B, pushed) | Reviewed in P0.2 closeout | — | `cancelSale`, `cancel-sale.dto.ts` | Partially paid sales stay manual (Policy A; no refund model) | Refund/reversal design (later) |
+| Cashier correction | YES (P0.2-A, pushed) | Reviewed in P0.2 closeout | — | `pending-correction.service.ts` | Client UI in P0.2-C; add-variant only via API if the UI stays minimal | P0.2 |
+| Audit | YES | YES | Same | `shared/audit.ts`, `AuditLog` | — | — |
+| Realtime | YES (advisory) | YES | + persisted notifications | `realtime/socket.ts` | Scope snapshot | 9B/9C |
+| Cash session | YES (Demo V2 level) | PARTIAL | + deposit/withdrawal/adjustment types | `cash.service.ts` | Movement types | 6E |
+| Session refresh | NO | NO | [UNVERIFIED — NEEDS CONFIRMATION] | `tokens.ts` | `JWT_ACCESS_TTL_SECONDS` is validated in `env.ts` but not read by `tokens.ts` (hardcoded 15 min); config and token lifetime are disconnected | DEBT-008 |
+| Backup automation | PARTIAL (manual tooling) | PARTIAL | Hardening in 10C | `scripts/database/*` | No scheduling | DEBT-006 |
+| Logging/observability | PARTIAL | PARTIAL | — | `shared/logger.ts`, fixed-code events | No aggregation or alerting | DEBT-004/005 |
+| Split payment | YES | YES | 6C metadata | `SalePayment` | — | 6C |
+| Import (CSV/XLSX) | NO | NO | Phase 4D | — | — | 4D |
+| Transfers, suppliers, SEÑA, exchanges, publications, labels, reports, ARCA | NO | NO | Phases 4–10 | — | — | Roadmap |
+
+---
+
+## 15. File Responsibility Index
+
+| File | Responsibility | Critical invariants | Introduced/changed by block |
+| --- | --- | --- | --- |
+| `api/src/modules/sales/reservation-holds.ts` | TTL, batch limits, releasable predicate, read projection | Never writes; one predicate for reads and discovery; `effectiveAvailable ≤ physical` | P0.1-A (new), B2 (`PRE_SEND_RECONCILE_LIMIT`) |
+| `api/src/modules/sales/reservation.service.ts` | Send-to-cashier: preflight, pre-send hook, locked reserve | The locked raw `physical − reserved` check alone decides; lock order Sale → Inventory → Counter | Demo V2; B1 (TTL constant); B2 (preflight + hook) |
+| `api/src/modules/sales/cancellation.service.ts` | Cancel, per-Sale expiry release, reconcile, SYSTEM/pre-send/manual entries | One Sale per transaction; exact decrement; no clamping; guarded status update; automation owns its clock | Demo V2; B1 (rewrite); B2 (`reconcileBeforeSend`, variant filter, limit); P0.2-B (controlled cancellation: seller-own DRAFT, `SALE_CANCEL_PENDING`, payment-row block, structured reason) |
+| `api/src/modules/sales/cancellation.controller.ts` | Cancel and manual release HTTP | Manual scope = same-assignment `INVENTORY_MANAGE` locations | B1 |
+| `api/src/modules/sales/reservation-sweeper.ts` | Opt-in scheduler | Inert when disabled; no overlap; `stop` awaits in-flight run; no global state | B2 (new) |
+| `api/src/modules/sales/hold-coverage.ts` | Pure current-coverage evaluator + cashier hold state | No DB, no global clock; explicit expiry policy; coverage defects before expiry; ACTIVE rows only | P0.1-C (new, `421b584`) |
+| `api/src/modules/sales/sales.service.ts` | Draft/cart, queue, completion; wires pre-send + notifications | Emit only after commit; emit failure isolated; completion consumes exactly the locked ACTIVE rows; queue read-only and PENDING_PAYMENT + PAID | B2 (wiring); P0.1-C (completion, queue) |
+| `api/src/modules/sales/pending-correction.service.ts` | Pending-sale correction (P0.2-A) | Sale-first lock; zero payment rows; exact unexpired coverage before and after; exact `reserved` delta; original `expiresAt`; no `StockMovement`; audit before/after | P0.2-A (pushed) |
+| `api/src/modules/sales/sales.controller.ts` | Sales HTTP | Queue accepts no client filters; `GET /sales` and `GET /sales/pending` take locations from `authorizedLocationIds(auth, SALE_VIEW \| SALE_QUEUE_VIEW)`, never raw `effectiveLocationIds` | B2 (options passthrough); D5I-B1/B1C (`8a11585`) |
+| `api/src/modules/audit/system-actor.service.ts` | System actor classify/bootstrap/resolve | Inactive, scope-less; fail closed; never repair | B1 (new) |
+| `api/scripts/bootstrap-system-actor.ts` | Operator CLI | Explicit `--target`, `--dry-run`/`--execute`; never prints the secret | B1 (new) |
+| `api/src/modules/payments/payments.service.ts` | Payments | Sale lock; replay before new-payment checks; exact current coverage; first payment unexpired; never releases; no overpayment | Demo V2; 1D.3.2; P0.1-C |
+| `api/src/modules/payments/payments.controller.ts` | Payments HTTP | Committed payment result is never changed by a realtime failure | P0.1-C |
+| `client/src/app/page.tsx` (cashier workspace) | Cashier queue/payment/completion/correction/cancellation UI | Payment action honors `canAcceptPayment`; correction/cancel only on server flags; remaining balance read-only from the server; split toggle; server stays authoritative | P0.1-C |
+| `api/src/modules/rbac/authorization-context.ts` | Builds `req.auth` from the DB | Assignments only from valid Production role codes | 1D; D1 |
+| `api/src/modules/rbac/authorization-policy.ts` | The only permission/scope decision point | Same-assignment rule; OWNER only COMPANY; COMPANY-required set | 1D; GC2 |
+| `api/src/middleware/authorization.ts` | `requirePermission`, `requireAnyPermission`, `assertPermissionAtLocation` | Production permissions only; `requireAnyPermission` is a coarse gate — the service must re-check at the persisted location | 1D; P0.2-B |
+| `api/src/modules/auth/user-context.dto.ts` | Public user projection | Public roles from assignments only | D1, D3 |
+| `api/src/server.ts` | Process runtime, sweeper lifecycle, shutdown | Sweeper started only here, after listen; stopped before disconnect | B2 |
+| `api/src/app.ts` | Express composition | No timers; routes mounted after `requireAuth` | Demo V2; B1 (`/admin` router) |
+| `api/src/config/env.ts` | Zod env | Sweeper opt-in, exact booleans, bounded values; errors name variables only | D3; B2 |
+| `api/src/modules/inventory/inventory.service.ts` | Availability reads and pre-checks | Read-only; expiry-aware | P0.1-A |
+| `api/src/modules/inventory/initial-stock.service.ts` | Additive initial stock | `physical += qty` only; one movement + audit | D3 |
+| `api/tests/helpers/test-runtime-env.ts` | Deterministic synthetic test runtime environment | Test-only; D5F-A (`38bac33`) |
+| `api/src/modules/rbac/scope-backfill.service.ts` | Scope backfill from legacy `UserBranchRole` | O(1) DB operations in the eligible-row count; core sync has no `$transaction` of its own | D5F-C2 (`eab79a6`) |
+| `api/src/middleware/rateLimit.ts` | Hosts the global limiter (`createRateLimiter`) and the reusable failed-attempt primitive (`createFailedAttemptLimiter`) used by login; the wholesale attempt limiter is instantiated inline in `sales.routes.ts`, not here | Failed-attempt limiters charge only failed requests; the client IP comes from `CLIENT_IP_SOURCE`; `X-Forwarded-For` is never read | `28c3ba4`, `c6b182c` |
+| `api/tests/setup.ts`, `api/tests/helpers/test-db.ts` | TEST identity proof, proven TEST clients, truncation | Fail closed; destructive only on proven TEST clients; `DATABASE_URL` never read; adapter-owned pool ended by `$disconnect()` | Phase 0; A2 (TEST-H1); D5H-I1b (`830d595`: gate mode skips dotenv and takes the pinned target; non-gate mode restores ambient target controls after dotenv) |
+| `api/scripts/demo-database.ts` (`openProvenTestPool`, `verifyTestMarkerFacts`, `MARKER_FACTS_SQL`) | TEST marker verification for the test harness and `openSeedDatabase('test')` | READ ONLY transaction + `ACCESS SHARE`; canonical structure incl. no inheritance; facts SQL identical to `test-marker.mjs` (asserted by `test-db-guard.test.ts`) | A2 (TEST-H1); D5H-I1b (`830d595`: process-lifetime gate pin, `readD5hPinnedTarget`, gate-only target selection, non-throwing case-folded `safeCode`, safe failure classification) |
+| `api/tests/test-db-guard.test.ts`, `api/tests/test-cleanup.test.ts` | Zero-DB tests: identity guard; AST cleanup-lifecycle scanner | Allowlist, fail closed; hermetic exemption limited to `test-db-guard` | A2; A3 (TEST-H2/H2.1); D5H-I1b (`830d595`: start-up-state cases run in child Vitest processes with a constructed env and no setup files) |
+| `scripts/database/test-marker.mjs`, `backup.mjs`, `restore.mjs`, `lib.mjs` | TEST marker installer; DEV-free TEST backup; TEST-only restore | Restore proves the live TEST marker first; manifest byte-exact; archives containing `mona_test_guard` refused | Phase 0C; A1 |
+| `scripts/database/hosted-test-config.mjs` | Canonical hosted TEST config parser: raw bytes → held target + secret-free evidence; one deterministic connection-string spelling | No I/O; exactly one assignment per relevant key (`TEST_DATABASE_URL`, `TEST_DATABASE_MARKER_ID`) in the narrow `KEY=value` grammar; no fallback to any other variable; password private and non-enumerable; `targetDigest` and `markerDigest` carry no secret | D5H-I1a (`ad18815`, new) |
+| `scripts/database/d5h-preflight.mjs` | Read-only D5H preflight: marker + migration-history + catalog + SalePayment guard risk in one `REPEATABLE READ READ ONLY` snapshot | One config read, one held target, one client, one `ROLLBACK`; PASS needs confirmed rollback and close; fixed-code, secret-free output; incapable of writes; never run live by the agent | D5H-I1a (`ad18815`, new) |
+| `scripts/database/test-marker.mjs` (`proveInstalledMarkerInTransaction`, exported `PROOF_BEGIN_SQL`) | The marker proof for a caller-owned transaction; `proveInstalledMarker` is now BEGIN + that primitive + ROLLBACK | The primitive issues no BEGIN/COMMIT/ROLLBACK and no write; one set of marker rules; standalone behavior unchanged | D5H-I1a (`ad18815`, modified) |
+| `scripts/database/hosted-test-config.test.mjs`, `d5h-preflight.test.mjs`, `test-marker.test.mjs` | Zero-database tests (injected fakes only) for the three modules above | No default dependency is reachable; synthetic values only | D5H-I1a (`ad18815`) |
+| `scripts/database/pilot-marker.mjs`, `pilot-migrate.mjs`, `pilot-bootstrap.mjs`, `pilot-catalog-bootstrap.mjs` | OWNER-only PILOT marker, migrate, bootstrap, catalog bootstrap | Private URL file only; PILOT marker proof; TEST marker refused; plan digest; absent → create, exact → no-op, else rollback; cleanup never replaces an established outcome; no secrets printed | C; D |
+| `scripts/dev/safe-nodb-run.mjs` | Runs explicitly listed tracked `api/tests/**/*.test.ts` files with the repo-local pinned Vitest inside layered containment; screens the repo-local import closure; validates reporter evidence before any verdict | Never infers database identity; PASS/FAIL/DENY/BLOCKED partition (usable evidence is validated BEFORE the process exit is interpreted); no unisolated fallback; arbitrary AF_UNIX `NOT_GUARANTEED` | `05b3055` |
+| `scripts/dev/repo-scope-guard.mjs` | Read-only check that branch/HEAD/dirty/staged sets equal the expected sets exactly | Only `git --no-optional-locks status --porcelain=v2 -z --branch` and `rev-parse --show-toplevel` with `GIT_*` scrubbed; every porcelain record is grammar-validated (malformed => BLOCKED); protected paths always DENY | `05b3055` |
+| `api/vitest.nodb.config.mjs`, `api/vitest.nodb.remediation.config.mjs` | Generic worktree-independent no-DB Vitest config (no setup/globalSetup); the `remediation` file is a one-line compatibility re-export of it | Root derived from `import.meta.url`, never an absolute path; meant to be run only through `safe-nodb-run` | `05b3055` |
+| `scripts/dev/*.test.mjs` | Hermetic tests of both tools (Node built-ins only; temporary repositories and fakes; real `unshare` against a fake Vitest for the containment proofs) | AST tests resolve TypeScript only from the repo-local pinned package unless an explicit supplemental override is set (provenance: each consumed file canonicalized and bounded) | `05b3055` |
+
+---
+
+## 16. Block Change Ledger
+
+### P0.1-A — Expiry-aware effective availability
+
+| Field | Value |
+| --- | --- |
+| Goal | Stop expired, unpaid technical holds from hiding sellable stock in reads and pre-checks |
+| Start → end | `6aa8143` → `8e9699a585cea727c03cfd15c3ed61b9b233b752` |
+| Files | `reservation-holds.ts` (new); `inventory.service.ts`, `products.service.ts`, `backoffice.service.ts`; 3 test files |
+| Behavior added | Effective availability (§6.1); raw `reserved` preserved |
+| Explicitly excluded | Any write; changes to the authoritative reserve check |
+| Tests | `inventory/effective-availability.test.ts` (+ variants, backoffice) |
+| OpenCode / Codex | [UNVERIFIED — NEEDS CONFIRMATION] |
+| Deferred | Authoritative release (B1), automation (B2) |
+| Commit / push | `8e9699a` / pushed (`6aa8143..7b6fce8`) |
+
+### P0.1-B1 — Authoritative expiry release
+
+| Field | Value |
+| --- | --- |
+| Goal | One idempotent, auditable, per-Sale release; attribution for automation |
+| Start → end | `8e9699a` → `ab728be6bc78e42918998b1de53f81395865170c` |
+| Files | `cancellation.service.ts` (rewrite), `cancellation.controller.ts`, `reservation.service.ts`, `system-actor.service.ts` (new), `scripts/bootstrap-system-actor.ts` (new); tests |
+| Behavior added | §9 B1. Replaced the Demo V2 single-transaction batch (F-004); same-assignment manual scope (F-002); clock-free SYSTEM entry (F-003); `<=` expiry boundary |
+| Explicitly excluded | Scheduling; pre-send; payment/completion rules |
+| Tests | `sales/reservation-expiry.test.ts` (B1), `audit/system-actor.test.ts` |
+| OpenCode / Codex | [UNVERIFIED — NEEDS CONFIRMATION] |
+| Deferred | B2; P0.1-C |
+| Commit / push | `ab728be` / pushed (`6aa8143..7b6fce8`) |
+
+### P0.1-B2 — Automatic reconciliation
+
+| Field | Value |
+| --- | --- |
+| Goal | Reclaim expired holds automatically without risking oversell or latency |
+| Start → end | `ab728be` → `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` |
+| Files | `reservation-sweeper.ts` (new), `reservation.service.ts`, `cancellation.service.ts`, `reservation-holds.ts`, `sales.service.ts`, `sales.controller.ts`, `server.ts`, `env.ts`, `api/.env.example`; `docs/pilot-v1.1/00-pilot-safety-gate.md` (new), `docs/api/endpoints.md`; tests |
+| Behavior added | §9 B2 |
+| Explicitly excluded | Enabling the sweeper by default; bootstrapping the actor; starvation hardening; payment TTL |
+| Tests | `sales/reservation-sweeper.test.ts`, `sales/reservation-expiry.test.ts` (pre-send), `env.test.ts`, `inventory/effective-availability.test.ts` |
+| OpenCode / Codex | [UNVERIFIED — NEEDS CONFIRMATION] |
+| Deferred | P0.1-C; P0.5 starvation |
+| Commit / push | `e7b6cc7` / pushed (`6aa8143..7b6fce8`) |
+
+### Living Blueprint (documentation checkpoint)
+
+| Field | Value |
+| --- | --- |
+| Goal | Persistent implementation/status/failure ledger + `AGENTS.md` pointer |
+| Start → end | `e7b6cc7` → `4eb8101d1abe1599314f7ed641748c47798fa5c4` |
+| Files | `docs/blueprint/MONA-JACINTA-SYSTEM-BLUEPRINT.md` (new), `AGENTS.md` (+6 lines) |
+| OpenCode | Approved for local checkpoint (per owner; not recorded in repo) |
+| Commit / push | `4eb8101` / pushed (`6aa8143..7b6fce8`) |
+
+### P0.1-C — Payment / completion / cashier-queue hold semantics
+
+| Field | Value |
+| --- | --- |
+| Goal | Close the expiry → payment → PAID → completion boundary without weakening stock authority |
+| Start → end | `4eb8101` → `421b584` (`421b58453b7de667cb3ad6a3467a051a14dd61f7`) |
+| Files (source) | `api/src/modules/sales/hold-coverage.ts` (new), `api/src/modules/payments/payments.service.ts`, `api/src/modules/payments/payments.controller.ts`, `api/src/modules/sales/sales.service.ts`, `client/src/app/page.tsx` |
+| Files (tests) | `api/tests/sales/hold-coverage.test.ts` (new), `api/tests/sales/paid-transition.test.ts`, `api/tests/payments/split-payment.test.ts`, `api/tests/sales/complete-sale.test.ts`, `api/tests/sales/pending-queue.test.ts`, `client/src/app/cashier-queue.test.tsx` (new) |
+| Files (docs) | `docs/pilot-v1.1/00-pilot-safety-gate.md`, `docs/api/endpoints.md`, this Blueprint |
+| Behavior added | §9 P0.1-C and §10.1: exact current coverage; first-payment expiry; Policy A later payments; replay first; PAID completion after expiry; ACTIVE-only completion; PAID in queue + hold states; client payment gating; payment realtime isolation |
+| Explicitly excluded | P0.2 correction/cancel, stale-correction guards, any release from payment, schema/RBAC/seed changes |
+| Fixture note | Payment tests that paid item-less, hold-less sales now build a realistic held sale (item + matching ACTIVE hold); their assertions are unchanged. Item-less sales now fail closed. |
+| Tests (RED) | 23 API tests failed for the expected reasons, plus 1 client test (EXPIRED payment button); realtime isolation RED (`500` instead of `201`) |
+| Tests (GREEN) | **Authoritative final focused run** (API, on the final source, 2026-09-24 16:02:58Z start, 3044.86s, `VITEST_EXIT=0`; counts taken from the Vitest JSON reporter by file identity): **9/9 files passed, 211/211 tests passed, 0 failed, 0 skipped** — `tests/sales/hold-coverage.test.ts` 18, `tests/sales/paid-transition.test.ts` 39, `tests/payments/split-payment.test.ts` 24, `tests/sales/complete-sale.test.ts` 23, `tests/sales/pending-queue.test.ts` 25, `tests/sales/reservation-expiry.test.ts` 38, `tests/sales/cancellation.test.ts` 17, `tests/audit/audit.test.ts` 16, `tests/inventory/stock-movement-invariant.test.ts` 11. No infrastructure timeout occurred. Earlier run (superseded): 211 tests, 210 passed, 1 failed — a pre-existing order-dependent assertion (`findMany` without `orderBy` in "finalizes two variants atomically…": identical rows, swapped order), fixed with an explicit `orderBy` (RULE-017). Its per-file breakdown was mis-transcribed (`cancellation` recorded as 19 instead of 17, so the parts summed to 213); that was OpenCode's LOW bookkeeping finding, now **resolved** by the reporter-derived counts above. Client `src/app`: 10/10 (separate client run; not part of the API run above). |
+| Static gates | API lint, `tsc --noEmit`, `typecheck`, `build`: PASS. Client lint, `tsc --noEmit`, `build`: PASS. `git diff --check`: PASS. |
+| Pure-test validity | The evaluator tests were proven to catch mutants (boundary `<` vs `<=`, dropped branch check, released→EXPIRED mapping, expiry applied to protected sales) with a DB-free harness |
+| OpenCode / Codex | OpenCode: reviewed (per owner); LOW test-count bookkeeping finding resolved (see Tests (GREEN)). Codex: initial adversarial read-only review — BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1 (documentation only: stale §3 audit state), no runtime/test change required; LOW corrected; narrow recheck completed → final **0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW**, verdict `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`. |
+| Commit / push | `421b58453b7de667cb3ad6a3467a051a14dd61f7` + Blueprint record `59e629f` + P0.1 closeout `7b6fce805f11486b1f3a60081adfeaf0a545b7c4` / **pushed** (`6aa8143..7b6fce8`, normal push, verified `0 0`). |
+| Owner aggregate gate (P0.1) | **GREEN** — OWNER full suite: **55/55 test files passed, 855/855 tests passed, 0 failed** (start 15:07:14 local terminal time, duration 7777.98s). Run manually by the OWNER at `59e629f`; no agent ran it; no separate `VITEST_EXIT` line captured, so none recorded. Known non-failing `pg` DeprecationWarning only (DEBT-009). **P0.1 CLOSED AND PUSHED.** |
+
+### P0.2 — Cashier correction / cancellation / payment UX
+
+| Field | Value |
+| --- | --- |
+| Goal | Let the cashier correct or cancel a zero-payment PENDING_PAYMENT sale safely, and harden the payment UX, without weakening P0.1 (Policy A, expiry, exact coverage) |
+| Start → end | `289c545` → `e3ce087` (`e3ce087a7408646d97e1b0f204be8ee1c447fdae`), local checkpoint |
+| Decision source | The owner's P0.2 master brief (2026-09-24): approved product decisions for correction, permissions, cancellation reasons, DRAFT ownership, payment-row protection, no back-to-draft, and cashier UX. No P0.2 document existed in the repository; the frozen docs agree (04: cancel only DRAFT or PENDING_PAYMENT with zero payments; after payment no cancel). |
+| Stale-client guards | `expectedSaleUpdatedAt` / `expectedRemaining` are **not** approved by any repository document → deferred (DEBT-020). Server Sale-lock re-checks stay mandatory. |
+| **P0.2-A** — pending correction | `POST /api/v1/sales/:saleId/correct` `{ items: [{ variantId, quantity }] }` = the complete target item list. Permission `SALE_CORRECT_PENDING` (CASHIER, ADMIN; OWNER implicit). Eligible only when `PENDING_PAYMENT` **and zero `SalePayment` rows** (row existence). One Serializable transaction, lock order Sale → ACTIVE StockReservation (id ASC) → Inventory (id ASC). Requires exact, unexpired current coverage (first-payment rule): expired/released → `RESERVATION_EXPIRED`, defects → `INVALID_RESERVATION`. Increases pass the locked raw `physical − reserved >= delta` check (`INSUFFICIENT_STOCK`). `reserved` moves by the exact delta; physical never changes; no `StockMovement`. Superseded holds become `RELEASED`; one ACTIVE hold per changed variant keeps the **original** `expiresAt` (never refreshed). Removed items are **physically deleted**; new variants get a current price snapshot; unchanged lines keep their snapshot. Post-condition re-verifies exact coverage in the same transaction. `SALE_CORRECTED` audit with full before/after items, per-variant reservation changes and the preserved expiry. Empty list → 400; duplicate variant → 400; no-op → 409 `NO_CHANGES`; payments → 409 `PAYMENT_ALREADY_ACCEPTED`; wrong state → 409 `INVALID_SALE_STATE`. Advisory `inventory.updated` after commit, failure isolated (`sale_correction_notify_failed`). |
+| P0.2-A files | `api/src/modules/sales/pending-correction.service.ts` (new), `api/src/modules/sales/dto/pending-correction.dto.ts` (new), `sales.routes.ts`, `sales.controller.ts`, `rbac/permissions.ts`, `rbac/role-permission-matrix.ts`, `rbac/catalog.service.ts`; tests `api/tests/sales/pending-correction.test.ts` (new), `tests/rbac/role-permission-matrix.test.ts`, `tests/rbac/admin-company-backfill.test.ts`, `tests/rbac/seed-integration.test.ts`, `tests/rbac/catalog.test.ts` (catalog counts: approved new permission) |
+| P0.2-A tests | RED: 30/33 failed (route absent → 404). GREEN: `pending-correction` 33/33 + `role-permission-matrix` 7/7 (40/40); RBAC DB set (`catalog`, `admin-company-backfill`, `seed-integration`, `role-permission-scope-matrix`, `user-context-dto`) 61/61. Mutation check: forcing a fresh TTL or ignoring payment rows made 3 tests fail. API lint, `tsc --noEmit`, `typecheck`, `build`, `git diff --check`: PASS. |
+| **P0.2-B** — controlled cancellation | `POST /api/v1/sales/:saleId/cancel` now takes `{ reason, note? }` (`WRONG_ITEM`, `WRONG_QUANTITY`, `CUSTOMER_CHANGED_MIND`, `DUPLICATE_SALE`, `OTHER`; `OTHER` needs a nonblank note ≤ 500). Authority is decided on the locked, persisted sale: `DRAFT` = owning seller (`sellerId`) with `SALE_CREATE` at the sale's location (CASHIER/ADMIN/OWNER cannot cancel someone else's draft); `PENDING_PAYMENT` = `SALE_CANCEL_PENDING` (CASHIER, ADMIN; OWNER implicit) at the sale's location — SELLER lost pending-cancel authority. Any `SalePayment` **row** blocks (`PAYMENT_ALREADY_ACCEPTED`), replacing the old payment-**sum** check. Zero-payment pending: ACTIVE holds released with a checked row count, exact `reserved` decrement, no physical change, no `StockMovement`, `CANCELLED`, `SALE_CANCELLED` audit (reason, note, released) in the same Serializable transaction. Route gate `requireAnyPermission([SALE_CREATE, SALE_CANCEL_PENDING])` (new, coarse, centralized `hasPermission`); the service's same-assignment `hasPermissionAtLocation` decides. No refund, no payment/cash-movement deletion, no back-to-draft. Existing tests updated for the approved contract (reason body; pending cancel via cashier; seller-own drafts). |
+| P0.2-B files | `api/src/modules/sales/cancellation.service.ts`, `cancellation.routes.ts`, `cancellation.controller.ts`, `dto/cancel-sale.dto.ts` (new), `api/src/middleware/authorization.ts` (`requireAnyPermission`), `rbac/permissions.ts`, `rbac/role-permission-matrix.ts`, `rbac/catalog.service.ts`; tests `api/tests/sales/controlled-cancellation.test.ts` (new), `cancellation.test.ts`, `reservation-expiry.test.ts`, `audit/audit.test.ts`, RBAC count tests (35 permissions / 73 Production grants / 47 permission rows / 105 RolePermission rows); docs `docs/api/endpoints.md`, `docs/pilot-v1.1/00-pilot-safety-gate.md` |
+| P0.2-B tests | RED: 24/32 new tests failed. GREEN run 1: `controlled-cancellation` + `cancellation` + `role-permission-matrix` = 3/3 files, 56/56 tests, exit 0 (summary-only output). GREEN run 2 (JSON reporter): `audit` 16, `admin-company-backfill` 24, `catalog` 6, `seed-integration` 7, `reservation-expiry` 38 = 5/5 files, 91/91, 0 failed, 0 skipped, `VITEST_EXIT=0`. API lint, `typecheck`, `build`, `git diff --check`: PASS. |
+| **P0.2-C** — cashier / payment UX | Queue rows add `paymentCount`, `canCorrect` (VALID + live `SALE_CORRECT_PENDING` at the row's location) and `canCancel` (zero-payment PENDING_PAYMENT + live `SALE_CANCEL_PENDING`), computed in memory (no extra query; the queue stays read-only). Client (`page.tsx` cashier workspace): **Corregir venta** / **Cancelar venta** only when the server flags allow; a sale with payments states it admits neither. Correction panel edits quantities / removes lines of the current items (adding a new variant is API-only — DEBT-022), cannot submit an empty or non-positive list, sends the complete target list, and refetches the queue on success; a rejection shows the server message and changes nothing. Cancellation panel requires one of the five reasons and a nonblank note for `OTHER`. Paid/remaining amounts are the server's queue values, read-only (no longer recomputed from the payment list). **Pago parcial** toggle: OFF = amount is exactly the remaining balance (read-only input); ON = positive amount ≤ remaining. CASH received/change unchanged. P0.1 hold-state behavior preserved. |
+| P0.2-C files | `api/src/modules/sales/sales.service.ts` (`listPendingSales(branchIds, auth?)`), `sales.controller.ts`; `client/src/app/page.tsx`, `client/src/app/globals.css`; tests `api/tests/sales/pending-queue.test.ts` (+5 eligibility tests; exact-row test updated), `client/src/app/cashier-p02.test.tsx` (new); docs `docs/api/endpoints.md`, `docs/pilot-v1.1/00-pilot-safety-gate.md` |
+| P0.2-C tests | Client RED 14/17 (3 preservation tests passed already). API queue flags: RED 6/6 against the pre-change service (proved with a temporary copy of the `HEAD` file, restored byte-identically). GREEN: client `src/app` 3/3 files, 27/27; `pending-queue` 30/30, `VITEST_EXIT=0`. Client lint, `tsc --noEmit`, `build`: PASS. API lint, `typecheck`, `build`, `git diff --check`: PASS. |
+| **P0.2 aggregate focused gate** | API, JSON reporter, `VITEST_EXIT=0`, start 19:12:14 local, 4942.89s: **19/19 files, 393/393 tests, 0 failed, 0 skipped** — `pending-correction` 33, `controlled-cancellation` 32, `cancellation` 17, `split-payment` 24, `paid-transition` 39, `complete-sale` 23, `reservation-expiry` 38, `reservation-sweeper` 12, `send-to-cashier` 9, `hold-coverage` 18, `pending-queue` 30, `audit` 16, `stock-movement-invariant` 11, `effective-availability` 19, `role-permission-matrix` 7, `role-permission-scope-matrix` 14, `authorization-policy` 40, `cross-assignment` 1, `user-context-dto` 10. RBAC DB catalog tests (`catalog` 6, `admin-company-backfill` 24, `seed-integration` 7) were GREEN in the Phase B run and nothing under `rbac/` changed afterwards. Client (JSON reporter): 3/3 files, 27/27 (`cashier-p02` 17, `cashier-queue` 4, `page` 6). Final static gates: API lint, `typecheck`, `tsc --noEmit`, `build`; client lint, `tsc --noEmit`, `build`; `git diff --check` — all PASS. No retries; no infrastructure failure. |
+| Known limitations | Add-variant correction is API-only (DEBT-022). (The stale CASH "received" default after a same-sale correction was fixed in the Codex correction pass.) |
+| OpenCode / Codex | **OpenCode: COMPLETE** — independent transversal READ-ONLY audit. Precheck: branch `feat/production-v1`, HEAD `289c545`, `0 0` with origin, nothing staged, `git diff --check` clean, P0.2 unstaged/uncommitted/unpushed, `opencode.json` not inspected. Findings: **0 BLOCKER / 0 HIGH / 0 MEDIUM / 6 LOW** (all non-blocking, all **open**: L-1…L-6 below). Verdict: **`PILOT P0.2 APPROVED FOR CODEX REVIEW`**. OpenCode independently verified: P0.2-A correction authorization and lifecycle; zero-payment eligibility; row-existence Policy A; exact ACTIVE hold coverage; preserved reservation expiry; exact `Inventory.reserved` adjustments; no physical-stock mutation; no `StockMovement` for correction/release; transactional audit; strict seller-own DRAFT cancellation; controlled PENDING_PAYMENT cancellation; exact cancellation-reason contract; `SALE_CORRECT_PENDING`/`SALE_CANCEL_PENDING` matrix; centralized OWNER implicit authority; `requireAnyPermission` current call-site safety; queue `canCorrect`/`canCancel` server authority; cashier correction/cancellation UX; server-derived remaining balance; split-payment behavior; BigInt exactness; Sale-first concurrency serialization; no P0.1 regression; no P0.3/P0.4/P0.5 scope drift. It could not construct an invariant-breaking interleaving. **Codex: initial review done — see the Codex rows below.** |
+| OpenCode LOW findings (open) | **L-1** (test gap): Policy A row-existence in `/cancel` and `/correct` is not pinned by a test with a manually inserted zero-amount `SalePayment` row (code already uses row existence). **L-2** (test gap): `CORRECTION_NOT_SUPPORTED` for duplicate legacy `SaleItem` rows is not directly tested (code fails closed). **L-3** (test gap): no explicit correction-vs-cancellation race test (provably safe via Sale-first `FOR UPDATE`). **L-4** (design note): `requireAnyPermission` is a coarse reusable gate whose safety depends on the service's location-paired check; its only caller complies (DEBT-023). **L-5** (cosmetic): stale prose in `api/tests/audit/audit.test.ts` describing the old permission expectation. **L-6** (accepted UX debt): CASH "Recibido" default not reset after a same-sale correction; amount comes from the server's remaining balance, the stale value is visible/editable, client and server both check received ≥ amount, accounting stays correct. **Codex decisions:** L-1…L-5 safe to defer (accepted debt, DEBT-023); L-6 no longer accepted as-is — fixed by the Codex LOW #1 correction. |
+| Codex initial review | Independent adversarial read-only review: **BLOCKER 0 / HIGH 0 / MEDIUM 0 / LOW 2**, verdict **`PILOT P0.2 CODEX CHANGES REQUIRED`**. **LOW #1:** stale CASH tender after a same-sale correction — the payment-entry reset depended on `selectedSaleId`, which a correction does not change, so `cashReceived` kept the old balance (e.g. 10000) while the amount became the new one (5000); the server could record `receivedAmount`/`changeAmount` that were false (net cash still correct). **LOW #2:** stale Blueprint §8 (cancel = `SALE_CREATE`, no `sellerId` check, payment-sum semantics) and §10.3 (P0.2 shown as later work). |
+| Codex corrections (applied) | **#1:** new client regression in `client/src/app/cashier-p02.test.tsx` ("resets the CASH tender to the new server balance after a same-sale correction") — RED against the previous code (amount 5000, `Recibido` still 10000), GREEN after the fix. Fix in `client/src/app/page.tsx`: `refreshQueue` returns the refreshed rows; a shared `resetPaymentEntry(balance)` (amount, CASH received, retry intent, split toggle) is used by the selection effect and, after a committed correction, with the refreshed server row's `remainingBalance`. No API change. Client: 3/3 files, **28/28** (`cashier-p02` 18, `cashier-queue` 4, `page` 6); client lint, `tsc --noEmit`, `build`, `git diff --check`: PASS. The API aggregate (19/19, 393/393) is unchanged — no API source changed. **#2:** §8 and §10.3 rewritten to the current P0.2 semantics. **Narrow recheck: COMPLETE — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW; final verdict `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`.** |
+| Final audited state | P0.2-A, P0.2-B, P0.2-C implemented. OpenCode complete (0/0/0/6 LOW, non-blocking). Codex complete: initial 0/0/0/2 LOW (`PILOT P0.2 CODEX CHANGES REQUIRED`) → both corrections applied → narrow recheck **0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW**, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`. Evidence retained: API aggregate focused 19/19 files, 393/393 tests, 0 failed, 0 skipped, `VITEST_EXIT=0`; client 3/3 files, 27/27 before the Codex fix and **28/28** after it (new same-sale CASH-tender regression). Static gates GREEN. FULL SUITE: OWNER ONLY — NOT RUN. |
+| Commit / push | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` (28 files: runtime, tests, `docs/api/endpoints.md`, Pilot doc; Blueprint and `opencode.json` excluded) + Blueprint record `a04478c930a69cee6c0c3b174de7636a711b622d`; initially local-only, now pushed as ancestors of current `feat/production-v1` |
+| Owner full-suite coverage (added 2026-09-28) | The owner full suite at `113c57a` (a descendant of `e3ce087`) passed 59/59 files and 1082/1082 tests; the wrapper exit was not observed (see §16 "Validated checkpoint"). P0.2's final closeout and push are no longer pending. |
+
+### A1 — TEST backup / restore / marker tooling
+
+| Field | Value |
+| --- | --- |
+| Goal | A backup and restore path for TEST that never contacts DEV, plus the TEST identity marker installer that TEST-H1 depends on |
+| Start → end | `a04478c` → `8a95f0d1d8b749cb523c703b3a7f30e14d5f6dad` |
+| Files | `scripts/database/backup.mjs`, `restore.mjs`, `lib.mjs`, `test-marker.mjs` (new); zero-DB tests `backup.test.mjs`, `restore.test.mjs`, `test-marker.test.mjs` (new); `docs/development/backup-restore-seed.md` |
+| Behavior added | `backup.mjs --target=test` reads only `TEST_DATABASE_URL`, needs owner project-ref attestation, and writes a `<name>.dump` + `<name>.dump.manifest.json` set (`mona-test-backup/v1`). `restore.mjs` is TEST-only and proves the live TEST marker before `pg_restore`. It refuses archives that contain `mona_test_guard`. The marker installer requires a verified backup first. |
+| Explicitly excluded | Any live restore as part of this block; any DEV/DEMO restore path |
+
+### A2 — TEST-H1 runtime identity guard
+
+| Field | Value |
+| --- | --- |
+| Goal | The `api/` test harness proves TEST from its own marker and never contacts DEV |
+| Start → end | `8a95f0d` → `41ee88231d309610816d6d01a467158226bcf0ac` |
+| Files | `api/scripts/demo-database.ts`, `api/tests/helpers/test-db.ts`, `api/tests/setup.ts`; `api/tests/test-db-guard.test.ts` (new) |
+| Behavior added | `openProvenTestPool` / `verifyTestMarkerFacts`: a READ ONLY transaction with `ACCESS SHARE` verifies the canonical marker structure, including no inheritance or partition parent/child. `setup.ts` swaps `DATABASE_URL` for an unresolvable placeholder. `createTestPrismaClient()` hands PrismaPg a pool *configuration*, so the adapter owns the pool and ends it on `$disconnect()`. Destructive helpers accept only proven clients. Copied or malformed markers fail closed. |
+
+### A3 — TEST-H2 / H2.1 cleanup lifecycle
+
+| Field | Value |
+| --- | --- |
+| Goal | Test teardown can no longer replace a setup failure or leak a TEST handle |
+| Start → end | `41ee882` → `0d7ac5d179fe8b48a146339b935152ba53df69d9` |
+| Files | 20 modified `api/tests/**` files; `api/tests/test-cleanup.test.ts` (new) |
+| Behavior added | Guarded `db?.$disconnect()` in suite teardown (18 files); `rbac/authorization-context` releases its inline client in `try/finally`; the `realtime/socket` listen error rejects `beforeAll`; a zero-DB AST scanner enforces the canonical acquisition and release forms across `tests/` (allowlist, fail closed) |
+
+### C — PILOT database bootstrap tooling
+
+| Field | Value |
+| --- | --- |
+| Goal | OWNER-only, PILOT-only tools that stay separate from the TEST and DEMO paths |
+| Start → end | `0d7ac5d` → `3868e5a4b97c7404dd0e65a89b10d7be8a160934` |
+| Files | `scripts/database/pilot-marker.mjs`, `pilot-migrate.mjs`, `pilot-bootstrap.mjs` + zero-DB `*.test.mjs` (all new) |
+| Behavior added | `pilot-marker`: installs (additive) and proves (REPEATABLE READ READ ONLY + ACCESS SHARE) `mona_pilot_guard.database_identity`, and refuses a TEST marker. `pilot-migrate`: guarded `prisma migrate deploy` bound to an OWNER-pinned migration payload (names, sizes, SHA-256) under an allowlisted child environment. `pilot-bootstrap`: a single-transaction RBAC catalog, synthetic PILOT company and locations, the five accounts and the system actor, approved by a plan digest. Cleanup/ROLLBACK handling never replaces an established outcome and never lets a secret-bearing error escape. |
+| Explicitly excluded | Any live PILOT execution. None is recorded in the repository or claimed here. |
+
+### D — PILOT catalog bootstrap tooling
+
+| Field | Value |
+| --- | --- |
+| Goal | An OWNER-only, additive synthetic merchandise catalog for PILOT client demos |
+| Start → end | `3868e5a` → `113c57adf865268cf2df4add41d8090f5511ed2b` |
+| Files | `scripts/database/pilot-catalog-bootstrap.mjs` + `pilot-catalog-bootstrap.test.mjs` (new) |
+| Behavior added | 3 categories, 2 brands, 6 products, 16 variants and 32 stock rows at PCEN/PDEP, all marked PILOT, in ARS centavos. It re-proves the marker, PCEN/PDEP (`Location.id = Branch.id`) and the canonical OWNER in one transaction. Empty → create, exact → no-op, anything else → rollback. Writes go through the canonical catalog-admin and initial-stock services (audit, `INITIAL_STOCK`). The catalog creates **no product images**: products stay valid without `ProductImage`, which is still Phase 2D (§19 DEBT-027). |
+| Explicitly excluded | Any live PILOT execution (none recorded); ProductImage |
+
+### Validated checkpoint — A1 → A2 → A3 → C → D (recorded 2026-09-28)
+
+| Field | Value |
+| --- | --- |
+| Validated implementation baseline | `113c57adf865268cf2df4add41d8090f5511ed2b` |
+| Independent audit (before the owner gate) | OpenCode, read-only: **`APPROVED FOR OWNER FULL SUITE`**, with 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW. Gates it reported: `node --test` hermetic 300/300; hermetic Vitest `test-db-guard` + `test-cleanup` 157/157; TypeScript clean; ESLint clean. It reported that the A1→D chain is dependency-safe with exact commit boundaries. It found no TEST→DEV contact path, found that TEST destructive helpers require proven clients and that malformed or copied markers fail closed, and found the C ROLLBACK/cleanup fix to be class-wide. It found no raw PILOT password or URL cleanup escape, no PILOT fallback to TEST/DEV, and no Production runtime import of PILOT tooling. It confirmed that C/D require target proof and that TEST-H3 remains deferred. These are the audit's reported results. The agent did not re-run them during this reconciliation. |
+| Owner pre-suite preflight | TEST read-only preflight, then a fresh durable TEST backup `test_manual_20260928T130605Z.dump` (§11), with explicit OWNER authorization |
+| Owner full suite (OWNER, not an agent) | **Vitest full-suite result: PASS: 59/59 files, 1082/1082 tests**, duration 8461.73s. The final Vitest summary had zero failed files and zero failed tests. |
+| Wrapper exit code | **`FULL_SUITE_EXIT`: NOT OBSERVED.** The terminal closed after the final Vitest summary, before the surrounding shell wrapper printed it. No exit code is recorded, and none may be assumed. |
+| Post-recovery state (owner) | No vitest or npm-test process remained. Branch `feat/production-v1`, HEAD `113c57a`, and no working-tree change outside `opencode.json`. |
+| Not claimed | Live PILOT execution; a live restore; a wrapper exit of 0; TEST-H3 |
+| Commit / push | A1–D + documentation records are now ancestors of current pushed `feat/production-v1` |
+
+### Task 4 — LOCAL_TEST disposable test target (pushed; recorded 2026-10-01)
+
+| Field | Value |
+| --- | --- |
+| Goal | Let the destructive API integration suite run against a disposable, marker-proven local PostgreSQL (LOCAL_TEST) — locally and in CI — without weakening hosted TEST or DEV isolation |
+| Base | `9e97aa9` |
+| Files | Boundary A (implementation, 33): 17 modified tracked files (CI workflow, `prisma/seed.ts`, `scripts/demo-database.ts`, test harness and tests, `docs/development/migrations.md`), 14 new files (LOCAL_TEST Prisma config, marker and prepare tools, baseline/runtime modules, shared TEST Company descriptor, tests) and `api/package.json` + `api/package-lock.json` (direct devDependency `@prisma/config` 7.10.0). Boundary B (policy/docs, 6): `AGENTS.md`, `CLAUDE.md`, `.claude/claude-security-guidance.md`, `docs/development/database.md`, `docs/testing/strategy.md`, this Blueprint |
+| Behavior added | Selector `MONA_TEST_DATABASE_TARGET`: absent or `test` → hosted TEST (default); exactly `local` → LOCAL_TEST; anything else fails closed. LOCAL_TEST accepts only `LOCAL_TEST_DATABASE_URL` = `postgres[ql]://mona_local_test:<password>@127.0.0.1:5432/mona_local_test` and is proven read-only by `mona_local_test_guard.database_identity` (= `LOCAL_TEST_DATABASE_MARKER_ID`) on PostgreSQL 17+, with `PGOPTIONS` refused. No fallback between LOCAL_TEST, TEST and DEV. Marker installed only by `scripts/database/local-test-marker.mjs`; baseline prepared only by `scripts/database/local-test-prepare.mjs` (plan digest, refuses unknown/unsafe states, verify-only on `EXACT_BASELINE`). CI job `local-postgres` runs the suite on an ephemeral `postgres:17` without repository secrets. The canonical demo seed is now a frozen descriptor (`CANONICAL_DEMO_SEED`) with unchanged values |
+| Gates | LOCAL_TEST owner gate 65/65 files, 1652/1652 tests, exit 0. Hosted TEST owner suite (Approval 11) 65/65 files, 1652/1652 tests, exit 0, 8458.58s. Static gates after the hosted suite PASS |
+| Procedural deviation | Approval 11 pre-suite Section 9 (independent post-restore proof) and Section 10 (three fresh connection cycles) were **NOT RUN**; classified `DOCUMENTED_PROCEDURAL_DEVIATION`. They are not recorded as passed |
+| Status | **COMPLETE AND PUSHED.** Boundary A (`bbc24c6`), Boundary B (`f3e5779`) and final Task 4 persistent checkpoint (`c8f61c5`) are ancestors of current `feat/production-v1`. Substantive work: complete (LOCAL_TEST 65/65, hosted TEST 65/65, Section 9/10 NOT RUN / DOCUMENTED_PROCEDURAL_DEVIATION preserved, DEBT-028 OPEN, LOW / deferred: CI PostgreSQL image (`.github/workflows/ci.yml` `postgres:17`) floating tag (no digest pin) — not resolved, no new blockers). |
+
+### D5 remediation series and D5I transaction design (recorded 2026-10-09)
+
+Evidence labels follow §17 (`[OWNER-REPORTED]` is defined there). Items tagged `[OWNER-REPORTED]` come from the owner's D5I-DOC1 instruction; the repository holds no artifact for them and they are not independently verified here.
+
+| Step | Commit / state | What the repository or this session proves | Not claimed |
+| --- | --- | --- | --- |
+| D5 full-suite investigation | none | `[OWNER-REPORTED]` A historical full-suite failure was investigated rather than treated as a product-wide failure. | No failing run, log or manifest is recorded in the repository. |
+| D5F-A | `38bac33` | Deterministic synthetic test runtime environment added (3 files, verified from git). | No run result recorded here. |
+| Test infrastructure | `3c6dfc4`, `29e5893`, `dbccdf1` | Pool-attribution diagnostics; cleanup-scanner and fixture alignment; hosted connection-timeout hardening (files verified from git). | Block labels and run results are not in the repository. |
+| D5F-C2 | `eab79a6` | Scope-backfill latency class fixed by batching (F-016): `findMany` then at most one `createMany`; `scope-backfill-batching.test.ts` added. | No run result recorded here. |
+| D5G | none | `[OWNER-REPORTED]` Focused inventory/auth proofs completed (as historically recorded). A restore hit a deadlock; an automatic retry was NOT authorized. The event and the wait cycle are established from a preserved owner-local artifact, and external operational PostgreSQL logs (not tracked in Git) later identified both sessions and the wait/block cycle; the historical root-cause attribution is RESOLVED under the owner K1 interpretation of the existing policy (F-018). | The recovered D5G run is still NOT recorded as a PASS; the second restore remains a protocol deviation and did not diagnose the first deadlock. |
+| D5H-A | none (no artifact tracked) | `[OWNER-REPORTED]` A fresh full-suite execution protocol was designed. Live gates are PAUSED because source changed afterward; any earlier test manifest/hash is stale after later commits. | D5H is NOT complete. No full suite has run at `8a11585`. *(Historical row; the current D5H state is in §2 and the D5H-I1a block below.)* |
+| D5I-B1 / B1C | `8a11585` | `GET /sales/pending` and `GET /sales` use `authorizedLocationIds` (F-015). Evidence observed in this work: new DB-free files `pending-queue-authorization.test.ts` (18 tests) and `sales-list-authorization.test.ts` (20 tests); a scratch-copy mutation proof (outside the repository) showed each fix is guarded by its own file: reverting the pending filter failed 5/18 of the pending file, and reverting the list filter failed 6/20 of the list file; focused run 89/89 with the two RBAC policy files; typecheck, lint, build (synthetic `DATABASE_URL`, network namespace) and `git diff --check` exit 0. | No DB-backed test was run. The independent review approval is `[OWNER-REPORTED]` (§22). |
+| D5I-B2A / B2A1 | no commit; read-only | Transaction-risk design and DB-free evidence; see the next table. | No implementation. |
+| D5I-B2B1 | `3397ed3` (committed and pushed) | `REPRICE_C` + `RESERVE_C` implementation; see the table after the D5I-B2A / B2A1 table. | Real PostgreSQL behavior at `timeout: 15000` (timeout firing, rollback timing), real Serializable contention timing, pool pressure at `max: 5` and real PILOT latency / lock timing are NOT claimed; no DB-backed run and no measurement exist. The DB-free implementation itself (transaction-bound pricing reads; `timeout: 15000` on `addItem`, `activateWholesale`, `updatePriceMode`, `sendToCashier`) is recorded as IMPLEMENTED in the next table. |
+
+#### D5I-B2A / B2A1 — pilot transaction design (read-only; proposals only)
+
+| Field | Value |
+| --- | --- |
+| Prisma defaults (installed runtime) | `maxWait` 2000 ms, `timeout` 5000 ms; `config/prisma.ts` sets no `transactionOptions`; pool `max: 5` |
+| Structural findings (source) | `reserveInTransaction` costs about 11–12 fixed round trips plus 2 per distinct variant at the 5 s default, Serializable. `activateWholesale` and `updatePriceMode` cost about 10 fixed plus 1 per line at the 5 s default. `createPricingService(database)` reads pricing through the OUTER Prisma handle inside the transaction callbacks (`addItem`, `activateWholesale`, `updatePriceMode`, `pending-correction`). `completeSale`, `cancellation`, `cash`, `payments` and `pending-correction` already use `timeout: 30000`. No sale-line cap exists (NO EXPLICIT CAP VERIFIED). |
+| DB-free evidence | 4 files (`block1-wholesale.behavior`, `pricing/pilot-pricing-v2.behavior`, `pricing/pilot-pricing-v2`, `sales/remove-item-concurrency.behavior`): 124 passed, 0 failed, 0 skipped, 0 todo, exit 0; no DB, no external network |
+| Adversarial accounting | planned 36 = executed 15 + source-only 8 + not executable DB-free 13; executed 15 = matched 15 + mismatched 0 |
+| NOT proven | Pool starvation, P2028 timing for these request paths, real PostgreSQL row-lock timing, production timeout behavior. These remain STRUCTURAL risks. (P2028 at the 5 s default is proven only for the earlier scope-backfill path, F-016.) |
+| Proposals (not approved) | Repricing: `REPRICE_C` — transaction-bound pricing read plus an explicit timeout, no batching for the pilot. Reservation: `RESERVE_C` — explicit timeout only, no batching for the pilot. |
+| Timeout | `PROPOSED_TIMEOUT_MS=30000`. Basis: repository precedent (five request-path transactions already use 30000); NOT measured. Downside: a slower send can hold the branch-wide `SaleNumberCounter` lock longer. **`AWAITING_OWNER_TIMEOUT_DECISION` — not an approved owner decision.** |
+| Status | Design/evidence complete. Superseded as to implementation status by D5I-B2B1 below. |
+
+#### D5I-B2B1 — REPRICE_C + RESERVE_C transaction hardening (`3397ed3`, committed and pushed; independently approved)
+
+| Field | Value |
+| --- | --- |
+| Owner decision | [OWNER DECISION — 2026-10-10] D5I-B2B transaction timeout **15000 ms**; `maxWait` unchanged (Prisma default, never overridden). This supersedes, for D5I-B2B only, the earlier `PROPOSED_TIMEOUT_MS=30000` / `AWAITING_OWNER_TIMEOUT_DECISION`. |
+| Base | Parent `08fd70f95ce4bb9343316256c4cfc8ee9f356bef`; committed and pushed as `3397ed3c180d91a8a6bfbee79a802ee34463348d` (`fix(api): harden sales transaction boundaries`; 7 files, 343 insertions, 32 deletions, verified from git) |
+| `REPRICE_C` | `pricing.getSnapshot(reader = database)`: when called with a `TransactionClient`, BOTH the company lookup and the `companyPricingConfig` lookup use that client (no outer Prisma read, no nested transaction). Call sites passing `tx`: `addItem` (new-line path), `activateWholesale`, `updatePriceMode`, pending-correction. No other `getSnapshot` caller exists in `api/src`. |
+| `RESERVE_C` | `sendToCashier` keeps `isolationLevel: 'Serializable'` and adds `timeout: 15000`; lock order, sale-number allocation and the locked stock check are untouched. |
+| Timeouts | `timeout: 15000` (no `maxWait`) on `addItem`, `activateWholesale`, `updatePriceMode`, `sendToCashier`. Pending-correction keeps its pre-existing `Serializable` / `timeout: 30000` (unchanged; only its pricing read became transaction-bound). `completeSale`, payments, cancellation, cash and scope-backfill timeouts are unchanged. |
+| Retry | Unchanged. `P2028` is NOT added to transient detection; no generic retry; attempt counts unchanged. Each attempt has a 15000 ms ceiling; the HTTP request as a whole is NOT bounded to 15000 ms (up to 3 attempts). |
+| Files | `pricing.service.ts`, `sales.service.ts`, `pending-correction.service.ts`, `reservation.service.ts`; tests `block1-wholesale.behavior.test.ts` (+14), `pricing/pilot-pricing-v2.behavior.test.ts` (+4); this Blueprint (all in `3397ed3`) |
+| TDD | RED via `npm run tooling:nodb`: 132 executed, 116 passed, 16 failed for the intended reasons (missing timeouts; outer pricing reads inside the transaction). GREEN: 132 executed, 132 passed, 0 failed, 0 skipped, 0 todo, exit 0, containment `ENFORCED`. Typecheck, lint, `git diff --check` clean. |
+| Known limitation (pre-existing, follow-up only) | `addItem` reads `ProductVariant` / the base price BEFORE opening the transaction, while the pricing configuration is read inside it; a concurrent catalog/configuration change can therefore yield a mixed-time snapshot. This pre-dates D5I-B2B1 (not introduced by it). Codex classified it `ACCEPTED_PREEXISTING_RACE_OUTSIDE_SCOPE` (outside the approved outer-handle-escape fix; not a checkpoint blocker). No concurrency measurement was executed. Scoped follow-up note only; no new F/RULE/DEBT ID was created. |
+| NOT proven | Real PostgreSQL behavior (Serializable timing, actual `P2028` rollback at 15000 ms, pool pressure at `max: 5`) — `NOT_EXECUTED_DB_REQUIRED`. No full suite at the current source; DB-backed `send-to-cashier` / `pending-correction` tests were not run. |
+| Review status | OpenCode: approved for Codex (0 BLOCKER / 0 HIGH / 0 MEDIUM; LOW observations only). Codex initial final review: 0 BLOCKER / 0 HIGH / 0 MEDIUM / 2 LOW. D5I-F01 (contradictory evidence cell in the D5I step table): documentation contradiction, corrected. D5I-F02 (X13 test title overstated coverage; the injected failure occurs before writes, in wholesale activation only): title/comment corrected, no body or assertion change. Codex final checkpoint recheck: `D5I_B2B3_4_CODEX_APPROVED_FOR_CHECKPOINT` — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW. Checkpoint: `3397ed3`, pushed. |
+| Status | Implemented, independently reviewed, committed and pushed (`3397ed3`). DB-free: 2 files, 132/132 PASS, 0 failed / 0 skipped / 0 todo; typecheck, lint, diff-check exit 0. Real PostgreSQL behavior NOT RUN / NOT PROVEN. D5H was not complete at that checkpoint (current state: §2, D5H-I1a block). Pilot merge, PILOT DB and customer import NOT done. |
+
+### Development Tooling Pause — P0A through P0R / final checkpoint `05b3055` (recorded 2026-10-10)
+
+Evidence labels follow §17. `[VERIFIED]` = checked against git, source or tests in TOOLING-P0S. Items tagged `[OWNER-REPORTED]` come from the owner's TOOLING-P0S instruction; the repository holds no artifact for them.
+
+| Field | Value |
+| --- | --- |
+| Goal | Make future development safer, more repeatable and auditable for Claude Code, OpenCode and Codex **without changing product runtime behavior**: a hermetic DB-free test runner, a read-only exact repository-scope guard and a worktree-independent no-DB Vitest config. |
+| Range | `3220d0c` → `05b3055` (one commit, one parent) `[VERIFIED]`. Not a merge commit. |
+| Files (exactly 8) `[VERIFIED]` | NEW: `scripts/dev/safe-nodb-run.mjs`, `scripts/dev/safe-nodb-run.test.mjs`, `scripts/dev/repo-scope-guard.mjs`, `scripts/dev/repo-scope-guard.test.mjs`, `api/vitest.nodb.config.mjs`. MODIFIED: `api/vitest.nodb.remediation.config.mjs` (was a config that hardcoded another worktree's absolute root; now a one-line re-export of the generic config), `package.json` (two scripts: `tooling:nodb`, `tooling:scope-guard`; no dependency or lockfile change), `api/tests/rbac/scope-backfill-batching.test.ts` (2-line comment pointing at the runner; no import, test or assertion change). +6390 / -14 lines. |
+| TOOL-1 `safe-nodb-run` `[VERIFIED from source]` | Input: explicit, tracked, regular `api/tests/**/*.test.ts` paths only (no globs, no `..`, no absolute paths, no symlinked parents). Screening: TypeScript-AST screen over the **bounded transitive** closure (cycle-safe, max 2000 files) of repo-local imports; never traverses `node_modules`; `api/src/generated/**` is a leaf and `api/src/config/prisma` is a WARN boundary; fail-closed classes include DB drivers/helpers, DB client construction, `child_process`, socket primitives and `socketPath`, dynamic code, loader/`createRequire`/mock indirection, non-literal dynamic loading, unresolvable local imports. Child environment is built from scratch (fixed `PATH`, `NODE_ENV=test`, controlled `HOME`/`TMPDIR`, synthetic JWT/CORS values, unresolvable `.invalid` database URLs, and `PGHOST=127.0.0.1`, `PGPORT=1`, `PGPASSFILE`/`PGSERVICEFILE=/dev/null`); nothing is inherited. Execution: `/usr/bin/unshare -rnm --propagation private` (user + network + mount namespaces), private propagation re-verified, loopback only, `/run` (and `/var/run` only when it is a distinct directory) masked by namespace-local tmpfs; any failure is BLOCKED and there is **no unisolated fallback**. Vitest: the repo-local `api/node_modules/vitest/vitest.mjs` with the generic no-DB config and a JSON reporter written outside the repository. Verdicts: DENY (input/screen, nothing spawned), BLOCKED (execution or evidence cannot be established), FAIL (usable evidence plus a negative result or a numeric non-zero exit), PASS (usable positive evidence, exit 0). |
+| TOOL-1 evidence rules `[VERIFIED from source/tests]` | Reporter evidence is validated **before** the process exit is interpreted: existence, JSON, structure, exact requested/reported file cardinality (each file exactly once), status vocabulary, strict test counters, suite-counter arithmetic that allows nested `describe` suites; anything unusable is BLOCKED whatever the exit code. The output states each guarantee separately: `tcpDnsIsolation`, `runtimeSocketIsolation` (+ `maskedRuntimeDirs`), and `arbitraryFilesystemUnixSocketIsolation` which is always `NOT_GUARANTEED`. |
+| TOOL-2 `repo-scope-guard` `[VERIFIED from source/tests]` | Read-only. Compares branch, optional exact HEAD, and the **exact** dirty and staged sets (omitted expectations mean the empty set) using only `git --no-optional-locks status --porcelain=v2 -z --branch` and `rev-parse --show-toplevel` with `GIT_*` scrubbed from the child environment and `core.fsmonitor=false`. Every porcelain record is grammar-validated (XY alphabet per record kind, modes, object ids, submodule field, score, paths, header cardinality); malformed output is BLOCKED. Rename/copy attribution follows git's X (index) / Y (worktree) letters. `opencode.json` and `.claude/settings.json` are always DENY if dirty, staged or named in an expectation, and are never opened. Exit 0 ALLOW / 1 DENY / 2 malformed input / 3 BLOCKED. It never stages, restores, resets, cleans or deletes. There is no dedicated linked-worktree test. |
+| Review-driven defect classes (summary; reviewer provenance is not repository-verified) | (A) **Socket-isolation overclaim**: a network namespace alone does not isolate arbitrary filesystem AF_UNIX sockets; the fix added the mount namespace + runtime-directory masking, PG default forcing and honest `NOT_GUARANTEED` reporting. (B) **Verdict/evidence correctness**: malformed or contradictory reporter evidence (duplicate files, unknown statuses, inconsistent counters, missing report) must BLOCK, not become a false PASS or an ordinary FAIL; evidence is validated before a numeric non-zero exit is interpreted. (C) **Suite/file accounting**: with nested `describe` suites the suite count cannot be equated with the file-result count; the model keeps exact file cardinality and allows nested suite counts. (D) **Test-harness TypeScript provenance**: Gate A first skipped the AST tests because the harness required an explicit override; a repo-local fallback was added, then review found ordinary symlink layouts that made the harness trust or load files outside the authorized package; the final harness canonicalizes and boundary-checks every consumed file (pin, metadata, entry) before reading or loading it. (E) **Porcelain parsing**: rename/copy attribution and malformed porcelain-v2 records were hardened to fail closed. Registered as F-019 / RULE-022. |
+| Independent review | `[OWNER-REPORTED]` iterative OpenCode / Codex review. Final Codex P0R: BLOCKER 0, HIGH 0, MEDIUM 0; LOW only: a theoretical concurrent filesystem replacement between validation and load; no ordinary deterministic bypass found. |
+| Gate A (Production V1 worktree) `[OWNER-REPORTED]` | `env -u TOOLING_TEST_TYPESCRIPT_DIR node --test scripts/dev/safe-nodb-run.test.mjs scripts/dev/repo-scope-guard.test.mjs` — TypeScript 5.9.3 from this worktree's `api/node_modules/typescript`; **251 tests, 251 passed, 0 failed, 0 skipped, 0 todo, exit 0**. |
+| Gate B (Production V1 worktree) `[OWNER-REPORTED]` | `env -u TOOLING_TEST_TYPESCRIPT_DIR npm run tooling:nodb -- api/tests/rbac/scope-backfill-batching.test.ts` — runner verdict PASS at HEAD `05b3055`; `testsExecuted` 37, `testsPassed` 37, `testsFailed` 0, `testsSkipped` 0, `testsTodo` 0; `reporterParsed` true; `processExit` 0; `screenedFiles` 4; `tcpDnsIsolation` ENFORCED; `runtimeSocketIsolation` MASKED; `maskedRuntimeDirs` `/run`; `arbitraryFilesystemUnixSocketIsolation` NOT_GUARANTEED. No database contact and no external network during Gate A/B were reported. |
+| Network accounting | External network was used only by the earlier, separately authorized pinned `npm --prefix api ci` install `[OWNER-REPORTED]`, not by Gate A/B. |
+| Integration state | Committed on `chore/dev-tooling-pilot`, then **fast-forward** integrated into `feat/production-v1` and pushed normally `[OWNER-REPORTED sequence]`; the resulting graph is `[VERIFIED]` (single parent `3220d0c`; contained in both branches, local and remote-tracking). |
+| NOT claimed | A product/API full suite at `05b3055` (none was run; DEBT-030 stays OPEN); that Gate A/B outputs are persisted repository artifacts; that the tools prove database identity (they never do); that arbitrary filesystem AF_UNIX sockets are isolated (DEBT-031); that D5I-B2B, D5H, the pilot merge, the PILOT migration or the customer import happened. |
+
+### User-level AI/development tooling phase — A0 through A8.1 (recorded 2026-10-10, A9)
+
+**Evidence class.** Everything in this subsection is `[OWNER-REPORTED]` unless explicitly marked `[VERIFIED]`. The phase changed **user-level** tooling and configuration only. It created no git checkpoint (no fake checkpoints are recorded), changed no Mona Jacinta product source and touched no database. The repository holds no artifact for it, so the repository cannot reproduce or prove any claim below. The only `[VERIFIED]` facts here are the git facts about `2cf1a93` and the unchanged product state in §2. No home-machine paths beyond abbreviated user-level locations, no URLs with state, no tokens and no account identifiers are recorded (§0.5).
+
+| Phase | Content |
+| --- | --- |
+| A0 | Inventory / gap analysis |
+| A1 | Upstream/source research and installation design |
+| A2–A6 | Safe installation of the three selected skills |
+| A7 | Security hardening design |
+| A7B1 | Codex execution-policy hardening + isolated Serena validation |
+| A7B2 | Permanent Serena read-only hardening |
+| A7B2-FINAL / CLOSURE | Fresh-session Serena verification |
+| A7C | Context7 owner OAuth + safe public-documentation query verification |
+| A8 | Final stack audit |
+| A8.1 | Codex unmatched-command fallback verification |
+
+**Final tool architecture:** §13.1.
+
+**Selected skills** `[OWNER-REPORTED]` (`addyosmani/agent-skills`, pin `1401c8b8030e023baeebb31781a6653fe8e93026`): `source-driven-development`, `api-and-interface-design`, `deprecation-and-migration`. Reported final characteristics: canonical user-level copies under `~/.agents/skills/`; each contains exactly one `SKILL.md`; no scripts, hooks or binaries were copied; the Claude entries are symlinks that resolve to the canonical copies; byte hashes matched the source/install evidence; Claude discovery verified.
+
+**Rejected / deferred decisions** `[OWNER-REPORTED]` (recorded so they are not re-analysed without new information):
+
+| Item | Decision | Reason |
+| --- | --- | --- |
+| `karpathy-guidelines` | REJECTED FOR NOW | Third-party derivative; substantial overlap with Superpowers and the Mona rules; low incremental value |
+| Vercel `skills` CLI | REJECTED FOR THIS WORKFLOW | Unnecessary package-manager/network/telemetry surface compared with pinned direct skill copies |
+| Prisma skills | DEFERRED | No reviewed specialist skill covered the actual transaction/concurrency problem sufficiently; generic Prisma CLI guidance can conflict with the DB-safety rules |
+| Superpowers 7 | DEFERRED | The existing 6.4.1 is retained |
+| Frontend/pilot skills (`browser-testing-with-devtools`, `frontend-ui-engineering`, `observability-and-instrumentation`, `react-best-practices`, `web-design-guidelines`, `composition-patterns`) | FUTURE RESEARCH ONLY | Not approved, not installed |
+
+**Serena (final state)** `[OWNER-REPORTED]`**.** Old: the `serena@claude-plugins-official` plugin launched from a floating (unpinned) source with an unrestricted shell/write surface and a dashboard. Final: that plugin is **disabled**; the replacement is the MCP server **`serena-ro`** from `oraios/serena`, pinned to commit `949a27ef1e5fda1a6e7b561e777bcece345c6ffd` (the reviewed tag `v1.7.0`), exposing exactly **7 tools**: `initial_instructions`, `get_symbols_overview`, `find_symbol`, `find_referencing_symbols`, `find_declaration`, `find_implementations`, `get_diagnostics_for_file`. Explicitly absent: shell, file-write, symbol-write, memory-write and dashboard tools. Project Serena state is kept outside this repository. Fresh-session verification reported: old floating process absent; old dashboard port closed; old plugin disabled; `serena-ro` connected with exactly 7 tools; a real read-only semantic smoke against this repository succeeded; no `.serena` directory in the repository; repository clean.
+
+**Context7 (final state)** `[OWNER-REPORTED]`**.** Installed and enabled; the owner completed OAuth; authenticated and connected; exactly **two** documentation tools (`resolve-library-id`, `query-docs`); a public Prisma-documentation query succeeded; no private source, secrets, customer data or database URL was sent; per-call approval retained initially. No OAuth URL, code, token or account identifier is recorded. **Data boundary — ALLOWED:** public library/framework documentation questions. **PROHIBITED:** secrets, tokens, DB URLs, credentials, customer data, production data, protected configuration, and private source unless the owner explicitly authorizes that disclosure. Context7's own instructions to use it for every library question do not override this boundary.
+
+**Codex (final security state)** `[OWNER-REPORTED]`**.** A7B1 replaced the previous standing-allow execution policy. Current reviewed policy hash (SHA-256): `947bfd32365312464f230ad3b3dfe9b86cdb2cd67cc51dfe90dcda0a728ddc58`. Properties: zero standing allow rules; the **reviewed / covered** DB-client forms are forbidden; the **reviewed / covered** Prisma `migrate`/`db` forms are forbidden; the **reviewed / covered** dotenv-loader forms are forbidden; the **reviewed / covered** package-runner, interpreter, wrapper and opaque-shell forms `prompt`. These are listed spellings, not universal classes. A7B1 evidence: 40/40 adversarial policy cases matched, 0 unsafe mismatches. The A8 final adversarial review then found additional executable/path spellings that match **no** rule (for example local-path dotenv launchers, `perl`/`ruby`/`php`, a `psql` at a non-standard path). **Those literal gaps still exist.** A8.1 therefore verified the class-level sandbox/approval fallback: result **SAFE_FALLBACK**, valid only within the exact reviewed scope and defaults, because the relevant Codex configuration override keys were absent, the documented defaults therefore apply (workspace-write sandbox for version-controlled work, network access off by default, leaving the sandbox needs owner approval, the user is the reviewer), and no standing allow rule exists. A8.1 evidence: 18/18 fallback cases matched their predictions, 14/14 policy-regression cases matched, 0 mismatches, no DB contact. The fallback conclusion is documentation-derived and inferred from how the sandbox and approval layers combine; the official rules page does not itself describe unmatched commands.
+
+**Residual limitations (registered, not fixed; `[OWNER-REPORTED]` conclusions):**
+
+1. The Codex safety conclusion depends on Codex continuing to run with the reviewed defaults. Invocation flags such as `danger-full-access`, `--dangerously-bypass-approvals-and-sandbox` or approval policy `never` would invalidate it (DEBT-032).
+2. An unmatched sandboxed Codex command may still READ workspace files, including workspace secrets. Network-off blocks the reviewed direct exfiltration route, but the read exposure remains defense-in-depth debt (DEBT-032).
+3. Not every possible executable path is enumerated in the rule file, by design; the class-level sandbox/approval fallback is the primary boundary. Endless path enumeration is not the remedy (DEBT-032).
+4. Skill discovery was **verified for Claude only** (the primary implementer). OpenCode and Codex skill discovery is `UNVERIFIED` by any safe local mechanism. This is a verification limit, not a failure (DEBT-033).
+5. Other connected Claude-account services increase the potential data-egress surface. They were outside this phase, no assertion is made that they are unsafe, and the Mona rules still prohibit sending protected or private data without authorization (DEBT-034). No connector was changed.
+
+### D5H-I1a — canonical hosted TEST config + read-only D5H preflight (recorded 2026-10-11)
+
+Evidence labels follow §17. Everything in this block was observed in this work or in the git history unless tagged `[OWNER DECISION]` (a decision stated by the owner; no repository artifact) or `[PROTOCOL DESIGN]` (designed in the D5H protocol phases; **not implemented**).
+
+| Item | Record |
+| --- | --- |
+| Checkpoint | `ad18815cca76fa4d35a708480242cf2661108a66` — `feat(db): add D5H hosted TEST preflight`, parent `336002612e6e41ba1fbd0405c1887e3e1806c748`; exactly 6 files, 1601 insertions, 3 deletions; committed with exact-file staging and pushed with a normal push (`3360026..ad18815`; no force). Tooling only: no `api/src`, no business behavior, no pricing change. |
+| Files | New: `scripts/database/hosted-test-config.mjs` (152 lines) + `.test.mjs` (290), `scripts/database/d5h-preflight.mjs` (376) + `.test.mjs` (700). Modified: `scripts/database/test-marker.mjs` (22 changed lines) + `.test.mjs` (+64). `backup.mjs`, `restore.mjs`, `lib.mjs`, `pilot-*.mjs`, `api/scripts/demo-database.ts` and the test harness were NOT edited (I1b/I1c scope). |
+| A. Canonical hosted TEST config parser | Input is raw BYTES (the caller owns file reading; the module never reads a file or the environment and imports only `node:crypto`). Fatal UTF-8; BOM, NUL and a lone CR are refused; CRLF is normalized. Exactly two relevant keys, `TEST_DATABASE_URL` and `TEST_DATABASE_MARKER_ID`, each exactly once (`CONFIG_DUPLICATE_KEY` even for identical values; `CONFIG_KEY_MISSING`); **no fallback** to `DATABASE_URL`, `LOCAL_TEST_*` or any other variable. A relevant assignment is accepted only as `KEY=value` at column 0 (printable ASCII; no whitespace, quotes, backtick, `#` or backslash; every other spelling of a relevant key — `export`, `KEY:`, leading space, hidden inside another value — is counted and refused); this deliberately does NOT use dotenv/`util.parseEnv`. Both `postgres:` and `postgresql:` normalize to one semantic target with one canonical scheme (`postgresql:`). Target class: the approved Supabase session-pooler host class (lowercase host, at least four labels), explicit port 5432, database `postgres`, no query or fragment, username decoded exactly once and equal to `postgres.<20 lowercase alphanumerics>`, non-empty password, marker a canonical lowercase UUIDv4. The returned `held` target is frozen with a **non-enumerable** password; the public `evidence` is `{targetClass, targetDigest, markerDigest}`. `targetDigest` = SHA-256 over a domain header plus the JSON of `{host, port, database, username}` (no password, no scheme); `markerDigest` = SHA-256 over a different domain header plus the marker id. `toConnectionString` is the one deterministic reconstruction (extra escaping of `!'()*` so its output always re-parses to the same components and digest) and refuses any object not produced by the parser. All failures are fixed codes; no input text is echoed. 22 DB-free tests. |
+| B. Transaction-safe marker primitive | `proveInstalledMarkerInTransaction(client, markerId)` runs the existing marker proof (id check, `search_path` pin, timeouts, `ACCESS SHARE` lock, canonical-structure verdict) for a caller that already owns the transaction: no BEGIN, COMMIT or ROLLBACK, no write; a thrown error propagates unchanged. The standalone `proveInstalledMarker` keeps owning the transaction (BEGIN, the shared primitive, a confirmed ROLLBACK) with unchanged external behavior; the marker SQL and structure rules were not duplicated. `PROOF_BEGIN_SQL` is now exported. `test-marker.test.mjs` 55 → 60 tests; a mutation making the primitive issue ROLLBACK failed the new tests. |
+| C. D5H read-only preflight | `node scripts/database/d5h-preflight.mjs --expect=<pre-deploy or post-deploy> [--require-guard-clear]` (owner-only live use; never run by an agent). Flow: read the configuration bytes once → parse → hold one target → create exactly ONE client from the discrete held fields (verified TLS; no connection string, no ambient `DATABASE_URL`/`PG*`) → `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY` → marker proof → exact migration-history proof → catalog/phase proof → SalePayment guard-risk proof → ONE `ROLLBACK` → close. Marker and ledger are read in the SAME snapshot; a valid marker cannot hide an invalid ledger and a valid ledger cannot substitute for the marker. PASS requires a confirmed ROLLBACK and a confirmed close; a cleanup failure is never PASS. The expectation is required and explicit (no default, no inference from the catalog). Output is one secret-free JSON line with a closed key set (digests, class label, per-migration statuses, guard fields, cleanup states, fixed `{phase, code}` failure); no URL, host, project ref, username, password, marker id, raw env text, stack or migration log. Failure codes are a 5-character SQLSTATE or an allow-listed Node/TLS code, never a case-folded fragment of a secret. |
+| D. Migration history | The six pinned migration identities and SHA-256 values were independently re-verified against `api/prisma/migrations` and `migration_lock.toml` before being pinned (no drift), are D5H's own constants (not imported from PILOT tooling), and a test ties them to the bytes on disk. PRE_DEPLOY = the first four `APPLIED_CLEAN` and the last two (`20261002120000_block1_pricing_wholesale`, `20261006120000_pilot_pricing_v2`) `MISSING`; POST_DEPLOY = all six `APPLIED_CLEAN`. Classifier statuses: `APPLIED_CLEAN`, `MISSING`, `CHECKSUM_MISMATCH`, `INCOMPLETE`, `ROLLED_BACK`, `DUPLICATE`, `ORDERING_GAP`, plus an `unexpected` row count (never named). Duplicate, unexpected, checksum, incomplete, rolled-back and order-gap states fail closed in both modes. The ledger query selects only name, checksum and two booleans (never `logs`). This proves the exact RECORDED migration history, **not** that the live schema equals the migration SQL (schema-drift fingerprinting is deliberately out of D5H v1). |
+| E. SalePayment guard evidence | The Block 1 migration adds a `BEFORE TRUNCATE` guard on `SalePayment` that refuses to truncate payments whose `Sale.paymentStartedAt` is NULL (no backfill) or later than `paidAt`; after the migration, pre-existing payments would make the suite's first truncate fail. PRE_DEPLOY: the catalog must show `paymentStartedAt` ABSENT; the predicate form is `post-migration-equivalent` (SalePayment rows joined to their Sale). POST_DEPLOY: the catalog must show it PRESENT; the form is `exact` (the migration's guard predicate verbatim, pinned by a test against the migration text). A catalog that contradicts the expectation fails closed (`CATALOG_EXPECTATION_MISMATCH`). Result `salePaymentGuardRisk` = `CLEAR` or `PRESENT` (`NOT_EVALUATED` when the probe did not run) with `violatingRows` as detail only (a count; no ids, timestamps or contents). Risk class: **POST_MIGRATION_SUITE_BLOCKER**, not a migration-deploy blocker; no cleanup or remediation is performed or selected. |
+| Exit codes | 0: proofs valid (risk `CLEAR` or `PRESENT`; `PRESENT` alone is NOT a proof failure). 1: any proof failure. 2: usage error (before any config read or connection). 3: only with `--require-guard-clear`, proofs valid and risk not `CLEAR`. |
+| Consumers (NOT implemented here) | The guard and history evidence are intended to be consumed by later D5H slices (I3 dry-runs / readiness, I4 migration wrapper, I5 suite wrapper). `migrationDeployEligibility`, `fullSuiteReadiness`, the wrappers, the journal, authorization subjects and receipts do **not** exist. |
+| Claude implementation evidence | Valid behavioral RED for every group (stub-first, so failures are assertions, not missing imports), then GREEN; the first parser GREEN attempt exposed one real defect in the raw-value character class (`#` accepted), fixed under the test. Adversarial (DB-free fakes, expectations written first): I1a 53 executed, 50 matched, 3 mismatched (one real defect: a failure code derived from a secret, plus a throwing `code` getter that bypassed cleanup — fixed with tests; two were imprecise expectations with safe behavior); I1a.1 20 new executed, 20 matched, 0 mismatched, plus 10 regression cases in the same run. Mutation checks (cleanup, ordering, expectation, checksum, guard predicate, exit code, shape) were each caught and reverted. |
+| Checkpoint verification (observed) | `d5h-preflight.test.mjs` 43/43, `hosted-test-config.test.mjs` 22/22, `test-marker.test.mjs` 60/60, `restore.test.mjs` 23/23 = 148/148, all exit 0; each file was inspected as DB-free before running. `git diff --check` clean; `node --check` exit 0 on the three production modules. `npm run deps:check` exits NONZERO with one violation, `api/scripts/demo-database.ts → api/tests/helpers/pool-attribution.ts` (`non-test-code-not-to-tests`): **KNOWN PRE-EXISTING** — reproduced on a clean export of `336002612` during I1a.1 and independently classified by Codex as pre-existing and unrelated; it is NOT reported as PASS, not an I1a failure, and not fixed here (no existing debt entry covers it; none was created in this narrow closeout). |
+| Codex review evidence | Final review `D5H_I1A_CODEX_APPROVED_FOR_CHECKPOINT` / `D5H_I1A_APPROVED_FOR_CHECKPOINT`: BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1. Tests: N/A — NOT RUN BY CODEX. Database contact: NONE for every target. Independent adversarial review: 42 read-only source checks, 42 MATCH, 0 MISMATCH, no new defect class. LOW `D5H-I1A-CODEX-F01` (fail-closed count capacity): both guard count queries use `count(*)::int`; above 2,147,483,647 rows PostgreSQL raises instead of producing `PRESENT` (fail closed, can never report `CLEAR`); non-blocking; tracked as DEBT-035, not fixed. |
+| Observations (not Codex findings) | The pre-existing `safeCode` helper in `test-marker.mjs` (still used by `restore.mjs` and the installer) matches secrets case-sensitively and can echo a code that is a case-transform of a secret; D5H does not use it (the preflight has its own stricter allow-list). Not changed; no debt ID assigned in this closeout. §17 (Failure & Learning) and §18 (Prevention Rules) were reviewed and are intentionally **unchanged**: no new reusable root-cause failure or prevention rule was identified beyond what is recorded here. |
+| `[PROTOCOL DESIGN]` / `[OWNER DECISION]` context for the later slices (designed, **not implemented**) | Every live D5H operation is initiated by the human owner with a per-operation decision (agents never execute D5H live operations); an owner-decision reference is recorded as process evidence, not proof of identity. Migration and suite are separate attempts joined by a migration receipt. The durable backup copy is owner-only, outside the worktree and on the same host (`OUTSIDE_WORKTREE_SAME_HOST`): a D5H recovery point, not off-machine disaster recovery. D5H v1 has no time-based authorization expiry. Exclusivity is local to the owner gate. No automatic retry. SalePayment guard risk is a post-migration suite blocker; any remediation is a separate, separately authorized operation. The planned `AGENTS.md` D5H entry and `docs/development/d5h-protocol.md` do not exist yet. |
+| NOT claimed / not proven | No live PostgreSQL execution occurred during implementation or review; no live hosted TEST preflight has run; no migration, backup, restore, seed or full suite has run; no PILOT operation occurred; no pricing or business behavior changed. The catalog/guard SQL has been checked against the migration text and fakes only. I1b is NOT implemented and NOT authorized; I1c–I5 are NOT implemented. **D5H as a whole is NOT complete.** |
+| Status | Implemented · Claude DB-free evidence green · Codex approved for checkpoint (0/0/0/1) · committed `ad18815` · pushed. D5H-I1a CLOSED. D5H-I1b is next and unauthorized. |
+
+### D5H-I1b — pinned gate-only hosted TEST target channel, incl. corrective I1b.1 (recorded 2026-10-11)
+
+Evidence labels follow §17. "Implementer evidence" was observed by Claude Code during implementation; "Codex evidence" is what the independent Codex review reported, including what it reproduced itself. The two are kept separate on purpose.
+
+| Item | Record |
+| --- | --- |
+| Checkpoint | `830d5950d6199549558d24e982d126a6d46581c0` — `fix(d5h): harden I1b test-target pin and error handling`, parent `b2e2fe96a2e52c4f6e12ea47697b5b10a7e589d5`; exactly 3 files, 1205 insertions, 23 deletions (verified from git); exact-path staging; normal push `b2e2fe9..830d595` (no force); remote SHA confirmed with `git ls-remote`. No Git hooks were active. Test harness and `api/scripts` only: no `api/src`, no business behavior, no pricing change. |
+| Files | `api/scripts/demo-database.ts` (+232/−15), `api/tests/setup.ts` (+36/−5), `api/tests/test-db-guard.test.ts` (+937/−3). Safety tooling (`scripts/dev/safe-nodb-run*`, `api/vitest.nodb.config.mjs`), `scripts/database/*` and the frozen docs were NOT edited. |
+| A. Pinned gate-only channel (I1b) | One inherited variable, `MONA_D5H_PINNED_TEST_TARGET`, holding canonical JSON `{"v":1,"url","markerId","attemptId"}` (exactly one rendering: fixed key order, no whitespace, no duplicate key; UUIDv4 marker and attempt ids). The URL and marker are validated by the I1a canonical parser (`scripts/database/hosted-test-config.mjs`) and the URL must equal the parser's canonical reconstruction. In a gate process: hosted TEST is the only target (`MONA_TEST_DATABASE_TARGET=local`, `openSeedDatabase('local-test' / 'demo')` and `openProvenLocalTestPool` are refused), `.env.development` is never read, and `setup.ts` skips dotenv and only sets the `TEST_DATABASE_URL` presence value that `env.ts` needs. In a non-gate process, `setup.ts` restores the ambient selector, LOCAL_TEST variables and the gate variable after dotenv, so the repository file cannot switch targets or manufacture the gate. Refusals are fixed messages; no URL, password, host, project ref, marker or attempt id is echoed. The TEST marker proof stays mandatory. |
+| B. I1b.1 corrections (from the Codex review of I1b and the I1b.1 adversarial pass) | **F01 (HIGH, closed):** the gate decision was a module-local constant, so `vi.resetModules()` (or a second loader) re-read the variable and could downgrade or redirect the process. Now the decision and its raw subject are captured once per process into a non-writable, non-configurable `globalThis` property (`Symbol.for('mona.d5h.pinnedTestTarget.v1')`) holding a frozen null-prototype record; a re-evaluated module adopts the first capture; any pre-existing property that is not exactly such a record is untrusted and refuses every target; every target decision requires the variable to still equal the captured subject (absent stays absent), so a deleted, changed or late pin fails closed. No reset hook exists in production code. **F02 (MEDIUM, closed):** `safeCode` reads `code` once inside try/catch (throwing getter, throwing Proxy trap, revoked Proxy → `'unexpected'`), never coerces non-strings, and compares SQLSTATE/allow-listed codes against secrets case-insensitively. **C1 (found by the adversarial pass, closed):** `instanceof PhaseFailure` on a hostile thrown value could itself throw out of the failure path; classification is now non-throwing (`classifyFailure`) and an unclassifiable value reports `'unexpected'`. **C2 (found by the adversarial pass, closed):** the suppression set now holds the URL, the marker id and (in gate mode) the attempt id. Ordinary SQLSTATEs stay visible. |
+| C. Test isolation | Because the pin survives module resets, every case about a start-up state runs in a child Vitest process started in exactly that state (one child per distinct subject), through the Vitest node API with no config file, no setupFiles and no globalSetup, and a constructed environment (synthetic `.invalid` URLs, `PGHOST=127.0.0.1`, `PGPORT=1`, only `PATH` inherited). The parent asserts each child's exact set of passed test names. A worker that itself started gated skips the non-gate cases and runs them in one child started without the variable. All databases are in-file fakes. The file therefore spawns about 60 child processes (roughly +11 s). |
+| Implementer evidence (Claude Code; DB-free, contained) | Every run used an isolated scratch harness outside the repository (user, network and mount namespaces; private propagation; loopback only; `/run` masked, `/var/run` → `/run`; `env -i` with synthetic values). Valid behavioral RED (8 failed / 395 passed / 1 skipped): F02 assertions plus the F01 child cases (downgrade, redirect, late enable, deletion still connecting). GREEN 403/1. Adversarial: 32 independently derived and executed, 28 matched, 4 mismatched, revealing classes C1 and C2; 12 further class cases were derived and run before fixing; one gated-parent case (61 passed / 368 skipped, exit 0). Final focused run: 428 passed / 1 skipped, exit 0. `tsc` (both configs) and scoped ESLint exit 0; `git diff --check` clean. `npm run deps:check` was NOT run in I1b. |
+| Codex evidence (independent) | Final review `D5H_I1B1_CODEX_APPROVED`: BLOCKER 0, HIGH 0, MEDIUM 0, LOW 4 (non-blocking). Independently reproduced GREEN: **428 passed, 1 skipped**. F01, F02, C1 and C2: CLOSED. Historical RED counts: NOT independently reproduced, structurally reconciled. Independent adversarial review: 18 cases executed, 18 matched; 2 not executed. Database contact: NONE. |
+| Open LOW observations (non-blocking; NOT resolved) | **L1:** the failure path evaluates `instanceof PhaseFailure` redundantly → DEBT-036. **L2:** behavior when `globalThis` is non-extensible, a condition that can arise in the transitive import chain (pin capture then falls back to the untrusted pin, which refuses every target) → DEBT-037. **L3:** child-test assertion messages are propagated into the parent's failure output → DEBT-038. **L4:** an otherwise valid pin whose `attemptId` equals its `markerId` is accepted; whether they must differ is a policy question, and **no owner decision has been made** → DEBT-039. |
+| NOT claimed / not proven | No live PostgreSQL execution occurred during implementation or review; the pinned channel has never been used by a live gate; no hosted TEST preflight, migration, backup, restore, seed or full suite has run; no PILOT operation occurred; no pricing or business behavior changed. §17 (Failure & Learning) and §18 (Prevention Rules) were reviewed and are intentionally **unchanged** in this closeout. **D5H as a whole is NOT complete;** I1c is NOT started and NOT authorized. |
+| Status | Implemented (I1b + I1b.1) · implementer DB-free evidence green · Codex approved (0/0/0/4) · committed `830d595` · pushed · remote SHA verified. D5H-I1b CLOSED. D5H-I1c is next and unauthorized. |
+
+### D5H-I1c owner design decisions D1–D7 (recorded 2026-10-11)
+
+Evidence labels follow §17. `[OWNER DECISION]` = approved by the owner on 2026-10-11 (recorded in `AGENTS.md` Database safety). Everything else here comes from the read-only D5H-I1c preflight at `40b15156a196f4c85071dc48435c500c8db35545` (source and git inspection only: no test, no tool, no database). **This is APPROVED DESIGN, not implementation.**
+
+| Item | Record |
+| --- | --- |
+| Source definition before the decisions | §23 row 35 ("TEST backup path on the shared parser; outside-worktree verified copy") and the I1a `[PROTOCOL DESIGN]` row (owner-only, `OUTSIDE_WORKTREE_SAME_HOST`, recovery point not disaster recovery, no automatic retry). `docs/development/d5h-protocol.md` does not exist. |
+| D1 — target and binding `[OWNER DECISION]` | Canonical TEST configuration through the I1a parser only; demonstrably bound to the specific owner-authorized D5H operation and to the TEST subject the later suite expects; mismatch, missing binding proof, malformed configuration, ambiguous selector or fallback fail closed; never `DATABASE_URL`, `LOCAL_TEST_*`, the legacy DEMO selection or an ambient fallback. The I1b pin is process-local to the `api/` test harness; no cross-process inheritance exists or is assumed — I1c must establish and verify the binding explicitly. |
+| D2 — identity proof `[OWNER DECISION]` | Marker proof inside a verified read-only transaction, bound to the exact snapshot the dump consumes; fail closed when identity, transaction confirmation or snapshot binding cannot be established. `backup.mjs`'s pre-marker bootstrap path is preserved unchanged and is not given the D5H marker requirement. Pooler snapshot import is UNVERIFIED (separate owner authorization for live testing). |
+| D3 — artifact format `[OWNER DECISION]` | Keep `mona-test-backup/v1`; the durable copy must remain consumable by the existing restore verifier with no change to `restore.mjs`; compatibility demonstrated DB-free before any live restore drill; no D5H metadata in the legacy manifest. |
+| D4 — storage `[OWNER DECISION]` | `OUTSIDE_WORKTREE_SAME_HOST`, excluding the current worktree, the main checkout, every sibling worktree / other checkout of this repository, temporary or ephemeral storage, symlink escapes and unsafe paths; owner-controlled directory; `0700` directories, `0600` files, exclusive create (no overwrite), safe temp-to-final publication, file and directory sync, destination re-verification, refusal on any incomplete/ambiguous/unverifiable state. Same-host recovery point, not off-machine disaster recovery. No path is fixed. |
+| D5 — evidence sidecar `[OWNER DECISION]` | Separate digest-only sidecar; minimum fields `setId`, backup SHA-256, `targetDigest`, `markerDigest`; no URL, credential, password, connection string or other sensitive source material; identifies the same authorized target and verified set. Serialization, canonicalization and the I2 binding/verification rules are DEFERRED to the implementing slice; I2 is not implemented. |
+| D6 — tooling integrity `[OWNER DECISION]` | No `pg_dump` (or later `pg_restore`) from an uncontrolled `PATH` in D5H execution; verified absolute binaries, version-compatibility checks, fixed-code refusal when missing, substituted or incompatible. No binary path, installed version, server version or pooler compatibility is asserted. `restore.mjs` is unchanged. |
+| D7 — slices `[OWNER DECISION]` | **I1c-a** (DB-free): canonical config ingestion, binding contract at the DB-free boundary, destination-root policy, durable exclusive publication, backup-pair verification, connection-free `--dry-run`, behavior-level DB-free TDD. **I1c-b**: verified TLS, read-only REPEATABLE READ transaction, marker proof, exported snapshot, snapshot-bound `pg_dump`, counts consistent with that snapshot without the `count(*)::int` capacity defect, the D5 sidecar, DB-free fakes. Proposed files `scripts/database/d5h-backup.mjs` + `d5h-backup.test.mjs` are proposals only (fresh dependency sweep and owner approval first). Each slice: own authorization, valid RED/GREEN, independent adversarial cases, Codex review, checkpoint approval. Live compatibility and restore validation stay UNAUTHORIZED. |
+| Preflight findings F1–F7 (source-grounded; all OPEN at the code level) | **F1 (HIGH for D5H use):** `backup.mjs --target=test` proves no marker; identity is owner project-ref attestation only (deliberate bootstrap design) → addressed in design by D2; the legacy path stays as is. **F2 (MEDIUM):** legacy row counts are taken on a separate, later connection (`lib.mjs` `tableRowCounts`), not in the dump's snapshot → D7/I1c-b; legacy behavior tracked as DEBT-040. **F3 (MEDIUM):** legacy TEST config is read relative to the working directory → D1/I1c-a; legacy tracked as DEBT-040. **F4 (MEDIUM):** no binding between a separately launched backup and the I1b pinned suite subject → D1/D5. **F5 (LOW–MEDIUM):** the existing LOCAL_TEST root policy excludes only the current worktree → D4. **F6 (LOW):** legacy pg tools resolved from `PATH` → D6; legacy tracked as DEBT-040. **F7 (INFO):** the full D5H protocol is not in the repository → resolved for I1c scope by recording D1–D7. |
+| NOT claimed / not proven | Nothing is implemented; no backup is durable, marker-proven, restorable or live-validated because of this record; no test, tool or database was run; pooler snapshot import, installed binaries/versions and server compatibility are UNVERIFIED. I1a CLOSED; I1b CLOSED (`830d595`; closeout `40b1515`); I1c-a and I1c-b NOT STARTED / NOT AUTHORIZED; I2–I5 pending; hosted TEST operations NOT AUTHORIZED; full suite NOT RUN; **D5H NOT complete**. DEBT-035…DEBT-039 unchanged. |
+| Status | DESIGN APPROVED (D1–D7) · NOT IMPLEMENTED · next slice I1c-a, unauthorized. *(As recorded at `ab8cfb2`. Current state: §16 "D5H-I1c-a implementation and architecture research" — I1c-a implemented in untracked files and BLOCKED.)* |
+
+### D5H-I1c-a implementation and architecture research (recorded 2026-10-11)
+
+Evidence labels follow §17. `[OWNER-REPORTED]` = reviewer verdicts relayed by the owner; the reviews themselves are not repository artifacts. **Design progress is not implementation progress.**
+
+| Item | Record |
+| --- | --- |
+| Implementation state | I1c-a was implemented (DB-free) in `scripts/database/d5h-backup.mjs` and `d5h-backup.test.mjs`; both are **untracked and uncommitted** at `ab8cfb2` and are kept as evidence. Not staged, not committed, not approved. |
+| I1c-a review | Codex review of I1c-a: findings F-01…F-08 `[OWNER-REPORTED]`; a remediation (I1c-a.1) was implemented in the same two files (Claude DB-free evidence: focused suites green under contained root and non-root identities, independent adversarial cases); Codex I1c-a.1 verdict **BLOCKED** `[OWNER-REPORTED]` (same-user path substitution, premature reader acceptance, false durable finalization, failure-state accounting). |
+| Architecture research | I1c-a.2 (read-only): Linux/Node primitive survey — Node 24.20 has no descriptor-relative (`*at`) calls and no `RENAME_NOREPLACE`; a same-UID process cannot be prevented from altering an owner-owned store; strict D4 needs a separate identity. Codex architecture verdict: **REVISIONS REQUIRED** `[OWNER-REPORTED]`. I1c-a.3 (read-only): Claude P-B2 design (Node-only storage service under a dedicated identity, private store, certification after verification and durability, certified restore copy-out) — **READY FOR CODEX REVIEW**; P-B2 is a **PROPOSED** architecture, not approved. |
+| Proposed owner decisions O1–O8 | Proposals only, none approved: O1 separate admin account and removing the developer UID from `sudo`; O2 `ptrace_scope ≥ 1`; O3 separate producer identity; O4 root-owned pinned Node runtime for the storage identity; O5 recovery identity; O6 `lib.mjs` reader hardening; O7 release-area modes; O8 native helper. |
+| Reported host findings (to be independently re-verified; not established by this documentation record) | The research reported: developer UID in the `sudo` group; `kernel.yama.ptrace_scope = 0`; the project Node runtime owned by the developer UID; system Node 20.19.2 versus the repository pin 24.20.0; subordinate UID ranges available. |
+| NOT done / NOT authorized | No Linux users, groups, sudoers, services, runtime installation, CI change, database contact, backup, restore or full suite. D4 and the frozen documents are unchanged. I1c-b NOT AUTHORIZED; I2–I5 pending; **D5H NOT complete**. |
+
+### R3-A4.3 — proportional checkout (S1–S4 statically approved) (recorded 2026-10-16)
+
+Evidence labels follow §17. **Nothing is deployed or applied to any real database.** **Design approval is not implementation validation, and neither is PostgreSQL validation.** The approved source package lives outside the repository (`R3-A4.3_CONTRATO_APROBADO_COMPLETO_PARA_CODEX.md`), so this record cannot be re-verified from git (see the contract doc §12).
+
+| Item | Record |
+| --- | --- |
+| Status (exact) | `IMPLEMENTADO PARCIALMENTE — S1–S4 APROBADOS ESTÁTICAMENTE — NO DESPLEGADO — PostgreSQL PENDIENTE`. The contract doc is `docs/architecture/r3-a4.3-checkout-contract.md`; the dated `AGENTS.md` record is 2026-10-16. |
+| Design review | Codex returned **APPROVED** as a **static design review** after the final normative corrections F6, T-X and P21b `[OWNER-REPORTED]`. The pasted source tails still carry "PENDIENTE DE REVISIÓN"; the later Document 4 preamble is authoritative for F6/T-X/P21b. Does not validate S1's implementation nor PostgreSQL. |
+| Slice sequence | S1 → S2 → S3 → S4 → S5 → S6 → S-REF → S7 (T-S and T-RR) → S8 (guards) → S9 (gate and cut-over) → S10 (client and admin) → S11 (R3-T). **S1–S4 approved statically. S5-A (HTTP wiring), S5-B (attempt identity/authority preflight), S5-C (sealed-plan confirmation validation/hash plus confirmed-checkout replay), S5-D (the real atomic T-C settlement) and its S5-D.1 hardening (F1/F2/F3) are present in the current uncommitted worktree. The `501 CHECKOUT_CONFIRMATION_NOT_IMPLEMENTED` stub is gone: a valid RESERVED confirmation now settles from the sealed plan only. S5 is NOT complete and NOT approved; S6–S11 remain pending and **S-REF is implemented DB-free (NOT approved, PostgreSQL pending)**; S5-D has DB-free evidence only (no PostgreSQL).** S1 = the ninth migration; S2 = canonical hashes/DTOs; S3 = `actsAsSupervisorAtLocation`; S4 = T-R reservation + read endpoints; S5-D = the T-C settlement (`checkout()`), which also deletes the dead R3-A2 inline-pricing path; S5-D.1 = the audit hardening (concurrent-reference P2002 → 409, idempotent REJECTED replay, service-side raw-reference bound); S6 = T-X close/declaration (present in the worktree with DB-free evidence only; PostgreSQL pending). |
+| S5-D implementation (in the current worktree, 2026-10-16) | `api/src/modules/payments/checkout.service.ts`: one Serializable transaction (timeout 30000, up to 3 attempts on P2034/40001/40P01) that locks Sale → CheckoutAttempt → ExternalCollection(id ASC) → CashSession → StockReservation(id ASC) → Inventory(id ASC), derives every amount from the sealed attempt (`expectedTotal`/`expectedBalanceAmount`/`tenderCount`/`fullPriceCASH\|TRANSFER\|DEBIT`/`transferAdjustmentBps`/`debitAdjustmentBps`/`cashSessionId`/`balanceMethod` + `CheckoutAttemptTender`), rebuilds per-line full prices through the exported pure helpers `lineFullPrices`/`allocate` of the pricing engine, then confirms the attempt, applies/records the external collections, writes one `SalePayment` and one `SaleLineAllocation` per method per line, the net CASH movement, PAID, and the shared `finalizePaidSaleInTransaction` finalizer in the SAME transaction. Terminal rejections (`INVALID_SALE_STATE`, `NO_OPEN_CASH_SESSION`, `CASH_SESSION_BRANCH_MISMATCH`, `EXTERNAL_COLLECTION_NOT_APPLICABLE`, `INSUFFICIENT_PHYSICAL`, `INSUFFICIENT_RESERVED`) commit the attempt as REJECTED with `CHECKOUT_RESERVATION_REJECTED` and only then become 409; `STOCK_HOLD_EXPIRED`/`STOCK_HOLD_RELEASED` are correctable 409s that leave the attempt RESERVED. `CHECKOUT_PLAN_INCONSISTENT` is the new 500 defect code. **S5-D.1 hardening (2026-10-16):** F1 — a concurrent external-reference `P2002` maps to 409 `EXTERNAL_REFERENCE_ALREADY_RECORDED` through a post-rollback, READ-ONLY, lock-free lookup (the in-transaction pre-check stays fast-fail; the partial unique index remains the integrity guard; detection is by unique target — the index name or Prisma's column list — and never converts an unrelated `P2002`); F2 — a persisted `REJECTED` attempt replays its own `rejectionCode`/`rejectionDetails` with zero writes; F3 — the service re-bounds the raw reference to 1..64 Unicode code points before any INSERT (the shared `codePoints`/`REFERENCE_RAW_MAX` moved to `checkout-canonical.ts`). Coverage S5D1-01..15 adds the reference race, the rejected replay, the raw-reference bound, `EXTERNAL_COLLECTION_NOT_APPLICABLE`, already-recorded references, multi-method NEW settlement, FIXED centavos, the `INVALID_SALE_STATE` variants and a missing cash session. Evidence: `api/tests/payments/checkout.behavior.test.ts` (79 passed / 55 skipped; the 55 are the legacy R3-A2 blocks, kept verbatim as the superseded specification and skipped; the legacy coverage comment now maps A–H and P to their S5-D/S5-D.1 replacements), `checkout.http.test.ts` 69/69, `tests/pricing/proportional-checkout.test.ts` 44/44, the `checkout-canonical`/`checkout-attempt-dto`/`checkout-policy`/`checkout-reservation`/`r3-attempts-schema.static` suites 146/146, `tsc --noEmit`/`lint`/`git diff --check` clean. DB-free only. F4 (the physical lock order of `ORDER BY id ASC FOR UPDATE`) is recorded as **PostgreSQL evidence pending P21+** and is not forced by a hint or advisory lock. |
+| S6 implementation (in the current worktree, 2026-10-16) | `api/src/modules/payments/checkout-close.service.ts` (T-X) + `.controller.ts`, mounted at `POST /sales/:saleId/checkout/reservations/:reserveKey/close` behind `validate(params)` + `validate(body)` + `requirePermission(SALE_CHARGE)`. ONE READ COMMITTED transaction (timeout 30000, **no** P2034/40001/40P01 retries): `Sale` `FOR UPDATE NOWAIT` (PostgreSQL `55P03` → 409 `CHECKOUT_RESERVATION_BUSY`) → `CheckoutAttempt` by `(reserveKey, saleId)` `FOR UPDATE` → the attempt's `ExternalCollection` claims `ORDER BY id ASC FOR UPDATE`. Write order (schema F4/F6, owner decision 2026-10-16): `RESERVED → ABANDONED` with `declaredAt` still NULL (F4 refuses a declaration on a non-terminal attempt) → **Phase 8b (S6.3): insert the `ExternalCollection` of EVERY CHARGED row** (`UNAPPLIED`, `originAttemptId`/`originSaleId`/`branchId`/`method`/`recordedById`) → **Phase 8c (S6.3): only then insert EVERY `CheckoutAttemptDeclaration`** → fix `declaredAt` → **release the COLLECTION claims** (F6 requires the attempt terminal AND declared) → audit, all in the same transaction. **The owner-authorized Document 4 order (declarations → declaredAt → release) supersedes the older in-repo wording that released the claim before `declaredAt`.** Permissions: the initiator needs `SALE_CHARGE` at the locked `sale.branchId`; a foreign actor needs `actsAsSupervisorAtLocation([SALE_CANCEL_PENDING])` at that branch plus a mandatory `reason`+`evidence` (else 403). One declaration row per sealed tender (the client is never trusted for `tenderSource`); a COLLECTION tender is declared NONE only; a CHARGED amount must be exactly the sealed amount (`CheckoutAttemptTender.amount` for FIXED, `expectedBalanceAmount` for BALANCE); `CHARGED` rows create `UNAPPLIED` collections whose raw reference is normalised by the canonical rule. A `CONFIRMED` attempt is immutable (replay/`readCheckoutResult`, zero writes); an already declared attempt replays 200 only for the same actor and identical persisted content, else 409 `CHECKOUT_DECLARATION_ALREADY_RECORDED`. New error codes: `CHECKOUT_DECLARATION_ALREADY_RECORDED`, `CHECKOUT_DECLARATION_MISMATCH`, `CHECKOUT_DECLARATION_AMOUNT_MISMATCH`, `CHECKOUT_DECLARATION_EVIDENCE_REQUIRED`. Audit actions: `CHECKOUT_RESERVATION_ABANDONED`, `CHECKOUT_DECLARATION_RECORDED`, `EXTERNAL_COLLECTION_RECORDED`, `CHECKOUT_ATTEMPT_CASH_RETURNED`, `EXTERNAL_COLLECTION_CLAIM_RELEASED` (all `userId = actor`, `branchId = sale.branchId`). S6 writes **no** `CashMovement`/`CashSession`/`StockReservation`/`Inventory` (a RETURNED cash amount never entered the drawer; stock recovery is S7). Evidence: `checkout-close.behavior.test.ts` (57 cases: S6-01..S6-25 with the `-13b`/`-13c`/`-18b` variants, the S6.1 fixes S6F-01..S6F-20 + S6F-23..S6F-25, and the S6.3 write-order tests S6W-01..S6W-04; S6F-21/S6F-22 live in `checkout.behavior.test.ts`) and `checkout-close.http.test.ts` (5 cases) — DB-free only. **S6.1 review fixes (2026-10-16, DB-free):** S6-B01 a fresh close bumps `Sale.updatedAt` (`UPDATE "Sale" SET "updatedAt" = now()`) after the three locks and before the first attempt write, never on a replay; S6-B02 a supervised close of a `REJECTED` attempt records `reason`/`evidence` in `after.supervisor` of its single `CHECKOUT_DECLARATION_RECORDED` audit row (no attempt column may hold it on REJECTED) and a replay compares them (changed reason/evidence or another actor → 409 `CHECKOUT_DECLARATION_ALREADY_RECORDED`; a missing/duplicated/malformed audit → 500 `CHECKOUT_STATE_INCONSISTENT`); S6-B03 CHARGED collections carry `cashSessionId = attempt.cashSessionId`; S6-B04 every audit row is written after the claim release; **S6.2 — T-C on a closed attempt** (zero writes): `ABANDONED` → 409 `CHECKOUT_RESERVATION_CLOSED`; `REJECTED` with `declaredAt IS NOT NULL` → 409 `CHECKOUT_RESERVATION_CLOSED`; `REJECTED` with `declaredAt IS NULL` → replay of the persisted `rejectionCode`/`rejectionDetails` (S5-D.1). S5 and S6 stay **NOT complete and NOT approved**; PostgreSQL P21–P55 **NOT RUN**; S-REF and S7–S11 pending. |
+| S6.3 write-order fix (2026-10-17, DB-free) | Fixes S6-B05 and DOC-S6-01 in `api/src/modules/payments/checkout-close.service.ts`: Document 4 has always prescribed "CHARGED collections → declarations", but the S6/S6.1 code walked the sealed plan once and interleaved the two writes per tender (for `CASH/NONE + TRANSFER/CHARGED + CARD_DEBIT/CHARGED` it wrote `declaration:CASH → collection:TRANSFER → declaration:TRANSFER → collection:CARD_DEBIT → declaration:CARD_DEBIT`). S6.3 splits the walk into two canonical-plan-order phases so that **every CHARGED `ExternalCollection` is inserted before ANY `CheckoutAttemptDeclaration`**: Phase 8b creates the collection of every CHARGED row (UNAPPLIED, `cashSessionId = attempt.cashSessionId`, sealed amount, id kept per method) and Phase 8c creates every `CheckoutAttemptDeclaration` reusing the Phase 8b ids (a missing id fails closed with 500 `CHECKOUT_STATE_INCONSISTENT`). No permission, DTO or endpoint changed; all S6/S6.1 semantics preserved (READ COMMITTED, one transaction, `Sale FOR UPDATE NOWAIT`, `55P03 → CHECKOUT_RESERVATION_BUSY`, visibility bump only on a fresh close, replay zero-write, sealed CHARGED amount, `cashSessionId = attempt.cashSessionId`, P2002 → `EXTERNAL_REFERENCE_ALREADY_RECORDED`, CASH/RETURNED without a cash session, no stock writes, S6.1 supervisor/replay, S6.2 `CHECKOUT_RESERVATION_CLOSED`), and the order `declaredAt → release claim → audit → COMMIT` is unchanged. Tests (DB-free, in-memory double): `S6W-01` asserts `max(CHARGED collection create) < min(declaration create)` and re-checks the sealed amounts, `UNAPPLIED`, `cashSessionId` and the declaration→collection links for both charged rows; `S6W-02` pins the exact canonical sequence `collection:TRANSFER → collection:CARD_DEBIT → declaration:CASH → declaration:TRANSFER → declaration:CARD_DEBIT`; both were RED-first against the interleaved loop. `S6W-03` (GAP-1) asserts `max(declaration create) < declaredAt update` and `S6W-04` (GAP-2) asserts the terminal `RESERVED → ABANDONED` mutation precedes `min(CHARGED collection create)`; both hold under the interleaved and the fixed code, so their RED is mutation/sensitivity evidence only (declaredAt moved early → GAP-1 `expected 10 to be less than 7`; terminal update deferred → GAP-2 `expected 11 to be less than 5`), fully reverted (service sha256 unchanged). **GAP-3** (a CHARGED declaration whose persisted `ExternalCollection` is missing on replay) is documented, not implemented: PostgreSQL/schema invariant dependent; unreachable if the FK/commit guards hold; left to real evidence. Inventory: `checkout-close.behavior.test.ts` 57/57, `checkout-close.http.test.ts` 5/5, `checkout.behavior.test.ts -t "S5|S6"` 77 passed / 59 skipped; `tsc --noEmit`, `lint`, `git diff --check` clean. **S6 is still NOT approved**; PostgreSQL P47–P55 (incl. P52/P53/P55) **NOT RUN**; S-REF and S7–S11 pending. No staging, no commit, no push, no migration/`schema.prisma` edit, no `docs/production-v1/*` change, no database contact. |
+| S-REF implementation (in the current worktree, 2026-10-17) | `api/src/modules/payments/external-collections.service.ts`/`.controller.ts`/`.routes.ts` + `dto/external-collection-refund.dto.ts`, mounted in `api/src/app.ts` outside `/sales/:saleId`: `POST /api/v1/external-collections/:externalCollectionId/refund` (T-F) and `GET /api/v1/external-collections?branchId=&status=&limit=`. T-F is ONE READ COMMITTED transaction (timeout 30000, **no** NOWAIT/NOWAIT-style contention handling, **no** P2034/40001/40P01 retries, **no** CheckoutAttempt lock, **no** cash/stock write): `ExternalCollection FOR UPDATE` (404 if absent) → permission on the LOCKED `ec.branchId` (`actsAsSupervisorAtLocation([SALE_CANCEL_PENDING])`, the S3 refactor) → state/idempotency (APPLIED → 409 `EXTERNAL_COLLECTION_ALREADY_APPLIED`; REFUNDED with the SAME canonical reference + date + reason → 200 zero-write replay; REFUNDED otherwise → 409 `EXTERNAL_COLLECTION_ALREADY_REFUNDED`; UNAPPLIED with a claim → 409 `EXTERNAL_COLLECTION_CLAIMED`; any other persisted status → 500 `EXTERNAL_COLLECTION_STATE_INCONSISTENT`) → the single server `resolvedAt` with a future `externalRefundedAt` refused as 400 `EXTERNAL_REFUND_DATE_IN_FUTURE` → the UPDATE → audit → COMMIT. The amount is read exclusively from the locked row (BigInt end-to-end, no partial refund). The listing gives a supervisor the whole branch and a `SALE_CHARGE` holder only its own rows; the listing permission never enables the refund. **Pilot gate:** `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` (`api/src/config/env.ts`, `z.enum(['true','false']).default('false')`) is validated at startup and injected by `app.ts` into the quote and the reservation (never into the refund or the listing). S-REF.1 review fixes (2026-10-17, DB-free): the gate is **FAIL-CLOSED** — the former `options.externalMethodsEnabled ?? true` is `?? false` in both service factories and `?? false` in both controllers, so no omission can enable the external methods, and the quote returns `unappliedCollections: []` while the gate is off (T-R would refuse those candidates); the ISO-8601 `externalRefundedAt` is validated STRICTLY (`parseStrictIsoInstant` re-derives the calendar/clock components from the exact instant, so `2026-02-30T00:00:00Z` / `24:00:00` / non-leap `02-29` are 400 before the service, while valid offsets are kept); the refund audit snapshot carries the identity, method, reference, referenceKey, origin, claim, resolution and amount (BigInt → JSON-safe decimal string via `createAuditLog`, never a Number); and the P38 fixture rebuild was begun through the real flows (T-R claim + the S4 confirmation fixture for APPLIED), never a hand-written `status = APPLIED` with a null application or a claim F6 rejects — completed in **S-REF.2** (P38-01/02/03, see that row). |
+| Migrations | Two additive migrations: R3-A2 `20261016120000_r3_proportional_checkout` (15340 bytes, sha256 `217e87eb5b156a57a5edcfd73433e1e9558ce59caa019208d9df8c0268f08dc6`) and R3-A4.3 S1 `20261016130000_r3_checkout_attempts` (35290 bytes, sha256 `076884120da38a05099ee00dbb16aafaa9e8c78f5846889fe7f590a8e95d9148`). The reviewed tree holds **nine migration directories**; only **seven** are the operational `APPROVED_MIGRATION_PAYLOAD` (G7). Joined pin over the nine migration files of the reviewed tree: `1ca60b06b0f74e74713448900d2b3b5a6c6887a805f4f88695020b4198888137`. R3-A2 is never touched; no already-applied migration is rewritten. |
+| G9 protected contract | `api/scripts/local-test-fingerprint.ts` now pins **298 columns / 32 relations / 17 enums / 9 protected functions / 3 jsonb**; type counts `{ text:165, int4:17, int8:44, bool:6, tstz:33, enum:30, jsonb:3 }`; `checked` = 290. Of the nine protected functions, **six are new** in the ninth migration (F1–F6) and three pre-exist. Derived independently from the nine migration SQL files and `schema.prisma`; the only pinned-vs-derived difference is the known `AuditLog.branchId` nullable pin (the parser omits the `DROP NOT NULL` in `20260922210000_d3_initial_stock_and_global_audit`). |
+| D5H tree recognition | `scripts/database/d5h-preflight.test.mjs` recognizes the two R3 migrations as **reviewed-tree entries only** (name + bytes + sha256), so the tree pin does not drift. `D5H_MIGRATIONS` keeps its six independent pins; `scripts/database/d5h-preflight.mjs`, the `mona-test-backup/v1` format and its authorizations are unchanged. |
+| G7 restraint | `scripts/database/pilot-migrate.mjs` keeps `APPROVED_MIGRATION_PAYLOAD` at G7. No R3 migration is enabled for application by any D5H or pilot path. |
+| Mounted endpoints (S1–S6 + S-REF) | `POST /sales/:saleId/checkout/quote` (R3-A4.1, unchanged); `POST /sales/:saleId/checkout` (R3-A3.3 kept route; its T-C settlement is implemented in S5-D); `POST`/`GET /sales/:saleId/checkout/reservations`, `GET …/:reserveKey` (S4) and `POST …/:reserveKey/close` (S6, T-X, DB-free evidence only); `GET /api/v1/checkout-attempts/recent` (S4, mounted in `api/src/app.ts`); and (S-REF, DB-free only) `POST /api/v1/external-collections/:externalCollectionId/refund` (T-F) and `GET /api/v1/external-collections`, both mounted in `api/src/app.ts` outside the `/sales/:saleId` router. |
+| DTO-only, not mounted (future) | `POST …/checkout/stock-recovery` (S7): the DTO `checkout-stock-recovery.dto.ts` exists, no route registered. |
+| Pilot gate (S-REF implemented) | `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` (`api/src/config/env.ts`, `z.enum(['true','false']).default('false')`) is **implemented (S-REF)**, validated at startup and injected only by `app.ts` into the quote and the reservation. It is **fail-closed**, asserted DB-free at each boundary the suite covers (`api/tests/payments/external-methods-gate.behavior.test.ts`, C-01-01..04: the quote controller without the option, the reservation controller without it, the payments router without it, and `parseEnv` without the variable are each OFF; an explicit `true` is ON, so a dropped propagation is RED — no grep/comment evidence). That is wiring evidence only; the PostgreSQL gate (P40) is **NOT RUN**. With it `false`, the quote reports TRANSFER/CARD_DEBIT unavailable (`PAYMENT_METHOD_NOT_ENABLED`) and returns `unappliedCollections: []`, and T-R answers 409 `PAYMENT_METHOD_NOT_ENABLED` for a `NEW` external method or a `COLLECTION` consumption; CASH, the refund and the listing stay available; T-C is not gated. The separate implemented fail-closed gate is `PROPORTIONAL_CHECKOUT_LOCATION_IDS` (`api/src/config/env.ts`), read only in `createDraftSale`; a new draft sale defaults to `pricingModel = FIXED_TOTAL` unless its location is listed. |
+| Collateral contract observers | This slice repins the G9-affected contract observers it was authorized to touch: the drift guard in `api/tests/protected-capability-static.test.ts` (the 26-relation G7 witness is the historical subset; G8/G9 add exactly the six new relations; no G9 operational generation), the baseline count pins in `api/tests/local-test-baseline.test.ts` (298; the six new relations classified `PRESERVED_FROM_BACKUP`) and the runtime count pins in `api/tests/protected-capability-runtime.test.ts` (`LOCKED_TABLES` derives from `PROTECTED_RELATIONS.length`, with an explicit G9 pin of 32 relations; its lock-count, SQL-order and snapshot assertions remain regression-sensitive). These DB-free suites pass. The operational witness `scripts/database/local-test-witness.mjs` stays the historical G7 witness at 26 relations; `BACKUP_SCHEMA_GENERATIONS` is not extended; G9 is not enabled in `pilot-migrate.mjs` or `local-test-prepare.mjs`. |
+| Not implemented (§11 of the contract) | A POS/bank integration and automatic reimbursement — the S-REF refund is a manual, supervised registration only. The external refund (`UNAPPLIED → REFUNDED`, T-F) and the general listing of `UNAPPLIED` collections by branch **are implemented DB-free (S-REF)**. A pending OWNER decision on the manual interim procedure stands. |
+| PostgreSQL evidence | **NOT RUN.** P21–P55 (migration-9 atomicity, partial indexes, triggers, isolation `40001`, pooler compatibility, and the Document 4 F6/T-X cases P47–P55) are designed, not executed. **S6 in particular leaves P52 (the COLLECTION claim released only after `declaredAt`), P53 (a full T-X with COLLECTION/CHARGED/CASH-returned) and P55 (T-X racing T-C on the same attempt) unexecuted.** **S-REF's P36–P40 (the F6 trigger accepting `UNAPPLIED → REFUNDED` exactly once, `chk_ec_status`/`chk_ec_refund_fields`/`chk_ec_claim_state` raising 23514, the real row lock serialising two refunds, and the fail-closed gate) are NOT RUN; P39 is DEFINED / NOT RUN until S7.** The ninth migration has **not been executed against any database**, including LOCAL_TEST; it has not been applied to DEV, TEST, DEMO or PILOT. |
+| NOT done / NOT authorized | No deploy, database operation (DEV/TEST/LOCAL_TEST/DEMO/PILOT/production), migration execution, backup or restore. Git publication state is tracked by the repository history and checkpoint ledger, not by this status row. The frozen `docs/production-v1/*` documents are unchanged and nothing is superseded. |
+
+### Cash withdrawals and expenses (reviewed 2026-10-18)
+
+| Item | Record |
+| --- | --- |
+| Existing slice reviewed | Additive migration 10, `CashMovement` service/controller/routes/DTOs, `CASH_MOVEMENT_MANAGE` authorization, role catalog/matrix, behavior tests and local migration tooling were treated as existing work. No replacement or general refactor was made; no reproducible backend defect was established in this pass. |
+| Client implementation | `client/src/app/page.tsx` and `globals.css` add a small presentational movement panel for Gasto/Retiro, amount and reason, explicit confirmation, success/error state and movements from the open session. Amount conversion stays string/integer-cent based. A fresh UUID v4 is created per intentional operation and retained with the pending intent when a transport failure is retried. Retiro states that supervisor authorization is required. |
+| Client evidence | `cashier-cash-movement.test.tsx` 3/3; complete client suite 12 files / 244 tests; `tsc --noEmit`, ESLint and `next build --webpack` PASS. The default Turbopack build could not bind its internal port in this restricted environment (`EPERM`); the webpack production build completed. |
+| API/tooling DB-free evidence | Cash/RBAC/static gates 28/28 + 60/60 + 34/34; cash behavior + fingerprint + baseline 162/162; local migration payload 36/36; local-test prepare 194/194; pilot migration pin 41/41. Main API build PASS with a non-secret loopback placeholder used only to satisfy Prisma configuration parsing. API lint PASS. `tsconfig.check.json` is nonzero from the separate R3 checkout tests already present in the shared worktree; main source TypeScript compilation passed. |
+| PostgreSQL evidence | **NOT RUN / BLOCKED BY ENVIRONMENT.** No selected/configured marker-proven disposable LOCAL_TEST exists in this process and loopback PostgreSQL is unavailable. Migration 10 and its real constraints, transactions, concurrency and idempotency behavior therefore remain unverified on PostgreSQL. No fallback target was attempted. |
+| Status | `BLOCKED` until the owner supplies the disposable LOCAL_TEST configuration/runtime; this is not `CASH_WITHDRAWAL_EXPENSE_GREEN`. |
+
+### Older blocks (summary; strong evidence only)
+
+| Block | Commit(s) | Goal | Push |
+| --- | --- | --- | --- |
+| Phase 1C | `7d0c2b6` | UserRoleScope location authority; full gate 310/310 | pushed |
+| Phase 1D | `20d6ce3` → `cefc70d`, `ca45475` | Production authorization switch; legacy permissions deleted | pushed |
+| Phase 1E | `053f0b4` → `4eed1db` | RBAC/security test matrix | pushed |
+| D1 | `ca45475` | Public roles from Production assignments | pushed |
+| D2.1 / D2.2 | `db7e8a0`, `b592d56` | MANAGER deferred; canonical-first seed | pushed |
+| D3 | `6aa8143` | Admin catalog, price edit, additive initial stock, nullable `AuditLog.branchId`, `DEMO_SEED_PASSWORD` | pushed |
+
+---
+
+## 17. Failure & Learning Registry
+
+Evidence labels: `[VERIFIED]` = supported by current source/git/tests/docs;
+`[OPERATIONAL OBSERVATION]` = supported only by development-session evidence;
+`[UNVERIFIED]` = precise provenance cannot currently be established;
+`[OWNER-REPORTED]` = stated by the owner in a session instruction, with no repository artifact (an operational evidence class like `[OPERATIONAL OBSERVATION]`; it is never treated as repository-verified). A defect
+can be `[VERIFIED]` from before/after git evidence even when the reviewer who
+first reported it is unknown.
+
+Failures verified from git, code or tests are listed; the only exception is an entry explicitly labelled `[OPERATIONAL OBSERVATION]` / `[OWNER-REPORTED]` (F-018), which is not repository-verified. When the *detection
+source* (for example, which reviewer found an issue) is not in the repository,
+it is marked unverified. The defect and its fix are still verified.
+
+### F-001 — Stale expired holds reduced reported availability `[VERIFIED]`
+
+- **Block:** P0.1-A · **Severity:** HIGH (operational: sellable stock appeared unavailable)
+- **Symptom:** a hold stayed counted in `Inventory.reserved` after its TTL until something released it, so reads and pre-checks under-reported stock.
+- **Evidence:** `[VERIFIED]` — pre-A reads used raw `physical − reserved`; P0.1-A diff and regression tests.
+- **Detection source:** exact detector/reviewer unverified; defect and remediation verified from git and tests.
+- **Root cause:** `reserved` is a persisted counter. Expiry had no read-side meaning.
+- **Impact:** false "no stock" at the seller catalog, inventory and backoffice.
+- **Fix:** the expiry-aware read projection (§6.1).
+- **Regression tests:** `effective-availability.test.ts` ("reports a unit held only by an expired zero-payment hold as available", "lets checkAvailability pass when the counter is stale only because of a releasable hold").
+- **Prevention:** RULE-001, RULE-009 · **Status:** CLOSED · **Commit:** `8e9699a`.
+
+### F-002 — Manual expiry release used cross-assignment location union `[VERIFIED]`
+
+- **Block:** P0.1-B1 · **Severity:** HIGH (authorization)
+- **Symptom:** before `ab728be`, the controller passed `req.auth.effectiveLocationIds` (the union across all assignments) to the release. A user with `INVENTORY_MANAGE` at location A and any other role at location B could release holds at B.
+- **Evidence:** `[VERIFIED]` — before/after in the `git show ab728be` diff of `cancellation.controller.ts`.
+- **Detection source:** exact detector/reviewer unverified; defect and remediation verified from git.
+- **Root cause:** a location list was used as authority instead of the centralized same-assignment policy.
+- **Fix:** filter with `hasPermissionAtLocation(auth, INVENTORY_MANAGE, id)`, plus a scope recheck under the Sale lock (`OUT_OF_SCOPE`).
+- **Regression tests:** `reservation-expiry.test.ts` › "manual endpoint scope" (3 cases).
+- **Prevention:** RULE-004 · **Status:** CLOSED · **Files:** `cancellation.controller.ts`, `cancellation.service.ts`.
+
+### F-003 — Automatic release must not accept a caller clock `[VERIFIED remediation · UNVERIFIED provenance]`
+
+- **Block:** P0.1-B1 · **Severity:** HIGH (stock integrity)
+- **Symptom (risk):** a SYSTEM entry that accepted `now` could release unexpired holds.
+- **Evidence:** remediation `[VERIFIED]` in source and a dedicated regression test. The pre-fix defect is `[UNVERIFIED]`: B1 landed as one commit, so no git state shows a clock-accepting SYSTEM entry.
+- **Detection source:** unverified.
+- **Fix:** `releaseExpiredHoldsAsSystem` and `reconcileBeforeSend` read the wall clock internally and take no clock parameter.
+- **Regression tests:** "never lets a SYSTEM caller supply the clock: a smuggled future now cannot release unexpired holds"; sweeper "passing exactly { limit: batchSize } and no clock".
+- **Prevention:** RULE-002 · **Status:** CLOSED.
+
+### F-004 — Demo V2 expiry batch: one transaction, sum-based protection, `<` boundary `[VERIFIED]`
+
+- **Block:** P0.1-B1 (fixing `c15cb67`, Demo V2) · **Severity:** HIGH (liveness/consistency)
+- **Symptom (verified in `ab728be^`):**
+  - All candidate Sales were released in **one** transaction, so one corrupt Sale rolled back every release.
+  - Discovery was unbounded.
+  - Payment protection used the accepted **sum > 0**.
+  - Expiry used `expiresAt < now`.
+  - No system actor existed.
+- **Evidence:** `[VERIFIED]` — `git show ab728be^:api/src/modules/sales/cancellation.service.ts` versus current source.
+- **Detection source:** exact detector/reviewer unverified; defect and remediation verified from git.
+- **Root cause:** the demo-grade maintenance design had no per-unit isolation.
+- **Fix:** one Sale per Serializable transaction; bounded (100) deterministic discovery; Policy A row existence; the `<=` boundary shared with P0.1-A; hardened guarded status update.
+- **Regression tests:** "isolates a corrupt sale: healthy sales before and after it still commit", "treats expiresAt == now as releasable", "does not release … when any SalePayment row exists — even a zero-amount corrupt row".
+- **Prevention:** RULE-005, RULE-007 · **Status:** CLOSED.
+
+### F-005 — Pre-send realtime failure must not be classified as reconciliation failure `[VERIFIED remediation · UNVERIFIED provenance]`
+
+- **Block:** P0.1-B2 · **Severity:** MEDIUM (observability correctness)
+- **Symptom (risk):** a throwing emitter after a committed release could be reported as `reservation_pre_reconcile_failed`, stop later notifications, or abort the send.
+- **Evidence:** remediation `[VERIFIED]` in `sales.service.ts`, the Pilot doc contract and a regression test. The pre-fix defect is `[UNVERIFIED]`: B2 landed as one commit.
+- **Detection source:** unverified.
+- **Fix:** a per-release `try/catch` in `sales.service.ts` logs `reservation_pre_reconcile_notify_failed`. Nothing is rolled back, nothing goes into `failed[]`, and the send continues.
+- **Regression test:** "isolates a throwing realtime emit: later notifications still go out and the send proceeds"; sweeper "keeps sweeping when a realtime notification throws".
+- **Prevention:** RULE-006 · **Status:** CLOSED · **Commit:** `e7b6cc7`.
+
+### F-006 — LOCATION-scoped ADMIN could manage any user company-wide (GC2) `[VERIFIED]`
+
+- **Block:** Phase 1 global closeout · **Severity:** HIGH (authorization)
+- **Symptom:** a transitional LOCATION-scoped ADMIN passed the global `USER_MANAGE` gate.
+- **Evidence:** `[VERIFIED]` — `25832de` diff and its commit comment in `permissions.ts`.
+- **Detection source:** exact detector/reviewer unverified; defect and remediation verified from git.
+- **Root cause:** `USER_MANAGE` has no location dimension but was not in the COMPANY-required set.
+- **Fix:** added `USER_MANAGE` to `COMPANY_SCOPE_REQUIRED_FOR_ADMIN` (commit comment in `permissions.ts`).
+- **Regression tests:** `rbac/privilege-escalation.test.ts`, `backoffice/scope-assignment.test.ts`, `backoffice/backoffice.test.ts`.
+- **Prevention:** RULE-004 · **Status:** CLOSED · **Commit:** `25832de53a4945f7219a69831bc88e6918270f41`.
+
+### F-007 — Public roles projected from legacy UserBranchRole `[VERIFIED]`
+
+- **Block:** D1 · **Severity:** MEDIUM (authorization presentation / UX correctness)
+- **Symptom:** a canonical Production user with zero `UserBranchRole` rows did not publicly project their real role (test comment in `auth/user-context-dto.test.ts`).
+- **Evidence:** `[VERIFIED]` — `ca45475` diff and D1 test comments.
+- **Detection source:** exact detector/reviewer unverified; defect and remediation verified from git.
+- **Root cause:** the public DTO derived roles from the legacy-inclusive internal `roles` union.
+- **Fix:** public roles are projected only from Production `assignments`.
+- **Regression tests:** `auth/user-context-dto.test.ts`, `auth/me.test.ts`, `auth/login-scope-switch.test.ts`, `client/src/app/page.test.tsx`.
+- **Prevention:** RULE-004, RULE-010 · **Status:** CLOSED · **Commit:** `ca4547569bb3a4b3778a9b6b3ed2c94d8472c52d`.
+
+### F-008 — Full suite appeared hung (remote TEST latency) `[VERIFIED]`
+
+- **Block:** Phase 0 / 1C · **Severity:** LOW (infrastructure trap, recurring)
+- **Symptom:** a full `vitest run` showed no output for many minutes.
+- **Root cause:** hosted TEST at ~100 ms/round-trip, sequential fixture awaits, and `fileParallelism: false`. The suite was slow, not stuck.
+- **Evidence:** `[VERIFIED]` — `f10cffe`, `docs/working/production-v1-status-and-next-steps.md` §11, `CLAUDE.md` testing policy.
+- **Fix:** `f10cffe` (config + `docs/testing/strategy.md`); use `--reporter=verbose`.
+- **Prevention:** RULE-011 · **Status:** MITIGATED (DEBT-015 performance).
+
+### F-009 — Intermittent safety/isolation-check timeout during focused test runs `[OPERATIONAL OBSERVATION — NOT REPOSITORY-VERIFIED]`
+
+- **Evidence strength:** prior development-session observations only. No repository artifact (commit, test, doc) records it. Do not treat it as repository-verified.
+- **Block:** observed during P0.1 development (session date 2026-09-23) · **Severity:** LOW (infrastructure, not application)
+- **Observation:** the existing read-only database safety/isolation check has intermittently timed out during focused test runs, and retries subsequently passed.
+- **Verified context:** `api/tests/setup.ts` runs `assertTestDatabaseIsolation()` before every test file, and `docs/testing/strategy.md` states that the setup connects read-only to both targets and aborts if it cannot prove distinct identities. A timeout there therefore fails closed before any test runs.
+- **Mitigation:** retry; probe reachability before blaming a change; never run two vitest processes at once.
+- **Prevention:** RULE-011 · **Status:** OPEN (infrastructure).
+
+### F-010 — First payment accepted on an expired zero-payment hold `[VERIFIED]`
+
+- **Block:** P0.1-C · **Severity:** HIGH (stock integrity: an expired hold became payment-protected and outlived its TTL)
+- **Evidence:** `[VERIFIED]` — the pre-P0.1-C `payments.service.ts` (at `4eb8101`) checked only `status = ACTIVE`, never `expiresAt`. RED test observed.
+- **Detection source:** Blueprint §10.2 gap analysis and the P0.1-C RED run.
+- **Symptom:** if no pre-send or sweeper release had touched the sale, a cashier could take the first payment after the TTL. Under Policy A that payment then protected the stale hold indefinitely.
+- **Root cause:** payment validated reservation *status*, not *current validity*. Expiry had meaning only for the release paths.
+- **Fix:** `FIRST_PAYMENT` policy (`expiresAt > now`, own clock) → `RESERVATION_EXPIRED`, with no side effects.
+- **Regression tests:** `paid-transition` "rejects a first payment on an expired zero-payment hold …"; `hold-coverage` boundary tests.
+- **Prevention:** RULE-013, RULE-015 · **Status:** FIXED (`421b584`, audited) · **Files:** `payments.service.ts`, `hold-coverage.ts`.
+
+### F-011 — Historical reservation rows treated as current coverage (payment and completion) `[VERIFIED]`
+
+- **Block:** P0.1-C · **Severity:** MEDIUM (false rejection; correctly covered sales could not be paid or completed)
+- **Evidence:** `[VERIFIED]` — at `4eb8101`, payment rejected on *any* non-ACTIVE row, and completion locked all rows and threw on any non-ACTIVE row. RED tests observed for both.
+- **Symptom:** a `RELEASED` or `CONSUMED` row next to correct ACTIVE coverage blocked payment and completion.
+- **Root cause:** the code reasoned over *all* reservation rows of the sale instead of the current ACTIVE set.
+- **Fix:** both paths read ACTIVE rows only and use the shared evaluator. Completion consumes exactly the locked ACTIVE ids.
+- **Regression tests:** `paid-transition` "ignores a historical RELEASED row …"; `complete-sale` "ignores a historical RELEASED/CONSUMED row … and never re-consumes it".
+- **Prevention:** RULE-009 (extended), RULE-014 · **Status:** FIXED (`421b584`) · **Files:** `payments.service.ts`, `sales.service.ts`.
+
+### F-012 — PAID sale disappeared from the cashier queue `[VERIFIED]`
+
+- **Block:** P0.1-C · **Severity:** MEDIUM (operational: a paid sale could be left uncompleted with its stock reserved)
+- **Evidence:** `[VERIFIED]` — at `4eb8101`, `listPendingSales` filtered `status: 'PENDING_PAYMENT'`. The client re-selects only rows present in the refreshed queue. RED test observed.
+- **Symptom:** after the final payment, the queue refresh dropped the sale. If it was the last row, the cashier lost the completion action.
+- **Root cause:** the queue was modelled as "awaiting payment", not as the cashier's work (payment + completion).
+- **Fix:** the queue includes `PAID`, with `status`/`holdState`/`canAcceptPayment`.
+- **Regression tests:** `pending-queue` inclusion, hold-state and live-scope cases; client `cashier-queue.test.tsx` "keeps the sale selected and completable …".
+- **Prevention:** RULE-016 · **Status:** FIXED (`421b584`).
+
+### F-013 — Realtime failure turned a committed payment into HTTP 500 `[VERIFIED]`
+
+- **Block:** P0.1-C · **Severity:** MEDIUM (financial ambiguity at the counter)
+- **Evidence:** `[VERIFIED]` — `payments.controller.ts` at `4eb8101` called `realtime.emit` unguarded after commit. Express 5.2.1 routes the rejection to `errorHandler`. The RED test got `500` for a persisted payment.
+- **Symptom:** the cashier sees an error for money actually taken and may charge the customer again. A different-key retry is rejected (sale PAID); a same-key retry replays safely.
+- **Root cause:** the B2 realtime-isolation rule (RULE-006) had not been applied to the payment controller.
+- **Fix:** `try/catch` around the emit; `payment_notify_failed` warn log with a safe code; the response stays `201`.
+- **Regression test:** `paid-transition` "keeps a committed final payment successful when the sale.paid notification throws".
+- **Prevention:** RULE-006 (extended) · **Status:** FIXED (`421b584`). Other post-commit emits (send-to-cashier, complete, cancel, manual release) still have the pattern: DEBT-018.
+
+### F-014 — Cancellation authority was broader than the lifecycle rules `[VERIFIED]`
+
+- **Block:** P0.2-B · **Severity:** MEDIUM (authorization / traceability)
+- **Evidence:** `[VERIFIED]` — `cancellation.service.ts` at `289c545` gated `/cancel` on `SALE_CREATE` at the sale's location only: any seller there could cancel **another seller's DRAFT** and any zero-payment **PENDING_PAYMENT** sale, with no reason recorded. It also decided payment protection by the payment **sum** (`> 0`), not by row existence. The P0.2-B RED run reproduced the missing ownership and permission checks.
+- **Root cause:** the Demo V2 cancel path was switched to Production permissions (1D.3.1) without lifecycle-specific authority; P0.1 hardened reservations but not who may cancel.
+- **Fix:** status-dependent authority under the Sale lock (seller-own DRAFT; `SALE_CANCEL_PENDING` for pending), payment-row existence, structured reason in the audit.
+- **Regression tests:** `controlled-cancellation` (DRAFT ownership, SELLER/WAREHOUSE refusals, revocation, reasons, payment protection, races).
+- **Prevention:** RULE-018 · **Status:** FIXED (`e3ce087`; pushed).
+
+### F-015 — Sales list and queue filtered by locations from another assignment `[VERIFIED]`
+
+- **Block:** D5I-B1/B1C · **Severity:** MEDIUM (authorization: cross-assignment composition)
+- **Evidence:** `[VERIFIED]` — before `8a11585`, `GET /sales/pending` and `GET /sales` passed raw `effectiveLocationIds` to the queries while the route gate (`SALE_QUEUE_VIEW` / `SALE_VIEW`) was global. A user with `SELLER@A` plus `WAREHOUSE@B` could therefore see own DRAFTs at B in the list although `GET /sales/:saleId` refused them (`assertPermissionAtLocation(SALE_VIEW, B)`). RED tests reproduced the leak (6 failures in the list matrix). The independent review that found the second endpoint is `[OWNER-REPORTED]` (no repository record).
+- **Root cause:** permission came from one assignment and the location filter from the union of all assignments (RULE-004).
+- **Fix:** both controllers use `authorizedLocationIds(auth, permission)`; no service signature or route permission changed.
+- **Regression tests:** `tests/sales/pending-queue-authorization.test.ts`, `tests/sales/sales-list-authorization.test.ts` (DB-free; the real router/controller/policy chain with a stub Prisma `findMany`).
+- **Prevention:** RULE-004, RULE-020 · **Status:** FIXED (`8a11585`).
+
+### F-016 — Scope backfill exceeded Prisma's 5 s interactive-transaction default `[VERIFIED]`
+
+- **Block:** D5F-C2 · **Severity:** MEDIUM (maintenance path; availability)
+- **Evidence:** `[VERIFIED]` — the source comment in `scope-backfill.service.ts` records P2028 at about 5.7 s for N=8 (D5B3) under the 5000 ms default, and 2·N sequential hosted round trips from a per-row `findFirst` + `create` loop.
+- **Root cause:** per-row sequential queries inside one interactive transaction over a variable-size set.
+- **Fix:** `findMany`, then at most one `createMany` (fail-closed on the returned count); an explicit longer timeout is defence in depth only.
+- **Regression tests:** `tests/rbac/scope-backfill-batching.test.ts`.
+- **Prevention:** RULE-021 · **Status:** FIXED (`eab79a6`). The same STRUCTURAL class is under review for request paths in D5I-B2A (§16); not proven there.
+
+### F-017 — `removeItem` did not take the Sale row lock `[VERIFIED]`
+
+- **Block:** pre-PILOT fix · **Severity:** MEDIUM (concurrency)
+- **Evidence:** `[VERIFIED]` — per the `18e2643` message and diff, `removeItem` deleted a line without `lockDraft`, so it did not queue behind send-to-cashier, `updateItem`, price-mode or wholesale changes.
+- **Fix:** `lockDraft(tx, saleId)` before the delete, then a re-read under the lock; a removal after a transition fails `SALE_NOT_DRAFT`.
+- **Regression tests:** `tests/sales/remove-item-concurrency.behavior.test.ts` (DB-free contract) and the opt-in `remove-item-concurrency.local-test.test.ts` (real PostgreSQL; its run result is not recorded in the repository).
+- **Status:** FIXED (`18e2643`).
+
+### F-018 — Restore deadlock during D5G: historical root cause attributed and RESOLVED under owner K1 interpretation `[OPERATIONAL OBSERVATION]`
+
+- **Block:** D5G · **Severity:** unknown
+- **Evidence provenance (neither class is tracked in Git or repository-verified):** (1) preserved owner-local operational artifacts outside the repository (directory `~/.local/share/mona-jacinta/runs/d5g-focused-001/`; `restore-2.log` sha256 `04bed4e068651fe594f57f5f65746008d8b67fb87ad22a2c89aa54c079aee23a`; inspected read-only, secret-screened, never executed; the preserved evidence includes the following files, this list is NOT claimed to be the exhaustive contents of the directory: `restore-2.log`, `restore-2b.log`, `post-restore-2.json`, `post-restore-2b.json`, `auth-prod.log` and `adversarial-plan.md`); and (2) later external operational PostgreSQL logs from the hosted TEST project, retrieved through an authenticated read-only Supabase logs surface after checkpoint `ceaaa1e` and supplied to a review (not database-query results and not fetched by the documentation edit that records them). The owner's earlier statement that a restore hit a deadlock, an automatic retry was not authorized and the recovered run is not recorded as a PASS remains `[OWNER-REPORTED]`. The preserved-local evidence alone could not identify the competing backend; the external logs did.
+- **Level 1 — deadlock event: PROVEN.** Local artifact: `restore-2.log` records `phase=restore`, `pg_restore exited with code 1` and PostgreSQL's `deadlock detected`. `LOCAL_ARTIFACT_SQLSTATE` = NOT_PRESERVED (the local log does not contain a code). `EXTERNAL_LOG_SQLSTATE` = `40P01` PROVEN, observed in the external PostgreSQL deadlock log row at 2026-10-09 16:18:33.931 UTC. The two are kept separate: the local log is not claimed to contain `40P01`.
+- **Level 2 — wait/block cycle: PROVEN.** PID 212607 waited for `AccessExclusiveLock` on relation OID 17297; the recorded blocker was PID 212620. PID 212620 waited for `AccessShareLock` on relation OID 2940129; the recorded blocker was PID 212607. Both blocker identities are PROVEN (stated by PostgreSQL as the process holding the lock). The exact lock MODE each blocker held is NOT PROVEN (the logs name the holder, not the held mode). The failing command reported with the error is `DROP TRIGGER IF EXISTS trg_sale_wholesale_frozen_after_payment ON public."Sale";` (PROVEN as the reported DDL).
+- **Identification:** PID 212607 = the restore session: PROVEN (session `6ac913cd.33e7f`, application `Supavisor`, user `postgres`; the same PID/session executes the restore DDL sequence and the exact failing statement, and the local `restore-2.log` carries the same statement, PIDs and OIDs; the `Supavisor` label alone is not the proof). PID 212620 = a Supabase Management API advisor-lints session: PROVEN (session `6ac913d5.33e8c`, session start 2026-10-09 16:18:29 UTC, application `mgmt-api`, backend type `client backend`, user `supabase_admin`; its logged query carries the advisor-lints markers `-- source: api` / `-- user: 'advisor lints'` and is bound to the same PID/session in the log rows). Contender workload: PROVEN at workload level. The exact sub-statement inside that workload that held the conflicting lock: UNRESOLVED.
+- **OID limits:** OID 17297 is UNMAPPED (`public."Sale"` is plausible by mechanism/context only, not a proven OID mapping). OID 2940129 is UNMAPPED / UNRESOLVED. No names were derived from query proximity.
+- **Level 3 — historical root cause: RESOLVED UNDER THE CURRENT POLICY BY OWNER K1 INTERPRETATION (decision dated 2026-10-10).** Resolved level: restore actor/session + competing management-API advisor-lints actor/session and workload + the two-way blocking cycle, with `40P01` externally observed. Safe causal statement: the D5G restore deadlocked in a two-session cycle between its restore session (PID 212607) and a Supabase Management API advisor-lints session (PID 212620). PID 212607 waited for AccessExclusiveLock on relation OID 17297, whose recorded blocker was PID 212620. PID 212620 waited for AccessShareLock on relation OID 2940129, whose recorded blocker was PID 212607. PostgreSQL reported SQLSTATE 40P01 in the external log. The two-session concurrency and the deadlock mechanism are proven; counterfactual necessity (that the deadlock would not have occurred otherwise) is not claimed, and nothing here says Supabase, advisor lints in general or `pg_restore` is defective.
+- **Owner K1 decision (owner interpretation of the existing planning policy):** the proven actor + workload + blocker-cycle explanation satisfies the existing requirement to "resolve the root cause". This is an interpretation of the existing policy; it is NOT a policy change, waiver, risk acceptance, retry authorization, recurrence-prevention proof, automatic authorization to run D5H, or a retroactive D5G PASS.
+- **Forensic residuals (recorded; they do not reopen F-018 and are not gate blockers under K1):** the exact advisor-lints sub-statement that held the conflicting lock; the catalog names of OIDs 17297 and 2940129; the exact lock modes held by each blocker; who or what initiated the advisor run and whether it recurs on a schedule.
+- **Restore version:** `INCIDENT_RESTORE_CONTRACT` = STRONGLY_EVIDENCED as the current (generation-2) restore behavior (preserved output wording, artifact date 2026-10-09 and an unchanged `restore.mjs` blob since `8a95f0d`). `INCIDENT_GIT_HEAD` = CONTEMPORANEOUSLY_REPORTED: the preserved `adversarial-plan.md` states HEAD `eab79a6`; there is no cryptographic binding from the executed bytes to that commit. The second restore (`restore-2b.log`) succeeded (counts and migrate status verified, no deadlock) on a dump that is not shown to be the same as the first attempt's; it remains a protocol deviation and its success does not diagnose the first deadlock.
+- **Status:** RESOLVED (historical root-cause attribution only). The F-018-specific blocker on the final full-suite gate is cleared under the existing policy. This does NOT authorize the full suite: the D5H full-suite gate still requires its own explicit owner authorization and all applicable DB-safety, backup and gate prerequisites. The recovered D5G run remains NOT recorded as a PASS. No recurrence hardening is claimed (no quiescence or maintenance-window guard, no protection against concurrent management/advisor workloads, no richer lock diagnostics; no retry or timeout policy exists); automatic retry remains unauthorized; no new registry item was created.
+
+### F-019 — Development tooling could overstate safety/evidence when containment, report validation or artifact provenance was incomplete `[VERIFIED remediation · OWNER-REPORTED detection]`
+
+- **Block:** development-tooling pause (P0A–P0R) · **Severity:** HIGH for the tooling's own safety claims (highest demonstrated effect: a review showed that host filesystem Unix sockets were reachable from a network-namespace-only sandbox). No database contact and no product runtime effect occurred or is claimed.
+- **Evidence:** the fix and its regression tests are `[VERIFIED]` in git at `05b3055` (`scripts/dev/*`). That each class was found by independent review is `[OWNER-REPORTED]`; no review output is in the repository, so reviewer attribution is not claimed.
+- **Observed classes (not one entry per iteration):** (1) a network namespace was treated as isolating filesystem AF_UNIX sockets; (2) malformed or contradictory reporter output — duplicate file entries, unknown statuses, inconsistent counters, a missing report — could become PASS or an ordinary FAIL, including when a numeric non-zero Vitest exit was interpreted before the evidence was validated; (3) suite counters were tied to the file-result count, so a valid report with nested `describe` suites would be rejected; (4) the test harness reported a repo-local TypeScript while symlink layouts made it trust or execute files outside the authorized package, and Gate A first skipped its AST tests for lack of a resolver; (5) malformed or mis-attributed porcelain-v2 records (rename/copy) were accepted by the scope guard.
+- **Root cause:** a safety or evidence claim was derived from a single control, a lexical path or an early outcome instead of the canonical artifact actually consumed and fully validated evidence.
+- **Fix:** mount namespace with private propagation and runtime-directory masking plus separate, honest guarantee fields; an explicit decision pipeline (execution established → evidence usable → outcome classified); nested-suite-aware counter validation with exact file cardinality; harness provenance that canonicalizes and boundary-checks every consumed file before it is read or loaded; a grammar-validating porcelain parser with git XY semantics.
+- **Regression tests:** `scripts/dev/safe-nodb-run.test.mjs` and `scripts/dev/repo-scope-guard.test.mjs` at `05b3055` (Gate A 251/251 `[OWNER-REPORTED]`).
+- **Prevention:** RULE-022 · **Residual (NOT fixed, tracked separately):** arbitrary filesystem AF_UNIX sockets outside the masked runtime directories are `NOT_GUARANTEED` (DEBT-031).
+- **Status:** CLOSED (class) at `05b3055`; the residual limitation stays OPEN as DEBT-031.
+
+### F-020 — External agent/MCP capabilities were trusted on unpinned sources and command-text rules without verifying the effective boundary `[OWNER-REPORTED]`
+
+- **Block:** user-level AI/dev tooling phase (A7 → A8.1) · **Severity:** HIGH for the tooling's own safety posture before hardening. No database contact and no product runtime effect occurred or is claimed.
+- **Evidence:** `[OWNER-REPORTED]` only; the repository holds no artifact. Two observed classes: (1) the Serena MCP plugin ran from a floating, unpinned source with an unrestricted shell/write/memory surface and a dashboard; (2) the Codex execution policy relied on standing "allow" rules written as exact command literals, so a safety conclusion was drawn from command text alone.
+- **Root cause:** an external agent/MCP capability was trusted because it was installed and its rules looked restrictive, instead of being pinned, reduced to least privilege, and checked against the effective sandbox/approval boundary that actually decides the unmatched case.
+- **Fix `[OWNER-REPORTED]`:** the old Serena plugin was disabled and replaced by the pinned read-only `serena-ro` (7 tools); the Codex policy was replaced by a reviewed zero-allow policy (hash recorded in §16); A8.1 verified the class-level unmatched-command fallback instead of enumerating paths.
+- **Prevention:** RULE-023, RULE-024 · **Residual (NOT fixed, tracked separately):** DEBT-032, DEBT-033, DEBT-034.
+- **Status:** CLOSED (class) `[OWNER-REPORTED]`; the residual limitations stay OPEN.
+
+### Review-history candidates not registered as failures
+
+"Interactive pre-send inherited the 100-Sale batch" and "batch starvation"
+were named as possible entries. The first is reflected only in the final
+design (`PRE_SEND_RECONCILE_LIMIT = 10`, and the Pilot doc: "a separate
+limit"). No intermediate commit shows the defect, so it is recorded as
+RULE-008 and not as a failure. Starvation is an acknowledged limitation
+(DEBT-003), not an observed failure. The PAID cashier-queue gap later became
+F-012 when P0.1-C reproduced it in a RED test.
+
+---
+
+## 18. Prevention Rules / Engineering Lessons
+
+| ID | Rule | Why | Enforced by | Related |
+| --- | --- | --- | --- | --- |
+| RULE-001 | Final stock authority is the **locked raw** `physical − reserved >= qty` check. Effective/expiry-aware values are advisory. | Reads can be stale, and maintenance can fail | `reserveInTransaction`; test "keeps the authoritative reserve transaction on raw physical - reserved" | F-001 |
+| RULE-002 | Automatic maintenance owns its production clock. No caller-supplied `now` on automated entries. | A smuggled clock releases live holds | Signatures of `releaseExpiredHoldsAsSystem`/`reconcileBeforeSend`; clock test | F-003 |
+| RULE-003 | Automatic writers default **OFF** and need an explicit opt-in (`=== 'true'`). They start only from the server runtime, never `createApp()`. | Tests and deployments must not mutate data implicitly | `env.ts`, `server.ts`, sweeper static wiring tests | — |
+| RULE-004 | Authorization goes through the centralized policy (`hasPermission`/`hasPermissionAtLocation`) with permission and location from the **same assignment**. `effectiveLocationIds` is never authority. | Cross-assignment unions leak authority | `authorization-policy.ts`; escalation + scope tests | F-002, F-006, F-007, F-015 |
+| RULE-005 | Maintenance isolates units and degrades conservatively. One Sale per transaction, failures logged with safe codes, and the business path continues to its authoritative check. | One bad row must not block every release, and failures must never oversell | `reconcile`, `reconcileBeforeSend` | F-004 |
+| RULE-006 | Realtime failure never changes, retries or rolls back committed DB state, **and never changes the HTTP result of a committed operation**. It is logged separately from DB failures. | PostgreSQL is the source of truth, and realtime is advisory | Per-release `try/catch` in `sales.service.ts`, the sweeper, `payments.controller.ts` | F-005, F-013 |
+| RULE-007 | Candidate discovery scope and Sale-level release scope are distinct: discovery may be narrow, but release is always the whole Sale's expired set. | Prevents half-released Sales and keeps one audit per Sale | B2 test "releases a nominated candidate Sale atomically…" | F-004 |
+| RULE-008 | Interactive maintenance needs a stricter latency bound than background work (10 vs 100). | Counter wait time | `PRE_SEND_RECONCILE_LIMIT`; cap test | — |
+| RULE-009 | Historical rows (`RELEASED`, `CONSUMED`, or ACTIVE on non-pending sales) never count as current releasable coverage. | Conservative availability | `releasableExpiredHoldWhere`; A tests | F-001 |
+| RULE-010 | Frozen requirements are not rewritten to match transitional code. Record the gap instead. | Keeps the target stable | `AGENTS.md`, `CLAUDE.md`, §0.6 | — |
+| RULE-011 | Treat test-infrastructure latency or timeouts as infrastructure first: use a verbose reporter, probe reachability, retry, and run only one vitest process. | Avoids false root causes | `CLAUDE.md` testing policy, §12 | F-008, F-009 |
+| RULE-013 | A payment that creates financial protection (the first payment) must validate that the stock protection it inherits is still current (`expiresAt > now`), using its own clock. | Otherwise a stale hold becomes permanent | `FIRST_PAYMENT` policy; `paid-transition` | F-010 |
+| RULE-014 | Current coverage is always the ACTIVE set compared exactly with the current items. History (RELEASED/CONSUMED) is neither coverage nor a blocker, and is never consumed again. | Historical rows coexist legitimately | `hold-coverage.ts`; payment + completion tests | F-011 |
+| RULE-015 | Expiry policy is explicit per lifecycle step (first payment / payment-protected / paid completion), never a bare boolean. Only B1/B2/cancel release holds; other paths only detect. | One release authority; no hidden semantics | `HoldExpiryPolicy`; "never writes a release … from the payment path" | F-010 |
+| RULE-016 | A work queue shows every state that still needs an action from its user (for the cashier: PENDING_PAYMENT **and** PAID), with a fail-closed state for corrupt rows. | Work must not vanish between steps | `listPendingSales`; queue + client tests | F-012 |
+| RULE-017 | Tests that assert an ordered list of DB rows must request an explicit `ORDER BY`. PostgreSQL row order is unspecified, and updates can change it. | Order-dependent assertions flake nondeterministically | `complete-sale` two-variant test (`orderBy: { variantId: 'asc' }`) | — (P0.1-C final run) |
+| RULE-018 | A lifecycle mutation's authority depends on the **persisted** state read under the Sale lock (DRAFT = owning seller; PENDING_PAYMENT = the dedicated pending permission), and payment protection is decided by `SalePayment` **row existence**, never the sum. A coarse route gate never replaces the per-location, same-assignment service check. | Prevents one generic permission from authorizing every lifecycle step | `cancelSale`, `correctPendingSale`, `requireAnyPermission` comment | F-014 |
+| RULE-019 | Direct database bootstrap/backfill execution requires a proven target classification; prefer the fail-closed TEST harness (focused Vitest) for implementation validation. `[OPERATIONAL OBSERVATION]` During P0.2 the safety hook blocked a composite command whose text named the catalog bootstrap script; it was not retried. | Avoids mutating an unproven (DEV/DEMO) database | `.claude/hooks`; CLAUDE.md DB rules | — |
+| RULE-012 | Privileged technical identities (the system actor) are inactive and scope-less, created only by explicit bootstrap, and fail closed when tampered. They are never repaired automatically. | Audit attribution without granting authority | `system-actor.service.ts`; system-actor tests | — |
+| RULE-020 | When a location-scope defect is found at one endpoint, sweep every use of `effectiveLocationIds` in the request path and fix the class: a list/queue filter must use `authorizedLocationIds(auth, <the route permission>)`. | A global route gate plus a union-derived filter composes permission from one assignment with locations from another | `sales.controller.ts`; the two D5I authorization test files | F-015 |
+| RULE-021 | Never loop sequential queries over a variable-size set inside a default-timeout interactive transaction: batch (`findMany` / `createMany`) or document an explicit bounded cost. An explicit timeout alone is defence in depth, not the fix. | Prisma defaults to a 5 s transaction timeout and each hosted round trip is slow | `scope-backfill.service.ts`; D5I-B2A review of the request paths (open) | F-016 |
+| RULE-022 | Safety and evidence tooling must validate the artifact or evidence it actually consumes, in canonical form, before deriving a positive or negative verdict: resolve and boundary-check every consumed file (no lexical-path provenance), validate reporter evidence completely before interpreting a process exit, never classify an outcome early, and report each guarantee separately (never one flag that over-claims). | Single controls, lexical paths and early exit-code shortcuts let tooling report PASS/LOCAL/ENFORCED while the real artifact or evidence was unvalidated or outside the boundary | `scripts/dev/safe-nodb-run.mjs` (evidence pipeline, guarantee fields), `scripts/dev/repo-scope-guard.mjs` (grammar validation), the harness provenance resolver in `safe-nodb-run.test.mjs`, and their tests | F-019 |
+| RULE-023 | External agent capabilities are trusted for Mona Jacinta work only after the following. (a) **Locally executed or fetched third-party code whose revision Mona can control** (a skill copy, a plugin, a locally launched MCP server) must be **pinned to a reviewed commit or version**; floating sources are not used. Concrete example: Serena is pinned to a reviewed commit. (b) Every capability must be reduced to **least privilege** (read-only where the job is read-only). (c) For a **remote service whose server implementation Mona cannot content-pin** (for example a remote documentation MCP such as Context7; its server code is NOT claimed to be pinned), verify instead: provider/server identity, the exposed tool surface, least privilege, the data boundary, and the authentication/approval model. (d) Generic instructions supplied by a remote service never override Mona-specific rules. | A floating or over-privileged capability can change under the project or act beyond its job; a remote service cannot be content-pinned, so its boundary is checked instead | Owner review of the user-level tooling (`[OWNER-REPORTED]`; not enforced by repository code) | F-020 |
+| RULE-024 | Never conclude that an agent command is safe from command-text rules alone. Also verify the effective sandbox, network and approval fallback that governs commands the rules do not match, and record which settings that conclusion depends on. | A rule file only classifies the commands it names; everything else is decided by the sandbox and approval policy | A8.1 fallback verification (`[OWNER-REPORTED]`); not enforced by repository code | F-020 |
+
+---
+
+## 19. Known Debt / Deferred Work
+
+| ID | Item | Why deferred | Risk | Target phase | Pilot blocker? | Status |
+| --- | --- | --- | --- | --- | --- | --- |
+| DEBT-001 | P0.1-C payment/completion hold rules (§10.2) | — | — | P0.1-C | Was YES | **CLOSED** — `421b584`, audited (OpenCode + Codex 0/0/0/0), P0.1 owner full suite green (55/55, 855/855) |
+| DEBT-002 | Cashier pending correction / pending cancel / permissions / UX | — | — | P0.2 | — | **IMPLEMENTED and pushed in P0.2** (`e3ce087`, audited; covered by the OWNER full suite at `113c57a`, 59/59, 1082/1082) — partially paid sales remain manual by design (Policy A) |
+| DEBT-003 | Sweeper batch starvation (id-ordered; permanently corrupt low-id Sales) | Pilot doc defers it | Healthy expired holds wait for pre-send or manual release | P0.5 | No | OPEN |
+| DEBT-004 | Log aggregation / rate limiting of repeated failure logs | Not in P0.1 scope | Log noise every tick | [UNVERIFIED — NEEDS CONFIRMATION] | No | OPEN |
+| DEBT-005 | Broader observability (metrics, alerting) | Not scoped | Silent degradation | 10C [UNVERIFIED — NEEDS CONFIRMATION] | [UNVERIFIED] | OPEN |
+| DEBT-006 | Backup automation / scheduling | `backup-restore-seed.md` §10: scheduling not implemented | Stale backups; latest local DEV/DEMO backup 2026-09-12; latest local TEST backup 2026-09-28 (manual, pre-suite) | 10C | [UNVERIFIED — NEEDS CONFIRMATION] | OPEN |
+| DEBT-007 | Pre-migration backup for D3 not evidenced locally | — | Recovery gap | — | [UNVERIFIED] | TO CONFIRM |
+| DEBT-008 | Session refresh absent. `env.JWT_ACCESS_TTL_SECONDS` is parsed and validated by the Zod env schema (`env.ts`), but `tokens.ts` never reads it (it imports `env` only for `JWT_SECRET`); it owns its own hardcoded 15-minute constant (`ACCESS_TOKEN_SECONDS`). The configured value and the actual token lifetime are therefore disconnected. | Not scoped | Users logged out mid-shift; config confusion | [UNVERIFIED — NEEDS CONFIRMATION] | [UNVERIFIED] | OPEN |
+| DEBT-009 | `createTestPrismaClient()` pool lifecycle; `pg` concurrent-query deprecation warning | Pre-existing (`CLAUDE.md`) | Test resource leaks; the warning ("removed in pg@9.0") becomes an error on a `pg@9` upgrade | — | No (warning appeared, non-failing, in the P0.1 owner full suite 55/55, 855/855) | **PARTIAL**: since A2 (`41ee882`) `createTestPrismaClient()` hands the adapter a pool configuration, so the adapter owns the pool and ends it on `$disconnect()`. The helper no longer creates a pool that callers cannot end. The `pg` concurrent-query warning is not verified as resolved and stays OPEN |
+| DEBT-010 | Socket.IO scope is a connection-time snapshot | Documented in 1D.5 | Revoked user keeps receiving room events until reconnect | 9C | No | OPEN |
+| DEBT-011 | `backoffice/users` legacy `UserBranchRole` presentation; deferred MANAGER rows retirement | Phase 1 closeout | Confusing admin view | 10D | No | OPEN |
+| DEBT-012 | Target `InventoryBalance`/`StockMovement`/`StockHold` migration | Roadmap order | Transitional counters | 3A–3E, 6B | No | OPEN |
+| DEBT-013 | Pricing tiers (CONSUMER_FINAL / WHOLESALE, cash discount) | Roadmap | Single price only | 2C | [UNVERIFIED] | OPEN |
+| DEBT-014 | Product-level barcode (currently unique per variant) | Roadmap | Label/scan model mismatch | 2B | [UNVERIFIED] | OPEN |
+| DEBT-015 | Test suite performance (~59 min at 310 tests; 7777.98s ≈ 2h10m at 855 tests for P0.1; 8461.73s ≈ 2h21m at 1082 tests at `113c57a`) | Correctness first | Slow gates | — | No | OPEN |
+| DEBT-016 | `AGENTS.md` "Checkpoint" section is stale (names D2 as current work) | This block was limited to adding a minimal pointer | Misleads agents | Next docs touch, with owner approval | No | **CLOSED**: `AGENTS.md` Checkpoint rewritten in place in the validated-checkpoint documentation commit (2026-09-28) |
+| DEBT-017 | [PILOT DECISION / TRANSITIONAL DIVERGENCE] Policy A vs frozen 07 §5.4 sellable formula (no payment exception) and frozen lazy on-touch release | Pilot keeps one conservative release authority | Target design must decide explicitly | 3C/6B | No | OPEN |
+| DEBT-018 | Other post-commit realtime emits (send-to-cashier, complete, cancel, manual release) can still turn a committed result into HTTP 500 if the emitter throws | Outside P0.1-C payment scope; same-key/replay retries are idempotent | Misleading error after commit | Next realtime/POS hardening block | [UNVERIFIED — NEEDS CONFIRMATION] | OPEN |
+| DEBT-020 | Stale-client guards (`expectedSaleUpdatedAt`, `expectedRemaining`) for correction/payment | Not approved by any repository document for P0.2 | A payment prepared against an older total is judged on the current sale (overpayment rejected; a now-partial payment is accepted) | Later block (owner decision) | No | OPEN |
+| DEBT-021 | Resolution of abandoned partially paid sales (refund/reversal model) | P0.2 keeps Policy A: no refund, no cancel after payment | Payment-protected holds can stay reserved indefinitely | Later block (owner decision) | No | OPEN |
+| DEBT-023 | OpenCode P0.2 LOW findings L-1…L-5 (Codex: safe to defer — accepted debt): zero-amount payment-row regression test; duplicate-legacy-SaleItem `CORRECTION_NOT_SUPPORTED` test; correction-vs-cancellation race test; `requireAnyPermission` must only be used with a service-level location-paired re-check (L-4); stale comment in `audit.test.ts` | Recorded after the OpenCode audit; not addressed yet by instruction | Test coverage / future misuse of a coarse gate; no current defect | P0.2 correction pass or later (owner decision) | No | OPEN |
+| DEBT-024 | OpenCode L-6 / Codex LOW #1: CASH "Recibido" default not reset after a same-sale correction | — | False received/change metadata on the next CASH payment | P0.2 Codex correction pass | No | **FIXED** (`e3ce087`) — tender re-derived from the refreshed server balance; client regression test |
+| DEBT-022 | Cashier UI cannot add a new variant during correction (API supports it) | Kept P0.2-C UX minimal; needs a product search in the cashier view | Replacing an item needs the seller or an API call | Later UX block | No | OPEN |
+| DEBT-025 | **TEST-H3**: deferred follow-up of the TEST hardening series (TEST-H1 in A2, TEST-H2/H2.1 in A3) | Outside the A1–D scope. The independent audit confirmed it is deferred. The label appears nowhere in current source or tests, and its exact scope is not recorded in the repository [UNVERIFIED — NEEDS CONFIRMATION] | Unknown until scoped | Later (owner decision) | No | **OPEN / DEFERRED**: not implemented |
+| DEBT-026 | `CLAUDE.md` is stale against A2: its "Known deferred technical debt" still describes `createTestPrismaClient()` pool ownership as unresolved (see DEBT-009), and its suite-duration example is still the `7d0c2b6` figure (310 tests) | `CLAUDE.md` was outside the authorized scope of the 2026-09-28 reconciliation (only `AGENTS.md` and this Blueprint) | Agents may re-open resolved work | Next authorized docs touch | No | OPEN |
+| DEBT-027 | ProductImage (optional primary image, FR-IMG-001..004) is not implemented; no `ProductImage` model exists | Frozen roadmap Phase 2D. Business intent: images are **optional**, and a Product must stay valid and usable without one | None for current flows | 2D | No | OPEN (by design). **Frozen-doc tension recorded, not resolved:** frozen `05-architecture.md` names Supabase Storage for product images, while `AGENTS.md` says no Supabase Storage is used; this must be decided before 2D |
+| DEBT-028 | `docs/development/database.md` §6 still describes the pre-TEST-H1 comparative isolation check (both `DATABASE_URL` and `TEST_DATABASE_URL`, live metadata comparison); since A2 the test harness proves TEST from its marker only and never reads `DATABASE_URL` | Pre-existing; outside the Task 4 F2 scope, which only added the LOCAL_TEST exception | Readers may believe the harness still contacts DEV | Next documentation pass | No | OPEN |
+| DEBT-019 | Expiry decisions use each API instance's wall clock (payment, B1/B2, queue) | Pre-existing design (B1) | Clock skew shifts the boundary between instances; all paths still serialize on the Sale lock, so no double outcome | Deployment hardening | No | OPEN |
+| DEBT-029 | LOCATION-only scope assignments can contribute an inactive location id to `effectiveLocationIds` (no active-location lookup), while COMPANY expansion uses active locations only. Observed during D5I-B1C: a `SELLER` assignment at an inactive location appeared in the filter. | Outside the D5I authorization-class fix; deliberately not investigated deeply | Not demonstrated as a security bug: the detail check (`hasPermissionAtLocation`) also qualifies that location, so list and detail agree | `DEFERRED_SEPARATE_FOLLOWUP` | No | OPEN |
+| DEBT-030 | Full-suite live-evidence tooling/protocol (D5H) is still required before the final gate: the earlier manifest/hash is stale after later commits and live gates are paused | Source changed after the D5H-A design `[OWNER-REPORTED]` | No full-suite evidence exists for the current HEAD | D5H on the final source HEAD | Pre-merge gate | OPEN (the D5H-I1a tooling slice `ad18815` and the D5H-I1b test-harness slice `830d595` were delivered, but D5H is not complete and no live gate has run) |
+| DEBT-031 | `safe-nodb-run` containment is deliberately layered, not total: TCP/DNS is `ENFORCED` (network namespace), runtime socket directories (`/run`, and `/var/run` when distinct) are `MASKED`, but **arbitrary filesystem AF_UNIX sockets elsewhere are `NOT_GUARANTEED`** (reported in every result). Also, a theoretical privileged concurrent file replacement between the test harness's provenance check and its module load is not defended (LOW). | Accepted defense-in-depth limitation; the screen and PG-default forcing reduce but do not remove the route; full socket confinement would need a different sandbox | Not demonstrated to reach a database; no evidence of a current DB route. The tool never proves database identity, which stays in the in-process DB safety code | Future tooling hardening, only if the tool is promoted beyond developer-side DB-free use | No | OPEN (accepted; F-019 residual) |
+| DEBT-032 | Codex fallback safety is conditional (F-020 residual, `[OWNER-REPORTED]`): (a) it holds only while Codex runs with the reviewed defaults — `danger-full-access`, bypassing approvals/sandbox, or approval policy `never` would invalidate it; (b) an unmatched sandboxed command may READ workspace files, including workspace secrets; network-off blocks the reviewed DIRECT network exfiltration route, but other local/IPC/exfiltration mechanisms were not exhaustively proven absent, so workspace-secret readability remains defense-in-depth debt; (c) `default.rules` does not enumerate every executable path, by design (known unmatched spellings include local-path dotenv launchers, `perl`/`ruby`/`php` and a `psql` at a non-standard path) | Accepted defense-in-depth limitation; the class-level sandbox/approval fallback is the primary boundary and path enumeration is not the remedy | Workspace secrets readable by a sandboxed unmatched command; the direct network route is blocked by default, other routes not exhaustively excluded | Only if the owner changes Codex defaults or wants stricter read confinement | No | OPEN (accepted) |
+| DEBT-033 | `[OWNER-REPORTED]` OpenCode and Codex skill discovery cannot be verified by any safe local mechanism (no read-only listing command; the alternatives would read protected configuration or make a model call). Claude discovery is verified. | Verification limit, not a failure | The three Addy skills may not be visible to OpenCode/Codex reviewers | Revisit if a safe discovery mechanism appears | No | OPEN |
+| DEBT-034 | `[OWNER-REPORTED]` Other services connected to the Claude account increase the potential data-egress surface. They were outside the tooling phase; no assertion is made that they are unsafe; none was changed. | Out of scope for A0–A8.1 | Protected/private data could be sent to a connected service by mistake | The Mona rules already prohibit this without authorization; the owner may review the connector list | No | OPEN |
+| DEBT-035 | D5H SalePayment guard count uses PostgreSQL `count(*)::int` (both the `post-migration-equivalent` and the `exact` probe in `d5h-preflight.mjs`). Above 2,147,483,647 matching rows PostgreSQL raises (SQLSTATE 22003) instead of producing `PRESENT`; the preflight fails closed with a safe code (`D5H-I1A-CODEX-F01`, LOW) | Non-blocking capacity/evidence limitation found in the Codex review of D5H-I1a; deliberately not fixed in the checkpoint | Capacity/evidence limitation only: it can never report a false `CLEAR` and does not bypass any live-authorization control | A later scoped change: bigint-safe count handling, or an existence probe plus a separate bounded detail count | No (not blocking for the D5H-I1a checkpoint) | OPEN / non-blocking |
+| DEBT-036 | D5H-I1b failure path evaluates `instanceof PhaseFailure` redundantly (Codex LOW L1) | Non-blocking review observation on `830d595`; not changed in the checkpoint | Code-clarity only; classification is non-throwing | A later scoped cleanup | No | OPEN / non-blocking |
+| DEBT-037 | D5H-I1b pin capture when `globalThis` is non-extensible, a condition that can arise in the transitive import chain (Codex LOW L2) | Non-blocking review observation on `830d595`; not changed in the checkpoint | Source: capture then falls back to the untrusted pin, which refuses every target (fail closed) | A later scoped review | No | OPEN / non-blocking |
+| DEBT-038 | D5H-I1b child-process tests propagate child assertion messages into the parent's failure output (Codex LOW L3) | Non-blocking review observation on `830d595`; not changed in the checkpoint | Failure-output hygiene; all values in this file are synthetic | A later scoped test cleanup | No | OPEN / non-blocking |
+| DEBT-039 | D5H-I1b accepts an otherwise valid pin whose `attemptId` equals its `markerId` (Codex LOW L4) | Distinctness is a policy question; **no owner decision has been made** | Identifier-semantics ambiguity only; the marker proof is unaffected | Owner policy decision, then a scoped change if required | No | OPEN / non-blocking — awaiting owner policy decision |
+| DEBT-040 | Legacy `scripts/database/backup.mjs --target=test` (preserved unchanged by D2): row counts taken on a separate, later connection instead of the dump snapshot (I1c preflight F2); `.env.development` read relative to the working directory (F3); `pg_dump`/`pg_restore` resolved from `PATH` (F6) | The owner kept the bootstrap path unchanged; the D5H path is a separate design (D1–D7) | A concurrent write between dump and counts yields a set that fails restore verification (fail closed); CWD-dependent config; binary substitution through `PATH` | Owner-scoped hardening of the legacy path, if ever wanted; D5H uses its own path | No | OPEN / non-blocking (legacy) |
+
+---
+
+## 20. Current Open Risks
+
+| Risk | Trigger | Impact | Existing mitigation | Next action |
+| --- | --- | --- | --- | --- |
+| ~~Payment accepted on an expired-but-unreleased hold~~ | — | — | **CLOSED in P0.1-C (`421b584`; F-010)**; owner full suite green | — |
+| ~~Paid sale disappears from the cashier queue~~ | — | — | **CLOSED in P0.1-C (`421b584`; F-012)**; owner full suite green | — |
+| Released/expired sale lingers in PENDING_PAYMENT | Expiry release or expired zero-payment hold | Queue clutter; shown as `EXPIRED`, not chargeable | Cashier cancellation with a reason (P0.2-B, pushed) | Later UX polish if needed |
+| Abandoned partial payment | Customer leaves after a partial payment | Hold stays protected indefinitely (Policy A); stock stays reserved | Visible as `PAYMENT_PROTECTED`; manual handling | P0.2 |
+| PAID sale with corrupt coverage | Manual data damage | Cannot complete (`INVALID_RESERVATION`); shown as `COVERAGE_INVALID` | Fail closed; audit trail | Manual/P0.2 |
+| ~~Uncommitted P0.1-C work~~ | — | — | **CLOSED** (`421b584`) | — |
+| ~~Unpushed local P0.1 checkpoints~~ | — | — | **CLOSED**: normal push `6aa8143..7b6fce8`, verified `0 0` | — |
+| ~~Unpushed local commits through Pricing V2/T4~~ | — | — | **CLOSED**: normal fast-forward push to `origin/feat/production-v1` at `9a3243f`; old dirty worktree durably preserved outside the repository | — |
+| Restore deadlock (F-018): historical root cause RESOLVED under owner K1 interpretation; recurrence not hardened | A restore during the D5G gate deadlocked with a concurrent Supabase Management API advisor-lints session (PID 212607 restore session vs PID 212620 `mgmt-api` / `supabase_admin`; external PostgreSQL logs, not tracked in Git, `[OPERATIONAL OBSERVATION]`; SQLSTATE `40P01` externally observed) | A concurrent management/advisor workload during a destructive restore or owner gate could deadlock again (no probability or severity established; no recurrence hardening is claimed) | Automatic retries remain unauthorized; the exact advisor sub-statement, OID names and held lock modes remain forensic limitations | Historical attribution satisfies the existing planning policy (owner K1 interpretation); the F-018-specific final-gate blocker is cleared. Future recurrence hardening is a separate follow-up, not a prerequisite created by K1. This does not authorize the full-suite gate |
+| Inactive location in `effectiveLocationIds` (DEBT-029) | LOCATION-only assignment at an inactive location | Possible stale scope entry; not shown to bypass any check | Detail and list use the same policy | Separate follow-up |
+| Request-path transaction risk (STRUCTURAL, not proven) | Large carts, or several concurrent sales transactions; formerly 5 s default and a pricing read on the outer pool handle inside transactions | A transaction abort returns HTTP 500 with a rollback and no partial data; possible pool pressure at `max: 5` | Rollback semantics; D5I-B2B1 (`3397ed3`, committed and pushed) makes pricing reads transaction-bound and sets `timeout: 15000` on the four target transactions (owner 2026-10-10); real-DB behavior still unproven | Real-DB validation in the owner gates (not run) |
+| No full-suite evidence at the current HEAD (DEBT-030) | Source changed after the last owner suites (`113c57a`, Task 4) and after the D5H-A design. **Still OPEN at the current repository state:** the last PRODUCT-source commit is `3397ed3` (D5I-B2B1; later commits may be documentation-only), on top of documentation commits `08fd70f` and `2cf1a93` and tooling `05b3055`. The 132/132 DB-free focused run is not a full suite. **No owner D5H full suite has run** for the current repository state; the tooling Gate A/B results (251/251; 37/37) are developer-tooling gates, **not** a product suite | A regression could be undetected by a full run | Focused DB-free evidence per block (§16) | Regenerate the D5H manifest/preflight on the final source HEAD; owner runs the gates |
+| D5H tooling incomplete; preflight never run against a database | Treating the D5H-I1a or D5H-I1b checkpoints as D5H completion or as live evidence | A live gate could be assumed ready when only the first two slices (I1a, I1b) exist; the catalog/guard SQL is validated against fakes and migration text only | I1a and I1b evidence is explicitly DB-free; I1c-a exists only as an implementation in two untracked, uncommitted files whose acceptance the independent Codex review BLOCKED (`[OWNER-REPORTED]`; not accepted, not approved for any live use); I1c-b is not authorized and not implemented; I2–I5 are pending with no implementation completion evidenced; the P-B2 storage architecture is PROPOSED, awaiting independent review and owner decisions O1–O8; D5H is NOT complete; no live operation is authorized; each live operation needs its own owner decision | Owner authorizes slices in order (I1c next); first live use is a separate owner decision |
+| No D5H recovery point exists; the only TEST backup is the legacy attestation-only path | Treating a `backup.mjs --target=test` set, or the approved D1–D7 design, as a D5H marker-proven durable recovery point | A backup of an unproven target, or an unverified copy, could be relied on before a destructive D5H step | D1–D7 approved as design only; legacy path documented as bootstrap-only (§11); no live D5H operation authorized | Independent P-B2 review and owner decisions O1–O8 (§23 rows 62–63), then an authorized I1c-a redesign (row 64), then I1c-b; live pooler/binary/restore validation separately |
+| Pilot or block status overstated | Treating a pilot transaction, a route, a page or a Prisma model as proof that a Block A/B capability or Production V1 is complete | Release on unverified capability | §1.5 maps every capability to §14 evidence or UNVERIFIED; C1 states the pilot is not completion evidence | Rows 44–61 produce evidence per gate |
+| Existing `SalePayment` rows would block the full suite after the Block 1 migration | Migration applied while payment rows exist (their `Sale.paymentStartedAt` stays NULL without backfill) | The suite's first `TRUNCATE` of `SalePayment` would be refused by the migration guard; the suite's `globalSetup` also deletes Location rows before that point, so the run must be blocked before spawn | D5H-I1a reports `salePaymentGuardRisk` (`CLEAR`/`PRESENT`) in both modes; it is a POST_MIGRATION_SUITE_BLOCKER, not a deploy blocker; no cleanup is selected | I3/I5 consume the evidence; any remediation is a separate, separately authorized operation |
+| Pilot merge and PILOT DB not done | — | The pilot store runs nothing from Production V1 yet | Separate authorization required | §23 rows 26–28 |
+| `safe-nodb-run` cannot guarantee isolation from arbitrary filesystem AF_UNIX sockets outside the masked runtime directories (DEBT-031) | A DB-free test run reaching a Unix socket located outside `/run` (and a distinct `/var/run`) | Defense-in-depth gap in developer tooling; **no evidence it can reach any database** | TCP/DNS enforced by the network namespace, runtime dirs masked, PG defaults forced to the isolated TCP namespace, AST screening, sanitized environment; the limitation is reported in every result (`NOT_GUARANTEED`) | Accepted; revisit only if the tool is promoted beyond developer-side DB-free use |
+| Codex unmatched-command fallback depends on reviewed defaults (DEBT-032, `[OWNER-REPORTED]`) | Codex launched with `danger-full-access`, bypassed approvals/sandbox or approval policy `never`; or a sandboxed unmatched command reading workspace secret files | Loss of the sandbox/approval boundary that stands in for explicit rules; secrets readable inside the sandbox | Zero allow rules; the reviewed/covered DB-client, Prisma `migrate`/`db` and dotenv-loader forms are forbidden and the reviewed/covered runner, interpreter, wrapper and shell-script forms prompt (additional unmatched spellings remain, DEBT-032); sandbox with network off by default | Keep the defaults; never run Codex with the bypass flags for Mona work without owner approval |
+| Extra connected services increase optional data-egress surface (DEBT-034, `[OWNER-REPORTED]`) | Protected or private data sent to a connected service by mistake | Disclosure | Mona rules prohibit sending protected/private data without authorization; Context7 limited to public documentation | Owner may review connectors; none was changed |
+| Sweeper enabled without a system actor | Env flag set before bootstrap | No releases; error logs each tick (fail closed, process stays up) | Fail-closed resolution | Bootstrap before enabling (§21) |
+| Wrong-target DB mutation | Operator error with multiple local env files | Data loss on DEV/DEMO | Identity proofs, dry-run/execute, `.claude/hooks`; TEST marker (A1/A2); PILOT marker + private URL file + plan digest (C/D) | Keep explicit approval discipline; PILOT tooling OWNER-only |
+
+---
+
+## 21. Environment / Deployment State
+
+- **Environments:** see §11. Credentials are never recorded.
+- **Deployment architecture:** the frozen target is Vercel for the frontends
+  and a long-lived container/VM for the API (`05-architecture.md` §3). The
+  repository has no deployment configuration, and the current deployment state
+  is [UNVERIFIED — NEEDS CONFIRMATION].
+- **Sweeper:** the implementation is at `e7b6cc7`. It is **disabled by
+  default**. **The B2 implementation and checkpoint do NOT mean the sweeper is
+  enabled in any deployment.** No environment is verified to have
+  `RESERVATION_SWEEPER_ENABLED=true`.
+- **System actor prerequisite:** run
+  `npx tsx scripts/bootstrap-system-actor.ts --target=<target> --dry-run`, then
+  `--execute`, from `api/` **before** enabling the sweeper. Without it, the
+  pre-send step and sweeper fail closed (no cleanup writes). Bootstrap state per
+  environment: [UNVERIFIED — NEEDS CONFIRMATION].
+- **Push/deploy status:** `origin/feat/production-v1` contained the D5I-B2B1 product checkpoint `3397ed3` at verification start (local
+  remote-tracking ref; `3397ed3` sits on top of the documentation/tooling commits
+  `08fd70f`, `2cf1a93` and `05b3055`; this closeout embeds no tip SHA of its own). This
+  includes P0.2, A1–D, Task 4, Block 1 wholesale, R4 LOCAL_TEST proof tooling,
+  Pricing V2, the pre-PILOT fixes and the D5 remediation series. It is NOT
+  merged into `pilot`. Nothing is deployed by this work.
+- **PILOT:** C/D add OWNER-only tooling only. No live PILOT marker install,
+  migrate, bootstrap or catalog bootstrap is recorded in the repository, and
+  none is claimed.
+
+---
+
+## 22. Audit Trail
+
+| Block | Reviewer | Verdict | Material findings | Resolution | Checkpoint |
+| --- | --- | --- | --- | --- | --- |
+| Phase 1C | OpenCode | Completed | Runtime fixes (Claude Code TDD) | Fixed before gate | `7d0c2b6` |
+| Phase 1C | Codex | 0 blockers | — | — | `7d0c2b6` |
+| P0.1-A | OpenCode | [UNVERIFIED — NEEDS CONFIRMATION] | — | — | `8e9699a` |
+| P0.1-A | Codex | [UNVERIFIED — NEEDS CONFIRMATION] | — | — | `8e9699a` |
+| P0.1-B1 | OpenCode | [UNVERIFIED — NEEDS CONFIRMATION] | Likely F-002/F-003 (unverified attribution) | Fixed in commit | `ab728be` |
+| P0.1-B1 | Codex | [UNVERIFIED — NEEDS CONFIRMATION] | — | — | `ab728be` |
+| P0.1-B2 | OpenCode | [UNVERIFIED — NEEDS CONFIRMATION] | Likely F-005 / RULE-008 (unverified attribution) | Fixed in commit | `e7b6cc7` |
+| P0.1-B2 | Codex | [UNVERIFIED — NEEDS CONFIRMATION] | — | — | `e7b6cc7` |
+| Living Blueprint | OpenCode | Approved for local checkpoint (per owner; 1 MEDIUM wording fix applied: DEBT-008) | DEBT-008 wording | Fixed before checkpoint | `4eb8101` |
+| P0.1-C | OpenCode | Reviewed; approved for Codex (per owner) | LOW: §16 focused-test per-file counts inconsistent (summed to 213 vs 211) | Resolved: counts re-derived from the completed run's JSON reporter output (211/211, exit 0) | `421b584` |
+| P0.1-C | Codex | Initial review: CHANGES REQUIRED (documentation only) — BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1. Narrow recheck: **APPROVED** — final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT` | LOW: §3 ledger still said "Pending OpenCode + Codex" | Corrected (§2, §3, §16, §22, §23); no runtime/test change required; recheck confirmed | `421b584` |
+| P0.2 (A, B, C) | Claude Code (implementer) | Implementation complete; aggregate focused gate GREEN 393/393; client 27/27, then 28/28 after the Codex fix | — | — | `e3ce087` |
+| P0.2 | OpenCode | **Complete** — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 6 LOW; `PILOT P0.2 APPROVED FOR CODEX REVIEW` | L-1…L-6 (§16 P0.2): 3 test gaps, 1 design note, 1 stale comment, 1 accepted UX debt | L-1…L-5 deferred as accepted debt (Codex; DEBT-023); L-6 fixed in the Codex correction pass (DEBT-024) | `e3ce087` |
+| P0.2 | Codex | Initial review: **CHANGES REQUIRED** — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 2 LOW. Narrow recheck: **APPROVED** — 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT` | LOW #1 stale CASH tender after same-sale correction; LOW #2 stale Blueprint §8/§10.3 | **Corrections applied** (client fix + regression test; Blueprint §8/§10.3); OpenCode L-1…L-5 deferred as accepted debt, L-6 fixed | `e3ce087` |
+| P0.1 aggregate | OWNER full suite (manual; not an agent) | **GREEN** — 55/55 files, 855/855 tests, 0 failed (start 15:07:14 local, 7777.98s) | None; known non-failing `pg` DeprecationWarning (DEBT-009) | — | `59e629f` |
+| A1 → A2 → A3 → C → D | OpenCode (independent, read-only; before the owner gate) | **`APPROVED FOR OWNER FULL SUITE`**: 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW. Reported gates: `node --test` hermetic 300/300; hermetic Vitest `test-db-guard` + `test-cleanup` 157/157; TypeScript clean; ESLint clean | None | — (TEST-H3 confirmed deferred: DEBT-025) | `113c57a` |
+| Validated checkpoint (includes P0.2) | OWNER full suite (manual; not an agent), after a TEST read-only preflight and a fresh TEST backup | **Vitest PASS**: 59/59 files, 1082/1082 tests, 8461.73s; zero failed files and zero failed tests in the final summary. **Wrapper `FULL_SUITE_EXIT`: NOT OBSERVED** (terminal closed after the final Vitest summary) | None | — | `113c57a` |
+| Task 4 | LOCAL_TEST owner gate | **PASS** — 65/65 files, 1652/1652 tests, exit 0 | — | — | `bbc24c6` / `f3e5779` / `c8f61c5` |
+| Task 4 | Hosted TEST owner suite under the owner's Approval 11 | **PASS** — 65/65 files, 1652/1652 tests, exit 0, 8458.58s; static gates after the suite PASS | Procedural deviation: pre-suite Section 9 and Section 10 **NOT RUN** | Classified `DOCUMENTED_PROCEDURAL_DEVIATION`; not reconstructed or recorded as passed | `bbc24c6` / `f3e5779` / `c8f61c5` |
+| Task 4 | Claude Code exact staging-scope audit (read-only) | 31/31 paths exact-set match; 30/30 adversarial cases matched; verdict ready for staging approval | F1 undeclared `@prisma/config` (LOW); F2 stale TEST-only policy text (MEDIUM) | F1: direct devDependency declared; F2: Boundary B documentation reconciliation | `bbc24c6` / `f3e5779` / `c8f61c5` |
+| D5I-B1 / B1C | Independent reviewer(s) `[OWNER-REPORTED; no repository record]` | The `GET /sales/pending` fix was approved; the review found the same defect class on `GET /sales`; after the class closure the final independent review approved | The second endpoint (F-015) | Fixed before the commit | `8a11585` |
+| D5I-B2B1 | Claude Code (implementer, strict TDD, DB-free) + OpenCode + Codex | Implemented; DB-free focused gate 132/132 (2 files); typecheck, lint, diff check exit 0. OpenCode: approved for Codex, 0 BLOCKER / 0 HIGH / 0 MEDIUM (LOW only). Codex initial: 0/0/0/2 LOW (D5I-F01 documentation contradiction, D5I-F02 X13 title overstatement; both corrected). Codex final checkpoint recheck: `D5I_B2B3_4_CODEX_APPROVED_FOR_CHECKPOINT`, 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW | Pre-existing `addItem` mixed-time snapshot recorded as a follow-up (§16); no real-DB run | D5I-F01, D5I-F02 corrected before the checkpoint | `3397ed3` |
+| D5I-B2A / B2A1 | Claude Code (read-only design and DB-free evidence) | Design complete as PROPOSALS; no independent review yet; owner timeout decision pending | None against the current code; structural risks recorded in §16/§20 | — | none (no commit) |
+| Development tooling (P0A–P0R) | OpenCode and Codex, iterative independent review `[OWNER-REPORTED; no repository record]` | Final Codex P0R: 0 BLOCKER / 0 HIGH / 0 MEDIUM | LOW only: a theoretical concurrent filesystem replacement between validation and load; no ordinary deterministic bypass found. Earlier iterations found the classes summarized in F-019 (reviewer attribution not repository-verified) | Earlier classes fixed before the commit (§16, F-019, RULE-022) | `05b3055` |
+| Development tooling | Gate A and Gate B in the Production V1 worktree `[OWNER-REPORTED / OPERATIONAL OBSERVATION; no repository artifact]` | Gate A `251/251` PASS, 0 skipped, repo-local TypeScript 5.9.3; Gate B `safe-nodb` verdict PASS, 37/37 on `api/tests/rbac/scope-backfill-batching.test.ts` | None | **Not a product or full API suite**; no database contact and no external network during the gates were reported | `05b3055` |
+| User-level AI/dev tooling phase (A7B1 → A8.1) | Claude Code, Codex-policy and Serena/Context7 verification sessions `[OWNER-REPORTED; no repository record]` | A7B1: 40/40 adversarial Codex policy cases matched; A8.1: SAFE_FALLBACK, 18/18 fallback cases and 14/14 regression cases matched; Serena `serena-ro` 7 tools verified in a fresh session; Context7 auth and public query verified; final A8 audit found no blocker | A8: Codex path/interpreter spellings that match no rule (literal gaps remain); skill discovery unverified for OpenCode/Codex; extra connectors noted | F-020 registered; residuals DEBT-032/033/034 (accepted); no DB contact reported | none (no git checkpoint; same `HEAD`) |
+| D5H-I1a | Claude Code (implementer, strict TDD, DB-free) | Implemented and verified at the checkpoint: 43/43 + 22/22 + 60/60 + 23/23 = 148/148 (exit 0); adversarial I1a 53 executed / 50 matched / 3 mismatched (one real defect fixed), I1a.1 20/20/0 plus 10 regression; mutation checks caught | One real defect found and fixed under test (a failure code derived from a secret; a throwing `code` getter skipping cleanup); a character-class bug caught by the parser tests | Fixed before the checkpoint; `deps:check` nonzero KNOWN PRE-EXISTING (not PASS) | `ad18815` |
+| D5H-I1a | Codex (final review; tests N/A — NOT RUN BY CODEX; database contact NONE) | `D5H_I1A_CODEX_APPROVED_FOR_CHECKPOINT` / `D5H_I1A_APPROVED_FOR_CHECKPOINT`; BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1; 42 independent read-only source checks, 42 MATCH, 0 MISMATCH, no new defect class | LOW `D5H-I1A-CODEX-F01`: `count(*)::int` capacity (fails closed; cannot report `CLEAR`) | Tracked as DEBT-035; not fixed in the checkpoint; non-blocking | `ad18815` |
+| D5H-I1b (incl. I1b.1) | Claude Code (implementer, strict TDD, DB-free, contained scratch harness) | Valid RED (8 failed / 395 passed / 1 skipped) → GREEN; adversarial 32 executed / 28 matched / 4 mismatched → classes C1 and C2 fixed under test with 12 further class cases; final focused 428 passed / 1 skipped, exit 0; `tsc` and scoped ESLint exit 0 | F01 and F02 (from the Codex I1b review) plus C1 and C2 (own adversarial pass) | Fixed before the checkpoint | `830d595` |
+| D5H-I1b (incl. I1b.1) | Codex (final review; database contact NONE) | `D5H_I1B1_CODEX_APPROVED`; BLOCKER 0, HIGH 0, MEDIUM 0, LOW 4; independently reproduced 428 passed / 1 skipped; historical RED counts not reproduced (structurally reconciled); 18 independent adversarial cases executed and matched, 2 not executed | LOW L1–L4 (non-blocking) | F01, F02, C1, C2 CLOSED; L1–L4 tracked as DEBT-036…DEBT-039, not fixed | `830d595` |
+| D5H-I1c (design) | Claude Code (read-only preflight at `40b1515`; no test, no tool, no database) and the owner | Preflight classification `D5H_I1C_PREFLIGHT_READY_FOR_OWNER_DECISION`; the owner approved D1–D7 (2026-10-11) | F1–F7 (§16) | Addressed in design by D1–D7; legacy properties tracked as DEBT-040; nothing implemented | — (design only) |
+| Cash withdrawals/expenses | Codex (worktree review and implementation continuation) | **DB-free/client evidence green; PostgreSQL verdict BLOCKED** | No reproducible backend replacement defect found. LOCAL_TEST selector, URL/marker configuration and PostgreSQL runtime are absent; API `tsconfig.check.json` also exposes unrelated R3 checkout-test errors already present in the shared worktree | Added only the minimal client UI/tests and this status record; preserved existing backend/migration/RBAC/tooling; no alternate database target used | none (uncommitted) |
+
+The owner states that P0.1-A, P0.1-B1 and P0.1-B2 were each independently
+audited (OpenCode and Codex) before their local checkpoints. The verdict
+details are not recorded in the repository, so the rows above stay
+unverified until the owner fills them in from the review records. Future
+blocks must record reviewer verdicts here at review time.
+
+---
+
+## 23. Next Work Queue
+
+| # | Block | Goal | Dependencies | Status | Exit condition |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Living Blueprint review | Finish review; local documentation checkpoint | — | **DONE** (`4eb8101`) | — |
+| 2 | **P0.1-C implementation** | Payment/completion/queue hold semantics (§9, §10) | P0.1-B2 | **DONE** | RED → focused GREEN; static gates; diff review; adversarial review |
+| 3 | OpenCode audit of P0.1-C | Independent transversal review | 2 | **DONE** — LOW test-count bookkeeping finding resolved (§16) | Findings resolved |
+| 4 | Codex audit of P0.1-C | Independent adversarial review | 3 | **DONE** — initial review (1 LOW documentation finding, corrected) + narrow recheck: final 0/0/0/0, APPROVED FOR LOCAL CHECKPOINT | Findings resolved; Codex approval recorded in §22 |
+| 5 | Local P0.1-C checkpoint | Exact-file commit | 4 | **DONE** (`421b584` + Blueprint record commit) | P0.1 aggregate (A + B1 + B2 + C) complete and audited |
+| 6 | **OWNER ONLY:** final P0.1 full-suite gate | Full suite over the whole P0.1 aggregate | 5 | **DONE — GREEN** (owner, manual): 55/55 files, 855/855 tests, 0 failed, 7777.98s; no separate `VITEST_EXIT` line captured | Owner records a green result here |
+| 7 | Push approved local P0.1 work | Push only if step 6 is green | 6 | **DONE** — normal push `6aa8143..7b6fce8`, verified `0 0` | origin = local HEAD; remote verified; Blueprint updated |
+| 8 | Later Pilot safety gates | **P0.2 — cashier correction / cancellation / payment UX: DONE and pushed.** OpenCode DONE (0/0/0/6 LOW); Codex DONE (narrow 0/0/0/0). OWNER full suite covered it at `113c57a` (row 9); P0.3/P0.4 (no repository source) [UNVERIFIED — NEEDS CONFIRMATION]; P0.5 (includes sweeper starvation hardening, per Pilot doc) | 7 | DONE | Remaining P0.2 LOW items are accepted debt (DEBT-023) |
+| 9 | TEST/PILOT safety tooling A1 → A2 → A3 → C → D | TEST backup/restore/marker, TEST-H1, TEST-H2/H2.1, PILOT bootstrap and catalog tooling | 8 (P0.2 checkpoint) | **DONE and pushed**: independent audit `APPROVED FOR OWNER FULL SUITE`; owner full suite PASS at `113c57a` (59/59, 1082/1082; wrapper exit NOT OBSERVED) | Validated; no live PILOT execution |
+| 10 | Documentation reconciliation of the validated checkpoint | `AGENTS.md` + this Blueprint | 9 | **DONE and pushed** | Final read-only OpenCode audit not separately recorded |
+| 11 | Task 4 LOCAL_TEST target | Disposable LOCAL_TEST and CI `local-postgres` | 10 | **DONE and pushed** (`bbc24c6`, `f3e5779`, `c8f61c5`) | AC-211 restore proof remains NOT RUN / deferred |
+| 12 | Pricing V2 / T4 | CASH base + price modes | 11 | **DONE and pushed** (`9a3243f`) | LOCAL_TEST 439/439; frontend gates passed; no PILOT migration |
+| 13 | TEST-H3 | Deferred TEST-hardening follow-up (DEBT-025) | — | DEFERRED | Scope defined by the owner |
+| 14 | Pre-PILOT code fixes | `removeItem`, rate-limit / `trust proxy` | 12 | **DONE and pushed** (`18e2643`, `28c3ba4`, `c6b182c`) | Review/run records of these fixes are not in this Blueprint |
+| 15 | Production V1 verification | Focused verification after pre-PILOT fixes | 14 | **SUPERSEDED** by rows 19–28 (queue rebuilt in D5I-DOC1) | — |
+| 16 | Repository cleanup | Branch/worktree cleanup after reachability proof | 15 | DEFERRED | No deletion authorized yet |
+| 17 | Production V1 → pilot merge | Normal merge to `pilot` | 16 | **SUPERSEDED** by row 26 | — |
+| 18 | PILOT DB migration/import/smoke | PILOT migration, controlled real data import, smoke/client validation | 17 | **SUPERSEDED** by rows 27–28 | — |
+| 19 | Blueprint reconciliation (D5I-DOC1) | Bring this ledger to the exact repository state | — | **DONE and pushed** as `3220d0c` (documentation only) | — |
+| 20 | Short development-tooling improvement pause | Hermetic DB-free runner, exact-scope guard, generic no-DB Vitest config (§16) | 19 | **DONE, integrated and pushed** as `05b3055` (fast-forward into `feat/production-v1`) | — (residual DEBT-031) |
+| 21 | D5I-B2B minimal transaction hardening | Transaction-bound pricing read plus explicit timeouts (proposals `REPRICE_C` / `RESERVE_C`, no batching). | 19; owner timeout decision | **DONE · CHECKPOINTED · PUSHED** as `3397ed3` (D5I-B2B1). Owner decision 2026-10-10: timeout 15000 ms per attempt, `maxWait` unchanged; supersedes `PROPOSED_TIMEOUT_MS=30000` for D5I-B2B | Real-DB behavior remains unproven (owner gates) |
+| 22 | Independent review of D5I-B2B1 | Read-only review of the implementation | 21 | **DONE** (OpenCode approved for Codex; Codex `D5I_B2B3_4_CODEX_APPROVED_FOR_CHECKPOINT`, 0/0/0/0) | — |
+| 23 | Regenerate the D5H manifest/preflight | On the NEW final source HEAD (DEBT-030) | 21–22 | **IN PROGRESS — superseded in detail by rows 32–41.** D5H protocol approved; slices D5H-I1a (`ad18815`) and D5H-I1b (`830d595`) DONE; the remaining slices are PENDING and **no live gate is authorized** (the old "PAUSED" wording is superseded) | Fresh manifest for the final HEAD, produced by the finished D5H tooling and an owner-authorized live sequence |
+| 24 | Owner live TEST gates / full suite | Owner-only gates | 23 | PENDING (owner only; not authorized) | Owner records the result in §22 |
+| 25 | Resolve the restore deadlock root cause (F-018) | Before the final gate (current planning policy, owner planning decision in D5I-DOC1; not a historical requirement; unchanged) | — | **DONE** — historical root-cause attribution resolved and recorded: restore actor/session, competing management-API advisor-lints actor/session and workload, and the two-way blocking cycle (`40P01` externally observed), per the owner K1 interpretation of the existing policy (2026-10-10). Deeper forensic unknowns (exact advisor sub-statement, OID names, held lock modes, run initiator) are not blockers. Removing the F-018 blocker does not authorize row 24 | Root-cause attribution resolved and recorded according to the current owner planning policy (fulfilled) |
+| 26 | Normal `feat/production-v1` → pilot integration | Merge to `pilot` | 24 | PENDING (owner only; not done) | Separate authorization; no DB migration implied |
+| 27 | PILOT database preparation/migration | OWNER-only tooling | 26 | PENDING (owner only; not authorized or executed) | Separate DB authorization |
+| 28 | Controlled customer product/stock import, then single-location pilot smoke and owner testing | Spreadsheet import (not executed) and smoke | 27 | PENDING (owner only; nothing done) | Separate authorization |
+| 29 | Tooling Blueprint closeout (TOOLING-P0S) | Reconcile this Blueprint after the tooling pause (documentation only) | 20 | **DONE and pushed** as `2cf1a93` (documentation only; superseded as the current block by row 31) | — |
+| 30 | User-level AI/dev tooling phase A0 → A8.1 | Pinned skills, read-only Serena, Context7, Codex policy and fallback verification (§13.1, §16). Tooling-only prerequisite; **no product source changed** | 29 | **DONE** `[OWNER-REPORTED]` (no git checkpoint; same `HEAD`) | Residuals DEBT-032/033/034 accepted |
+| 31 | Blueprint reconciliation after the tooling phase (AI-DEV-TOOLS-A9) | Correct the stale self-referential closeout and record rows 29–30 (documentation only; this file only) | 30 | **DONE and pushed** as `08fd70f` (documentation only) | Superseded as the current block by row 21 (D5I-B2B1, uncommitted working tree) |
+| 32 | D5H protocol / design | Final D5H protocol (identities, preflight, backup, authorization, attempts, receipt) approved for staged implementation | 25 | **DONE / approved** (design only; owner authorized the implementation order I1a → I1b → I1c → I2 → I3 → I4 → I5, one slice at a time) | — |
+| 33 | **D5H-I1a** canonical hosted TEST config + read-only preflight | Parser, in-transaction marker primitive, preflight with history, catalog and SalePayment guard evidence (§16) | 32 | **DONE · IMPLEMENTED · CODEX APPROVED (0/0/0/1) · CHECKPOINTED (`ad18815`) · PUSHED** | CLOSED; LOW tracked as DEBT-035 |
+| 34 | **D5H-I1b** runtime TEST adapter on the pinned gate-only target channel | Adapter consumes the canonical parser output; gate-mode harness changes (`demo-database.ts`, `setup.ts`, `test-db-guard.test.ts`) | 33 | **DONE · IMPLEMENTED (incl. I1b.1) · CODEX APPROVED (0/0/0/4) · CHECKPOINTED (`830d595`) · PUSHED** | CLOSED; LOWs tracked as DEBT-036…DEBT-039 |
+| 35 | D5H-I1c durable backup copy | TEST backup path on the shared parser; outside-worktree verified copy | 34 | **DESIGN APPROVED (D1–D7, 2026-10-11) — split by D7 into rows 42–43; I1c-a implemented only in untracked files and BLOCKED (row 42); I1c-b NOT IMPLEMENTED** | Rows 42 and 43 closed |
+| 36 | D5H-I2 | Authorization subjects, journal, attempts, receipt | 43 | PENDING | After I1c-b |
+| 37 | D5H-I3 | Dry-runs and readiness (consume the I1a guard evidence) | 36 | PENDING | After I2 |
+| 38 | D5H-I4 | Migration wrapper | 37 | PENDING | After I3 |
+| 39 | D5H-I5 | Full-suite wrapper and reporter contract | 38 | PENDING | After I4 |
+| 40 | Live hosted TEST gates (preflight, backup, migration) | Owner-only live operations | 39 | PENDING / OWNER ONLY — **not authorized**; each needs its own owner decision | Owner records results in §22 |
+| 41 | Full suite (hosted TEST) | Owner-only gate | 40 | PENDING / OWNER ONLY — **not authorized** | Owner records the result in §22 |
+| 42 | **D5H-I1c-a** DB-free configuration and durability foundation | Canonical config ingestion (I1a parser), binding contract at the DB-free boundary, destination-root policy (D4), durable exclusive publication, backup-pair verification, connection-free `--dry-run` | 35 (design) | **IMPLEMENTED (2 untracked, uncommitted files) · Codex I1c-a.1 BLOCKED `[OWNER-REPORTED]` · NOT APPROVED** — redesign pending rows 62–64 (§16 "D5H-I1c-a research") | Own authorization; RED/GREEN; independent adversarial cases; Codex review; checkpoint |
+| 43 | **D5H-I1c-b** marker-proven snapshot-bound backup | Verified TLS, read-only REPEATABLE READ, marker proof, exported snapshot, snapshot-bound `pg_dump`, snapshot-consistent bigint-safe counts, D5 sidecar (DB-free fakes) | 42 | PENDING — NOT AUTHORIZED | Same; live pooler/binary/restore validation separately authorized |
+| 44 | **PILOT-A** read-only review of Production V1 pilot functionality and safety contract | Pilot V1.1, Pilot Pricing V2, PILOT tooling (C1/C2) | — | PROPOSED — NOT AUTHORIZED | Review report; never on `feat/demo-v2` |
+| 45 | **PILOT-B** evaluate the seller → cashier → stock/cash → admin journey | DB-free / source evaluation | 44 | PROPOSED — NOT AUTHORIZED | Gap list with evidence |
+| 46 | **PILOT-C** PILOT database readiness and isolation from source and approved evidence | No database contact (C2) | 44 | PROPOSED — NOT AUTHORIZED | Readiness verdict; nothing asserted without evidence |
+| 47 | **PILOT-D** prioritize blocking functional gaps | — | 45, 46 | PROPOSED | Owner-approved gap list |
+| 48 | **PILOT-E** narrowly authorized corrections | Per-gap authorization | 47 | PROPOSED | Reviewed and checkpointed fixes |
+| 49 | **PILOT-F** controlled pilot validation | Owner-only; links rows 26–28 | 48; 26–28 | PENDING / OWNER ONLY — not authorized | Owner records results in §22 |
+| 50 | **PILOT-G** store-staff feedback and pilot verdict | — | 49 | PENDING | Owner pilot verdict |
+| 51 | **PROD-A-1** Block A module-by-module implementation inventory | §1.5 Block A vs §14 and frozen phases | — | PROPOSED — NOT AUTHORIZED | Inventory with evidence per capability |
+| 52 | **PROD-A-2** close missing backend behavior and invariants (variants/locations, cash open/close, returns/exchanges, transfers, SEÑA) | Frozen phases 2–3, 5–8 | 51 | PROPOSED | Per-phase RED/GREEN + review |
+| 53 | **PROD-A-3** role-specific frontend integration (`client/`, `admin/`) | Branch-level authorization in UI | 51 | PROPOSED | Verified integration per role |
+| 54 | **PROD-A-4** mixed-payment proportional repricing: owner acceptance criteria, then implementation | Final-product requirement (`AGENTS.md` 2026-10-06) | 51 | PROPOSED — owner criteria required first | Approved criteria; then tested implementation |
+| 55 | **PROD-A-5** end-to-end operational testing and Block A release gate | Phases 6G, 9E, 10E | 52–54; safety rows 40–41 | PROPOSED | Release-readiness verdict |
+| 56 | **PROD-B-1** Block B domain specification and acceptance criteria (incl. employee current accounts, C3) | Frozen FR-SUP/REC/TREAS/ARCA + C3 | — | PROPOSED — NOT AUTHORIZED | Approved specification; frozen vs added vs proposed kept separate |
+| 57 | **PROD-B-2** supplier operational foundation and foundational receiving | Phases 4A–4C; FR-SUP-001/002, FR-REC-001…003 (MUST; `05-architecture.md` §27 Day 25) — PurchaseOrder is NOT part of this row | 56 | PROPOSED | Tested modules |
+| 58 | **PROD-B-3** extended purchasing (PurchaseOrder, SupplierInvoice, SupplierPayment), accounts payable, treasury, bank/wallet and card-settlement reconciliation, expenses | FR-SUP-003, FR-TREAS-001 (SHOULD); `05-architecture.md` §27 Day 26-35 + future scope | 56, 57 | PROPOSED | Tested modules |
+| 59 | **PROD-B-4** accounting domain (chart of accounts, journal/postings, periods/closing) and employee current accounts | Future scope; professional accounting review | 56; Block A authoritative records | PROPOSED | Reviewed specification, then tested modules |
+| 60 | **PROD-B-5** ARCA interface, fiscal outbox, electronic invoicing / CAE where applicable, fiscal error handling | Phases 10A–10B; FR-ARCA-001/002 (SHOULD); official regulatory verification first | 56; Phases 6A–6D | PROPOSED | Homologation evidence (separately authorized) |
+| 61 | **PROD-B-6** administrative/accounting reporting, Block A↔B integration, reconciliation and release gates | — | 57–60 | PROPOSED | Block B release-readiness verdict |
+| 62 | **SAFETY** independent Codex review of the P-B2 design (I1c-a.3) | Read-only review | — | PROPOSED — owner to request | Review verdict |
+| 63 | **SAFETY** owner decisions O1–O8 (proposals) and D4 clarifications | Documentation decision checkpoint | 62 | PROPOSED — none approved | Recorded owner decisions |
+| 64 | **SAFETY** D5H-I1c-a redesign implementation and review | Supersedes the current untracked I1c-a code only after approval | 63 | NOT AUTHORIZED | Reviewed, checkpointed slice; then row 43 |
+| 65 | Cash withdrawal/expense PostgreSQL gate | Run migration 10 and focused cash integration/concurrency tests only on the marker-proven disposable LOCAL_TEST target | Owner supplies local selector, URL/marker and PostgreSQL runtime; repository guards pass | **BLOCKED — environment unavailable** | Migration and focused PG tests PASS; final diff review; no DEV/hosted TEST/PILOT contact |
+
+---
+
+## 24. Resume Instructions for Next Agent
+
+1. Read `AGENTS.md`.
+2. Read `CLAUDE.md` (or your tool's equivalent).
+3. Read this Blueprint, especially §2, §10, §19–§23.
+4. Read the frozen requirements for the current block (`docs/production-v1/*`)
+   and the Pilot overlay (`docs/pilot-v1.1/*`).
+5. Run:
+   `git branch --show-current`, `git rev-parse HEAD`, `git log -8 --oneline`,
+   `git status --short`, `git diff --check`,
+   `git rev-list --left-right --count origin/feat/production-v1...HEAD`.
+6. Compare the results with §2 and §3.
+7. Where they differ, trust git and source over this file.
+8. Resolve discrepancies before editing. Record them in §25.
+9. Continue from §2 "Exact next action".
+10. Update this Blueprint (see the Mandatory Update Protocol at the top) before
+    declaring the block complete.
+
+Never inspect, modify, stage or commit `opencode.json`. Never touch
+DEV/DEMO data without explicit approval. Never run the full suite (owner only).
+
+---
+
+## 25. Blueprint Update Log
+
+Append-only.
+
+| Date (UTC) | Block/event | HEAD | Sections updated | Reason |
+| --- | --- | --- | --- | --- |
+| 2026-09-24 | Blueprint creation | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | All (0–25) | Initial ledger at the verified P0.1-B2 local checkpoint; documentation only |
+| 2026-09-24 | Pre-review correction pass | `e7b6cc7e17f551396efb89aae8f9a52862ff41a3` | §2, §11, §12, §13, §17, §20, §21, §22, §23 | Corrected the P0.1 workflow order (P0.1-C next; owner full suite and push only after the whole P0.1 aggregate is audited); removed a demo credential value; added evidence labels to F-001–F-009 (F-009 is an operational observation) |
+| 2026-09-24 | P0.1-C implemented (uncommitted) | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | §2, §3, §8, §9, §10, §14, §15, §16, §17, §18, §19, §20, §22, §23, §25 | Reconciled the `4eb8101` documentation checkpoint; recorded P0.1-C behavior, F-010–F-013, RULE-013–RULE-016, DEBT-017–DEBT-019, the Policy A transitional divergence, and review readiness |
+| 2026-09-24 | P0.1-C focused-test evidence reconciled (uncommitted) | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | §2, §16, §22, §23, §25 | Resolved OpenCode's LOW test-count bookkeeping finding. Counts now come from the Vitest JSON reporter of the final focused API run (9/9 files, 211/211 tests, exit 0; `cancellation` is 17, not 19). A Claude Code/API connectivity interruption (`ECONNREFUSED`) occurred after the focused Vitest process had already completed with exit code 0; it did not affect test execution or application behavior, and is not a product F-###. The focused run was not repeated. |
+| 2026-09-24 | P0.1-C Codex initial review recorded; LOW corrected (uncommitted) | `4eb8101d1abe1599314f7ed641748c47798fa5c4` | §2, §3, §16, §22, §23, §25 | Codex adversarial read-only review: BLOCKER 0, HIGH 0, MEDIUM 0, LOW 1 (documentation only). The LOW was the stale §3 P0.1-C audit state ("Pending OpenCode + Codex"); corrected here. No runtime/test change required; focused-test evidence (9/9 files, 211/211) unchanged; no tests run. Final Codex approval not yet given: narrow recheck pending. |
+| 2026-09-24 | P0.1-C local checkpoint | `421b58453b7de667cb3ad6a3467a051a14dd61f7` | §2, §3, §9, §10, §14, §15, §16, §17, §20, §22, §23, §25 | Codex narrow recheck completed: final 0 BLOCKER / 0 HIGH / 0 MEDIUM / 0 LOW, `PILOT P0.1-C CODEX APPROVED FOR LOCAL CHECKPOINT`. Exact-file implementation commit `421b584` (13 files: source, tests, API/Pilot docs; Blueprint and `opencode.json` excluded), then this Blueprint record commit. Focused evidence unchanged (9/9 files, 211/211, 0 failed, 0 skipped, exit 0); no tests run. P0.1 is checkpointed locally but **not formally closed**: the owner final aggregate full suite is pending. Nothing pushed. |
+| 2026-09-24 | P0.1 final closeout | `59e629f988e469c623a792f9867a8cf4f7a949b3` | §2, §3, §12, §14, §16, §19, §20, §22, §23, §25 | OWNER ran the final aggregate P0.1 full suite manually (agents did not): 55/55 files, 855/855 tests, 0 failed, start 15:07:14 local, 7777.98s; no separate `VITEST_EXIT` line captured, so none recorded. Known non-failing `pg` DeprecationWarning (existing DEBT-009). OpenCode and Codex (final 0/0/0/0) complete; focused P0.1-C evidence unchanged (9/9, 211/211). **P0.1 COMPLETE / CLOSED LOCALLY**; push approved, remote synchronization pending at commit time. Next product block: P0.2. |
+| 2026-09-24 | P0.1 post-push synchronization record | `7b6fce805f11486b1f3a60081adfeaf0a545b7c4` | §2, §3, §16, §20, §21, §23, §25 | Post-push synchronization record — this documentation commit; its exact SHA is the containing Git commit. The P0.1 closeout commit `7b6fce8` was pushed normally (no force): `origin/feat/production-v1` advanced `6aa8143..7b6fce8`, verified `0 0`. The unpushed-P0.1-commits risk is closed; §23 push step DONE. P0.1 is **CLOSED AND PUSHED**. Test evidence unchanged (owner full suite 55/55 files, 855/855 tests, 0 failed); no new runtime validation. Next product block: P0.2 (not started). |
+| 2026-09-24 | P0.2-A implemented (uncommitted) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §2, §3, §14, §15, §16, §19, §23, §25 | Pending-sale correction with `SALE_CORRECT_PENDING`; RED 30/33 → GREEN 40/40 focused + 61/61 RBAC; static gates PASS. Stale-client guards deferred (DEBT-020). No commit, push or full suite. |
+| 2026-09-24 | P0.2-B implemented (uncommitted) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §2, §14, §15, §16, §17, §18, §19, §20, §22, §23, §25 | Controlled cancellation with `SALE_CANCEL_PENDING`, seller-own DRAFT, payment-row protection and structured reasons; F-014, RULE-018, RULE-019 (safety-hook observation), DEBT-021. RED 24/32 → GREEN 56/56 + 91/91; static gates PASS. Pilot doc P0.2 section written. |
+| 2026-09-24 | P0.2-C implemented (uncommitted) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §14, §15, §16, §19, §22, §23, §25 | Queue eligibility flags; cashier correction/cancellation UI; read-only server remaining balance; split-payment toggle. Client 27/27, queue 30/30; static gates PASS. DEBT-022. |
+| 2026-09-24 | P0.2 implementation complete (uncommitted) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §2, §16, §22, §23, §25 | Aggregate focused gate 19/19 files, 393/393 (JSON reporter); client 27/27; all static gates PASS. OpenCode and Codex NOT RUN. No commit, push or full suite. |
+| 2026-09-25 | P0.2 OpenCode audit recorded (uncommitted) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §2, §3, §16, §19, §20, §22, §23, §25 | OpenCode independent read-only audit: 0 BLOCKER / 0 HIGH / 0 MEDIUM / 6 LOW (all open, non-blocking), verdict `PILOT P0.2 APPROVED FOR CODEX REVIEW`. DEBT-023/024. Evidence unchanged (API 19/19, 393/393; client 3/3, 27/27). Codex NOT RUN; no tests run; not approved for checkpoint. |
+| 2026-09-25 | P0.2 Codex initial review recorded; required corrections applied (uncommitted) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §2, §3, §8, §10.3, §16, §19, §20, §22, §23, §25 | Codex 0/0/0/2 LOW (`PILOT P0.2 CODEX CHANGES REQUIRED`). LOW #1 fixed in the client (tender reset after same-sale correction; RED→GREEN regression; client 28/28; gates PASS). LOW #2: §8 and §10.3 corrected. OpenCode L-1…L-5 deferred (accepted debt), L-6 fixed. No API change; final Codex approval not given; narrow recheck next. |
+| 2026-09-25 | P0.2 Codex narrow recheck recorded (pre-checkpoint) | `289c545a1a717eb032f85dd47b158dca47c008fb` | §2, §3, §16, §20, §22, §23, §25 | Codex narrow recheck 0/0/0/0, `PILOT P0.2 CODEX APPROVED FOR LOCAL CHECKPOINT`. OpenCode L-1…L-5 deferred (accepted debt); L-6/DEBT-024 fixed. Not OWNER-full-suite approved; not pushed. |
+| 2026-09-25 | P0.2 local checkpoint | `e3ce087a7408646d97e1b0f204be8ee1c447fdae` | §2, §3, §16, §19, §20, §22, §23, §25 | Exact-file implementation commit `e3ce087` (28 files; Blueprint and `opencode.json` excluded), then this Blueprint record (exact SHA = the containing commit). Codex final 0/0/0/0. Evidence: API 19/19, 393/393; client 28/28 (27/27 before the Codex fix). No tests run during checkpointing. OWNER full suite NOT RUN; not pushed. |
+| 2026-09-28 | Validated checkpoint documentation reconciliation | `113c57adf865268cf2df4add41d8090f5511ed2b` | §2, §3, §4, §11, §12, §15, §16, §19, §20, §21, §22, §23, §25 | Records the A1 → A2 → A3 → C → D chain (order and boundaries verified with git), the independent OpenCode `APPROVED FOR OWNER FULL SUITE` (0/0/0/0), the fresh TEST backup (local size and SHA-256 re-checked, not restored) and the OWNER full suite at `113c57a`: Vitest PASS 59/59 files, 1082/1082 tests, 8461.73s; wrapper `FULL_SUITE_EXIT` NOT OBSERVED. Corrected §11 rules 2–3 (the test harness is DEV-free since A2). DEBT-009 partial; DEBT-016 closed; DEBT-025 (TEST-H3 deferred), DEBT-026 (stale `CLAUDE.md` debt list), DEBT-027 (ProductImage optional, Phase 2D; frozen `05` Storage tension). Documentation only; no database, no tests and no push. `docs/production-v1/*` untouched. |
+| 2026-10-01 | Task 4 (LOCAL_TEST) pre-staging record (uncommitted) | `9e97aa995569c80361b749fd09de5ae2c40f3290` | §2, §3, §11, §12, §16, §19, §22, §23, §25 | Recorded Task 4 (uncommitted): LOCAL_TEST environment row (§11); LOCAL_TEST owner gate 65/65, 1652/1652, exit 0; hosted TEST owner suite under Approval 11 65/65, 1652/1652, exit 0, 8458.58s; static gates PASS; Section 9/10 NOT RUN (`DOCUMENTED_PROCEDURAL_DEVIATION`). Reconciled §2/§3 with git (local remote-tracking ref, not fetched): everything up to `13fee1e` is in `origin/feat/production-v1`; `4b04411` and `9e97aa9` are local only on `chore/dev-tooling-1`; their review records are not in this Blueprint. DEBT-028. Task 4 NOT complete. No database, no full suite and no push during this record. `docs/production-v1/*` untouched. |
+| 2026-10-06 | Pilot Pricing V2 implementation (uncommitted) | `18b07310190674291e1e2202708679e72f05778c` | §2, §25 | Owner pricing supersession and uncommitted implementation: explicit retail `cashPrice`, wholesale cash base, company-global `CompanyPricingConfig` (bps 0..10000), one `Sale.priceMode` per sale, `SaleItem` immutable pricing snapshot, payment/price-mode compatibility (LIST has no method twin and accepts any method), wholesale cash base <= retail cash base (app + DB CHECK). New migration `20261006120000_pilot_pricing_v2` (additive; applied 2026-10-06 only to the disposable LOCAL_TEST database via prepare/resume and validated there; NOT applied to DEV, TEST, DEMO or PILOT). LOCAL_TEST fingerprint/baseline/witness contracts re-synced to the new schema (172 columns, 26 relations, 10 enums); the pilot-migrate / local-test-prepare OWNER-approved fixed migration pin contract was explicitly extended to also pin the reviewed `20261006120000_pilot_pricing_v2/migration.sql` (literal pin, no DB execution authorized). LOCAL_TEST validation: focused real-DB suite 439/439 PASS, return to EXACT_BASELINE; no push. Frontend semantics reconciled: admin edits the CASH base, previews derived LIST read-only (legacy `price` labeled transitional, never the active LIST), seller client shows no legacy fallback for `cashPrice = NULL`; validated with `npm ci` from the existing lockfiles (manifests/lockfiles unchanged): admin lint + `tsc -b && vite build` pass (no test script), client lint, vitest (5 files, 44 tests incl. `catalog-price.test.ts`) and `next build` pass. Final mixed proportional payments remain a REQUIRED later feature. Customer-data import and PILOT integration still pending. `docs/production-v1/*` untouched. |
+| 2026-10-07 | Production V1 Pricing V2 integration and documentation reconciliation | `9a3243f912d8b0f929767978e97454d229acedda` before this documentation commit | §2, §3, §16, §19, §20, §23, §25 | The old dirty worktree was durably preserved outside the repository; `feat/production-v1` was fast-forwarded and normally pushed to `9a3243f`, matching the temporary T4 branch. This documentation-only commit reconciles AGENTS, the Blueprint and working status. No source/test/migration changes; no DB contact; no PILOT merge, PILOT migration or customer-data import. AC-211 restore proof remains NOT RUN/deferred. |
+| 2026-10-09 | D5I-DOC1 Blueprint reconciliation (uncommitted) | `8a1158528bb629f2b32b3bbbc9aaf6fb70d90c83` | §2, §3, §14, §15, §16, §17, §18, §19, §20, §21, §22, §23, §25 | The Blueprint was stale relative to git (it recorded `9a3243f` as the current head; the repository was ten commits ahead). Reconciled to `8a11585`: ledger rows for `eddea12`…`8a11585`; the D5 sequence (D5F-A, D5F-C2, D5G, D5H-A, D5I-B1/B1C) and the read-only D5I-B2A/B2A1 design; F-015…F-018, RULE-020/021, DEBT-029/030; the queue rebuilt (rows 19–28). Owner-reported items (D5G restore deadlock, D5H-A protocol, independent review verdicts) are labelled `[OWNER-REPORTED]` because the repository holds no artifact for them. `PROPOSED_TIMEOUT_MS=30000` is recorded as NOT approved. Documentation only; no product source or test change, no database and no network contact. D5H remains paused; no full suite has run at this HEAD. `docs/production-v1/*` untouched. |
+| 2026-10-10 | Development tooling closeout / integration (TOOLING-P0S, uncommitted) | `05b30557b08f4edd7b74106a6ff9c609520c7000` | §2, §3, §4, §12, §14, §15, §16, §17, §18, §19, §20, §22, §23, §25 | Documentation-only reconciliation after the development-tooling pause. Recorded: tooling commit `05b3055` (parent `3220d0c`, exact 8 files, verified from git; committed on `chore/dev-tooling-pilot`, fast-forward integrated into `feat/production-v1`, pushed normally; not a merge commit); the D5I-DOC1 commit `3220d0c` that §2/§3 could not record about themselves; final independent Codex P0R 0 BLOCKER / 0 HIGH / 0 MEDIUM `[OWNER-REPORTED]`; Gate A `251/251` PASS and Gate B `37/37` PASS `[OWNER-REPORTED]` operational evidence (not repository artifacts, not a product suite); no DB contact during the final gates; external npm network only during the earlier authorized pinned install. New registry items: F-019, RULE-022, DEBT-031. Unchanged and explicitly NOT implied: Production V1 is NOT closed; D5I-B2B NOT implemented and `PROPOSED_TIMEOUT_MS=30000` NOT approved (`AWAITING_OWNER_TIMEOUT_DECISION`); D5H PAUSED and no full suite at `05b3055` (DEBT-030 OPEN); restore-deadlock root cause unresolved (F-018); pilot merge, PILOT migration and customer import NOT done. Sections judged not applicable and left unchanged: §1, §5–§11, §13, §21, §24 (no runtime, schema, authorization, environment or workflow-rule change). |
+| 2026-10-10 | AI-DEV-TOOLS-A9 Blueprint closeout (uncommitted) | `2cf1a937b53e83aecdb9cdc0132676a22fed41cb` | §2, §3, §13 (new §13.1), §14, §16, §17, §18, §19, §20, §21, §22, §23, §25 | Documentation-only reconciliation after the user-level AI/dev tooling phase A0–A8.1. Corrected the stale self-referential TOOLING-P0S closeout: `2cf1a93` (parent `05b3055`, one file, verified from git) is the committed and pushed checkpoint, no longer "pending". Recorded the final tool authority model, the selected/rejected/deferred skills, the Serena `serena-ro` hardening, Context7 state and data boundary, and the Codex policy/fallback result, all as `[OWNER-REPORTED]` (no repository artifact; no git checkpoint for the phase). New registry items: F-020, RULE-023, RULE-024, DEBT-032, DEBT-033, DEBT-034. The SHA of this A9 commit is not recorded because it is unknown until the owner commits. Unchanged and explicitly NOT implied: product source and behavior; D5I-B2B NOT implemented and `PROPOSED_TIMEOUT_MS=30000` NOT approved (`AWAITING_OWNER_TIMEOUT_DECISION`); D5H PAUSED and no full suite at the current HEAD (DEBT-030 OPEN); restore-deadlock root cause unresolved (F-018); pilot merge, PILOT migration and customer import NOT done. Sections judged not applicable and left unchanged: §1, §4–§12, §15, §24. No database, no network, no tests; `docs/production-v1/*`, `AGENTS.md`, `CLAUDE.md`, `opencode.json` and `.claude/settings.json` untouched. |
+| 2026-10-10 | D5I-B2B1 REPRICE_C + RESERVE_C (uncommitted) | `08fd70f95ce4bb9343316256c4cfc8ee9f356bef` | §2, §14, §16, §20, §22, §23, §25 | Recorded the owner timeout decision (15000 ms, `maxWait` unchanged; supersedes the 30000 proposal for D5I-B2B) and the uncommitted DB-free implementation of `REPRICE_C` (transaction-bound `getSnapshot(tx)`) and `RESERVE_C` (`sendToCashier` timeout 15000). Pending-correction keeps 30000. No SHA recorded (none exists). Unchanged: D5H PAUSED; pilot merge, PILOT DB, customer import NOT done; no full suite at the current source. No new F/RULE/DEBT entry (no new defect class beyond the already-recorded structural risk). Sections judged not applicable: §1, §3, §4–§13, §15, §17–§19, §21, §24. No database, no network. |
+| 2026-10-10 | D5I-B2B4 / B2B4.1 post-checkpoint closeout (this row's commit; SHA intentionally not embedded) | `3397ed3c180d91a8a6bfbee79a802ee34463348d` | §2, §3, §14, §16, §20, §22, §23, §25 | Documentation-only reconciliation after D5I-B2B1 was independently approved (OpenCode approved for Codex 0/0/0; Codex final `D5I_B2B3_4_CODEX_APPROVED_FOR_CHECKPOINT` 0/0/0/0), committed and pushed as `3397ed3` (parent `08fd70f`; 7 files, 343 insertions, 32 deletions, verified from git). Current pointers moved from the working-tree state to the committed product state and made self-reference-safe: no field asserts the repository tip or this commit's push state (HEAD/Origin fields renamed to "Last PRODUCT-source checkpoint" / "at verification start"); ledger rows 21–22 DONE; row 23 (D5H manifest/preflight on the new HEAD) is the next product action. Earlier changelog rows are left as the historical record of those passes. Unchanged: timeout 15000 ms per attempt, `maxWait` default, pending-correction 30000; the pre-existing `addItem` mixed-time snapshot follow-up; real PostgreSQL behavior NOT RUN / NOT PROVEN; D5H PAUSED; pilot merge, PILOT DB, customer import NOT done. No new F/RULE/DEBT entry. The SHA of this closeout is not recorded. No database, no network, no tests. |
+| 2026-10-10 | F-018 forensic closeout (this row's commit; SHA intentionally not embedded) | verification-start repository HEAD `ed504c63abc606e64a563c5d12ed8077f50c976f` | §16 (D5G row), §17 (F-018), §20, §23 row 25, §25 | Documentation-only. Recorded the preserved owner-local `restore-2.log` (inspected read-only; not tracked in Git): deadlock event PROVEN, immediate wait cycle PROVEN (`WAITS_FOR_EDGE_PROVEN`, not granted-lock ownership), failing DDL PROVEN as the reported command, SQLSTATE NOT preserved, PID 212620 UNRESOLVED, OIDs 17297 / 2940129 not mapped, preserved-local attribution evidence EXHAUSTED. Final Codex verdict on the forensic investigation: `D5H_F018_F_EVENT_AND_WAIT_CYCLE_PROVEN_ATTRIBUTION_UNRESOLVED`. F-018 remains OPEN; the live D5H gate remains BLOCKED_BY_F018; current planning policy unchanged (no waiver, no retry authorization). Out of scope and not altered: the earlier D5H manifest/preflight wording in §23 row 23. Exact file scope: this Blueprint only. No database, test, restore, backup or network. This documentation is not claimed to be committed or pushed. |
+| 2026-10-10 | F-018 external-evidence resolution closeout (this row's commit; SHA intentionally not embedded) | verification-start repository HEAD `ceaaa1e4fba2290c6157d9ff188926aab22c3343` | §16 (D5G row), §17 (F-018), §20, §23 row 25, §25 | Documentation-only. External operational PostgreSQL logs (authenticated read-only Supabase logs surface, hosted TEST; supplied to a review, not Git-tracked, not fetched by this edit) were reviewed: SQLSTATE `40P01` externally proven; restore PID 212607 / session identity proven; contender PID 212620 / session / `mgmt-api` / `supabase_admin` advisor-lints workload proven; direct blockers on both wait edges proven. Exact held lock modes, OID names (17297, 2940129) and the exact advisor sub-statement remain unknown. Owner K1 interpretation (2026-10-10): the proven level satisfies the existing F-018 policy; F-018 RESOLVED; the F-018-specific blocker is removed. The earlier `F-018 forensic closeout` row above is historical and correctly describes F-018 OPEN / blocked at that checkpoint. D5G remains NOT recorded as a PASS. No policy change, waiver or risk acceptance; no recurrence-hardening claim; no retry authorization; no full-suite authorization (the D5H gate still needs its own explicit owner authorization). Known stale and not altered here: §2 exact next action and §23 row 23. Exact file scope: this Blueprint only. No database, test, restore, backup or network. Not claimed as committed or pushed. |
+
+| 2026-10-11 | D5H-I1a checkpoint closeout (this row's commit; SHA intentionally not embedded) | verification-start repository HEAD `336002612e6e41ba1fbd0405c1887e3e1806c748`; implementation checkpoint `ad18815cca76fa4d35a708480242cf2661108a66` | §2, §3, §11, §14, §15, §16, §19, §20, §22, §23, §25 (§17 and §18 reviewed, intentionally unchanged) | Documentation-only. Recorded the D5H-I1a implementation checkpoint (canonical hosted TEST config parser, in-transaction marker primitive, read-only D5H preflight with migration-history, catalog and SalePayment guard-risk evidence; tooling only), the observed checkpoint verification (148/148 DB-free, `deps:check` nonzero KNOWN PRE-EXISTING), the Codex final review (0/0/0/1, tests N/A, DB contact NONE) and DEBT-035. Backfilled five missing §3 rows from git (`08fd70f`, `3397ed3`, `ed504c6`, `ceaaa1e`, `3360026`). Reconciled the stale D5H "PAUSED" wording and the §23 queue (rows 32–41); I1b is next but NOT authorized. No live operation, no database, no product change. |
+| 2026-10-11 | D5H-I1b checkpoint closeout (this row's commit; SHA intentionally not embedded) | verification-start repository HEAD `830d5950d6199549558d24e982d126a6d46581c0` (= implementation checkpoint; parent `b2e2fe96a2e52c4f6e12ea47697b5b10a7e589d5`) | §2, §3, §11, §14, §15, §16, §19, §20, §22, §23, §25 (§17 and §18 reviewed, intentionally unchanged) | Documentation-only. Recorded the D5H-I1b test-harness checkpoint including the corrective I1b.1 (F01, F02, C1, C2 closed), implementer DB-free evidence and the separate Codex evidence (`D5H_I1B1_CODEX_APPROVED`, 0/0/0/4, independent GREEN 428/1, 18 adversarial cases executed and matched, 2 not executed), the four LOW observations as open debt DEBT-036…DEBT-039 (DEBT-039 awaits an owner policy decision), and backfilled the D5H-I1a closeout `b2e2fe9` in §3. I1c is NEXT and NOT authorized; D5H is NOT complete; no full suite; no database contact. Noted, not changed: `AGENTS.md` "Checkpoint" still names `9a3243f` (outside this closeout's one-file scope). |
+| 2026-10-11 | D5H-I1c owner design decisions D1–D7 (this row's commit; SHA intentionally not embedded) | verification-start repository HEAD `40b15156a196f4c85071dc48435c500c8db35545`; last implementation checkpoint `830d5950d6199549558d24e982d126a6d46581c0` | §2, §3, §11, §16, §19, §20, §22, §23, §25 (§17 and §18 reviewed, intentionally unchanged) + `AGENTS.md` Database safety | Documentation-only. Recorded the owner-approved D5H-I1c design D1–D7 as APPROVED DESIGN (not implemented), the read-only preflight findings F1–F7 with their decision mapping, DEBT-040 for the preserved legacy `backup.mjs` TEST-path properties, a recovery-point risk, and the I1c-a / I1c-b split (§23 rows 42–43; row 36 now depends on 43). Backfilled `40b1515` in §3. Nothing superseded; frozen docs, legacy backup/restore tooling and DEV isolation unchanged; no test, tool or database used. |
+| 2026-10-11 | Owner decisions C1–C4 governance record (uncommitted when written; SHA not embedded) | verification-start HEAD `ab8cfb23f0ea88e3b1fbc665bc7cfec3585c9fc9` | §1.3, §1.5 (new), §2, §3, §16, §20, §23 (row 42 status; rows 44–64), §25 + `AGENTS.md` dated supersessions | Documentation-only. Recorded C1 (pilot = Production V1 + Pilot V1.1 + Pilot Pricing V2; Demo V2 historical), C2 (PILOT is the pilot target; DEMO never), C3 (employee current accounts: future scope, not implemented), C4 (Block A / Block B mapping to frozen phases and FR IDs), the two pricing stages, the D5H-I1c-a research state (owner-reported Codex verdicts; P-B2 and O1–O8 proposals) and tracks PILOT / PROD-A / PROD-B / SAFETY. Backfilled `ab8cfb2` in §3. FR-ARCA-001 is SHOULD and its own text calls ARCA a required Production V1 capability not on the Day 25 critical path (consistent with `00-master-index.md`). No database, test, OS change or branch switch. |
+| 2026-10-11 | C1–C4 documentation remediation M01–M03 (uncommitted when written; SHA not embedded) | verification-start HEAD `ab8cfb23f0ea88e3b1fbc665bc7cfec3585c9fc9` | §1.5 (cross-block dependencies; Block B supplier/receiving/purchasing/ARCA rows), §2 (Origin, Current phase, Push status), §11 (D5H-I1c paragraph), §16 (D5H-I1c decision Status pointer), §20, §23 (rows 35, 57, 58), §25 | Documentation-only remediation of Codex findings `[OWNER-REPORTED]`: M01 current D5H status (I1c-a implemented in untracked files and BLOCKED; P-B2 proposed) and current origin pointer (`ab8cfb2`, `40b1515` kept as historical); M02 the fiscal-outbox transactional contract (same transaction as Sale completion, asynchronous worker after commit, no ARCA call inside the Sale transaction; `05-architecture.md` §23, Phase 10A); M03 foundational receiving (MUST, Day 25) separated from extended purchasing / supplier financial depth (`PurchaseOrder`, SHOULD, Day 26-35, `05-architecture.md` §26–§27). Also corrected the C1–C4 row's inaccurate ARCA observation. `AGENTS.md` and frozen documents not edited. |
+| 2026-10-16 | R3-A4.3 proportional checkout registered; G9 contract extended; D5H reviewed tree recognizes the two R3 migrations (SHA not embedded) | repository branch `feat/production-v1`; the R3-A4.3 increment is undeployed and has not been executed against any database | §2 (appended R3-A4.3 row), §16 (new "R3-A4.3 — proportional checkout (S1–S4 statically approved)" block), §25 | Documentation-only. Registered the R3-A4.3 increment with the exact status `IMPLEMENTADO PARCIALMENTE — S1–S4 APROBADOS ESTÁTICAMENTE — NO DESPLEGADO — PostgreSQL PENDIENTE`; created the contract doc `docs/architecture/r3-a4.3-checkout-contract.md`; recorded the G9 protected contract (298 columns / 32 relations / 17 enums / 9 protected functions / 3 jsonb, `checked` 290; six of the nine functions new in the ninth migration) and the pinned migration bytes/sha256 (nine migration directories; only seven are in the operational G7 payload); recorded the D5H reviewed-tree recognition (the two R3 entries only; `D5H_MIGRATIONS` and `d5h-preflight.mjs` unchanged; `APPROVED_MIGRATION_PAYLOAD` stays G7); recorded the S1–S11 (+S-REF) sequence with S1–S4 approved statically and S5–S11 pending; mounted vs DTO-only endpoints; and the documentary gaps (external source package, contradictory review markers, the G9 contract observers repinned DB-free — the `protected-capability-runtime.test.ts` `LOCKED_TABLES` now derives from `PROTECTED_RELATIONS.length` with an explicit 32-relation pin — and no PostgreSQL evidence P21–P55). `docs/production-v1/*` not edited; no deploy, database contact or migration execution. |
+| 2026-10-16 | R3-A4.3 **S5-D** implemented: the real atomic T-C settlement (uncommitted worktree; SHA not embedded) | repository branch `feat/production-v1`; the R3-A4.3 increment is undeployed and has not been executed against any database | §2 (R3-A4.3 row), §16 ("R3-A4.3" block: Status, Slice sequence, new "S5-D implementation" and Mounted-endpoints rows), §25 | Implementation + documentation, DB-free only. `api/src/modules/payments/checkout.service.ts` now settles a valid RESERVED confirmation in ONE Serializable transaction (timeout 30000, ≤3 attempts on P2034/40001/40P01) locking Sale → CheckoutAttempt → ExternalCollection(id ASC) → CashSession → StockReservation(id ASC) → Inventory(id ASC), using ONLY the sealed attempt (no `pricing.getSnapshot`, no `computeProportionalQuote`) and the exported pure helpers `lineFullPrices`/`allocate`; the dead R3-A2 inline-pricing path was removed and `501 CHECKOUT_CONFIRMATION_NOT_IMPLEMENTED` no longer exists. Terminal rejections commit the attempt REJECTED (+`CHECKOUT_RESERVATION_REJECTED`) before returning 409; `STOCK_HOLD_EXPIRED`/`STOCK_HOLD_RELEASED` stay correctable with the attempt RESERVED; `CHECKOUT_PLAN_INCONSISTENT` is the new 500 defect code. **S5 is NOT approved and NOT complete**: S6–S11 and S-REF pending. Evidence: `checkout.behavior.test.ts` 65 passed / 55 skipped (legacy R3-A2 blocks kept verbatim as the superseded spec and annotated with a coverage mapping, not deleted), `checkout.http.test.ts` 69/69, `tests/pricing/proportional-checkout.test.ts` and the other DB-free `tests/payments` suites pass; `tsc --noEmit`, `lint`, `git diff --check` clean. No PostgreSQL (P21–P55 NOT RUN), no staging, no commit, no push, no migration edit, no database contact. |
+| 2026-10-16 | R3-A4.3 **S5-D.1 hardening** implemented: the S5-D audit's F1/F2/F3 plus its §12.7 coverage gaps (uncommitted worktree; SHA not embedded) | repository branch `feat/production-v1`; the R3-A4.3 increment is undeployed and has not been executed against any database | §2 (R3-A4.3 row), §16 ("R3-A4.3" block: Slice sequence and "S5-D implementation"), §25 | Hardening + tests + documentation, DB-free only. **F1** — a concurrent EXTERNAL reference `P2002` maps to 409 `EXTERNAL_REFERENCE_ALREADY_RECORDED` (detected by unique target: the partial index by SQL name or Prisma's column list; resolved by a post-rollback, read-only, lock-free lookup that never reopens a transaction; the in-transaction pre-check stays fast-fail and the partial unique index stays the integrity guard; an unrelated `P2002` is never converted); **F2** — a persisted `REJECTED` attempt replays its own `rejectionCode`/`rejectionDetails` with zero writes (a different `operationKey` stays a key-reuse 409); **F3** — the service re-bounds the raw reference to 1..64 Unicode code points before any INSERT (shared `codePoints`/`REFERENCE_RAW_MAX` moved to `checkout-canonical.ts`). New S5D1-01..15 cover the reference race (both target shapes), the rejected replay, the raw-reference bound, `EXTERNAL_COLLECTION_NOT_APPLICABLE`, already-recorded references, multi-method NEW settlement (2 and 3 methods), FIXED centavos, the `INVALID_SALE_STATE` variants and a missing cash session. **S5 is still NOT complete and NOT approved**; S6–S11 and S-REF remain pending. F4 (the physical lock order of `ORDER BY id ASC FOR UPDATE`) remains **PostgreSQL pending P21+**. Evidence: `checkout.behavior.test.ts` 79 passed / 55 skipped, `checkout.http.test.ts` 69/69, `tests/pricing/proportional-checkout.test.ts` 44/44, six related DB-free suites 146/146, `tsc --noEmit`/`lint`/`git diff --check` clean. No PostgreSQL (P21–P55 NOT RUN), no staging, no commit, no push, no migration edit, no `docs/production-v1/*` change, no database contact. |
+| 2026-10-16 | R3-A4.3 **S6 (T-X close/declaration)** implemented: `checkout-close.service.ts`/`.controller.ts` + mounted route (uncommitted worktree; SHA not embedded) | repository branch `feat/production-v1`; the R3-A4.3 increment is undeployed and has not been executed against any database | §2 (R3-A4.3 row), §16 ("R3-A4.3" block: Slice sequence, new "S6 implementation" row, Mounted-endpoints/DTO-only rows, PostgreSQL-evidence row), §25 + the contract doc §7.1/§11/§12 | Implementation + tests + documentation, DB-free only. ONE READ COMMITTED transaction (timeout 30000, **no** P2034/40001/40P01 retries): lock `Sale` `FOR UPDATE NOWAIT` (PostgreSQL `55P03` → 409 `CHECKOUT_RESERVATION_BUSY`) → `CheckoutAttempt` by `(reserveKey, saleId)` → the attempt's `ExternalCollection` claims `ORDER BY id ASC`; write order `RESERVED → ABANDONED` (declaredAt NULL, F4) → CHARGED collections (`UNAPPLIED`) → declarations → `declaredAt` → **release claims** (F6 requires terminal AND declared) → audit, same transaction. **The owner-authorized Document 4 order supersedes the older in-repo "release before declaredAt" wording** (contract doc corrected at §7.1/§11). The initiator needs `SALE_CHARGE` at the locked branch; a foreign actor needs `actsAsSupervisorAtLocation([SALE_CANCEL_PENDING])` plus mandatory reason+evidence; a COLLECTION tender is NONE only; a CHARGED amount must equal the sealed amount; `CONFIRMED` replays with zero writes; an identical declared replay by the same actor is 200 zero-writes, else 409 `CHECKOUT_DECLARATION_ALREADY_RECORDED`. New codes `CHECKOUT_DECLARATION_ALREADY_RECORDED`/`_MISMATCH`/`_AMOUNT_MISMATCH`/`_EVIDENCE_REQUIRED`; audit actions `CHECKOUT_RESERVATION_ABANDONED`, `CHECKOUT_DECLARATION_RECORDED`, `EXTERNAL_COLLECTION_RECORDED`, `CHECKOUT_ATTEMPT_CASH_RETURNED`, `EXTERNAL_COLLECTION_CLAIM_RELEASED`. **No** `CashMovement`/`CashSession`/`StockReservation`/`Inventory` write. **S6 is NOT complete and NOT approved**; S7–S11 and S-REF remain pending. Evidence: `checkout-close.behavior.test.ts` S6-01..S6-25 (29 passed) + `checkout-close.http.test.ts` (4 passed); mutation/sensitivity evidence: removing/stubbing the S6 behaviour caused 31 failures / 2 passes — this demonstrates suite sensitivity, **not** historical proof of test-first chronology; GREEN 33 passed; `checkout.behavior.test.ts -t "S5"` 75 passed / 59 skipped, `checkout.http.test.ts` + `proportional-checkout.test.ts` 113/113, `checkout-reservation`/`checkout-quote` suites 69/69; `tsc --noEmit`, `lint`, `build` and `git diff --check` clean. PostgreSQL P52 (claim released only after `declaredAt`), P53 (full T-X) and P55 (T-X vs T-C) remain **NOT RUN**. No staging, no commit, no push, no migration/`schema.prisma` edit, no `docs/production-v1/*` change, no database contact. |
+| 2026-10-16 | R3-A4.3 **S6.1 review fixes** (S6-B01..S6-B04 + the T-C/T-X `CHECKOUT_RESERVATION_CLOSED` gap) applied (uncommitted worktree; SHA not embedded) | repository branch `feat/production-v1`; the R3-A4.3 increment is undeployed and has not been executed against any database | §16 ("S6 implementation" row), §25 + the contract doc §10/§11/§12 | Fixes + tests + documentation, DB-free only. **Visibility bump fixed** (fresh close only, after Sale/Attempt/claim locks, before the first business write; rolls back with T-X; no bump on CONFIRMED / identical ABANDONED / identical declared REJECTED replay or on `55P03`). **Supervisor REJECTED replay/audit fixed** (justification durable in the single `CHECKOUT_DECLARATION_RECORDED` audit row and replay-compared; fail-closed on ambiguity). **CHARGED `cashSessionId` fixed** (`attempt.cashSessionId`, never the request; the strict DTO also refuses it at the edge). **Audit ordering fixed** (status → CHARGED collections → declarations → `declaredAt` → claim release → audits → commit). **`CHECKOUT_RESERVATION_CLOSED` fixed** (T-C on `ABANDONED`; extended by S6.2 to a `REJECTED` attempt with `declaredAt IS NOT NULL` — only a `REJECTED` attempt with `declaredAt IS NULL` replays its persisted S5-D.1 rejection). T-X unchanged otherwise: READ COMMITTED, one transaction, `Sale FOR UPDATE NOWAIT`, `55P03 → CHECKOUT_RESERVATION_BUSY`, no P2034/40001/40P01 retries. Contract-doc typo corrected: real `55P03` is not P52 (P52 = a claim release before `declaredAt` must fail). The earlier S6 "31 failed / 2 passed" figure is re-labelled as mutation/sensitivity evidence, not test-first chronology. Evidence at that date: `checkout-close.behavior.test.ts` 50/50 (later 53 after S6.2's S6F-23..S6F-25 and 57 after S6.3's S6W-01..S6W-04 — see the S6.3 rows), `checkout-close.http.test.ts` 5/5, `checkout.behavior.test.ts -t "S5|S6"` 77 passed / 59 skipped, `checkout.http.test.ts` 69/69; `tsc --noEmit`, `lint`, `build`, `git diff --check` clean. **S6 is still NOT approved**; PostgreSQL P52/P53/P55 **NOT RUN**. No staging, no commit, no push, no migration/`schema.prisma` edit, no `docs/production-v1/*` change, no database contact. |
+| 2026-10-17 | R3-A4.3 **S6.3 write-order fix** (S6-B05/DOC-S6-01) + the GAP-1/GAP-2 order guards applied; GAP-3 documented (uncommitted worktree; SHA not embedded) | repository branch `feat/production-v1`; the R3-A4.3 increment is undeployed and has not been executed against any database | §16 ("S6 implementation" row + new "S6.3 write-order fix" row), §2, §25 + the contract doc §11/§12 | Fix + tests + documentation, DB-free only. **Two canonical-order phases in `checkout-close.service.ts`:** Phase 8b inserts the `ExternalCollection` of EVERY CHARGED row and Phase 8c inserts EVERY `CheckoutAttemptDeclaration` reusing the Phase 8b ids (a missing id fails closed with 500 `CHECKOUT_STATE_INCONSISTENT`); **every CHARGED collection is now inserted before ANY declaration** (it was previously interleaved per tender — S6-B05). The order `declaredAt → release claim → audit → COMMIT` is unchanged; READ COMMITTED, one transaction, `Sale FOR UPDATE NOWAIT`, `55P03 → CHECKOUT_RESERVATION_BUSY`, replay zero-write, sealed CHARGED amount, `cashSessionId = attempt.cashSessionId`, P2002 → `EXTERNAL_REFERENCE_ALREADY_RECORDED`, no stock writes, S6.1 supervisor/replay and S6.2 `CHECKOUT_RESERVATION_CLOSED` preserved; no permission/DTO/endpoint change. Tests: `S6W-01` (`max(CHARGED collection create) < min(declaration create)`) and `S6W-02` (exact canonical sequence) were RED-first against the interleaved loop; `S6W-03` (GAP-1, `max(declaration create) < declaredAt`) and `S6W-04` (GAP-2, `ABANDONED < min(CHARGED collection create)`) are satisfied by both implementations, so their RED is mutation/sensitivity evidence only (declaredAt moved early → `expected 10 to be less than 7`; terminal update deferred → `expected 11 to be less than 5`), fully reverted (service sha256 unchanged). **GAP-3** (a CHARGED declaration whose persisted `ExternalCollection` is missing on replay) is documented, not implemented: PostgreSQL/schema invariant dependent; unreachable if the FK/commit guards hold; left to real evidence. Evidence: `checkout-close.behavior.test.ts` 57/57, `checkout-close.http.test.ts` 5/5, `checkout.behavior.test.ts -t "S5|S6"` 77 passed / 59 skipped; `tsc --noEmit`, `lint`, `git diff --check` clean. **S6 is still NOT approved**; PostgreSQL P47–P55 **NOT RUN**; S-REF and S7–S11 pending. No staging, no commit, no push, no migration/`schema.prisma` edit, no `docs/production-v1/*` change, no database contact. |
+| 2026-10-17 | R3-A4.3 **S-REF** implemented (T-F external-collection refund + branch listing) and the **S-REF.1 independent-review fixes** applied (uncommitted worktree; SHA not embedded) | repository branch `feat/production-v1`; the R3-A4.3 increment is undeployed and has not been executed against any database | §2 (R3-A4.3 row), §16 ("R3-A4.3" block: Slice sequence, new "S-REF implementation" row, Mounted-endpoints / DTO-only / Pilot-gate / Not-implemented / PostgreSQL-evidence rows), §25 + the contract doc §7.1/§10/§11/§12 | Implementation + tests + documentation, **DB-free only**. **S-REF (status = IMPLEMENTED DB-FREE — NOT APPROVED POSTGRESQL):** `external-collections.service.ts`/`.controller.ts`/`.routes.ts` + `dto/external-collection-refund.dto.ts`, mounted in `api/src/app.ts` as `POST /api/v1/external-collections/:externalCollectionId/refund` (T-F) and `GET /api/v1/external-collections`. T-F = ONE READ COMMITTED transaction, `ExternalCollection FOR UPDATE` first, then permission on the LOCKED `ec.branchId` (`actsAsSupervisorAtLocation([SALE_CANCEL_PENDING])`), then state/idempotency, the single server `resolvedAt`, the UPDATE, the audit and COMMIT; the amount is read only from the locked row; the listing gives a supervisor the whole branch and a `SALE_CHARGE` holder only its own rows. **S-REF.1 fixes (all DB-free, TDD RED-first):** (a) the pilot gate `PROPORTIONAL_EXTERNAL_METHODS_ENABLED` is now **FAIL-CLOSED** — `?? true` → `?? false` in both service factories and `?? false` in both controllers, and the quote returns `unappliedCollections: []` while the gate is off; (b) `externalRefundedAt` is validated **strictly** (`parseStrictIsoInstant`: impossible calendar/clock values — `2026-02-30`, `24:00:00`, non-leap `02-29` — are 400 *before* the service, valid offsets kept); (c) the refund audit snapshot now carries id/status/branchId/method/amount/reference/referenceKey/originSaleId/originAttemptId/cashSessionId/claimAttemptId/resolvedBy/resolvedAt/refundReference/resolutionNote/externalRefundedAt (amount = BigInt → JSON-safe decimal string, never a Number); (d) the rebuild of P38's fixture through the **real** flows (T-R claim + the S4 confirmation fixture for APPLIED, never `status = APPLIED` with a null application nor a claim F6 rejects) was **begun** in S-REF.1 and **completed in S-REF.2** (see the next row); at the end of S-REF.1 it was not yet complete. **Evidence actually executed:** the new/updated gate cases SREF-F01/F02 (factory with the option omitted → OFF) and SREF-F03/F04/F05/F04b (real-router composition `parseEnv → router option → controller → service → HTTP`, i.e. real wiring, replacing the removed grep-based GATE-S03), GATE-04 (gate OFF hides the recorded candidates), SREF-F06..F09/F17 (ISO strict at the HTTP edge), SREF-F10..F16 (future-date code, audit snapshot, replay, audit-failure rollback, lock-before-RBAC order, inconsistent-state 500). Suites: `checkout-quote`+`checkout-reservation`+`external-collections`+`checkout-policy` **5 files / 159 passed**; `checkout-close.behavior`+`checkout-close.http` **62 passed**; `checkout.behavior -t "S5\|S6"` **77 passed / 59 skipped**; `checkout.http` **69/69**; `tests/env.test.ts` **76/76**; api `tsc --noEmit`, `lint`, `build` (placeholder `DATABASE_URL` for `prisma generate` only) and `git diff --check` clean; admin `lint` and `build` (`tsc -b && vite build`) clean. **No PostgreSQL:** `external-collections-refund.pg.test.ts` (P36–P40) exists but **P36–P40 are NOT RUN** and **P39 is DEFINED / NOT RUN until S7**; the F6 trigger, `chk_ec_status`/`chk_ec_refund_fields`/`chk_ec_claim_state`, the real row lock and the fail-closed-gate PostgreSQL behaviour are unverified. **S-REF is NOT approved** (Codex has not re-reviewed) and **S7–S11 remain pending**. No staging, no commit, no push, no migration/`schema.prisma` edit, no `docs/production-v1/*` change, no DEV/TEST/LOCAL_TEST/DEMO/PILOT/production operation. |
+| 2026-10-17 | R3-A4.3 **S-REF.2 — CIERRE DE EVIDENCIA Y DOCS**: the final-review test/doc fixes applied (P38-01/02/03, P37, P40, C-01, contract-doc D-01/D-02) (uncommitted worktree; SHA not embedded) | repository branch `feat/production-v1`; the R3-A4.3 increment is undeployed and has not been executed against any database | §16 ("R3-A4.3" block: S-REF implementation / Pilot-gate / PostgreSQL-evidence rows), §2, §25 + the contract doc §10/§11.1/§12.9 | Test + documentation fixes, **DB-free only; no production S-REF code changed** (no test proved a defect, so `external-collections.service.ts`, `external-collection-refund.dto.ts` and `external-collections.routes.ts` are untouched). **P38-01** `claimCollection` re-reads the claimed `ExternalCollection` from PostgreSQL after T-R and asserts `claimAttemptId === attempt.id` (never the pre-claim row). **P38-02** SQLSTATE is obtained through a raw `pg` probe asserting `code === '23514'` and `constraint === 'chk_ec_refund_fields'` (Prisma 7.10 + adapter-pg may wrap `error.meta.code`), with a single deterministic `T`. **P38-03** the CLAIMED fixture is deterministic and built through the contractual T-R path (not an alternate `findFirst`), with `companyPricingConfig.upsert` + `getSnapshot()` so `PRICING_CONFIG_MISSING` cannot come from an accidental baseline absence. The APPLIED fixture stays **manual** through the real reservation/claim flow — **not equivalent to T-C** (real T-C is S5, unapproved) — asserting a CONFIRMED attempt, a valid `SaleCheckout`, valid `appliedCheckoutId`/`appliedSaleId`, coherent claim/origin/`operationKey` and satisfied `chk_ec_status`. **P37** the fixture derives permissions from the actor's OWN role (`grantsFor`) and adds a split-authority actor; five genuinely distinct cases (OWNER allow, COMPANY ADMIN allow, LOCATION ADMIN 403, real CASHIER 403, split authority 403). **P40** expanded on PostgreSQL to all six surfaces with the gate OFF; the **DB-free** suite `api/tests/payments/external-methods-gate.behavior.test.ts` (10 tests, all pass) runs P40-01..06 through the real wiring (`parseEnv → router → controller → service`) and C-01-01..04 fail-closed propagation. **Docs (D-01/D-02):** contract §10 retitled "not fully implemented / not PostgreSQL-verified"; the "fail-closed at every boundary" claim replaced by the enumerated DB-free boundaries actually tested; the "P38 fixture already rebuilt" claim corrected (S-REF.1 began it, S-REF.2 completed it). **No PostgreSQL was run** (`external-collections-refund.pg.test.ts` P36–P40 NOT RUN; P39 DEFINED / NOT RUN until S7); **no schema/migration/`docs/production-v1/*` change**; no staging, no commit, no push, no S7. Offline gates: required DB-free vitest batch 9 files / 366 passed; `checkout.behavior.test.ts -t "S5\|S6"` 77 passed / 59 skipped; api `tsc --noEmit` and `lint` clean; `tsc -p tsconfig.check.json` adds 0 errors in the two touched files (76 pre-existing elsewhere); admin `lint`/`build` clean; `git diff --check` clean. |
+| 2026-10-18 | Cash withdrawals/expenses frontend continuation and existing-slice review (uncommitted; SHA not embedded) | `829b8d39ed4bcf43a6c479df4f4bf0414085364d`; dirty shared worktree preserved | §2, §16, §22, §23, §25 | Added the minimal cashier movement UI and focused client tests; reviewed the existing backend/RBAC/migration/tooling without replacing it. Client and DB-free gates pass. Real migration/PG tests remain NOT RUN because marker-proven disposable LOCAL_TEST and a local PostgreSQL runtime are unavailable. No fallback to DEV, hosted TEST, DEMO, PILOT or production; no deploy, stage, commit or push. Final status: `BLOCKED`. |
+| 2026-10-19 | **G11-ADV-001..006 closed** (independent-adversarial-review P1×3/P2×3 blockers on the PILOT G11 cut-over tooling) (uncommitted worktree; HEAD `829b8d39ed4bcf43a6c479df4f4bf0414085364d`) | LOCAL_TEST only, through `local-test-cutover-lab.mjs`; PILOT/DEV/hosted TEST/DEMO untouched | §16 (cut-over tooling), §22, §25 | (1) ADV-001 plan/target/tooling binding (`pilot-plan-binding.mjs`; migrate plan v3, RBAC plan v2, `PLAN_BINDING_MISMATCH`, target fail-closed even at dry-run). (2) ADV-002 staged private migration run in `pilot-migrate.mjs` (0700 dirs/0600 files, exact-tree verifier at build AND pre-spawn, child cwd=stage, phase `stage`). (3) ADV-003 rollback boundary superseded: the lossless-restore end is cut-over step 18 (API start / reservation-sweeper writer), not step 20; R-C/R-D + static test `pilot-runbook-g11-boundary.test.mjs` (7/7). (4) ADV-004 S9 gate extended and **PG-proved**: m10/m11 unique indexes, the six SQL-only CHECKs compared as whitespace-normalized `pg_get_constraintdef` EQUALITY against PG17-proven pins, six m9 trigger pg_trigger bindings, composite FK column pairs + RESTRICT/RESTRICT/SIMPLE; root-cause fixes during the proof loop: TS template `'\s+'`→`\\s+` escape defect and five deparse pins corrected from real server renderings. (5) ADV-005 `pilot-backup.mjs` publication tail strict (marker removal identity-checked + absence re-verified, mandatory final fsync, post-publish inode+sha re-verification of both finals, every tail failure keeps evidence, rc=4 phase=publish; F26 matrix 5 cases; backup 127/127, clone-restore 130/130). (6) ADV-006 U1-CFG-01 probe protocol `U1CFG/1` with `writeSync(1,…)` + pure fail-closed parser (empty stdout+exit 0 refused; malformed/duplicate/missing fields refused; 42/42). ADV-007/008 (P3): deferred post-pilot in the closure report — original finding texts not recoverable in the working record. Gates: scripts DB-free 438/438; api DB-free readiness/G9 180/180; lint 0; typecheck baseline exactly 76; `git diff --check` clean; manifests all CURRENT (clone-restore re-written by the approved tool). Lab proofs: rehearsals S4→G11 and G7→G11 `LAB_RESULT=GREEN`; restore itest 3/3; **new** — `--op=integration-test` also runs the opt-in S9 PG suite against a lab-provisioned disposable EXACT_G11 cluster: **17 passed / 2 skipped (intentional), exit 0** (first real-PostgreSQL proof of the S9 gate, incl. the ADV-004 bindings). Durable evidence `~/.local/share/mona-jacinta/handoff/cutover-lab-g11-proofs-20261019T084355Z`; verdict report `~/.local/share/mona-jacinta/handoff/g11-adv-closure-verdict-20261019T083900Z.md`. All disposable lab data torn down. Verdict: `INDEPENDENT_G11_FINDINGS_CLOSED` — `G11_CUTOVER_TOOLING_GREEN_RESTORED`; `PILOT_NOT_TOUCHED`, `PILOT_RESTORE_EXECUTION_BLOCKED`, `RAILWAY_DATABASE_TARGET_UNVERIFIED`. No staging/commit/push; migrations 1–11 untouched; `docs/production-v1/*` untouched. |
+| 2026-10-19 | PILOT migrate P1011 staged-CA root cause and TDD fix (uncommitted; HEAD `ccd43a849ed7b67d9204ed35722bde10d175f92e`) | DB-free only; frozen PILOT not contacted | §25 | Root cause proven: the generated config lived at the staging root but resolved the verified CA with `../scripts/...`, outside that root, while staging had copied it to `./scripts/...`; Prisma therefore reported P1011 `cert file not found`, whereas the identity proof used the same reviewed CA bytes directly through `pg` and succeeded. RED added an exact staged-path assertion; GREEN changes only that relative path. The child allowlist remains unchanged and excludes `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and `NODE_TLS_REJECT_UNAUTHORIZED`; its `DATABASE_URL` remains the held canonical URL without query mutation. Evidence: focused migrator suites 64/64; binding/payload/runbook regressions 59/59; isolated API TLS 11/11; API lint clean; manifests all CURRENT; migration payload unchanged. The tooling-bound S4 plan digest necessarily changed from the previously approved value to a new dry-run value (reported separately to the OWNER); no migration, backup, RBAC, Railway, commit or push operation occurred. `docs/production-v1/*` untouched. |

@@ -1,0 +1,552 @@
+import request from 'supertest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { seedDemo } from '../../prisma/seed.js';
+import { createApp } from '../../src/app.js';
+import type { PrismaClient } from '../../src/generated/prisma/client.js';
+import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
+
+describe('backoffice read API', () => {
+  let prisma: PrismaClient;
+  let app: ReturnType<typeof createApp>;
+  let branches: Record<string, string>;
+  let users: Record<string, string>;
+  let variants: Record<string, { id: string; productId: string; sku: string; price: bigint }>;
+
+  beforeAll(async () => {
+    prisma = await createTestPrismaClient();
+    app = createApp(prisma);
+  }, 120000);
+
+  beforeEach(async () => {
+    await truncateAllTables(prisma);
+    await seedDemo(prisma);
+    branches = Object.fromEntries(
+      (await prisma.branch.findMany({ select: { code: true, id: true } })).map((branch) => [
+        branch.code,
+        branch.id,
+      ]),
+    );
+    users = Object.fromEntries(
+      (await prisma.user.findMany({ select: { email: true, id: true } })).map((user) => [
+        user.email,
+        user.id,
+      ]),
+    );
+    variants = Object.fromEntries(
+      (
+        await prisma.productVariant.findMany({
+          where: { sku: { in: ['REM-NEG-M', 'JEA-AZU-42'] } },
+          select: { id: true, productId: true, sku: true, price: true },
+        })
+      ).map((variant) => [variant.sku, variant]),
+    );
+    // Phase 1D.3.5 SWITCH: Backoffice REPORT_VIEW/USER_MANAGE now gate on
+    // Production assignments (req.auth.assignments), not legacy UserBranchRole
+    // report.view/user.manage. Legacy MANAGER confers no Production role at
+    // all (D2.1: DEFERRED), and Production WAREHOUSE carries neither
+    // REPORT_VIEW nor USER_MANAGE by default (role-permission-matrix.ts) —
+    // neither can stand in as "the authorized single-branch caller" these
+    // tests need. ADMIN is the only canonical role granted every Production
+    // permission by default, and can still be LOCATION-scoped during the
+    // pre-1D.4.1-backfill compatibility window this task must keep working
+    // under — a fresh LOCATION-scoped ADMIN user is the default authorized,
+    // single-branch caller.
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const scopedAdmin = await createTestUser(prisma, adminRole.id, branches.CEN!);
+    users['scoped-admin'] = scopedAdmin.id;
+  }, 120000);
+
+  afterAll(async () => prisma?.$disconnect(), 120000);
+
+  async function token(email: string) {
+    return getAuthToken({ id: users[email]! });
+  }
+
+  async function get(path: string, email = 'scoped-admin') {
+    return request(app).get(path).set('Authorization', `Bearer ${await token(email)}`);
+  }
+
+  // GC2 (Phase 1 Global Closeout): USER_MANAGE is now COMPANY-required
+  // (permissions.ts's COMPANY_SCOPE_REQUIRED_FOR_ADMIN). The canonical,
+  // non-transitional ADMIN shape — exactly one UserRoleScope row, scopeKind
+  // COMPANY, locationId null, no legacy UserBranchRole row — used wherever a
+  // test needs a real ADMIN caller for a USER_MANAGE-gated route now that a
+  // LOCATION-scoped ADMIN (this file's default 'scoped-admin') no longer
+  // qualifies. GC4F2 converged seedDemo's admin@demo.local itself to this
+  // same canonical COMPANY shape, so it is no longer a LOCATION example.
+  async function createCompanyAdmin(email: string) {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const admin = await prisma.user.create({ data: { name: 'company-admin', email, passwordHash: 'x' } });
+    await prisma.userRoleScope.create({
+      data: { userId: admin.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    return admin;
+  }
+
+  async function createPendingSale(branchId = branches.CEN!) {
+    const sellerId = users['seller01@demo.local']!;
+    const remera = variants['REM-NEG-M']!;
+    const jean = variants['JEA-AZU-42']!;
+    return prisma.sale.create({
+      data: {
+        sellerId,
+        branchId,
+        saleNumber: `T-${branchId.slice(0, 6)}`,
+        status: 'PENDING_PAYMENT',
+        subtotal: 16500000n,
+        total: 16500000n,
+        items: {
+          create: [
+            {
+              variantId: remera.id,
+              productId: remera.productId,
+              productName: 'Remera Basica',
+              variantName: 'Negro / M',
+              sku: remera.sku,
+              quantity: 2n,
+              unitPrice: 4500000n,
+              subtotal: 9000000n,
+            },
+            {
+              variantId: jean.id,
+              productId: jean.productId,
+              productName: 'Jean Slim',
+              variantName: 'Azul / 42',
+              sku: jean.sku,
+              quantity: 1n,
+              unitPrice: 7500000n,
+              subtotal: 7500000n,
+            },
+          ],
+        },
+      },
+    });
+  }
+
+  async function createPaidSale(branchId = branches.CEN!) {
+    const sale = await createPendingSale(branchId);
+    const register = await prisma.cashRegister.findFirstOrThrow({ where: { branchId } });
+    const session = await prisma.cashSession.create({
+      data: { registerId: register.id, openedById: users['cashier01@demo.local']!, startingCash: 0n },
+    });
+    await prisma.salePayment.create({
+      data: {
+        saleId: sale.id,
+        method: 'CASH',
+        amount: 16500000n,
+        receivedAmount: 17000000n,
+        changeAmount: 500000n,
+        cashSessionId: session.id,
+        idempotencyKey: 'cash-full',
+        cashMovement: {
+          create: {
+            sessionId: session.id,
+            type: 'SALE_INCOME',
+            amount: 16500000n,
+            userId: users['cashier01@demo.local']!,
+          },
+        },
+      },
+    });
+    return prisma.sale.update({ where: { id: sale.id }, data: { status: 'PAID' } });
+  }
+
+  async function writeSnapshot() {
+    const [
+      sales,
+      saleItems,
+      salePayments,
+      inventory,
+      reservations,
+      movements,
+      cashSessions,
+      cashMovements,
+      audits,
+    ] = await Promise.all([
+      prisma.sale.count(),
+      prisma.saleItem.count(),
+      prisma.salePayment.count(),
+      prisma.inventory.count(),
+      prisma.stockReservation.count(),
+      prisma.stockMovement.count(),
+      prisma.cashSession.count(),
+      prisma.cashMovement.count(),
+      prisma.auditLog.count(),
+    ]);
+    return {
+      sales,
+      saleItems,
+      salePayments,
+      inventory,
+      reservations,
+      movements,
+      cashSessions,
+      cashMovements,
+      audits,
+    };
+  }
+
+  it('allows a LOCATION-scoped Production caller to read own branch data', async () => {
+    await createPendingSale();
+    const response = await get('/api/v1/backoffice/sales');
+    expect(response.status).toBe(200);
+    expect(response.body.items).toHaveLength(1);
+    expect(response.body.items[0].branch).toMatchObject({ id: branches.CEN, code: 'CEN' });
+  });
+
+  it('returns 403 when a LOCATION-scoped caller queries an unauthorized branchId', async () => {
+    const response = await get(`/api/v1/backoffice/sales?branchId=${branches.YB}`);
+    expect(response.status).toBe(403);
+  });
+
+  it('authorizes Backoffice REPORT_VIEW reads via the Production grant alone', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const user = await createTestUser(prisma, adminRole.id, branches.CEN!);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/backoffice/dashboard').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('authorizes GET /api/v1/backoffice/dashboard via a COMPANY-scoped OWNER assignment, with zero RolePermission rows', async () => {
+    const ownerRole = await prisma.role.findUniqueOrThrow({ where: { code: 'OWNER' } });
+    const owner = await prisma.user.create({
+      data: { name: 'owner-backoffice', email: 'owner-backoffice@test.local', passwordHash: 'x' },
+    });
+    await prisma.userRoleScope.create({
+      data: { userId: owner.id, roleId: ownerRole.id, scopeKind: 'COMPANY', locationId: null },
+    });
+    const ownerToken = await getAuthToken(owner);
+    const response = await request(app).get('/api/v1/backoffice/dashboard').set('Authorization', `Bearer ${ownerToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only report.view grant, once switched', async () => {
+    const permission = await prisma.permission.upsert({ where: { code: 'report.view' }, create: { code: 'report.view' }, update: {} });
+    const role = await createRole(prisma, 'LEGACY-ONLY-REPORT-VIEW');
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(prisma, role.id, branches.CEN!);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/backoffice/dashboard').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
+  });
+
+  it('rejects canonical WAREHOUSE (no REPORT_VIEW) on Backoffice reads', async () => {
+    expect((await get('/api/v1/backoffice/dashboard', 'warehouse01@demo.local')).status).toBe(403);
+  });
+
+  it('revokes Production REPORT_VIEW after token issuance and fails closed', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const permission = await prisma.permission.findUniqueOrThrow({ where: { code: 'REPORT_VIEW' } });
+    await prisma.rolePermission.delete({ where: { roleId_permissionId: { roleId: adminRole.id, permissionId: permission.id } } });
+    expect((await get('/api/v1/backoffice/dashboard')).status).toBe(403);
+  });
+
+  // Phase 1D.3.5 cross-assignment security: a permission granted by one
+  // assignment must never combine with a location granted by a different
+  // assignment (authorization-policy.ts's hasPermissionAtLocation contract).
+  // ADMIN carries REPORT_VIEW by default; WAREHOUSE does not.
+  it('does not compose ADMIN @ A REPORT_VIEW with WAREHOUSE @ B location for sale detail', async () => {
+    const adminRole = await prisma.role.findUniqueOrThrow({ where: { code: 'ADMIN' } });
+    const warehouseRole = await prisma.role.findUniqueOrThrow({ where: { code: 'WAREHOUSE' } });
+    const multi = await prisma.user.create({ data: { name: 'multi-report', email: 'multi-report@test.local', passwordHash: 'x' } });
+    await prisma.userRoleScope.createMany({
+      data: [
+        { userId: multi.id, roleId: adminRole.id, scopeKind: 'LOCATION', locationId: branches.CEN! },
+        { userId: multi.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branches.YB! },
+      ],
+    });
+    const multiToken = await getAuthToken(multi);
+    const saleA = await createPendingSale(branches.CEN);
+    const saleB = await createPendingSale(branches.YB);
+    expect((await request(app).get(`/api/v1/backoffice/sales/${saleA.id}`).set('Authorization', `Bearer ${multiToken}`)).status).toBe(200);
+    expect((await request(app).get(`/api/v1/backoffice/sales/${saleB.id}`).set('Authorization', `Bearer ${multiToken}`)).status).toBe(403);
+  });
+
+  it('GET /branches returns only the authorized Locations with their type and state', async () => {
+    const scoped = await get('/api/v1/backoffice/branches');
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.items).toHaveLength(1);
+    expect(scoped.body.items[0]).toMatchObject({
+      id: branches.CEN,
+      code: 'CEN',
+      type: 'RETAIL_BRANCH',
+      isActive: true,
+      locationConsistency: 'consistent',
+    });
+  });
+
+  it('GET /branches binds several authorized ids and keeps the code ordering', async () => {
+    const response = await get('/api/v1/backoffice/branches', 'admin@demo.local');
+    expect(response.status).toBe(200);
+    const codes = response.body.items.map((item: { code: string }) => item.code);
+    expect(codes.length).toBeGreaterThan(1);
+    expect(codes).toEqual([...codes].sort());
+    for (const item of response.body.items) {
+      expect(item.locationConsistency).toBe('consistent');
+      expect(['RETAIL_BRANCH', 'CENTRAL_WAREHOUSE']).toContain(item.type);
+    }
+  });
+
+  it('allows ADMIN to read global authorized data', async () => {
+    await createPendingSale(branches.CEN);
+    await createPendingSale(branches.YB);
+    const response = await get('/api/v1/backoffice/sales', 'admin@demo.local');
+    expect(response.status).toBe(200);
+    expect(response.body.items.map((sale: { branch: { code: string } }) => sale.branch.code).sort()).toEqual([
+      'CEN',
+      'YB',
+    ]);
+  });
+
+  it('denies SELLER and CASHIER on REPORT_VIEW endpoints', async () => {
+    expect((await get('/api/v1/backoffice/dashboard', 'seller01@demo.local')).status).toBe(403);
+    expect((await get('/api/v1/backoffice/dashboard', 'cashier01@demo.local')).status).toBe(403);
+  });
+
+  it('denies /users without USER_MANAGE, including a transitional LOCATION ADMIN caller', async () => {
+    // Canonical WAREHOUSE carries neither USER_MANAGE nor REPORT_VIEW by
+    // default (role-permission-matrix.ts).
+    expect((await get('/api/v1/backoffice/users', 'warehouse01@demo.local')).status).toBe(403);
+    // GC2: USER_MANAGE now requires COMPANY scope. GC4F2 converged
+    // seedDemo's admin@demo.local to canonical ADMIN COMPANY, so it no
+    // longer represents a transitional LOCATION ADMIN — this test
+    // intentionally uses this file's purpose-built LOCATION ADMIN fixture
+    // ('scoped-admin', created in beforeAll above) instead, to keep proving
+    // this global (no-location) route denies a LOCATION-scoped ADMIN.
+    expect((await get('/api/v1/backoffice/users', 'scoped-admin')).status).toBe(403);
+    const companyAdmin = await createCompanyAdmin('company-admin-users-1@test.local');
+    const response = await request(app)
+      .get('/api/v1/backoffice/users')
+      .set('Authorization', `Bearer ${await getAuthToken(companyAdmin)}`);
+    expect(response.status).toBe(200);
+    expect(response.body.items[0]).not.toHaveProperty('passwordHash');
+  });
+
+  it('authorizes /backoffice/users via the Production USER_MANAGE grant alone (COMPANY-scoped ADMIN)', async () => {
+    const user = await createCompanyAdmin('company-admin-users-2@test.local');
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/backoffice/users').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(200);
+  });
+
+  it('rejects a legacy-lowercase-only user.manage grant, once switched', async () => {
+    const permission = await prisma.permission.upsert({ where: { code: 'user.manage' }, create: { code: 'user.manage' }, update: {} });
+    const role = await createRole(prisma, 'LEGACY-ONLY-USER-MANAGE');
+    await prisma.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(prisma, role.id, branches.CEN!);
+    const isolatedToken = await getAuthToken(user);
+    const response = await request(app).get('/api/v1/backoffice/users').set('Authorization', `Bearer ${isolatedToken}`);
+    expect(response.status).toBe(403);
+  });
+
+  it('denies sale detail from an unauthorized branch', async () => {
+    // Phase 1D.3.5 SWITCH: getSale now pairs REPORT_VIEW with the persisted
+    // Sale.branchId via assertPermissionAtLocation — the default caller's
+    // ADMIN assignment only covers Centro, so a sale persisted at Yerba
+    // Buena must still be rejected.
+    const sale = await createPendingSale(branches.YB);
+    const response = await get(`/api/v1/backoffice/sales/${sale.id}`);
+    expect(response.status).toBe(403);
+  });
+
+  it('returns inventory available as physical minus reserved', async () => {
+    const inventory = await prisma.inventory.findFirstOrThrow({ where: { branchId: branches.CEN } });
+    await prisma.inventory.update({ where: { id: inventory.id }, data: { physical: 9n, reserved: 4n } });
+    const response = await get(`/api/v1/backoffice/inventory?branchId=${branches.CEN}`);
+    expect(response.status).toBe(200);
+    const row = response.body.items.find((item: { id: string }) => item.id === inventory.id);
+    expect(row).toMatchObject({ physical: '9', reserved: '4', available: '5' });
+  });
+
+  it('keeps an old zero-payment hold unavailable, like a payment-protected one: the clock never frees committed stock (OWNER 2026-10-20)', async () => {
+    const expiresAt = new Date(Date.now() - 60 * 60 * 1000);
+    const rows: Record<string, string> = {};
+    for (const [sku, partialPayment] of [['REM-NEG-M', false], ['JEA-AZU-42', true]] as const) {
+      const variant = variants[sku]!;
+      const inventory = await prisma.inventory.update({
+        where: { variantId_branchId: { variantId: variant.id, branchId: branches.CEN! } },
+        data: { physical: 1n, reserved: 1n },
+      });
+      rows[sku] = inventory.id;
+      const sale = await prisma.sale.create({
+        data: {
+          sellerId: users['seller01@demo.local']!, branchId: branches.CEN!, status: 'PENDING_PAYMENT',
+          saleNumber: `T-BO-${sku}`, subtotal: variant.price, total: variant.price,
+          items: { create: {
+            variantId: variant.id, productId: variant.productId, productName: 'Snapshot product',
+            variantName: 'Snapshot variant', sku, quantity: 1n, unitPrice: variant.price, subtotal: variant.price,
+          } },
+        },
+      });
+      await prisma.stockReservation.create({
+        data: { saleId: sale.id, variantId: variant.id, branchId: branches.CEN!, quantity: 1n, status: 'ACTIVE', expiresAt },
+      });
+      if (partialPayment) {
+        await prisma.salePayment.create({
+          data: { saleId: sale.id, method: 'TRANSFER', amount: 1n, idempotencyKey: `partial-${sku}` },
+        });
+      }
+    }
+    const response = await get(`/api/v1/backoffice/inventory?branchId=${branches.CEN}`);
+    expect(response.status).toBe(200);
+    const byId = (id: string) => response.body.items.find((item: { id: string }) => item.id === id);
+    expect(byId(rows['REM-NEG-M']!)).toMatchObject({ physical: '1', reserved: '1', available: '0' });
+    expect(byId(rows['JEA-AZU-42']!)).toMatchObject({ physical: '1', reserved: '1', available: '0' });
+  });
+
+  it('serializes sales/detail monetary BigInts as strings', async () => {
+    const sale = await createPaidSale();
+    const list = await get('/api/v1/backoffice/sales');
+    expect(list.status).toBe(200);
+    expect(list.body.items[0]).toMatchObject({
+      subtotal: '16500000',
+      total: '16500000',
+      paymentSummary: { paidAmount: '16500000', remainingBalance: '0' },
+    });
+    const detail = await get(`/api/v1/backoffice/sales/${sale.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.sale.total).toBe('16500000');
+    expect(detail.body.sale.items[0].unitPrice).toBeTypeOf('string');
+    expect(detail.body.sale.payments[0]).toMatchObject({
+      amount: '16500000',
+      receivedAmount: '17000000',
+      changeAmount: '500000',
+      cashMovement: { amount: '16500000' },
+    });
+  });
+
+  it('does not write from read-only endpoints', async () => {
+    await createPaidSale();
+    const before = await writeSnapshot();
+    await get('/api/v1/backoffice/dashboard', 'admin@demo.local');
+    await get('/api/v1/backoffice/sales', 'admin@demo.local');
+    const sale = await prisma.sale.findFirstOrThrow();
+    await get(`/api/v1/backoffice/sales/${sale.id}`, 'admin@demo.local');
+    await get('/api/v1/backoffice/inventory', 'admin@demo.local');
+    await get('/api/v1/backoffice/branches', 'admin@demo.local');
+    await get('/api/v1/backoffice/users', 'admin@demo.local');
+    expect(await writeSnapshot()).toEqual(before);
+  });
+
+  it('scopes dashboard aggregates to authorized branches', async () => {
+    await createPendingSale(branches.CEN);
+    await createPendingSale(branches.YB);
+    const centroCaller = await get('/api/v1/backoffice/dashboard');
+    const admin = await get('/api/v1/backoffice/dashboard', 'admin@demo.local');
+    expect(centroCaller.status).toBe(200);
+    expect(admin.status).toBe(200);
+    expect(centroCaller.body.pendingSalesCount).toBe(1);
+    expect(admin.body.pendingSalesCount).toBe(2);
+  });
+
+  // Phase 1D.4.6: GET /backoffice/users must read exclusively from live
+  // UserRoleScope — never UserBranchRole — for both user discovery and the
+  // projected assignments. Nested here (not a separate file) so it reuses
+  // this describe's seedDemo fixtures/beforeEach and its `get`/`token`
+  // helpers, per this file's own established convention.
+  describe('Phase 1D.4.6 live UserRoleScope users projection', () => {
+    async function findRole(code: 'ADMIN' | 'SELLER' | 'WAREHOUSE') {
+      return prisma.role.findUniqueOrThrow({ where: { code } });
+    }
+
+    // GC2: USER_MANAGE now requires COMPANY scope. Every test below is about
+    // the TARGET user's projected assignments, not the USER_MANAGE gate
+    // itself, so the caller must be a real ADMIN COMPANY (this file's default
+    // 'scoped-admin' is LOCATION-scoped and would 403 before reaching the
+    // projection under test). A COMPANY assignment's effectiveLocationIds
+    // expands to every active Location (authorization-context.ts), so CEN
+    // and YB both remain in scope for this dedicated companyAdmin caller.
+    let companyAdminToken: string;
+    beforeEach(async () => {
+      const companyAdmin = await createCompanyAdmin('company-admin-projection@test.local');
+      companyAdminToken = await getAuthToken(companyAdmin);
+    });
+
+    async function getAsCompanyAdmin(path: string) {
+      return request(app).get(path).set('Authorization', `Bearer ${companyAdminToken}`);
+    }
+
+    it('a stale legacy UserBranchRole never leaks into assignments — only the live UserRoleScope is projected', async () => {
+      const sellerRole = await findRole('SELLER');
+      const warehouseRole = await findRole('WAREHOUSE');
+      // createTestUser gives target BOTH a legacy UserBranchRole(SELLER@CEN)
+      // and a matching UserRoleScope(SELLER@CEN) — deliberately diverge them
+      // below so the legacy row and the live Production row disagree.
+      const target = await createTestUser(prisma, sellerRole.id, branches.CEN!);
+      await prisma.userRoleScope.deleteMany({ where: { userId: target.id, roleId: sellerRole.id } });
+      await prisma.userRoleScope.create({
+        data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branches.CEN! },
+      });
+      // Confirm the divergence is real before asserting on it.
+      expect(await prisma.userBranchRole.count({ where: { userId: target.id, roleId: sellerRole.id } })).toBe(1);
+
+      const response = await getAsCompanyAdmin('/api/v1/backoffice/users');
+      expect(response.status).toBe(200);
+      const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
+      expect(projected).toBeDefined();
+      expect(projected).not.toHaveProperty('roles');
+      expect(projected).not.toHaveProperty('branches');
+      expect(projected.assignments).toEqual([
+        { roleCode: 'WAREHOUSE', scopeKind: 'LOCATION', location: { id: branches.CEN, name: expect.any(String), code: 'CEN' } },
+      ]);
+    });
+
+    it('a fully-revoked user (stale UserBranchRole, zero UserRoleScope) is absent from the response', async () => {
+      const sellerRole = await findRole('SELLER');
+      const target = await createTestUser(prisma, sellerRole.id, branches.CEN!);
+      await prisma.userRoleScope.deleteMany({ where: { userId: target.id } });
+
+      const response = await getAsCompanyAdmin('/api/v1/backoffice/users');
+      expect(response.status).toBe(200);
+      expect(response.body.items.map((item: { id: string }) => item.id)).not.toContain(target.id);
+      expect(await prisma.userBranchRole.count({ where: { userId: target.id } })).toBe(1);
+    });
+
+    it('a COMPANY-scoped assignment is live user state — appears with location: null and no UserBranchRole needed', async () => {
+      const adminRole = await findRole('ADMIN');
+      const target = await prisma.user.create({
+        data: { name: 'company-target', email: 'company-target@test.local', passwordHash: 'x' },
+      });
+      await prisma.userRoleScope.create({
+        data: { userId: target.id, roleId: adminRole.id, scopeKind: 'COMPANY', locationId: null },
+      });
+      expect(await prisma.userBranchRole.count({ where: { userId: target.id } })).toBe(0);
+
+      const response = await getAsCompanyAdmin('/api/v1/backoffice/users');
+      expect(response.status).toBe(200);
+      const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
+      expect(projected).toBeDefined();
+      expect(projected.assignments).toEqual([{ roleCode: 'ADMIN', scopeKind: 'COMPANY', location: null }]);
+    });
+
+    it('a user with two independent LOCATION assignments returns both, never collapsed into a single role/branch list', async () => {
+      const sellerRole = await findRole('SELLER');
+      const warehouseRole = await findRole('WAREHOUSE');
+      const target = await prisma.user.create({
+        data: { name: 'multi-target', email: 'multi-target@test.local', passwordHash: 'x' },
+      });
+      await prisma.userRoleScope.create({
+        data: { userId: target.id, roleId: sellerRole.id, scopeKind: 'LOCATION', locationId: branches.CEN! },
+      });
+      await prisma.userRoleScope.create({
+        data: { userId: target.id, roleId: warehouseRole.id, scopeKind: 'LOCATION', locationId: branches.YB! },
+      });
+
+      // The COMPANY admin caller's effectiveLocationIds expands to every
+      // active Location (authorization-context.ts), so both CEN and YB are
+      // within its filter.
+      const response = await getAsCompanyAdmin('/api/v1/backoffice/users');
+      expect(response.status).toBe(200);
+      const projected = response.body.items.find((item: { id: string }) => item.id === target.id);
+      expect(projected).toBeDefined();
+      const byRoleCode = Object.fromEntries(
+        projected.assignments.map((a: { roleCode: string; location: { id: string } | null }) => [a.roleCode, a]),
+      );
+      expect(projected.assignments).toHaveLength(2);
+      expect(byRoleCode.SELLER).toMatchObject({ scopeKind: 'LOCATION', location: { id: branches.CEN } });
+      expect(byRoleCode.WAREHOUSE).toMatchObject({ scopeKind: 'LOCATION', location: { id: branches.YB } });
+    });
+  });
+});

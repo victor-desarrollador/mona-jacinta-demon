@@ -1,0 +1,289 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hermetic:
+    name: Hermetic checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            api/package-lock.json
+            client/package-lock.json
+            admin/package-lock.json
+
+      - name: Verify runtime
+        run: |
+          test "$(node --version)" = "v24.20.0"
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install API dependencies
+        run: npm --prefix api ci
+
+      - name: Install client dependencies
+        run: npm --prefix client ci
+
+      - name: Install admin dependencies
+        run: npm --prefix admin ci
+
+      - name: Generate Prisma client
+        env:
+          NODE_ENV: production
+          DATABASE_URL: "postgresql://ci:ci@127.0.0.1:1/mona_ci"
+        run: npm --prefix api run db:generate
+
+      - name: API lint
+        run: npm --prefix api run lint
+
+      - name: API typecheck
+        run: npm --prefix api run typecheck
+
+      - name: Client lint
+        run: npm --prefix client run lint
+
+      - name: Client tests
+        run: npm --prefix client test -- --reporter=dot
+
+      - name: Admin lint
+        run: npm --prefix admin run lint
+
+      - name: Admin build
+        run: npm --prefix admin run build
+
+      # The tooling tests exercise the real contained children and read the pinned
+      # PostgreSQL 17 binaries (initdb, pg_ctl, postgres, pg_dump, pg_restore), so
+      # the runner needs the server package's binaries too (no cluster is created).
+      - name: Runner prerequisites (user namespaces, PostgreSQL 17 binaries)
+        uses: ./.github/actions/runner-prerequisites
+        with:
+          postgresql-packages: postgresql-17 postgresql-client-17
+
+      - name: Hermetic database tooling tests
+        run: node --test scripts/database/*.test.mjs
+
+      - name: Dependency boundaries
+        run: npm run deps:check
+
+      - name: Setup Python for Semgrep
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13.5"
+
+      - name: Install pinned Semgrep
+        run: python -m pip install semgrep==1.178.0
+
+      - name: Verify Semgrep version
+        run: test "$(semgrep --version)" = "1.178.0"
+
+      - name: Global security scan
+        shell: bash
+        run: |
+          mapfile -t TARGETS < <(
+            git ls-files -- \
+              api/src \
+              api/scripts \
+              api/tests \
+              client/src \
+              admin/src \
+              scripts \
+              .claude/hooks \
+            | grep -Ev '^api/src/generated/' \
+            | grep -E '\.(ts|tsx|js|jsx|mjs|cjs)$' \
+            | sort -u
+          )
+
+          test "${#TARGETS[@]}" -gt 0
+
+          if printf '%s\n' "${TARGETS[@]}" | grep -Fxq 'opencode.json'; then
+            echo "opencode.json must never enter the security target set"
+            exit 1
+          fi
+
+          if printf '%s\n' "${TARGETS[@]}" | grep -Eq '^api/src/generated/'; then
+            echo "generated Prisma must not enter the security target set"
+            exit 1
+          fi
+
+          semgrep scan \
+            --error \
+            --config p/secrets \
+            --config semgrep/mona-security.yml \
+            "${TARGETS[@]}"
+
+      - name: Express security scan
+        shell: bash
+        run: |
+          mapfile -t TARGETS < <(
+            git ls-files -- api/src |
+              grep -Ev '^api/src/generated/' |
+              grep -E '\.(ts|tsx|js|jsx|mjs|cjs)$' |
+              sort -u
+          )
+
+          test "${#TARGETS[@]}" -gt 0
+
+          semgrep scan \
+            --error \
+            --config p/expressjs \
+            "${TARGETS[@]}"
+
+  # Task 4: routine destructive API integration tests run against a disposable,
+  # job-local PostgreSQL 17 that satisfies the exact LOCAL_TEST contract
+  # (mona_local_test@127.0.0.1:5432/mona_local_test, proven by its marker).
+  # No repository secret, hosted Supabase TEST or DEV database is involved; the
+  # hosted TEST suite stays an OWNER-only final gate. Every credential is
+  # generated per run, masked, and passed through env -i, never argv.
+  local-postgres:
+    name: API integration (LOCAL_TEST PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            api/package-lock.json
+
+      - name: Verify runtime
+        run: |
+          test "$(node --version)" = "v24.20.0"
+          test "$(npm --version)" = "11.19.0"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install API dependencies
+        run: npm --prefix api ci
+
+      - name: Generate Prisma client
+        env:
+          NODE_ENV: production
+          DATABASE_URL: "postgresql://ci:ci@127.0.0.1:1/mona_ci"
+        run: npm --prefix api run db:generate
+
+      # Loopback-only publish. The superuser password is random, masked, and
+      # handed to docker by name (-e NAME), so it never appears in argv; the
+      # superuser is only used over the container's local socket below.
+      - name: Start PostgreSQL 17
+        run: |
+          POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::${POSTGRES_PASSWORD}"
+          export POSTGRES_PASSWORD
+          docker run --detach --name mona-ci-postgres \
+            --publish 127.0.0.1:5432:5432 \
+            --env POSTGRES_PASSWORD \
+            postgres:17
+          # The image's init-time server listens on the socket only, so a TCP
+          # answer means the final server is up. Bounded: fail after 60s.
+          for _ in $(seq 1 60); do
+            if docker exec mona-ci-postgres pg_isready -q -h 127.0.0.1 -p 5432 -U postgres; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec mona-ci-postgres pg_isready -q -h 127.0.0.1 -p 5432 -U postgres
+          version_num="$(docker exec mona-ci-postgres psql -X -At -U postgres -d postgres -c 'SHOW server_version_num')"
+          test "${version_num}" -ge 170000
+
+      # Non-superuser application role and its database, exactly the canonical
+      # LOCAL_TEST target. The password travels on stdin only.
+      - name: Provision CI LOCAL_TEST database
+        run: |
+          umask 077
+          LOCAL_TEST_PASSWORD="$(openssl rand -hex 32)"
+          echo "::add-mask::${LOCAL_TEST_PASSWORD}"
+          docker exec -i mona-ci-postgres psql -X -q -v ON_ERROR_STOP=1 -U postgres -d postgres <<SQL
+          CREATE ROLE mona_local_test WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT PASSWORD '${LOCAL_TEST_PASSWORD}';
+          CREATE DATABASE mona_local_test OWNER mona_local_test;
+          SQL
+          marker_id="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
+          {
+            printf 'LOCAL_TEST_DATABASE_URL=postgresql://mona_local_test:%s@127.0.0.1:5432/mona_local_test\n' "${LOCAL_TEST_PASSWORD}"
+            printf 'LOCAL_TEST_DATABASE_MARKER_ID=%s\n' "${marker_id}"
+          } > "${RUNNER_TEMP}/mona-local-test.env"
+
+      - name: Install LOCAL_TEST marker
+        run: |
+          set -a; . "${RUNNER_TEMP}/mona-local-test.env"; set +a
+          run_marker() {
+            env -i PATH="${PATH}" HOME="${HOME}" \
+              LOCAL_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
+              LOCAL_TEST_DATABASE_MARKER_ID="${LOCAL_TEST_DATABASE_MARKER_ID}" \
+              node scripts/database/local-test-marker.mjs "$@"
+          }
+          run_marker --execute --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}" \
+            --confirm-local-target=mona_local_test@127.0.0.1:5432/mona_local_test
+          run_marker --check --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}"
+
+      - name: Runner prerequisites (user namespaces, PostgreSQL 17 client)
+        uses: ./.github/actions/runner-prerequisites
+
+      # CI-only fixture: the job's disposable database is FRESH by construction,
+      # so it gets the pinned migrations plus the minimal synthetic bootstrap the
+      # integration tests need (canonical seed + Company/Location backfill), with
+      # no human backup/authorization step. Not local-test-prepare, which stays the
+      # manual workflow. The tool refuses anything but this exact CI target.
+      - name: Prepare LOCAL_TEST fixture
+        run: |
+          set -a; . "${RUNNER_TEMP}/mona-local-test.env"; set +a
+          env -i PATH="${PATH}" HOME="${HOME}" \
+            CI=true GITHUB_ACTIONS=true RUNNER_TEMP="${RUNNER_TEMP}" \
+            LOCAL_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
+            LOCAL_TEST_DATABASE_MARKER_ID="${LOCAL_TEST_DATABASE_MARKER_ID}" \
+            node scripts/database/ci-local-test-fixture.mjs --marker-id="${LOCAL_TEST_DATABASE_MARKER_ID}"
+
+      # MONA_TEST_DATABASE_TARGET=local selects the marker-proven LOCAL_TEST
+      # target. TEST_DATABASE_URL is only the NODE_ENV=test schema requirement
+      # (src/config/env.ts); it is unresolvable and never connected to, since the
+      # hosted TEST proof reads only the absent, ignored .env.development.
+      - name: API integration tests
+        working-directory: api
+        run: |
+          set -a; . "${RUNNER_TEMP}/mona-local-test.env"; set +a
+          JWT_SECRET="$(openssl rand -hex 32)"
+          echo "::add-mask::${JWT_SECRET}"
+          env -i PATH="${PATH}" HOME="${HOME}" CI=true \
+            MONA_TEST_DATABASE_TARGET=local \
+            LOCAL_TEST_DATABASE_URL="${LOCAL_TEST_DATABASE_URL}" \
+            LOCAL_TEST_DATABASE_MARKER_ID="${LOCAL_TEST_DATABASE_MARKER_ID}" \
+            TEST_DATABASE_URL="postgresql://hosted-test-disabled:unused@hosted-test-disabled-in-ci.invalid:5432/postgres" \
+            JWT_SECRET="${JWT_SECRET}" \
+            JWT_ACCESS_TTL_SECONDS=900 \
+            CORS_ORIGINS="http://localhost:3000,http://localhost:5173" \
+            npx --no-install vitest run --reporter=verbose
+
+      - name: Remove PostgreSQL container
+        if: always()
+        run: |
+          rm -f "${RUNNER_TEMP}/mona-local-test.env"
+          docker rm --force --volumes mona-ci-postgres >/dev/null 2>&1 || true

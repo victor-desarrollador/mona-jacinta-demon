@@ -1,0 +1,406 @@
+import { randomUUID } from 'node:crypto';
+import request from 'supertest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { seedDemo } from '../../prisma/seed.js';
+import { createApp } from '../../src/app.js';
+import type { Prisma, PrismaClient } from '../../src/generated/prisma/client.js';
+import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
+import { getAuthToken, createTestUser } from '../helpers/auth.js';
+import { createRole } from '../helpers/factories.js';
+
+describe('POST /api/v1/sales/:saleId/complete', () => {
+  let db: PrismaClient;
+  let app: ReturnType<typeof createApp>;
+  let cashierId: string;
+  let sellerId: string;
+  let branchId: string;
+  let otherBranchId: string;
+  let remeraId: string;
+  let jeanId: string;
+  let remeraProductId: string;
+  let jeanProductId: string;
+  let token: string;
+
+  beforeAll(async () => {
+    db = await createTestPrismaClient();
+    app = createApp(db);
+  }, 120000);
+
+  beforeEach(async () => {
+    await truncateAllTables(db);
+    await seedDemo(db);
+    const [cashier, seller, branch, otherBranch, remera, jean] = await Promise.all([
+      db.user.findUniqueOrThrow({ where: { email: 'cashier01@demo.local' } }),
+      db.user.findUniqueOrThrow({ where: { email: 'seller01@demo.local' } }),
+      db.branch.findUniqueOrThrow({ where: { code: 'CEN' } }),
+      db.branch.findUniqueOrThrow({ where: { code: 'YB' } }),
+      db.productVariant.findUniqueOrThrow({ where: { sku: 'REM-NEG-M' } }),
+      db.productVariant.findUniqueOrThrow({ where: { sku: 'JEA-AZU-42' } }),
+    ]);
+    cashierId = cashier.id;
+    sellerId = seller.id;
+    branchId = branch.id;
+    otherBranchId = otherBranch.id;
+    remeraId = remera.id;
+    jeanId = jean.id;
+    remeraProductId = remera.productId;
+    jeanProductId = jean.productId;
+    token = await getAuthToken(cashier);
+  }, 120000);
+
+  afterAll(async () => { await db?.$disconnect(); }, 120000);
+
+  function complete(saleId: string, accessToken = token, body: object = {}) {
+    return request(app)
+      .post(`/api/v1/sales/${saleId}/complete`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .send(body);
+  }
+
+  async function createSale(status: 'PAID' | 'DRAFT' | 'PENDING_PAYMENT' | 'COMPLETED' | 'CANCELLED' = 'PAID') {
+    return db.sale.create({
+      data: { sellerId, branchId, status, subtotal: 0n, total: 0n },
+    });
+  }
+
+  async function addItem(saleId: string, variantId: string, productId: string, quantity: bigint) {
+    const variant = await db.productVariant.findUniqueOrThrow({ where: { id: variantId } });
+    return db.saleItem.create({
+      data: {
+        saleId, variantId, productId, productName: 'Snapshot product',
+        variantName: 'Snapshot variant', sku: variant.sku,
+        quantity, unitPrice: variant.price, subtotal: quantity * variant.price,
+      },
+    });
+  }
+
+  async function reserve(saleId: string, variantId: string, quantity: bigint, overrides: Partial<{
+    branchId: string;
+    status: 'ACTIVE' | 'RELEASED' | 'CONSUMED';
+  }> = {}) {
+    const reservationBranchId = overrides.branchId ?? branchId;
+    await db.inventory.update({
+      where: { variantId_branchId: { variantId, branchId: reservationBranchId } },
+      data: { reserved: { increment: quantity } },
+    });
+    return db.stockReservation.create({
+      data: {
+        saleId, variantId, branchId: reservationBranchId, quantity,
+        status: overrides.status ?? 'ACTIVE',
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+      },
+    });
+  }
+
+  // A historical (non-ACTIVE) row: it never contributed to Inventory.reserved.
+  async function historical(saleId: string, variantId: string, quantity: bigint, status: 'RELEASED' | 'CONSUMED') {
+    return db.stockReservation.create({
+      data: { saleId, variantId, branchId, quantity, status, expiresAt: new Date(Date.now() - 60 * 60 * 1000) },
+    });
+  }
+
+  async function createReservedSale(items: Array<{ variantId: string; productId: string; quantity: bigint }>) {
+    const total = items.reduce((sum, item) => sum + item.quantity, 0n);
+    const sale = await db.sale.create({
+      data: { sellerId, branchId, status: 'PAID', subtotal: total, total },
+    });
+    for (const item of items) {
+      await addItem(sale.id, item.variantId, item.productId, item.quantity);
+      await reserve(sale.id, item.variantId, item.quantity);
+    }
+    return sale;
+  }
+
+  async function inventory(variantId: string, selectedBranchId = branchId) {
+    return db.inventory.findUniqueOrThrow({ where: { variantId_branchId: { variantId, branchId: selectedBranchId } } });
+  }
+
+  it('requires authentication, SALE_COMPLETE, fresh permission and fresh branch authorization', async () => {
+    const sale = await createReservedSale([{ variantId: remeraId, productId: remeraProductId, quantity: 1n }]);
+    expect((await request(app).post(`/api/v1/sales/${sale.id}/complete`)).status).toBe(401);
+
+    // Phase 1D.3.1 SWITCH: gated on the Production SALE_COMPLETE grant now.
+    const role = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+    const permission = await db.permission.findUniqueOrThrow({ where: { code: 'SALE_COMPLETE' } });
+    await db.rolePermission.delete({ where: { roleId_permissionId: { roleId: role.id, permissionId: permission.id } } });
+    expect((await complete(sale.id)).status).toBe(403);
+
+    await db.role.update({ where: { id: role.id }, data: { code: 'ADMIN_LOOKALIKE' } });
+    expect((await complete(sale.id)).status).toBe(403);
+
+    await db.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    // Fresh branch authorization subcase: move the authoritative LOCATION
+    // scope, not the legacy UserBranchRole assignment used above for permission.
+    await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranchId } });
+    expect((await complete(sale.id)).status).toBe(403);
+  });
+
+  // Phase 1D.3.1 §8: isolate the authority source explicitly. This proves
+  // completeSaleInTransaction's converted inline check (hasPermissionAtLocation
+  // over req.auth.assignments) — not just the route-level requirePermission
+  // gate — actually decides completion.
+  it('authorizes completion via the Production SALE_COMPLETE grant alone', async () => {
+    // Isolated via a fresh user, not a fresh role: authorization-context.ts
+    // validates a persisted UserRoleScope's Role.code against the canonical
+    // Production catalog (isProductionRoleCode) before it can ever become an
+    // assignment — an arbitrary test-only role code would be skipped
+    // entirely and prove nothing. CASHIER carries SALE_COMPLETE as its own
+    // real default grant (role-permission-matrix.ts), so a brand-new CASHIER
+    // user with no other state still isolates "the grant alone authorizes".
+    const cashierRole = await db.role.findUniqueOrThrow({ where: { code: 'CASHIER' } });
+    const user = await createTestUser(db, cashierRole.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const sale = await createReservedSale([{ variantId: remeraId, productId: remeraProductId, quantity: 1n }]);
+    const response = await complete(sale.id, isolatedToken);
+    expect(response.status).toBe(200);
+  });
+
+  it('authorizes completion via a bare COMPANY-scoped OWNER assignment', async () => {
+    const ownerRole = await db.role.findUniqueOrThrow({
+      where: { code: 'OWNER' },
+    });
+
+    const owner = await db.user.create({
+      data: {
+        name: 'owner-complete-sale',
+        email: 'owner-complete-sale@test.local',
+        passwordHash: 'x',
+      },
+    });
+
+    await db.userRoleScope.create({
+      data: {
+        userId: owner.id,
+        roleId: ownerRole.id,
+        scopeKind: 'COMPANY',
+        locationId: null,
+      },
+    });
+
+    const ownerToken = await getAuthToken(owner);
+    const sale = await createReservedSale([
+      { variantId: remeraId, productId: remeraProductId, quantity: 1n },
+    ]);
+    const response = await complete(sale.id, ownerToken);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('COMPLETED');
+  });
+
+  it('rejects a legacy-lowercase-only sale.complete grant, once switched', async () => {
+    const permission = await db.permission.upsert({ where: { code: 'sale.complete' }, create: { code: 'sale.complete' }, update: {} });
+    const role = await createRole(db, 'LEGACY-ONLY-SALE-COMPLETE');
+    await db.rolePermission.create({ data: { roleId: role.id, permissionId: permission.id } });
+    const user = await createTestUser(db, role.id, branchId);
+    const isolatedToken = await getAuthToken(user);
+    const sale = await createReservedSale([{ variantId: remeraId, productId: remeraProductId, quantity: 1n }]);
+    const response = await complete(sale.id, isolatedToken);
+    expect(response.status).toBe(403);
+  });
+
+  it('grants completion on a fresh UserRoleScope location despite a stale UserBranchRole', async () => {
+    // Phase 1C SWITCH: UserRoleScope is the sole LOCATION authority.
+    // UserBranchRole (role/permission authority) stays at branchId (CEN) —
+    // only the scope moves to otherBranchId (YB) — so this proves the legacy
+    // row can no longer veto access to a location UserRoleScope authorized.
+    await db.userRoleScope.updateMany({ where: { userId: cashierId, scopeKind: 'LOCATION' }, data: { locationId: otherBranchId } });
+    const sale = await db.sale.create({ data: { sellerId, branchId: otherBranchId, status: 'PAID', subtotal: 4500000n, total: 4500000n } });
+    await addItem(sale.id, remeraId, remeraProductId, 1n);
+    await reserve(sale.id, remeraId, 1n, { branchId: otherBranchId });
+    const response = await complete(sale.id);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('COMPLETED');
+  });
+
+  it('returns 404 for an unknown sale and rejects invalid lifecycle states', async () => {
+    expect((await complete(randomUUID())).status).toBe(404);
+    for (const status of ['DRAFT', 'PENDING_PAYMENT', 'CANCELLED'] as const) {
+      const sale = await createSale(status);
+      const response = await complete(sale.id);
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe('INVALID_SALE_STATE');
+    }
+  });
+
+  it('finalizes two variants atomically with exact physical/reserved deltas and audit', async () => {
+    const sale = await createReservedSale([
+      { variantId: remeraId, productId: remeraProductId, quantity: 2n },
+      { variantId: jeanId, productId: jeanProductId, quantity: 1n },
+    ]);
+    const before = { remera: await inventory(remeraId), jean: await inventory(jeanId) };
+    const response = await complete(sale.id);
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('COMPLETED');
+    expect(await inventory(remeraId)).toMatchObject({ physical: before.remera.physical - 2n, reserved: before.remera.reserved - 2n });
+    expect(await inventory(jeanId)).toMatchObject({ physical: before.jean.physical - 1n, reserved: before.jean.reserved - 1n });
+    // Explicit order: without ORDER BY PostgreSQL may return the two updated
+    // rows in either order (seed variant ids sort remera before jean).
+    expect(await db.stockReservation.findMany({ where: { saleId: sale.id }, orderBy: { variantId: 'asc' } })).toEqual([
+      expect.objectContaining({ variantId: remeraId, quantity: 2n, status: 'CONSUMED' }),
+      expect.objectContaining({ variantId: jeanId, quantity: 1n, status: 'CONSUMED' }),
+    ]);
+    expect(await db.stockMovement.findMany({ where: { saleId: sale.id }, orderBy: { inventoryId: 'asc' } })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'SALE', quantityDelta: -2n, saleId: sale.id, userId: cashierId, branchId }),
+      expect.objectContaining({ type: 'SALE', quantityDelta: -1n, saleId: sale.id, userId: cashierId, branchId }),
+    ]));
+    expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityType: 'Sale', entityId: sale.id } })).toBe(1);
+    expect(await db.salePayment.count({ where: { saleId: sale.id } })).toBe(0);
+    expect(await db.cashMovement.count()).toBe(0);
+    expect(await db.cashSession.count({ where: { status: 'OPEN' } })).toBe(0);
+  });
+
+  it('aggregates duplicate SaleItems into one inventory decrement and movement', async () => {
+    const sale = await createSale();
+    await addItem(sale.id, remeraId, remeraProductId, 1n);
+    await addItem(sale.id, remeraId, remeraProductId, 2n);
+    await reserve(sale.id, remeraId, 3n);
+    const before = await inventory(remeraId);
+    expect((await complete(sale.id)).status).toBe(200);
+    expect(await inventory(remeraId)).toMatchObject({ physical: before.physical - 3n, reserved: before.reserved - 3n });
+    expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(1);
+    expect((await db.stockMovement.findFirstOrThrow({ where: { saleId: sale.id } })).quantityDelta).toBe(-3n);
+  });
+
+  it('replays COMPLETED safely with no duplicate inventory, reservations, movements or audit', async () => {
+    const sale = await createReservedSale([{ variantId: remeraId, productId: remeraProductId, quantity: 2n }]);
+    expect((await complete(sale.id)).status).toBe(200);
+    const snapshot = {
+      inventory: await inventory(remeraId),
+      reservations: await db.stockReservation.count({ where: { saleId: sale.id } }),
+      movements: await db.stockMovement.count({ where: { saleId: sale.id } }),
+      audits: await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } }),
+    };
+    const replay = await complete(sale.id, token, { branchId: otherBranchId });
+    expect(replay.status).toBe(200);
+    expect(replay.body.status).toBe('COMPLETED');
+    expect(await inventory(remeraId)).toEqual(snapshot.inventory);
+    expect(await db.stockReservation.count({ where: { saleId: sale.id } })).toBe(snapshot.reservations);
+    expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(snapshot.movements);
+    expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } })).toBe(snapshot.audits);
+  });
+
+  it('serializes concurrent completion requests without double finalization', async () => {
+    const sale = await createReservedSale([
+      { variantId: remeraId, productId: remeraProductId, quantity: 2n },
+      { variantId: jeanId, productId: jeanProductId, quantity: 1n },
+    ]);
+    const [first, second] = await Promise.all([complete(sale.id), complete(sale.id)]);
+    expect([first.status, second.status].sort()).toEqual([200, 200]);
+    expect(first.body.status).toBe('COMPLETED');
+    expect(second.body.status).toBe('COMPLETED');
+    expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(2);
+    expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } })).toBe(1);
+    expect((await inventory(remeraId)).physical).toBe(18n);
+    expect((await inventory(remeraId)).reserved).toBe(0n);
+    expect((await inventory(jeanId)).physical).toBe(19n);
+    expect((await inventory(jeanId)).reserved).toBe(0n);
+  });
+
+  it.each([
+    ['missing inventory', async (saleId: string) => {
+      await db.inventory.delete({ where: { variantId_branchId: { variantId: remeraId, branchId } } });
+      return saleId;
+    }],
+    ['insufficient physical', async (saleId: string) => {
+      await db.inventory.update({ where: { variantId_branchId: { variantId: remeraId, branchId } }, data: { physical: 0n } });
+      return saleId;
+    }],
+    ['insufficient reserved', async (saleId: string) => {
+      await db.inventory.update({ where: { variantId_branchId: { variantId: remeraId, branchId } }, data: { reserved: 0n } });
+      return saleId;
+    }],
+  ])('rejects %s without partial writes', async (_label, mutate) => {
+    const sale = await createReservedSale([{ variantId: remeraId, productId: remeraProductId, quantity: 1n }]);
+    await mutate(sale.id);
+    const response = await complete(sale.id);
+    expect(response.status).toBe(409);
+    expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
+    expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(0);
+    expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } })).toBe(0);
+  });
+
+  // These four rejection scenarios are logically independent (each starts
+  // from its own fresh sale/reservation setup and asserts the same
+  // no-partial-writes shape). They used to run as manual iterations inside a
+  // single `it`, re-truncating and reseeding the database by hand between
+  // iterations instead of relying on this suite's own beforeEach — that put
+  // 5 full seed cycles (1 implicit + 4 manual) at ~14s each of real Supabase
+  // round-trip cost inside one `it`'s 60s testTimeout budget, timing out at
+  // ~70s+ even though no single case is slow on its own. Splitting into
+  // `it.each` (matching the sibling case above) gives each case its own
+  // fresh beforeEach and its own 60s budget instead.
+  it.each([
+    ['missing reservation', async () => { /* no reservation */ }],
+    ['non-active reservation', async (saleId: string) => { await reserve(saleId, remeraId, 1n, { status: 'RELEASED' }); }],
+    ['wrong-branch reservation', async (saleId: string) => { await reserve(saleId, remeraId, 1n, { branchId: otherBranchId }); }],
+    ['mismatched reservation quantity', async (saleId: string) => { await reserve(saleId, remeraId, 2n); }],
+    // Pilot P0.1-C: historical rows are never current coverage, and an
+    // unexpected extra ACTIVE variant breaks exact coverage.
+    ['only historical CONSUMED coverage', async (saleId: string) => { await historical(saleId, remeraId, 1n, 'CONSUMED'); }],
+    ['an extra ACTIVE variant', async (saleId: string) => { await reserve(saleId, remeraId, 1n); await reserve(saleId, jeanId, 1n); }],
+  ])('rejects a sale with %s without partial writes', async (_label, prepare) => {
+    const sale = await createSale();
+    await addItem(sale.id, remeraId, remeraProductId, 1n);
+    await prepare(sale.id);
+    expect((await complete(sale.id)).status).toBe(409);
+    expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
+    expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(0);
+  });
+
+  it('rolls back every completion write when the late audit write fails', async () => {
+    const sale = await createReservedSale([
+      { variantId: remeraId, productId: remeraProductId, quantity: 2n },
+      { variantId: jeanId, productId: jeanProductId, quantity: 1n },
+    ]);
+    const beforeRemera = await inventory(remeraId);
+    const beforeJean = await inventory(jeanId);
+    const transaction = db.$transaction.bind(db);
+    vi.spyOn(db, '$transaction').mockImplementation(((callback: (tx: Prisma.TransactionClient) => Promise<unknown>, options: object) =>
+      transaction(async (tx) => {
+        vi.spyOn(tx.auditLog, 'create').mockRejectedValueOnce(new Error('forced completion audit failure'));
+        return callback(tx);
+      }, options)) as typeof db.$transaction);
+    expect((await complete(sale.id)).status).toBe(500);
+    vi.restoreAllMocks();
+    expect((await db.sale.findUniqueOrThrow({ where: { id: sale.id } })).status).toBe('PAID');
+    expect(await inventory(remeraId)).toEqual(beforeRemera);
+    expect(await inventory(jeanId)).toEqual(beforeJean);
+    expect(await db.stockReservation.findMany({ where: { saleId: sale.id } })).toEqual([
+      expect.objectContaining({ status: 'ACTIVE' }), expect.objectContaining({ status: 'ACTIVE' }),
+    ]);
+    expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(0);
+    expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } })).toBe(0);
+  });
+
+  // Pilot P0.1-C: PAID completion consumes CURRENT ACTIVE coverage only and
+  // is not blocked by the original technical-hold expiresAt.
+  describe('PAID completion and current hold coverage (Pilot P0.1-C)', () => {
+    it('completes a PAID sale whose ACTIVE hold expired long ago', async () => {
+      const sale = await createSale();
+      await addItem(sale.id, remeraId, remeraProductId, 2n);
+      await reserve(sale.id, remeraId, 2n);
+      await db.stockReservation.updateMany({ where: { saleId: sale.id }, data: { expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000) } });
+      const before = await inventory(remeraId);
+      const response = await complete(sale.id);
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('COMPLETED');
+      expect(await inventory(remeraId)).toMatchObject({ physical: before.physical - 2n, reserved: before.reserved - 2n });
+      expect((await db.stockReservation.findFirstOrThrow({ where: { saleId: sale.id } })).status).toBe('CONSUMED');
+      expect(await db.stockMovement.count({ where: { saleId: sale.id } })).toBe(1);
+    });
+
+    it.each(['RELEASED', 'CONSUMED'] as const)('ignores a historical %s row next to correct current ACTIVE coverage and never re-consumes it', async (status) => {
+      const sale = await createSale();
+      await addItem(sale.id, remeraId, remeraProductId, 1n);
+      const old = await historical(sale.id, remeraId, 5n, status);
+      await reserve(sale.id, remeraId, 1n);
+      const before = await inventory(remeraId);
+      const response = await complete(sale.id);
+      expect(response.status).toBe(200);
+      expect(await inventory(remeraId)).toMatchObject({ physical: before.physical - 1n, reserved: before.reserved - 1n });
+      expect(await db.stockReservation.findUniqueOrThrow({ where: { id: old.id } })).toMatchObject({ status, quantity: 5n });
+      expect(await db.stockReservation.count({ where: { saleId: sale.id, status: 'CONSUMED' } })).toBe(status === 'CONSUMED' ? 2 : 1);
+      expect((await db.stockMovement.findFirstOrThrow({ where: { saleId: sale.id } })).quantityDelta).toBe(-1n);
+      expect(await db.auditLog.count({ where: { action: 'SALE_COMPLETED', entityId: sale.id } })).toBe(1);
+    });
+  });
+});

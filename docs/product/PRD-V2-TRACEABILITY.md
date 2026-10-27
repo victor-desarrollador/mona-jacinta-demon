@@ -1,0 +1,277 @@
+# PRD V2 — Trazabilidad
+
+Formato listo para las siguientes fases. La columna **Blueprint Reference** apunta a las anclas
+`BP-x.y` de `docs/architecture/BLUEPRINT-V2.md`. Las referencias de implementación, migración y
+test permanecen en `TBD` hasta que existan (P0-A, P0-B y P0-C ya tienen las suyas); no se registran referencias futuras inventadas.
+
+- `BASE_HEAD=1c2c2a8` (PRD con OR-052..OR-056)
+- Fuente de requisitos: `docs/product/PRD-V2.md`
+- Fuente técnica: `docs/architecture/BLUEPRINT-V2.md`
+- Valores de `Status`: `TBD` · `BLUEPRINT_DRAFT` (anclas asignadas, Blueprint sin aprobar) · `BLUEPRINTED` (Blueprint aprobado y publicado) · `IMPLEMENTED` · `VERIFIED`
+
+| Requirement ID | Blueprint Reference | Implementation Reference | Migration Reference | Test Reference | Status |
+|---|---|---|---|---|---|
+| FR-ORG-001 | BP-5.1, BP-6.2, BP-6.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ORG-002 | BP-5.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ORG-003 | BP-5.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ORG-004 | BP-5.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ORG-005 | BP-4.3 | api/src/shared/operating-time.ts, api/src/modules/backoffice/backoffice.service.ts, api/src/modules/backoffice/backoffice.routes.ts, admin/src/pages/SalesHistory.tsx | NONE | api/tests/shared/operating-time.test.ts, api/tests/backoffice/dashboard.unit.test.ts, api/tests/backoffice/sales-date-filters.unit.test.ts, admin/src/pages/SalesHistory.test.tsx, api/tests/architecture/set-hours-guard.test.ts | IMPLEMENTED |
+| FR-CAT-001 | BP-9.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CAT-002 | BP-9.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CAT-003 | BP-9.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CAT-004 | BP-9.1, BP-9.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CAT-005 | BP-9.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CAT-006 | BP-9.1, BP-9.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CAT-007 | BP-9.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-001 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-002 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-003 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-004 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-005 | BP-10.2 | api/src/modules/pricing/pricing.service.ts (qrAdjustmentBps), api/src/modules/payments/checkout-quote.service.ts, api/src/modules/payments/checkout-reservation.service.ts | NONE (la columna ya existía en CompanyPricingConfig) | api/tests/pricing/proportional-checkout-qr.test.ts (QR-14), api/tests/payments/checkout-quote.behavior.test.ts (QR-Q6), api/tests/payments/checkout-qr.pg.test.ts (QRPG-07) | IMPLEMENTED |
+| FR-PRICE-006 | BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-007 | BP-10.1, BP-10.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-008 | BP-10.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PRICE-009 | BP-10.3, BP-38.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SALE-001 | BP-11.1, BP-11.2, BP-11.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SALE-002 | BP-11.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SALE-003 | BP-11.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SALE-004 | BP-11.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SALE-005 | BP-11.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SALE-006 | BP-4.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-WHOL-001 | BP-14.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-WHOL-002 | BP-14.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-001 | BP-12.1, BP-48.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-002 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (guard FIXED_TOTAL cash-only) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts, api/tests/payments/split-payment.test.ts, api/tests/sales/paid-transition.test.ts | IMPLEMENTED |
+| FR-PAY-003 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (guard FIXED_TOTAL cash-only) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts | IMPLEMENTED |
+| FR-PAY-004 | BP-12.2, BP-12.3 | api/src/modules/pricing/proportional-checkout.ts, api/src/modules/payments/checkout-canonical.ts, api/src/modules/payments/dto/checkout-fields.ts, dto/checkout.dto.ts, dto/checkout-quote.dto.ts, dto/checkout-close.dto.ts, dto/checkout-reservation.dto.ts, checkout-quote.service.ts, checkout-reservation.service.ts, checkout.service.ts, checkout-close.service.ts, checkout-stock-recovery.service.ts, client/src/app/ProportionalChargePanel.tsx, client/src/app/checkout-quote.ts. El Voucher de Seña (FR-VOUCH-011) queda fuera de P0-B. | api/prisma/migrations/20261021140000_r3_qr/migration.sql (G14) | api/tests/pricing/proportional-checkout-qr.test.ts, api/tests/payments/checkout-canonical-qr.test.ts, api/tests/payments/checkout-attempt-dto.test.ts, api/tests/payments/checkout-quote.behavior.test.ts, api/tests/payments/checkout-reservation.behavior.test.ts, api/tests/payments/checkout-close.behavior.test.ts, api/tests/payments/checkout.behavior.test.ts, api/tests/payments/r3-qr-migration.static.test.ts, api/tests/payments/checkout-qr.pg.test.ts, api/tests/payments/r3-attempts-schema.pg.test.ts, api/tests/payments/checkout-readiness.test.ts, client/src/app/cashier-payment-mode.test.tsx, client/src/app/checkout-quote.test.ts; compatibilidad N-1 verificada en PostgreSQL local (ejecución, sin archivo propio) | IMPLEMENTED |
+| FR-PAY-005 | BP-12.2, BP-10.2 | api/src/modules/payments/checkout-reservation.service.ts (sella fullPriceQr/qrAdjustmentBps), api/src/modules/payments/checkout.service.ts (liquida desde el intento sellado), api/src/modules/payments/checkout-stock-recovery.service.ts | api/prisma/migrations/20261021140000_r3_qr/migration.sql (G14) | api/tests/payments/checkout-reservation.behavior.test.ts (RQ-5), api/tests/payments/checkout.behavior.test.ts (CQ-1, CQ-7), api/tests/payments/checkout-stock-recovery.behavior.test.ts (TS-B13i/j), api/tests/payments/checkout-qr.pg.test.ts (QRPG-01, QRPG-07, QRPG-08, QRPG-09) | IMPLEMENTED |
+| FR-PAY-006 | BP-12.6, BP-48.1 | api/src/modules/payments/payments.service.ts (NON_CASH_REQUIRES_PROPORTIONAL_CHECKOUT) | NONE | api/tests/payments/fixed-total-cash-only.behavior.test.ts, client/src/app/cashier-fixed-total-cash-only.test.tsx, api/tests/payments/split-payment.test.ts, api/tests/sales/paid-transition.test.ts | IMPLEMENTED |
+| FR-PAY-007 | BP-13.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-008 | BP-13.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-009 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | api/src/modules/pricing/proportional-checkout.ts, api/src/modules/payments/checkout.service.ts, client/src/app/ProportionalChargePanel.tsx | api/prisma/migrations/20261021140000_r3_qr/migration.sql (G14) | api/tests/pricing/proportional-checkout-qr.test.ts (QR-5..QR-10), api/tests/payments/checkout-qr.pg.test.ts (QRPG-02, QRPG-03), client/src/app/cashier-payment-mode.test.tsx (UI-QR-1..5) | IMPLEMENTED |
+| FR-PAY-010 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | api/src/modules/pricing/proportional-checkout.ts (reparto Hamilton por línea, sin cambios de algoritmo) | api/prisma/migrations/20261021140000_r3_qr/migration.sql (G14) | api/tests/pricing/proportional-checkout-qr.test.ts (QR-11, QR-12, QR-13), api/tests/payments/checkout-qr.pg.test.ts (allocationsAddUp en QRPG-01..04) | IMPLEMENTED |
+| FR-PAY-011 | BP-12.1, BP-12.2, BP-12.5, BP-12.6 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PAY-012 | BP-12.7 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-001 | BP-30.1, BP-30.2, BP-31.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-002 | BP-30.1, BP-30.2, BP-31.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-003 | BP-31.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-004 | BP-30.1, BP-30.2, BP-31.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-005 | BP-30.1, BP-30.2, BP-31.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-006 | BP-30.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-007 | BP-30.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-008 | BP-30.1, BP-30.2, BP-31.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-009 | BP-26.1, BP-30.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-010 | BP-12.3, BP-30.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-011 | BP-31.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-012 | BP-31.2, BP-34.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CASH-013 | BP-30.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-001 | BP-15.2, BP-8.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-002 | BP-15.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-003 | BP-15.1, BP-11.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-004 | BP-15.3, BP-16.7 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-005 | BP-15.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-006 | BP-15.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-007 | BP-15.4, BP-16.7 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-008 | BP-15.2, BP-37.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CANCEL-009 | BP-15.3, BP-15.5, BP-16.7 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-001 | BP-16.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-002 | BP-16.1, BP-16.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-003 | BP-16.3, BP-39.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-004 | BP-16.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-005 | BP-16.3, BP-8.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-006 | BP-16.6 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-007 | BP-16.2, BP-12.7 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-008 | BP-16.5, BP-12.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-009 | BP-16.5, BP-12.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-010 | BP-16.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-011 | BP-16.7 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-012 | BP-16.4, BP-16.7 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-013 | BP-16.3, BP-37.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-014 | BP-16.5, BP-12.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-015 | BP-12.3, BP-16.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXCH-016 | BP-16.7, BP-15.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-DISC-001 | BP-17.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-DISC-002 | BP-17.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-DISC-003 | BP-17.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-DISC-004 | BP-17.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-DISC-005 | BP-17.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-STOCK-001 | BP-18.1, BP-18.2, BP-19.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-STOCK-002 | BP-18.1, BP-18.2, BP-19.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-STOCK-003 | BP-19.1, BP-19.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-STOCK-004 | BP-19.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-STOCK-005 | BP-18.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-STOCK-006 | BP-18.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-STOCK-007 | BP-18.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ADJ-001 | BP-20.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ADJ-002 | BP-20.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ADJ-003 | BP-20.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ADJ-004 | BP-20.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TRANSFER-001 | BP-21.1, BP-21.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TRANSFER-002 | BP-21.3, BP-8.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TRANSFER-003 | BP-21.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TRANSFER-004 | BP-21.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TRANSFER-005 | BP-21.2, BP-21.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TRANSFER-006 | BP-21.5, BP-37.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TRANSFER-007 | BP-21.3, BP-21.6 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TRANSFER-008 | BP-21.3, BP-21.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RECV-001 | BP-22.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RECV-002 | BP-22.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RECV-003 | BP-22.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RECV-004 | BP-21.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMP-001 | BP-23.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMP-002 | BP-23.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMP-003 | BP-23.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMP-004 | BP-23.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMP-005 | BP-23.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMP-006 | BP-23.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMP-007 | BP-23.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-001 | BP-23.2, BP-24.1, BP-24.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-002 | BP-23.2, BP-24.1, BP-24.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-003 | BP-24.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-004 | BP-24.3, BP-47.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-005 | BP-24.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-006 | BP-23.3, BP-39.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-007 | BP-23.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-008 | BP-24.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-009 | BP-24.4, BP-8.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPACC-010 | BP-24.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-001 | BP-25.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-002 | BP-25.1, BP-25.2, BP-25.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-003 | BP-25.1, BP-25.2, BP-25.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-004 | BP-25.4, BP-37.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-005 | BP-23.3, BP-25.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-006 | BP-25.1, BP-25.2, BP-25.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-007 | BP-25.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-008 | BP-25.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-009 | BP-25.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPWD-010 | BP-25.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-001 | BP-26.4, BP-4.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-002 | BP-26.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-003 | BP-26.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-004 | BP-26.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-005 | BP-26.3, BP-24.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-006 | BP-26.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-007 | BP-26.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-008 | BP-26.1, BP-26.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-009 | BP-26.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-010 | BP-26.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-011 | BP-26.1, BP-26.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-012 | BP-4.3, BP-26.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EMPSET-013 | BP-24.2, BP-26.1, BP-26.2, BP-26.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CUST-001 | BP-27.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CUST-002 | BP-27.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CUST-003 | BP-27.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-001 | BP-28.1, BP-28.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-002 | BP-28.1, BP-28.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-003 | BP-28.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-004 | BP-28.6 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-005 | BP-28.6 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-006 | BP-28.8 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-007 | BP-28.1, BP-28.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-008 | BP-28.3, BP-39.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-009 | BP-28.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-010 | BP-18.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-011 | BP-28.7 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-012 | BP-28.7, BP-12.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-013 | BP-28.7, BP-12.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SENA-014 | BP-28.7, BP-28.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-001 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-002 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-003 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-004 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-005 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-006 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-007 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-008 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-009 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-010 | BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-011 | BP-12.3, BP-29.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-VOUCH-012 | BP-29.1, BP-28.8 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SUPP-001 | BP-33.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SUPP-002 | BP-33.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PURCHASE-001 | BP-33.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PURCHASE-002 | BP-33.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-PURCHASE-003 | BP-33.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SUPDEBT-001 | BP-33.3, BP-33.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SUPDEBT-002 | BP-33.3, BP-33.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-SUPDEBT-003 | BP-33.3, BP-33.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXP-001 | BP-32.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXP-002 | BP-32.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXP-003 | BP-32.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-EXP-004 | BP-32.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TREAS-001 | BP-32.2, BP-32.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TREAS-002 | BP-32.2, BP-32.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TREAS-003 | BP-32.2, BP-32.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TREAS-004 | BP-32.2, BP-32.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-USER-001 | BP-7.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-USER-002 | BP-7.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-USER-003 | BP-7.3, BP-7.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-USER-004 | BP-7.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-USER-005 | BP-7.4 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RBAC-001 | BP-7.1, BP-7.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RBAC-002 | BP-7.1, BP-7.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RBAC-003 | BP-7.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RBAC-004 | BP-7.1, BP-7.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-001 | BP-8.1, BP-8.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-002 | BP-8.2, BP-8.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-003 | BP-8.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-004 | BP-8.1, BP-8.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-005 | BP-8.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-006 | BP-8.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-007 | BP-8.6 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-008 | BP-8.6, BP-37.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-009 | BP-8.5 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUTH-010 | BP-8.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ALERT-001 | BP-37.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ALERT-002 | BP-37.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ALERT-003 | BP-21.5, BP-37.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ALERT-004 | BP-37.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUDIT-001 | BP-36.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUDIT-002 | BP-36.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUDIT-003 | BP-36.1, BP-42.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-AUDIT-004 | BP-8.6, BP-36.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RPT-001 | BP-38.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RPT-002 | BP-38.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RPT-003 | BP-38.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RPT-004 | BP-38.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-RPT-005 | BP-4.3, BP-38.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TICKET-001 | BP-34.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TICKET-002 | BP-34.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-TICKET-003 | BP-34.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ARCA-001 | BP-35.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ARCA-002 | BP-35.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-ARCA-003 | BP-35.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CONF-001 | BP-39.1, BP-48.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CONF-002 | BP-39.1, BP-39.2 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-CONF-003 | BP-39.3 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-SEC-001 | BP-55.1, BP-7.3 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-SEC-002 | BP-37.2, BP-7.3 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-SEC-003 | BP-53.1, BP-55.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-SEC-004 | BP-55.1, BP-7.3 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-SEC-005 | BP-55.1, BP-53.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-MONEY-001 | BP-2.3, BP-4.5, BP-41.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-MONEY-002 | BP-42.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-MONEY-003 | BP-24.2, BP-41.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-MONEY-004 | BP-24.4, BP-41.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-MONEY-005 | BP-41.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-STOCK-001 | BP-41.2 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-STOCK-002 | BP-19.2, BP-19.3, BP-42.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-STOCK-003 | BP-18.2, BP-41.2 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-CONC-001 | BP-2.4, BP-44.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-CONC-002 | BP-28.6, BP-44.4 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-CONC-003 | BP-44.2, BP-44.4, BP-7.3 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-IDEMP-001 | BP-43.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-IDEMP-002 | BP-43.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-AUDIT-001 | BP-36.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-AUDIT-002 | BP-8.6 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-AUDIT-003 | BP-36.1, BP-2.4 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-TIME-001 | BP-4.3 | api/src/shared/operating-time.ts, api/src/modules/backoffice/backoffice.service.ts | NONE | api/tests/shared/operating-time.test.ts, api/tests/backoffice/dashboard.unit.test.ts, api/tests/architecture/set-hours-guard.test.ts | IMPLEMENTED |
+| NFR-TIME-002 | BP-4.3, BP-26.4 | api/src/shared/operating-time.ts | NONE | api/tests/shared/operating-time.test.ts | IMPLEMENTED |
+| NFR-OPS-001 | BP-50.1, BP-54.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-OPS-002 | BP-51.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-OPS-003 | BP-53.1, BP-52.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-OPS-004 | BP-54.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-OPS-005 | BP-50.1, BP-54.1 | TBD | TBD | TBD | BLUEPRINTED |
+| NFR-OPS-006 | BP-46.1, BP-6.3 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-MIG-001 | BP-47.1 | TBD | TBD | TBD | BLUEPRINTED |
+| FR-MIG-002 | BP-47.1 | TBD | TBD | TBD | BLUEPRINTED |

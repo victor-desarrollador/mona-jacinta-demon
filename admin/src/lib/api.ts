@@ -1,0 +1,419 @@
+export type UserContext = {
+  id: string;
+  name: string;
+  email: string;
+  roles: string[];
+  branchIds: string[];
+  permissions: string[];
+  // UI hint projected by /auth/me: locations where the caller acts as supervisor
+  // (OWNER or COMPANY ADMIN). Visibility only — the backend re-checks every write.
+  cashSupervisorLocationIds?: string[];
+};
+
+export type Branch = {
+  id: string;
+  name: string;
+  code: string;
+  address?: string;
+  pointOfSaleNumber?: number;
+};
+
+// GET /backoffice/branches: Branch + its Location. type/isActive are null only
+// when the Location row is missing (locationConsistency 'missing_location').
+export type BranchListItem = Branch & {
+  type: 'RETAIL_BRANCH' | 'CENTRAL_WAREHOUSE' | null;
+  isActive: boolean | null;
+  locationConsistency: 'consistent' | 'missing_location';
+};
+
+export type DashboardSummary = {
+  salesToday: number;
+  pendingSalesCount: number;
+  revenueToday: string;
+  lowStockCount: number;
+};
+
+export type SaleStatus = 'DRAFT' | 'PENDING_PAYMENT' | 'PAID' | 'COMPLETED' | 'CANCELLED';
+export type PaymentMethod = 'CASH' | 'TRANSFER' | 'CARD_DEBIT' | 'CARD_CREDIT' | 'QR';
+
+export type ExternalCollectionStatus = 'APPLIED' | 'UNAPPLIED' | 'REFUNDED';
+
+// R3-A4.3 S-REF: a non-cash collection received outside the POS. `amount` is
+// integer centavos serialised as a decimal string (BigInt end-to-end on the
+// server); the UI never sends an amount back.
+export type ExternalCollection = {
+  id: string;
+  branchId: string;
+  method: PaymentMethod;
+  amount: string;
+  reference: string;
+  referenceKey: string;
+  institution: string | null;
+  institutionOther: string | null;
+  status: ExternalCollectionStatus;
+  originSaleId: string | null;
+  originAttemptId: string | null;
+  cashSessionId: string | null;
+  recordedById: string;
+  recordedAt: string;
+  resolvedById: string | null;
+  resolvedAt: string | null;
+  refundReference: string | null;
+  resolutionNote: string | null;
+  externalRefundedAt: string | null;
+};
+
+export type RefundExternalCollectionBody = {
+  refundReference: string;
+  externalRefundedAt: string;
+  reason: string;
+};
+
+export type ExternalCollectionRefundResult = {
+  replayed: boolean;
+  collection: ExternalCollection;
+};
+
+export type Seller = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+export type SaleSummary = {
+  id: string;
+  saleNumber: string | null;
+  branch: Branch;
+  seller: Seller;
+  status: SaleStatus;
+  subtotal: string;
+  discountTotal: string;
+  total: string;
+  createdAt: string;
+  paymentSummary: {
+    paidAmount: string;
+    remainingBalance: string;
+    count: number;
+    methods: PaymentMethod[];
+  };
+};
+
+export type SaleItem = {
+  id: string;
+  productId: string;
+  variantId: string;
+  productName: string;
+  variantName: string;
+  sku: string;
+  quantity: string;
+  unitPrice: string;
+  subtotal: string;
+  product?: { id: string; name: string; slug: string };
+  variant?: {
+    id: string;
+    sku: string;
+    barcode: string;
+    color: string | null;
+    size: string | null;
+    cashPrice: string | null;
+    price: string;
+    productId: string;
+  };
+};
+
+export type SalePayment = {
+  id: string;
+  method: PaymentMethod;
+  amount: string;
+  receivedAmount: string | null;
+  changeAmount: string | null;
+  cashSessionId: string | null;
+  idempotencyKey: string;
+  paidAt: string;
+  cashMovement?: {
+    id: string;
+    sessionId: string;
+    type: string;
+    amount: string;
+    userId: string;
+    timestamp: string;
+  } | null;
+};
+
+export type SaleDetail = SaleSummary & {
+  branchId: string;
+  sellerId: string;
+  updatedAt: string;
+  items: SaleItem[];
+  payments: SalePayment[];
+  stockMovements: Array<{
+    id: string;
+    type: string;
+    quantityDelta: string;
+    userId: string;
+    timestamp: string;
+  }>;
+};
+
+export type InventoryRow = {
+  id: string;
+  branch: Branch;
+  product: { id: string; name: string; slug: string };
+  variant: {
+    id: string;
+    sku: string;
+    barcode: string;
+    color: string | null;
+    size: string | null;
+    price: string;
+  };
+  physical: string;
+  reserved: string;
+  available: string;
+};
+
+export type BackofficeUser = {
+  id: string;
+  name: string;
+  email: string;
+  isActive: boolean;
+  // GET /backoffice/users contract: one entry per role scope; `location` is null for COMPANY scope.
+  assignments: Array<{ roleCode: string; scopeKind: 'COMPANY' | 'LOCATION'; location: Branch | null }>;
+};
+
+export type CatalogRef = { id: string; name: string };
+export type PriceMode = 'CASH' | 'LIST' | 'CREDIT_CARD' | 'DEBIT_CARD' | 'BANK_TRANSFER' | 'QR';
+export type PricingConfig = {
+  id: string | null;
+  updatedAt: string | null;
+  adjustmentsBps: Record<PriceMode, number>;
+};
+
+export type CatalogVariant = {
+  id: string;
+  productId: string;
+  sku: string;
+  barcode: string;
+  color: string | null;
+  size: string | null;
+  price: string;
+  cashPrice: string | null;
+  isActive: boolean;
+};
+
+export type CatalogProduct = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  category: CatalogRef;
+  brand: CatalogRef;
+  variants: CatalogVariant[];
+};
+
+// Block 1: management-only price read (GET /variants/:id/pricing,
+// PRICE_MANAGE). wholesalePrice null = the variant has no wholesale price.
+export type VariantPricing = { id: string; sku: string; cashPrice: string | null; price: string; wholesalePrice: string | null };
+
+// Only the fields being changed are sent; wholesalePrice null clears it.
+export type UpdateVariantPriceBody = { cashPrice?: string; price?: string; wholesalePrice?: string | null };
+
+export type CreateProductBody = { name: string; slug: string; categoryId: string; brandId: string };
+
+export type CreateVariantBody = {
+  productId: string;
+  sku: string;
+  barcode: string;
+  color?: string;
+  size?: string;
+  // Integer cents as strings (BigInt-safe API contract).
+  cashPrice: string;
+  price: string;
+  costPrice: string;
+};
+
+export type InitialStockBody = { variantId: string; branchId: string; quantity: string };
+
+export type InitialStockResult = {
+  inventory: { id: string; variantId: string; branchId: string; physical: string; reserved: string };
+  movement: { id: string; type: string; quantityDelta: string };
+};
+
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:3001/api/v1';
+
+// `<input type="date">` gives YYYY-MM-DD. The API compares instants, and a bare date would be
+// read as UTC midnight, so both ends of a range are built in the browser's own time zone:
+// the first and the last millisecond of the selected local day.
+function localDayIso(date: string, hours: number, minutes: number, seconds: number, ms: number): string {
+  const [year, month, day] = date.split('-').map(Number);
+  return new Date(year, month - 1, day, hours, minutes, seconds, ms).toISOString();
+}
+export const startOfDayIso = (date: string) => localDayIso(date, 0, 0, 0, 0);
+export const endOfDayIso = (date: string) => localDayIso(date, 23, 59, 59, 999);
+const UUID = '[0-9a-fA-F-]{36}';
+const allowedBackoffice = [
+  /^\/backoffice\/dashboard$/,
+  /^\/backoffice\/sales(?:\?.*)?$/,
+  new RegExp(`^/backoffice/sales/${UUID}$`),
+  /^\/backoffice\/inventory(?:\?.*)?$/,
+  /^\/backoffice\/branches$/,
+  /^\/backoffice\/users$/,
+];
+// D3 admin catalogue / initial stock. Explicit method + path pairs only;
+// the backend remains the authority for every one of them.
+const allowedCatalogue: Array<[string, RegExp]> = [
+  ['GET', /^\/products(?:\?.*)?$/],
+  ['GET', /^\/categories$/],
+  ['GET', /^\/brands$/],
+  ['POST', /^\/products$/],
+  ['POST', /^\/variants$/],
+  // Block 1: management-only price read (PRICE_MANAGE server side).
+  ['GET', new RegExp(`^/variants/${UUID}/pricing$`)],
+  ['PATCH', new RegExp(`^/variants/${UUID}/price$`)],
+  ['GET', /^\/pricing\/config$/],
+  ['PATCH', /^\/pricing\/config$/],
+  ['POST', /^\/inventory\/initial-stock$/],
+];
+// R3-A4.3 S-REF: external collections (the branch listing and the refund). The
+// backend service is the authority for the location scope; the UI never is.
+const allowedExternalCollections: Array<[string, RegExp]> = [
+  ['GET', /^\/external-collections(?:\?.*)?$/],
+  ['POST', new RegExp(`^/external-collections/${UUID}/refund$`)],
+];
+
+function assertAllowed(method: string, path: string) {
+  const authAllowed =
+    (method === 'POST' && path === '/auth/login') ||
+    (method === 'GET' && path === '/auth/me');
+  const backofficeAllowed = method === 'GET' && allowedBackoffice.some((rule) => rule.test(path));
+  const catalogueAllowed = allowedCatalogue.some(([allowedMethod, rule]) => allowedMethod === method && rule.test(path));
+  const externalCollectionsAllowed = allowedExternalCollections.some(([allowedMethod, rule]) => allowedMethod === method && rule.test(path));
+  if (!authAllowed && !backofficeAllowed && !catalogueAllowed && !externalCollectionsAllowed) {
+    throw new Error(`Endpoint no permitido: ${method} ${path}`);
+  }
+}
+
+function userFacingError(message: string | undefined, fallback: string) {
+  const labels: Record<string, string> = {
+    Unauthorized: 'No autorizado.',
+    Forbidden: 'No tenés permiso para realizar esta acción.',
+    'Invalid credentials': 'Usuario o contraseña incorrectos.',
+  };
+  return message ? (labels[message] ?? message) : fallback;
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit & { token?: string | null; onUnauthorized?: () => void } = {},
+): Promise<T> {
+  const method = options.method ?? 'GET';
+  assertAllowed(method, path);
+
+  const headers = new Headers(options.headers);
+  headers.set('Content-Type', 'application/json');
+  if (options.token) headers.set('Authorization', `Bearer ${options.token}`);
+
+  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  const body = await response.json().catch(() => ({}));
+  if (response.status === 401) options.onUnauthorized?.();
+  if (!response.ok) {
+    const candidate = body as { message?: string; error?: { code?: string; message?: string } };
+    const fallback =
+      response.status === 401
+        ? 'No autorizado.'
+        : response.status === 403
+          ? 'No tenés permiso para realizar esta acción.'
+          : 'Error de API.';
+    throw new ApiError(
+      response.status,
+      userFacingError(candidate.message ?? candidate.error?.message, fallback),
+      candidate.error?.code,
+    );
+  }
+  return body as T;
+}
+
+function send<T>(method: 'POST' | 'PATCH', path: string, token: string, body: unknown, onUnauthorized: () => void) {
+  return request<T>(path, { method, token, onUnauthorized, body: JSON.stringify(body) });
+}
+
+export const api = {
+  login: (email: string, password: string) =>
+    request<{ accessToken: string; user: UserContext }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+  me: (token: string, onUnauthorized: () => void) =>
+    request<{ user: UserContext }>('/auth/me', { token, onUnauthorized }),
+  dashboard: (token: string, onUnauthorized: () => void) =>
+    request<DashboardSummary>('/backoffice/dashboard', { token, onUnauthorized }),
+  branches: (token: string, onUnauthorized: () => void) =>
+    request<{ items: BranchListItem[] }>('/backoffice/branches', { token, onUnauthorized }),
+  sales: (token: string, params: URLSearchParams, onUnauthorized: () => void) => {
+    const query = params.toString();
+    return request<{ items: SaleSummary[]; pagination: { limit: number; offset: number } }>(
+      `/backoffice/sales${query ? `?${query}` : ''}`,
+      { token, onUnauthorized },
+    );
+  },
+  saleDetail: (token: string, id: string, onUnauthorized: () => void) =>
+    request<{ sale: SaleDetail }>(`/backoffice/sales/${id}`, { token, onUnauthorized }),
+  inventory: (token: string, params: URLSearchParams, onUnauthorized: () => void) => {
+    const query = params.toString();
+    return request<{ items: InventoryRow[]; pagination: { limit: number; offset: number; total: number } }>(
+      `/backoffice/inventory${query ? `?${query}` : ''}`,
+      { token, onUnauthorized },
+    );
+  },
+  users: (token: string, onUnauthorized: () => void) =>
+    request<{ items: BackofficeUser[] }>('/backoffice/users', { token, onUnauthorized }),
+  products: (token: string, params: URLSearchParams, onUnauthorized: () => void) => {
+    const query = params.toString();
+    return request<{ items: CatalogProduct[]; pagination: { page: number; limit: number; total: number } }>(
+      `/products${query ? `?${query}` : ''}`,
+      { token, onUnauthorized },
+    );
+  },
+  categories: (token: string, onUnauthorized: () => void) =>
+    request<{ items: CatalogRef[] }>('/categories', { token, onUnauthorized }),
+  brands: (token: string, onUnauthorized: () => void) =>
+    request<{ items: CatalogRef[] }>('/brands', { token, onUnauthorized }),
+  createProduct: (token: string, body: CreateProductBody, onUnauthorized: () => void) =>
+    send<{ product: Omit<CatalogProduct, 'category' | 'brand' | 'variants' | 'description'> }>(
+      'POST', '/products', token, body, onUnauthorized,
+    ),
+  createVariant: (token: string, body: CreateVariantBody, onUnauthorized: () => void) =>
+    send<{ variant: CatalogVariant & { costPrice: string } }>('POST', '/variants', token, body, onUnauthorized),
+  variantPricing: (token: string, variantId: string, onUnauthorized: () => void) =>
+    request<{ pricing: VariantPricing }>(`/variants/${variantId}/pricing`, { token, onUnauthorized }),
+  updateVariantPrice: (token: string, variantId: string, body: UpdateVariantPriceBody, onUnauthorized: () => void) =>
+    send<{ variant: VariantPricing }>(
+      'PATCH', `/variants/${variantId}/price`, token, body, onUnauthorized,
+    ),
+  pricingConfig: (token: string, onUnauthorized: () => void) =>
+    request<{ config: PricingConfig }>('/pricing/config', { token, onUnauthorized }),
+  updatePricingConfig: (token: string, body: Partial<Record<Exclude<PriceMode, 'CASH'>, number>>, onUnauthorized: () => void) =>
+    send<{ config: PricingConfig }>('PATCH', '/pricing/config', token, body, onUnauthorized),
+  loadInitialStock: (token: string, body: InitialStockBody, onUnauthorized: () => void) =>
+    send<InitialStockResult>('POST', '/inventory/initial-stock', token, body, onUnauthorized),
+  externalCollections: (token: string, params: URLSearchParams, onUnauthorized: () => void) => {
+    const query = params.toString();
+    return request<{ items: ExternalCollection[] }>(
+      `/external-collections${query ? `?${query}` : ''}`,
+      { token, onUnauthorized },
+    );
+  },
+  refundExternalCollection: (token: string, id: string, body: RefundExternalCollectionBody, onUnauthorized: () => void) =>
+    send<ExternalCollectionRefundResult>('POST', `/external-collections/${id}/refund`, token, body, onUnauthorized),
+};

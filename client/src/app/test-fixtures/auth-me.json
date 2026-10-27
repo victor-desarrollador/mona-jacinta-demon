@@ -1,0 +1,59 @@
+{
+  "OWNER": {
+    "roles": ["OWNER"],
+    "permissions": [
+      "sale.create", "sale.charge", "sale.complete", "sale.view", "sale.queue.view", "inventory.view",
+      "inventory.manage", "cash.session.open", "cash.session.close", "user.manage", "report.view", "audit.view",
+      "PRODUCT_MANAGE", "PRODUCT_VARIANT_MANAGE", "PRICE_MANAGE", "IMPORT_RUN", "CASH_MOVEMENT_MANAGE"
+    ],
+    "cashMovementLocationIds": ["branch-1"],
+    "cashSupervisorLocationIds": ["branch-1"],
+    "inventoryManageLocationIds": ["branch-1"]
+  },
+  "ADMIN_COMPANY": {
+    "roles": ["ADMIN"],
+    "permissions": [
+      "sale.create", "sale.charge", "sale.complete", "sale.view", "sale.queue.view", "inventory.view",
+      "inventory.manage", "cash.session.open", "cash.session.close", "user.manage", "report.view", "audit.view",
+      "PRODUCT_MANAGE", "PRODUCT_VARIANT_MANAGE", "PRICE_MANAGE", "IMPORT_RUN", "CASH_MOVEMENT_MANAGE"
+    ],
+    "cashMovementLocationIds": ["branch-1"],
+    "cashSupervisorLocationIds": ["branch-1"],
+    "inventoryManageLocationIds": ["branch-1"]
+  },
+  "ADMIN_LOCATION": {
+    "roles": ["ADMIN"],
+    "permissions": [
+      "sale.create", "sale.charge", "sale.complete", "sale.view", "sale.queue.view", "inventory.view",
+      "inventory.manage", "cash.session.open", "cash.session.close", "report.view", "audit.view",
+      "IMPORT_RUN", "CASH_MOVEMENT_MANAGE"
+    ],
+    "cashMovementLocationIds": ["branch-1"],
+    "cashSupervisorLocationIds": [],
+    "inventoryManageLocationIds": ["branch-1"]
+  },
+  "CASHIER": {
+    "roles": ["CASHIER"],
+    "permissions": [
+      "sale.charge", "sale.complete", "sale.view", "sale.queue.view", "inventory.view", "cash.session.open",
+      "cash.session.close", "CASH_MOVEMENT_MANAGE"
+    ],
+    "cashMovementLocationIds": ["branch-1"],
+    "cashSupervisorLocationIds": [],
+    "inventoryManageLocationIds": []
+  },
+  "SELLER": {
+    "roles": ["SELLER"],
+    "permissions": ["sale.create", "sale.view", "inventory.view"],
+    "cashMovementLocationIds": [],
+    "cashSupervisorLocationIds": [],
+    "inventoryManageLocationIds": []
+  },
+  "WAREHOUSE": {
+    "roles": ["WAREHOUSE"],
+    "permissions": ["inventory.manage"],
+    "cashMovementLocationIds": [],
+    "cashSupervisorLocationIds": [],
+    "inventoryManageLocationIds": ["branch-1"]
+  }
+}
