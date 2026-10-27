@@ -1,3 +1,4 @@
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import type { Request } from 'express';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
@@ -25,7 +26,7 @@ import { voidSaleDto, type VoidSaleInput } from './dto/void-sale.dto.js';
 //
 // Order of decisions (every step before the writes is read-only, so a refusal writes nothing):
 //   auth -> input shape -> Sale FOR UPDATE -> supervisor at the sale's persisted branch -> existing SaleVoid
-//   (replay / conflict) -> state -> payments -> external evidence -> existing refunds -> CashSession FOR UPDATE
+//   (replay / conflict) -> state -> no SaleExchange (SALE_HAS_EXCHANGES) -> payments -> external evidence -> existing refunds -> CashSession FOR UPDATE
 //   (only with CASH) -> drawer -> stock (PAID: StockReservation then Inventory; COMPLETED: Inventory) -> writes.
 // Lock order: Sale -> CashSession -> StockReservation -> Inventory, a prefix-compatible extension of payments
 // (Sale -> CashSession), finalization and cancellation (Sale -> StockReservation -> Inventory) and the
@@ -67,12 +68,8 @@ const notFound = (message: string) => new AppError(404, 'NOT_FOUND', message);
 const stockInconsistent = (message: string) => new AppError(409, 'SALE_VOID_STOCK_INCONSISTENT', message);
 const concurrency = () => new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
 
-function transient(error: unknown) {
-  const candidate = error as { code?: string; meta?: { code?: string } };
-  const message = error instanceof Error ? error.message : '';
-  return candidate.code === 'P2034' || candidate.meta?.code === '40001'
-    || candidate.meta?.code === '40P01' || message.includes('40001') || message.includes('40P01');
-}
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
+const transient = isTransientTransactionError;
 
 const byId = <T extends { id: string }>(rows: T[]) => [...rows].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 const toBigInt = (value: unknown) => BigInt(typeof value === 'bigint' ? value : String(value));
@@ -116,6 +113,14 @@ export function createSaleVoidService(database: PrismaClient) {
         throw new AppError(409, 'INVALID_SALE_STATE', 'La venta no puede anularse en su estado actual.');
       }
       const previousStatus: VoidablePreviousStatus = sale.status;
+
+      // 4b. A sale that was exchanged cannot be voided: the void rebuilds the stock from the original SALE
+      //     movements, which after an exchange would return the original variant a second time and never the
+      //     replacement. Read-only, before payments / cash / stock, so a refusal writes nothing. The database
+      //     refuses the same thing on a direct SaleVoid insert (sale_void_exchange_guard).
+      if (await tx.saleExchange.findFirst({ where: { saleId }, select: { id: true } })) {
+        throw new AppError(409, 'SALE_HAS_EXCHANGES', 'La venta tiene cambios registrados y no puede anularse.');
+      }
 
       // 5. Payments, and the evidence the external ones need (pure validation, nothing locked yet).
       const payments = await tx.salePayment.findMany({

@@ -28,6 +28,12 @@ enum StockMovementType {
   // sale (saleVoidId + saleId required, quantityDelta > 0; SQL CHECKs in the
   // sale_void_schema migration). The original SALE rows are never touched.
   SALE_VOID
+  // Sale exchange v1: a garment swap on a COMPLETED sale writes ONE IN (+N, the original
+  // variant coming back) and ONE OUT (-N, the replacement variant leaving) per exchange
+  // line. saleExchangeId + saleExchangeLineId + saleId required; SQL CHECKs, composite
+  // FKs and deferred ledger guards live in the sale_exchange_schema migration.
+  SALE_EXCHANGE_IN
+  SALE_EXCHANGE_OUT
 }
 
 // WAREHOUSE-MVP: why a manual adjustment was made (StockMovement.reason).
@@ -243,6 +249,7 @@ model User {
   checkoutAttemptsAbandoned   CheckoutAttempt[] @relation("CheckoutAttemptAbandonedBy")
   checkoutAttemptsDeclared    CheckoutAttempt[] @relation("CheckoutAttemptDeclaredBy")
   saleVoids                   SaleVoid[]
+  saleExchanges               SaleExchange[]
   checkoutDeclarations        CheckoutAttemptDeclaration[]
 }
 
@@ -420,6 +427,7 @@ model ProductVariant {
   inventory         Inventory[]
   stockReservations StockReservation[]
   saleItems         SaleItem[]
+  saleExchangeLines SaleExchangeLine[]
 
   @@index([productId])
 }
@@ -455,6 +463,10 @@ model StockMovement {
   // Sale void v1: only SALE_VOID rows carry it (SQL CHECKs in the sale_void_schema
   // migration); such a row keeps the ORIGINAL saleId too. NULL for every other row.
   saleVoidId    String?
+  // Sale exchange v1: only SALE_EXCHANGE_IN / SALE_EXCHANGE_OUT rows carry them, both
+  // together and with saleId (SQL CHECKs in the sale_exchange_schema migration). NULL otherwise.
+  saleExchangeId     String?
+  saleExchangeLineId String?
   timestamp     DateTime          @default(now()) @db.Timestamptz(3)
   inventory     Inventory         @relation(fields: [inventoryId], references: [id], onDelete: Restrict)
   sale          Sale?             @relation(fields: [saleId], references: [id], onDelete: Restrict)
@@ -463,6 +475,11 @@ model StockMovement {
   // A return movement can only belong to the void of ITS OWN sale and branch
   // (MATCH SIMPLE: not enforced while saleVoidId IS NULL, i.e. every other row).
   saleVoid      SaleVoid?         @relation(fields: [saleVoidId, saleId, branchId], references: [id, saleId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "StockMovement_saleVoid_sale_branch_fkey")
+  // An exchange movement belongs to the exchange AND to the line of ITS OWN sale and branch
+  // (MATCH SIMPLE: not enforced while the ids are NULL, i.e. every other row). The line FK
+  // already implies the exchange one; both are kept so each relation is navigable.
+  saleExchange     SaleExchange?     @relation(fields: [saleExchangeId, saleId, branchId], references: [id, saleId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "StockMovement_saleExchange_sale_branch_fkey")
+  saleExchangeLine SaleExchangeLine? @relation(fields: [saleExchangeLineId, saleExchangeId, saleId, branchId], references: [id, saleExchangeId, saleId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "StockMovement_saleExchangeLine_fkey")
 
   // NULL keys are distinct in PostgreSQL: historical rows never conflict.
   @@unique([userId, idempotencyKey])
@@ -470,6 +487,9 @@ model StockMovement {
   // distinct, so SALE / INITIAL_STOCK / ADJUSTMENT rows never conflict).
   @@unique([saleVoidId, inventoryId])
   @@index([saleVoidId])
+  // At most one IN and one OUT per exchange line (NULL line is distinct for every other row).
+  @@unique([saleExchangeLineId, type], map: "StockMovement_saleExchangeLineId_type_key")
+  @@index([saleExchangeId])
   @@index([inventoryId, timestamp])
   @@index([saleId])
   @@index([userId])
@@ -550,6 +570,9 @@ model Sale {
   externalOrigins   ExternalCollection[] @relation("ExternalCollectionOriginSale")
   // Sale void v1: the single post-payment void of this sale (UNIQUE(saleId) on SaleVoid).
   saleVoid          SaleVoid?
+  // Sale exchange v1: a COMPLETED sale can be exchanged many times (remainder per SaleItem).
+  saleExchanges     SaleExchange[]
+  postSaleGuard     SalePostSaleGuard?
 
   @@unique([branchId, saleNumber])
   @@unique([id, branchId], map: "Sale_id_branchId_key")
@@ -607,6 +630,72 @@ model SaleVoid {
 //   chk_sale_void_external_refund_method    method is not CASH (cash goes back as SALE_REFUND)
 //   chk_sale_void_external_refund_amount    amount > 0
 //   chk_sale_void_external_refund_evidence  btrim(evidence) <> '' and char_length(evidence) <= 200
+// Sale exchange v1: ONE garment swap on a COMPLETED sale. Append-only history (UPDATE / DELETE
+// are refused by a trigger): the Sale, its SaleItems and SalePayments are never touched and no
+// money row is written (equal value only). Idempotent per (saleId, idempotencyKey);
+// requestHash is the sha256 of the canonical request (reason + lines ordered by saleItemId).
+model SaleExchange {
+  id             String   @id @default(uuid())
+  saleId         String
+  branchId       String
+  createdById    String
+  reason         String
+  idempotencyKey String
+  requestHash    String   @db.Char(64)
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+
+  // Same-branch link (ON UPDATE RESTRICT), pattern of SaleVoid.
+  sale      Sale @relation(fields: [saleId, branchId], references: [id, branchId], onDelete: Restrict, onUpdate: Restrict, map: "SaleExchange_sale_branch_fkey")
+  createdBy User @relation(fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "SaleExchange_createdBy_fkey")
+
+  lines          SaleExchangeLine[]
+  stockMovements StockMovement[]
+
+  @@unique([saleId, idempotencyKey], map: "SaleExchange_saleId_idempotencyKey_key")
+  // Candidate key of the SaleExchangeLine and StockMovement composite FKs.
+  @@unique([id, saleId, branchId], map: "SaleExchange_id_saleId_branchId_key")
+  @@index([saleId, createdAt])
+  @@index([branchId, createdAt])
+  @@index([createdById])
+}
+
+// One returned SaleItem and the variant that replaces it, with the two unit prices frozen
+// (equal by CHECK: V1 moves no money).
+model SaleExchangeLine {
+  id                   String @id @default(uuid())
+  saleExchangeId       String
+  saleId               String
+  branchId             String
+  saleItemId           String
+  replacementVariantId String
+  returnQuantity       BigInt
+  originalUnitPrice    BigInt
+  replacementUnitPrice BigInt
+
+  exchange           SaleExchange   @relation(fields: [saleExchangeId, saleId, branchId], references: [id, saleId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "SaleExchangeLine_exchange_fkey")
+  saleItem           SaleItem       @relation(fields: [saleItemId, saleId], references: [id, saleId], onDelete: Restrict, onUpdate: Restrict, map: "SaleExchangeLine_saleItem_fkey")
+  replacementVariant ProductVariant @relation(fields: [replacementVariantId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "SaleExchangeLine_replacementVariant_fkey")
+
+  stockMovements StockMovement[]
+
+  @@unique([saleExchangeId, saleItemId], map: "SaleExchangeLine_saleExchangeId_saleItemId_key")
+  // Candidate key of the StockMovement composite FK.
+  @@unique([id, saleExchangeId, saleId, branchId], map: "SaleExchangeLine_id_saleExchangeId_saleId_branchId_key")
+  @@index([saleItemId])
+  @@index([replacementVariantId])
+}
+
+// Sale exchange v1 (G20): the central claim that makes SaleVoid and SaleExchange mutually exclusive per sale (one row per sale that ever had a post-sale
+// operation). Written ONLY by trigger fn_sale_post_sale_claim (INSERT ... ON CONFLICT DO UPDATE on the primary key); the application never touches it.
+//   chk_sale_post_sale_guard_mode   mode IN ('VOID', 'EXCHANGE')
+model SalePostSaleGuard {
+  saleId    String   @id
+  mode      String
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+
+  sale Sale @relation(fields: [saleId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "SalePostSaleGuard_saleId_fkey")
+}
+
 model SaleVoidExternalRefund {
   id            String        @id @default(uuid())
   saleVoidId    String
@@ -646,6 +735,7 @@ model SaleItem {
   variant     ProductVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
   product     Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
   allocations SaleLineAllocation[]
+  exchangeLines SaleExchangeLine[]
 
   @@index([saleId])
   @@index([variantId])

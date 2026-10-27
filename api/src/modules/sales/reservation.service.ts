@@ -1,3 +1,4 @@
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
@@ -46,15 +47,7 @@ function insufficientStock(variantId: string) {
   return new AppError(409, 'INSUFFICIENT_STOCK', 'No hay stock disponible suficiente para la variante.', { variantId });
 }
 
-function isTransientTransactionError(error: unknown) {
-  if (!error || typeof error !== 'object') return false;
-  const candidate = error as { code?: unknown; meta?: { code?: unknown } };
-  const message = error instanceof Error ? error.message : String(error);
-  return candidate.code === 'P2034'
-    || candidate.meta?.code === '40P01'
-    || message.includes('40001')
-    || message.includes('TransactionWriteConflict');
-}
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
 
 function formatSaleNumber(counter: bigint, branchCode: string) {
   return `${branchCode}-V-${counter.toString().padStart(6, '0')}`;

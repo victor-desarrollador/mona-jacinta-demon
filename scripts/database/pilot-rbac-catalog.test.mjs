@@ -29,13 +29,13 @@ function rowsOf(def) {
   };
 }
 
-test('RC-01 CATALOG_36 (the historical catalog of the G14 cut-over tooling) equals the real canonical catalog of api/src MINUS exactly SALE_VOID and its ADMIN grant', () => {
-  // The canonical catalog is CATALOG_37 since sale void v1 (see pilot-rbac-catalog-generations.mjs); this module stays
+test('RC-01 CATALOG_36 (the historical catalog of the G14 cut-over tooling) equals the real canonical catalog of api/src MINUS exactly SALE_VOID, SALE_EXCHANGE and their ADMIN grants', () => {
+  // The canonical catalog is CATALOG_38 since sale exchange v1 (see pilot-rbac-catalog-generations.mjs); this module stays
   // byte-identical because the PILOT tool manifests pin it.
   const real = {
     roles: Object.entries(catalog.CANONICAL_ROLE_IDS).sort(),
-    permissions: permissions.productionPermissionValues.map((c) => [c, catalog.CANONICAL_PERMISSION_IDS[c]]).sort().filter(([code]) => code !== 'SALE_VOID'),
-    grants: Object.entries(matrix.DEFAULT_ROLE_GRANTS).flatMap(([role, list]) => list.map((p) => [role, p])).sort().filter(([, code]) => code !== 'SALE_VOID'),
+    permissions: permissions.productionPermissionValues.map((c) => [c, catalog.CANONICAL_PERMISSION_IDS[c]]).sort().filter(([code]) => code !== 'SALE_VOID' && code !== 'SALE_EXCHANGE'),
+    grants: Object.entries(matrix.DEFAULT_ROLE_GRANTS).flatMap(([role, list]) => list.map((p) => [role, p])).sort().filter(([, code]) => code !== 'SALE_VOID' && code !== 'SALE_EXCHANGE'),
   };
   assert.deepEqual(rbac.CATALOG_36.roles.map((r) => [...r]), real.roles);
   assert.deepEqual(rbac.CATALOG_36.permissions.map((p) => [...p]), real.permissions);

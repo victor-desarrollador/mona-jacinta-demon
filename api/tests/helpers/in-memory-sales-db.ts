@@ -31,7 +31,9 @@ const MODELS = [
 // Sale void (post-payment): opt-in models, so the 18-table store that existing
 // tests assert on is unchanged unless a test asks for them (`withSaleVoid`).
 const SALE_VOID_MODELS = ['saleVoid', 'saleVoidExternalRefund', 'externalCollection'] as const;
-type Model = (typeof MODELS)[number] | (typeof SALE_VOID_MODELS)[number];
+// Sale exchange (post-sale garment swap): opt-in models, same contract as `withSaleVoid`.
+const SALE_EXCHANGE_MODELS = ['saleExchange', 'saleExchangeLine'] as const;
+type Model = (typeof MODELS)[number] | (typeof SALE_VOID_MODELS)[number] | (typeof SALE_EXCHANGE_MODELS)[number];
 
 type Relation = { model: Model; kind: 'one' | 'many'; local: string; foreign: string };
 const RELATIONS: Partial<Record<Model, Record<string, Relation>>> = {
@@ -43,6 +45,8 @@ const RELATIONS: Partial<Record<Model, Record<string, Relation>>> = {
     seller: { model: 'user', kind: 'one', local: 'sellerId', foreign: 'id' },
     // Only with `withSaleVoid` (UNIQUE(saleId) on SaleVoid).
     saleVoid: { model: 'saleVoid', kind: 'one', local: 'id', foreign: 'saleId' },
+    // Only with `withSaleExchange` (a sale may have many exchanges).
+    exchanges: { model: 'saleExchange', kind: 'many', local: 'id', foreign: 'saleId' },
     wholesaleConfirmedBy: { model: 'user', kind: 'one', local: 'wholesaleConfirmedById', foreign: 'id' },
   },
   saleItem: {
@@ -57,6 +61,9 @@ const RELATIONS: Partial<Record<Model, Record<string, Relation>>> = {
   },
   saleVoid: {
     voidedBy: { model: 'user', kind: 'one', local: 'voidedById', foreign: 'id' },
+  },
+  saleExchange: {
+    lines: { model: 'saleExchangeLine', kind: 'many', local: 'id', foreign: 'saleExchangeId' },
   },
 };
 
@@ -80,6 +87,7 @@ const DEFAULTS: Partial<Record<Model, () => Row>> = {
   salePayment: () => ({ receivedAmount: null, changeAmount: null, cashSessionId: null, paidAt: new Date() }),
   auditLog: () => ({ before: null, after: null, timestamp: new Date() }),
   saleVoid: () => ({ voidedAt: new Date() }),
+  saleExchange: () => ({ createdAt: new Date() }),
 };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -90,8 +98,12 @@ function unsupported(what: string): never {
   throw new Error(`in-memory-sales-db: unsupported ${what}`);
 }
 
-export function createInMemorySalesDb(options: { withSaleVoid?: boolean } = {}) {
-  const models: readonly Model[] = options.withSaleVoid ? [...MODELS, ...SALE_VOID_MODELS] : MODELS;
+export function createInMemorySalesDb(options: { withSaleVoid?: boolean; withSaleExchange?: boolean } = {}) {
+  const models: readonly Model[] = [
+    ...MODELS,
+    ...(options.withSaleVoid ? SALE_VOID_MODELS : []),
+    ...(options.withSaleExchange ? SALE_EXCHANGE_MODELS : []),
+  ];
   let tables: Tables = Object.fromEntries(models.map((model) => [model, [] as Row[]]));
   const rawQueries: string[] = [];
 

@@ -1,3 +1,4 @@
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import { Prisma, type PriceType, type PrismaClient, type SalePricingModel } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { actsAsRoleAtLocation, hasPermissionAtLocation } from '../rbac/authorization-policy.js';
@@ -56,16 +57,8 @@ function ensureSaleAccess(
   }
 }
 
-function isTransientCompletionError(error: unknown) {
-  const candidate = error as { code?: string; meta?: { code?: string } };
-  const message = error instanceof Error ? error.message : '';
-  return candidate.code === 'P2034'
-    || candidate.meta?.code === '40001'
-    || candidate.meta?.code === '40P01'
-    || message.includes('40001')
-    || message.includes('40P01')
-    || message.includes('TransactionWriteConflict');
-}
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
+const isTransientCompletionError = isTransientTransactionError;
 
 function variantName(variant: { color: string | null; size: string | null }) {
   return [variant.color, variant.size].filter(Boolean).join(' / ') || 'Única';

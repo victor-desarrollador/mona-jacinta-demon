@@ -538,8 +538,8 @@ export function inspectBackupArchive(file, uid) {
 // a blank line, one of the fixed header comment forms, or an entry whose type is in the allow-list; anything else is
 // refused. Entries are counted in a Map BEFORE any comparison (a Set would hide a duplicate TABLE or TABLE DATA line).
 // Required: exactly one dbname == mona_local_test, exactly one declared `TOC Entries: N` equal to the parsed entry count,
-// no marker schema, TABLE and TABLE DATA each exactly once per relation, and exactly the 26 protected relations in
-// schema `public`. The result carries a TOC MULTISET digest (sorted `type\tschema\tname` lines, duplicates kept) that the
+// no marker schema, TABLE and TABLE DATA each exactly once per relation, and exactly the protected relations of the expected generation (the `relations` argument; the
+// CURRENT contract is the 37 of local-test-witness.mjs) in schema `public`. The result carries a TOC MULTISET digest (sorted `type\tschema\tname` lines, duplicates kept) that the
 // manifest binds. Reasons are fixed strings: nothing from the archive is echoed.
 const TOC_HEADER_FORMS = [
   /^;$/, /^; Archive created at .+$/, /^;     Compression: \S+$/, /^;     Dump Version: \S+$/, /^;     Format: CUSTOM$/,

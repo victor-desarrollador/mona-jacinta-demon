@@ -1,3 +1,4 @@
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import type { PriceType, PrismaClient, SalePayment, SalePricingModel } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
@@ -16,13 +17,8 @@ type LockedSale = {
   wholesaleConfirmedAt: Date | null; wholesaleConfirmedById: string | null;
 };
 
-const transient = (error: unknown) => {
-  const candidate = error as { code?: string; meta?: { code?: string } };
-  const message = error instanceof Error ? error.message : '';
-  return candidate.code === 'P2034' || candidate.meta?.code === '40001'
-    || candidate.meta?.code === '40P01' || message.includes('40001')
-    || message.includes('40P01') || message.includes('TransactionWriteConflict');
-};
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
+const transient = isTransientTransactionError;
 
 // The SalePayment (saleId, idempotencyKey) unique key, read from meta.target or
 // the adapter-pg 7.10 shape (R-1, prisma-unique-violation.ts); a column list

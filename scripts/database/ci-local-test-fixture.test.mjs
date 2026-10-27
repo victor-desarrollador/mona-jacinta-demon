@@ -254,12 +254,15 @@ test('stops when a step does not produce the expected next state', async () => {
 
 // ---- migration generations: the REAL exact-tree verifier runs inside the fixture flow -----------------------------------
 //
-// The fixture applies and expects the LATEST generation (G16). These tests run the real staticGates + the real latest payload
+// The fixture applies and expects the LATEST generation (G20). These tests run the real staticGates + the real latest payload
 // verifier over synthetic copies of the repository tree (only the runtime, the migration child and the file hashes are fakes).
 const TMP = mkdtempSync(path.join(os.tmpdir(), 'ci-fixture-generations-'));
 const G14 = GENERATIONS.EXACT_G14;
 const G15 = GENERATIONS.EXACT_G15;
 const G16 = GENERATIONS.EXACT_G16;
+const G17 = GENERATIONS.EXACT_G17;
+const G18 = GENERATIONS.EXACT_G18;
+const G20 = GENERATIONS.EXACT_G20;
 
 function treeOf(names) {
   const root = mkdtempSync(path.join(TMP, 'api-'));
@@ -292,18 +295,18 @@ async function withTree(root, extra = {}) {
   return { code, loaded, calls: h.calls, err: h.err, out: h.out };
 }
 
-test('GN-F1 a G16 tree (the latest) is accepted: the runtime is handed exactly the sixteen approved migrations and the fixture reaches the bootstrap', async () => {
-  const r = await withTree(treeOf(G16));
+test('GN-F1 a G20 tree (the latest) is accepted: the runtime is handed exactly the twenty approved migrations and the fixture reaches the bootstrap', async () => {
+  const r = await withTree(treeOf(G20));
   assert.equal(r.code, 0, r.err.join('\n'));
   assert.equal(r.loaded.length, 1);
-  assert.deepEqual(r.loaded[0].approvedMigrations.map((m) => m.name), G16);
-  assert.equal(r.loaded[0].approvedMigrations.length, 16);
+  assert.deepEqual(r.loaded[0].approvedMigrations.map((m) => m.name), G20);
+  assert.equal(r.loaded[0].approvedMigrations.length, 20);
   assert.ok(r.calls.includes('migrate'));
-  assert.match(r.out.join('\n'), /exactly 16 approved migrations/);
+  assert.match(r.out.join('\n'), /exactly 20 approved migrations/);
 });
 
-test('GN-F2 fail closed: a G14 tree or a G15 tree (older generations) is refused before any runtime, connection or migration', async () => {
-  for (const names of [G14, G15]) {
+test('GN-F2 fail closed: a G14 .. G18 tree (older generations, the previous latest G16 included) is refused before any runtime, connection or migration', async () => {
+  for (const names of [G14, G15, G16, G17, G18]) {
     const r = await withTree(treeOf(names));
     assert.equal(r.code, 1, `${names.length} migrations`);
     assert.match(r.err.join('\n'), /phase=payload/);
@@ -313,18 +316,18 @@ test('GN-F2 fail closed: a G14 tree or a G15 tree (older generations) is refused
   }
 });
 
-test('GN-F3 fail closed: an unregistered extra migration, a missing sale void migration and a changed checksum are refused', async () => {
-  const extra = treeOf(G16);
+test('GN-F3 fail closed: an unregistered extra migration, a missing void guard migration and a changed checksum are refused', async () => {
+  const extra = treeOf(G20);
   mkdirSync(path.join(extra, 'prisma', 'migrations', '20261025000000_unregistered'));
   writeFileSync(sqlOf(extra, '20261025000000_unregistered'), 'SELECT 1;\n');
-  const missing = treeOf(G16);
-  rmSync(path.join(missing, 'prisma', 'migrations', G16[15]), { recursive: true });
-  const changed = treeOf(G16);
-  const bytes = readFileSync(sqlOf(changed, G16[14]));
+  const missing = treeOf(G20);
+  rmSync(path.join(missing, 'prisma', 'migrations', G20[19]), { recursive: true });
+  const changed = treeOf(G20);
+  const bytes = readFileSync(sqlOf(changed, G20[18]));
   bytes[bytes.length - 2] ^= 0x01;
-  writeFileSync(sqlOf(changed, G16[14]), bytes);
-  const renamed = treeOf(G16);
-  renameSync(path.join(renamed, 'prisma', 'migrations', G16[15]), path.join(renamed, 'prisma', 'migrations', '20261024130001_sale_void_schema'));
+  writeFileSync(sqlOf(changed, G20[18]), bytes);
+  const renamed = treeOf(G20);
+  renameSync(path.join(renamed, 'prisma', 'migrations', G20[19]), path.join(renamed, 'prisma', 'migrations', '20261026150001_sale_post_sale_guard'));
   for (const [label, root] of Object.entries({ extra, missing, changed, renamed })) {
     const r = await withTree(root);
     assert.equal(r.code, 1, label);
@@ -334,9 +337,9 @@ test('GN-F3 fail closed: an unregistered extra migration, a missing sale void mi
   }
 });
 
-test('GN-F4 the fixture still demands the exact CI target even with a valid G16 tree (no generation unlocks another database)', async () => {
+test('GN-F4 the fixture still demands the exact CI target even with a valid G20 tree (no generation unlocks another database)', async () => {
   for (const env of [{ ...GOOD_ENV, CI: 'false' }, { ...GOOD_ENV, LOCAL_TEST_DATABASE_URL: HOSTILE_TEST }, { ...GOOD_ENV, DATABASE_URL: HOSTILE_DEV }]) {
-    const r = await withTree(treeOf(G16), { env });
+    const r = await withTree(treeOf(G20), { env });
     assert.equal(r.code, 1);
     assert.equal(r.loaded.length, 0);
     assertNoMutation(r.calls);

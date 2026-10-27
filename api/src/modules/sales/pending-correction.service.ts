@@ -1,3 +1,4 @@
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import { Prisma, type PriceType, type PrismaClient } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
@@ -25,13 +26,8 @@ const conflict = (code: string, message: string, details?: unknown) => new AppEr
 const invalidReservation = () =>
   conflict('INVALID_RESERVATION', 'Las reservas de la venta no respaldan exactamente sus artículos.');
 
-function transient(error: unknown) {
-  const candidate = error as { code?: string; meta?: { code?: string } };
-  const message = error instanceof Error ? error.message : '';
-  return candidate.code === 'P2034' || candidate.meta?.code === '40001'
-    || candidate.meta?.code === '40P01' || message.includes('40001')
-    || message.includes('40P01') || message.includes('TransactionWriteConflict');
-}
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
+const transient = isTransientTransactionError;
 
 function variantName(variant: { color: string | null; size: string | null }) {
   return [variant.color, variant.size].filter(Boolean).join(' / ') || 'Única';

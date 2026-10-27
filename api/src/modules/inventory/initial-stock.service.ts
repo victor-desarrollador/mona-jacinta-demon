@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
+import { isInventoryFirstRowRace } from './inventory-unique-race.js';
 
 // D3 (Demo Operativa V1): additive initial stock load
 // (docs/production-v1/07-inventory-ledger.md §4: INITIAL_STOCK, ON_HAND,
@@ -9,6 +11,8 @@ import { createAuditLog } from '../../shared/audit.js';
 // never changed (a newly created Inventory row starts at 0/0). Exactly one
 // positive INITIAL_STOCK StockMovement and one audit row (real target
 // branch) commit atomically with the balance change.
+//
+// One Serializable transaction (like the manual stock adjustment): the Inventory row lock, the balance change, the movement and the audit row are atomic.
 //
 // Authorization (IMPORT_RUN, location-paired with the validated body
 // branchId) is enforced by inventory.routes.ts before this runs.
@@ -27,20 +31,10 @@ export type InitialStockInput = z.infer<typeof initialStockSchema>;
 type InitialStockDatabase = Pick<PrismaClient, '$transaction'>;
 type LockedInventory = { id: string; physical: bigint; reserved: bigint };
 
-// Same transient classification as reservation.service.ts, plus P2002: two
-// concurrent first loads of the same (variant, branch) can both try to
-// create its Inventory row; the loser's transaction is aborted and retried,
-// then finds the row and increments it under the row lock.
-function isRetryable(error: unknown) {
-  if (!error || typeof error !== 'object') return false;
-  const candidate = error as { code?: unknown; meta?: { code?: unknown } };
-  const message = error instanceof Error ? error.message : String(error);
-  return candidate.code === 'P2002'
-    || candidate.code === 'P2034'
-    || candidate.meta?.code === '40P01'
-    || message.includes('40001')
-    || message.includes('TransactionWriteConflict');
-}
+// Retry rule: a real transient transaction failure (the shared classifier, every driver shape), plus ONE expected unique violation: two concurrent first
+// loads of the same (variant, branch) can both try to create its Inventory row; the loser aborts with P2002 on Inventory_variantId_branchId_key, is
+// retried, then finds the row and increments it under the row lock. Any other P2002 is neither retried nor translated.
+const isRetryable = (error: unknown) => isTransientTransactionError(error) || isInventoryFirstRowRace(error);
 
 export function createInitialStockService(database: InitialStockDatabase) {
   async function loadInTransaction(userId: string, input: InitialStockInput) {
@@ -97,7 +91,7 @@ export function createInitialStockService(database: InitialStockDatabase) {
         },
       });
       return { inventory, movement };
-    });
+    }, { isolationLevel: 'Serializable', timeout: 30000 });
   }
 
   async function loadInitialStock(userId: string, input: InitialStockInput) {

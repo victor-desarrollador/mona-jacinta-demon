@@ -522,6 +522,9 @@ const PRESERVED_CHECKOUT_RELATIONS = new Set([
 // seed #2 writes none of them, so across the resume Q == P exactly. Classified EXPLICITLY as PRESERVED_FROM_BACKUP; an
 // unmentioned relation would fall through to CANONICAL_VALUE below, which is wrong for them.
 const PRESERVED_SALE_VOID_RELATIONS = new Set(['SaleVoid', 'SaleVoidExternalRefund']);
+// Sale exchange v1 (G19, G20): SaleExchange, SaleExchangeLine and SalePostSaleGuard (the VOID / EXCHANGE claim written by trigger) are operational history, not seed content — seed #2 writes none of
+// them, so across the resume Q == P exactly. Classified EXPLICITLY as PRESERVED_FROM_BACKUP, like the sale void relations above.
+const PRESERVED_SALE_EXCHANGE_RELATIONS = new Set(['SaleExchange', 'SaleExchangeLine', 'SalePostSaleGuard']);
 const categoryOf = (relation: string, column: string) => {
   if (relation === 'ProductVariant' && column === 'wholesalePrice') return 'PRESERVED_FROM_BACKUP';
   if (relation === 'RolePermission') return 'RECREATED_SEMANTIC_SET';
@@ -529,6 +532,7 @@ const categoryOf = (relation: string, column: string) => {
   if (relation === 'UserRoleScope') return 'PRESERVED_AND_CREATED';
   if (PRESERVED_CHECKOUT_RELATIONS.has(relation)) return 'PRESERVED_FROM_BACKUP';
   if (PRESERVED_SALE_VOID_RELATIONS.has(relation)) return 'PRESERVED_FROM_BACKUP';
+  if (PRESERVED_SALE_EXCHANGE_RELATIONS.has(relation)) return 'PRESERVED_FROM_BACKUP';
   return PRESERVED_RELATIONS.has(relation) ? 'PRESERVED_FROM_BACKUP' : 'CANONICAL_VALUE';
 };
 export const TRANSFORMATION_CATEGORIES: Readonly<Record<string, string>> = Object.freeze(

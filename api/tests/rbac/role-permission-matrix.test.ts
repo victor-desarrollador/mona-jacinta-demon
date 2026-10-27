@@ -63,9 +63,11 @@ describe('Phase 1B RBAC domain module (no database)', () => {
       'SALE_CANCEL_PENDING',
       // Sale void v1 (additive, 9400/37): ADMIN only; OWNER through its implicit authority.
       'SALE_VOID',
+      // Sale exchange v1 (additive, 9400/38): ADMIN only; OWNER through its implicit authority.
+      'SALE_EXCHANGE',
     ];
     expect(productionPermissionValues.slice().sort()).toEqual(expected.slice().sort());
-    expect(productionPermissionValues).toHaveLength(37);
+    expect(productionPermissionValues).toHaveLength(38);
     // Constant keys equal their string values (no invented abbreviations).
     for (const [key, value] of Object.entries(PRODUCTION_PERMISSIONS)) expect(key).toBe(value);
   });

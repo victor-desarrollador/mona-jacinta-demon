@@ -1,3 +1,4 @@
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import type { CashSession, Prisma, PrismaClient } from '../../generated/prisma/client.js';
 import { hasBranchAccess, hasPermissionAtLocation, actsAsSupervisorAtLocation } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
@@ -295,6 +296,14 @@ function isReversalRace(error: unknown): boolean {
   return text === 'cashmovement_reversesmovementid_key' || text === 'cashmovement_sessionid_idempotencykey_key';
 }
 
+// P2002 of CashSession(registerId) WHERE status = 'OPEN' (cash_session_one_open_per_register, migration 1): by the index name PostgreSQL reports through
+// @prisma/adapter-pg, or by the column list the Prisma engine reports (registerId is the only unique column of CashSession besides its primary key).
+function isOpenSessionRace(error: unknown): boolean {
+  const violation = uniqueViolation(error);
+  if (violation === null || (violation.modelName !== null && violation.modelName !== 'CashSession')) return false;
+  return violation.name === 'cash_session_one_open_per_register' || (violation.fields?.length === 1 && violation.fields[0] === 'registerId');
+}
+
 export function createCashService(database: PrismaClient) {
   // Task 1D.5.3's firm decision: GET register/current keep coarse branch
   // membership only — no CASH_VIEW permission exists in the Production
@@ -314,11 +323,9 @@ export function createCashService(database: PrismaClient) {
       try {
         return await database.$transaction(operation, { isolationLevel: 'Serializable', timeout: 30000 });
       } catch (error) {
-        const candidate = error as { code?: string; meta?: { code?: string } };
-        if (opening && candidate?.code === 'P2002') throw conflict(true);
-        const message = error instanceof Error ? error.message : '';
-        const transient = candidate?.code === 'P2034' || candidate?.meta?.code === '40001'
-          || candidate?.meta?.code === '40P01' || message.includes('40001') || message.includes('TransactionWriteConflict');
+        // The ONE unique violation behind CASH_SESSION_ALREADY_OPEN is the partial index cash_session_one_open_per_register; any other P2002 is not ours.
+        if (opening && isOpenSessionRace(error)) throw conflict(true);
+        const transient = isTransientTransactionError(error);
         if (!transient) throw error;
         if (attempt === 2) throw new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
       }

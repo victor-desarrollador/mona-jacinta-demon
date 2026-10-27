@@ -579,7 +579,7 @@ test('B17/B39/B40: a fresh PILOT gets exactly the additive rows, in one transact
   assert.equal(r.counters.pgClients.length, 1);
   assert.equal(r.counters.hashes, 6, 'five accounts + one random system-actor secret');
   assert.deepEqual(t.role.map((x) => x.code).sort(), ['ADMIN', 'CASHIER', 'OWNER', 'SELLER', 'WAREHOUSE']);
-  assert.equal(t.permission.length, 37, 'a fresh PILOT gets the LATEST canonical catalog (CATALOG_37, + SALE_VOID)');
+  assert.equal(t.permission.length, 38, 'a fresh PILOT gets the LATEST canonical catalog (CATALOG_38, + SALE_VOID + SALE_EXCHANGE)');
   const expectedGrants = Object.values(CANONICAL.DEFAULT_ROLE_GRANTS).reduce((n, g) => n + g.length, 0);
   assert.equal(t.rolePermission.length, expectedGrants);
   assert.equal((await CANONICAL.verifyProductionRbacCatalog(r.db)).ok, true);
@@ -647,33 +647,40 @@ test('B18/B19: a second run on the exact result is a no-op (no writes, no duplic
   assert.equal(r.counters.hashes, 0, 'no hashing needed for a no-op');
 });
 
-// --- RBAC generations: CATALOG_36 (historical) is a known state that needs an explicit transition ---------------------
+// --- RBAC generations: CATALOG_36 and CATALOG_37 (historical) are known states that need an explicit transition ------
 
-test('BG-01: an existing database holding exactly CATALOG_36 stops with CATALOG_37_UPGRADE_REQUIRED, writes nothing and is not a conflict', async () => {
-  const seed = await bootstrapped();
-  const saleVoid = seed.permission.find((p) => p.code === 'SALE_VOID');
-  const historical = mutate(seed, (s) => {
-    s.permission = s.permission.filter((p) => p.code !== 'SALE_VOID');
-    s.rolePermission = s.rolePermission.filter((g) => g.permissionId !== saleVoid.id);
-  });
-  assert.equal(historical.permission.length, 36);
-  const r = await run(EXECUTE, { db: fakeDb({ seed: historical }) });
-  assert.equal(r.code, 1, r.text);
-  assert.match(r.text, /phase=catalog-upgrade-required/);
-  assert.match(r.text, /CATALOG_37_UPGRADE_REQUIRED/);
-  assert.doesNotMatch(r.text, /phase=conflict/);
-  assert.ok(!r.db.calls.some((c) => /\.(create|createMany|update|updateMany|delete|deleteMany|upsert)$/.test(c)), 'no write of any kind');
-  assert.deepEqual(r.db.tables, historical);
-  assert.equal(r.db.stats.commits, 0);
-  assertNoLeak(r.text);
+const withoutPermissions = (seed, codes) => mutate(seed, (s) => {
+  const ids = new Set(s.permission.filter((p) => codes.includes(p.code)).map((p) => p.id));
+  s.permission = s.permission.filter((p) => !ids.has(p.id));
+  s.rolePermission = s.rolePermission.filter((g) => !ids.has(g.permissionId));
 });
 
-test('BG-02: a catalog that is neither exactly 36 nor exactly 37 stays a conflict (a partial 37 included)', async () => {
+for (const [label, codes, size] of [['CATALOG_37', ['SALE_EXCHANGE'], 37], ['CATALOG_36', ['SALE_EXCHANGE', 'SALE_VOID'], 36]]) {
+  test(`BG-01: an existing database holding exactly ${label} stops with CATALOG_38_UPGRADE_REQUIRED, writes nothing and is not a conflict`, async () => {
+    const seed = await bootstrapped();
+    const historical = withoutPermissions(seed, codes);
+    assert.equal(historical.permission.length, size);
+    const r = await run(EXECUTE, { db: fakeDb({ seed: historical }) });
+    assert.equal(r.code, 1, r.text);
+    assert.match(r.text, /phase=catalog-upgrade-required/);
+    assert.match(r.text, /CATALOG_38_UPGRADE_REQUIRED/);
+    assert.doesNotMatch(r.text, /phase=conflict/);
+    assert.ok(!r.db.calls.some((c) => /\.(create|createMany|update|updateMany|delete|deleteMany|upsert)$/.test(c)), 'no write of any kind');
+    assert.deepEqual(r.db.tables, historical);
+    assert.equal(r.db.stats.commits, 0);
+    assertNoLeak(r.text);
+  });
+}
+
+test('BG-02: a catalog that is none of the exact 36, 37 or 38 stays a conflict (a partial 37 or 38 included)', async () => {
   const seed = await bootstrapped();
   const saleVoid = seed.permission.find((p) => p.code === 'SALE_VOID');
   const cases = {
     'SALE_VOID permission without its ADMIN grant': (s) => { s.rolePermission = s.rolePermission.filter((g) => g.permissionId !== saleVoid.id); },
     'SALE_VOID granted to CASHIER as well': (s) => { s.rolePermission.push({ roleId: roleId(s, 'CASHIER'), permissionId: saleVoid.id }); },
+    'SALE_EXCHANGE permission without its ADMIN grant': (s) => { const id = permId(s, 'SALE_EXCHANGE'); s.rolePermission = s.rolePermission.filter((g) => g.permissionId !== id); },
+    'SALE_EXCHANGE granted to CASHIER as well': (s) => { s.rolePermission.push({ roleId: roleId(s, 'CASHIER'), permissionId: permId(s, 'SALE_EXCHANGE') }); },
+    'catalog 37 plus a foreign permission': (s) => { const id = permId(s, 'SALE_EXCHANGE'); s.permission = s.permission.filter((p) => p.id !== id); s.rolePermission = s.rolePermission.filter((g) => g.permissionId !== id); s.permission.push({ id: randomUUID(), code: 'FOO' }); },
     'catalog 36 plus a foreign permission': (s) => { s.permission = s.permission.filter((p) => p.code !== 'SALE_VOID'); s.rolePermission = s.rolePermission.filter((g) => g.permissionId !== saleVoid.id); s.permission.push({ id: randomUUID(), code: 'FOO' }); },
   };
   for (const [label, fn] of Object.entries(cases)) {

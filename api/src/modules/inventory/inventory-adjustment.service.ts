@@ -1,3 +1,4 @@
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
@@ -5,6 +6,7 @@ import { createAuditLog } from '../../shared/audit.js';
 import { hasPermissionAtLocation } from '../rbac/authorization-policy.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { uniqueViolation } from '../payments/prisma-unique-violation.js';
+import { isInventoryFirstRowRace } from './inventory-unique-race.js';
 
 // WAREHOUSE-MVP: manual stock adjustment. physical = previous physical + delta
 // (never "set"); reserved is NEVER changed. One StockMovement (type ADJUSTMENT)
@@ -40,31 +42,8 @@ type LockedInventory = { id: string; physical: bigint; reserved: bigint };
 const concurrencyError = () =>
   new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
 
-// Transient classification (P2034 / SQLSTATE 40001 / 40P01 / TransactionWriteConflict)
-// in every shape the driver stack really produces: Prisma code, meta.code, the
-// adapter-pg driverAdapterError cause (originalCode / kind), a pg error carrying
-// the SQLSTATE as `code`, an Error.cause chain, or the SQLSTATE in the message.
-const TRANSIENT_SQLSTATES = new Set(['40001', '40P01']);
-const MAX_CAUSE_DEPTH = 4;
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
-const isTransientState = (value: unknown) => typeof value === 'string' && TRANSIENT_SQLSTATES.has(value);
-
-function isTransient(error: unknown, depth = 0): boolean {
-  if (!isRecord(error) || depth > MAX_CAUSE_DEPTH) return false;
-  const meta = isRecord(error.meta) ? error.meta : {};
-  const adapter = isRecord(meta.driverAdapterError) ? meta.driverAdapterError : {};
-  const adapterCause = isRecord(adapter.cause) ? adapter.cause : {};
-  const message = error instanceof Error ? error.message : '';
-  return error.code === 'P2034'
-    || isTransientState(error.code)
-    || isTransientState(meta.code)
-    || isTransientState(adapterCause.originalCode)
-    || isTransientState(adapterCause.code)
-    || adapterCause.kind === 'TransactionWriteConflict'
-    || /(?<![0-9A-Za-z])(40001|40P01)(?![0-9A-Za-z])/.test(message)
-    || message.includes('TransactionWriteConflict')
-    || isTransient(error.cause, depth + 1);
-}
+// Transient classification: the shared isTransientTransactionError (src/shared/transient-transaction-error.ts).
+const isTransient = isTransientTransactionError;
 
 // P2002 is retryable ONLY for the two races this flow expects: the first
 // Inventory row of a (variant, branch) created concurrently, and the same
@@ -76,8 +55,7 @@ const sameFields = (fields: string[] | null, expected: string[]) =>
 function isExpectedUniqueRace(error: unknown) {
   const violation = uniqueViolation(error);
   if (violation === null) return false;
-  const inventory = (violation.modelName === null || violation.modelName === 'Inventory')
-    && (violation.name === 'Inventory_variantId_branchId_key' || sameFields(violation.fields, ['variantId', 'branchId']));
+  const inventory = isInventoryFirstRowRace(error);
   const idempotency = (violation.modelName === null || violation.modelName === 'StockMovement')
     && (violation.name === 'StockMovement_userId_idempotencyKey_key' || sameFields(violation.fields, ['userId', 'idempotencyKey']));
   return inventory || idempotency;
