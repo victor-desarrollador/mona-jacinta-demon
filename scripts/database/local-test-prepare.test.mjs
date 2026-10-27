@@ -377,14 +377,14 @@ test('A3 migration pins come only from local-test-migration-payload.mjs (G11 = t
   assert.doesNotMatch(SOURCE, /[0-9a-f]{64}/);
 });
 
-test('A3b U1 the default deps verify the LATEST LOCAL_TEST payload (G16): the real reviewed tree passes with sixteen migrations; G14 stays the historical payload', () => {
+test('A3b U1 the default deps verify the LATEST LOCAL_TEST payload (G20): the real reviewed tree passes with twenty migrations; G14 stays the historical payload', () => {
   assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.verifyMigrationPayload, localPayloadModule.verifyLocalTestMigrationPayload);
   assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.verifyP21BasePayload, localPayloadModule.verifyP21BasePayload);
   assert.equal(prepareModule.DEFAULT_PREPARE_DEPS.stageP21Base, localPayloadModule.stageP21BaseMigrations);
   const real = prepareModule.DEFAULT_PREPARE_DEPS.verifyMigrationPayload(REAL_API_DIR);
   assert.equal(real.ok, true, real.reason);
   assert.deepEqual(real.migrations.map((m) => m.name), localPayloadModule.LOCAL_TEST_LATEST_PAYLOAD.migrations.map((m) => m.name));
-  assert.equal(real.migrations.length, 16);
+  assert.equal(real.migrations.length, 20);
   assert.equal(localPayloadModule.LOCAL_TEST_MIGRATION_PAYLOAD.migrations.length, 14, 'the historical G14 payload is not replaced');
 });
 
@@ -447,7 +447,7 @@ test('A5c dry-run and a plan mismatch never import the runtime or spawn, even wi
 // U1 (R3-T) contract change: the real reviewed tree (eleven migration directories) was refused at phase=payload while
 // LOCAL_TEST used the PILOT G7 payload; it now verifies as the LOCAL_TEST payload G11 (drift is covered by
 // local-test-migration-payload.test.mjs). The dry-run still loads no runtime and starts no process.
-test('A6 U1 the real reviewed tree (sixteen migration directories) passes the LATEST LOCAL_TEST payload (G16); the dry-run starts nothing', async () => {
+test('A6 U1 the real reviewed tree (twenty migration directories) passes the LATEST LOCAL_TEST payload (G20); the dry-run starts nothing', async () => {
   const out = [];
   const loaded = [];
   const spawned = [];
@@ -462,7 +462,7 @@ test('A6 U1 the real reviewed tree (sixteen migration directories) passes the LA
   });
   const text = out.join('\n');
   assert.equal(code, 0, text);
-  assert.match(text, /migration payload: PASS — exactly 16 approved migrations \(pins: local-test-migration-payload\.mjs\)/);
+  assert.match(text, /migration payload: PASS — exactly 20 approved migrations \(pins: local-test-migration-payload\.mjs\)/);
   for (const m of localPayloadModule.LOCAL_TEST_LATEST_PAYLOAD.migrations) assert.ok(text.includes(`${m.name}  sha256 ${m.sha256}`), m.name);
   assert.match(text, /plan digest: [0-9a-f]{64}/);
   assert.equal(loaded.length, 0, 'the runtime was reached');
@@ -1193,9 +1193,11 @@ const ARCHIVE = Buffer.from('PGDMP synthetic custom archive bytes\n');
 const G7_RELATIONS = ['AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'CompanyPricingConfig', 'Inventory', 'Location', 'Permission', 'Product', 'ProductVariant', 'Role', 'RolePermission', 'Sale', 'SaleItem', 'SaleNumberCounter', 'SalePayment', 'StockMovement', 'StockReservation', 'User', 'UserBranchRole', 'UserRoleScope', '_prisma_migrations'];
 // G1-11 (migrations 8–11) adds six relations: the current contract is the 32, in raw-byte order.
 const G11_NEW_RELATIONS = ['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation'];
-// G1-16 (sale void v1) adds SaleVoid and SaleVoidExternalRefund: the CURRENT protected contract is the 34 relations.
+// G1-16 (sale void v1) added SaleVoid and SaleVoidExternalRefund; G1-19 (sale exchange v1) added SaleExchange and SaleExchangeLine; G1-20 (the post-sale claim) adds SalePostSaleGuard: the CURRENT protected contract is the 37 relations.
 const G16_NEW_RELATIONS = ['SaleVoid', 'SaleVoidExternalRefund'];
-const R4_RELATIONS = [...G7_RELATIONS, ...G11_NEW_RELATIONS, ...G16_NEW_RELATIONS].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+const G19_NEW_RELATIONS = ['SaleExchange', 'SaleExchangeLine'];
+const G20_NEW_RELATIONS = ['SalePostSaleGuard'];
+const R4_RELATIONS = [...G7_RELATIONS, ...G11_NEW_RELATIONS, ...G16_NEW_RELATIONS, ...G19_NEW_RELATIONS, ...G20_NEW_RELATIONS].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
 // A TOC in the shape pg_restore --list prints, for the 32 protected relations plus a few allow-listed object kinds (R4 strict contract).
 function r4Toc({ tables = R4_RELATIONS, data = tables, extra = [], dbname = 'mona_local_test', declared } = {}) {
   const entries = [
@@ -1425,7 +1427,7 @@ test('V231-P17/I32 a valid backup + a bound OWNER authorization: the resume prov
   const manifestSha = sha(readFileSync(path.join(b.runDir, MANIFEST)));
   assert.match(dry.text, new RegExp(`^  backup evidence: run ${RUN} dump sha256 ${b.dumpSha} bytes ${ARCHIVE.length} manifest sha256 ${manifestSha}$`, 'm'));
   assert.match(dry.text, /^  PRE witness \(digest only\): fPre [0-9a-f]{64} \(witness sha256 [0-9a-f]{64}; TOC multiset sha256 [0-9a-f]{64}\)$/m);
-  assert.match(dry.text, /^  backup verified: files \+ self-hashed manifest; age 3600s \(max 21600s\); bound to the current checkpoint cp-\d{8}T\d{6}Z-[0-9a-f]{32} \(record sha256 [0-9a-f]{64}\); pg_restore --list PASS \(\d+ entries, 34 tables with TABLE DATA, TOC sha256 [0-9a-f]{64} = manifest; pg_restore sha256 [0-9a-f]{64}\)$/m);
+  assert.match(dry.text, /^  backup verified: files \+ self-hashed manifest; age 3600s \(max 21600s\); bound to the current checkpoint cp-\d{8}T\d{6}Z-[0-9a-f]{32} \(record sha256 [0-9a-f]{64}\); pg_restore --list PASS \(\d+ entries, 37 tables with TABLE DATA, TOC sha256 [0-9a-f]{64} = manifest; pg_restore sha256 [0-9a-f]{64}\)$/m);
   assert.match(dry.text, /^\[db:local-test-prepare\] DRY RUN — no database connection was opened and no runtime was loaded; the only process started was the contained pg_restore --list/m);
   assert.match(dry.text, /^  action: resume-after-verified-backup — /m);
   assert.ok(dry.text.split('\n').includes(RESUME_PHASES_LINE));
@@ -2147,7 +2149,7 @@ const r4Check = (text) => prepareModule.checkToc(text);
 test('R4-ARC-00 a well-formed strict TOC passes with the 32 G1-11 tables, a deterministic multiset digest independent of line order, and its entry count', () => {
   const ok = r4Check(r4Toc());
   assert.equal(ok.ok, true, ok.reason);
-  assert.equal(ok.tables, 34);
+  assert.equal(ok.tables, 37);
   assert.match(ok.multisetSha256, /^[0-9a-f]{64}$/);
   const lines = r4Toc().split('\n');
   const body = lines.slice(14, -1).reverse();
@@ -2625,7 +2627,7 @@ test('R4-C01 the real PostgreSQL 17.11 shape (declared = listed + 4 header-only 
   const toc = realToc(4);
   const verdict = r4Check(toc);
   assert.equal(verdict.ok, true, verdict.reason);
-  assert.equal(verdict.tables, 34);
+  assert.equal(verdict.tables, 37);
   assert.equal(verdict.entries, listedCount(toc));
 });
 test('R4-C02/C03/C18 declared == listed, or listed + 1..4 (other PostgreSQL versions emit fewer header-only entries), is accepted', () => {

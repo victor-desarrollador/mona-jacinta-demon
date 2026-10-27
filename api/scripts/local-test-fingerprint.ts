@@ -30,12 +30,15 @@ export const DIGEST_SCHEME = 'MONA/V233/STATE-DIGEST/SD1';
 export const PROTECTED_SEARCH_PATH = 'pg_catalog, pg_temp';
 export const DEFAULT_MAX_RELATION_BYTES = 64 * 1024 * 1024; // UNPINNED parameter: pin from real LOCAL_TEST sizes (design SCOPE risk)
 
-// GENERATED from the R3-A4.3 mechanical derivation of the sixteen migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
-// by digest in tests/local-test-fingerprint.test.ts AC-150b): 329 columns of the 34 protected relations (33 Prisma models plus
+// GENERATED from the R3-A4.3 mechanical derivation of the twenty migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
+// by digest in tests/local-test-fingerprint.test.ts AC-150b): 351 columns of the 37 protected relations (36 Prisma models plus
 // the Prisma-internal _prisma_migrations), by (relation, attnum). Pinned against schema.prisma and the migration set by
 // tests/local-test-fingerprint.test.ts. G16 (sale void v1) added SaleVoid and SaleVoidExternalRefund, CashMovement.refundOfSalePaymentId
 // and StockMovement.saleVoidId (appended: ADD COLUMN takes the next attnum), the SALE_REFUND and SALE_VOID enum labels and the
 // functions fn_cash_movement_refund_guard / fn_sale_payment_refund_frozen; the first fourteen migrations are unchanged history.
+// G19 (sale exchange v1) added SaleExchange and SaleExchangeLine, StockMovement.saleExchangeId / saleExchangeLineId (attnums 13, 14), the
+// SALE_EXCHANGE_IN and SALE_EXCHANGE_OUT labels and the functions fn_sale_exchange_* (five), fn_sale_void_exchange_guard and fn_sale_exchange_void_guard (the second side of the exclusion, listed from G20 on).
+// G20 (sale post-sale guard) added SalePostSaleGuard (the central VOID / EXCHANGE claim, written only by the trigger function fn_sale_post_sale_claim).
 // Row: relation, attnum, column, field type, live format_type, notNull, hasDefault, enum type, primary-key position.
 type ContractRow = readonly [string, number, string, FieldType, string, 0 | 1, 0 | 1, string | null, number];
 const CONTRACT_ROWS: readonly ContractRow[] = [
@@ -265,6 +268,26 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["SaleCheckout", 24, "creditAdjustmentBps", "int4", "integer", 0, 0, null, 0],
   ["SaleCheckout", 25, "fullPriceQr", "int8", "bigint", 0, 0, null, 0],
   ["SaleCheckout", 26, "qrAdjustmentBps", "int4", "integer", 0, 0, null, 0],
+  ["SaleExchange", 1, "id", "text", "text", 1, 0, null, 1],
+  ["SaleExchange", 2, "saleId", "text", "text", 1, 0, null, 0],
+  ["SaleExchange", 3, "branchId", "text", "text", 1, 0, null, 0],
+  ["SaleExchange", 4, "createdById", "text", "text", 1, 0, null, 0],
+  ["SaleExchange", 5, "reason", "text", "text", 1, 0, null, 0],
+  ["SaleExchange", 6, "idempotencyKey", "text", "text", 1, 0, null, 0],
+  ["SaleExchange", 7, "requestHash", "text", "character(64)", 1, 0, null, 0],
+  ["SaleExchange", 8, "createdAt", "tstz", "timestamp(3) with time zone", 1, 1, null, 0],
+  ["SaleExchangeLine", 1, "id", "text", "text", 1, 0, null, 1],
+  ["SaleExchangeLine", 2, "saleExchangeId", "text", "text", 1, 0, null, 0],
+  ["SaleExchangeLine", 3, "saleId", "text", "text", 1, 0, null, 0],
+  ["SaleExchangeLine", 4, "branchId", "text", "text", 1, 0, null, 0],
+  ["SaleExchangeLine", 5, "saleItemId", "text", "text", 1, 0, null, 0],
+  ["SaleExchangeLine", 6, "replacementVariantId", "text", "text", 1, 0, null, 0],
+  ["SaleExchangeLine", 7, "returnQuantity", "int8", "bigint", 1, 0, null, 0],
+  ["SaleExchangeLine", 8, "originalUnitPrice", "int8", "bigint", 1, 0, null, 0],
+  ["SaleExchangeLine", 9, "replacementUnitPrice", "int8", "bigint", 1, 0, null, 0],
+  ["SalePostSaleGuard", 1, "saleId", "text", "text", 1, 0, null, 1],
+  ["SalePostSaleGuard", 2, "mode", "text", "text", 1, 0, null, 0],
+  ["SalePostSaleGuard", 3, "createdAt", "tstz", "timestamp(3) with time zone", 1, 1, null, 0],
   ["SaleItem", 1, "id", "text", "text", 1, 0, null, 1],
   ["SaleItem", 2, "saleId", "text", "text", 1, 0, null, 0],
   ["SaleItem", 3, "variantId", "text", "text", 1, 0, null, 0],
@@ -337,6 +360,8 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["StockMovement", 10, "note", "text", "text", 0, 0, null, 0],
   ["StockMovement", 11, "idempotencyKey", "text", "text", 0, 0, null, 0],
   ["StockMovement", 12, "saleVoidId", "text", "text", 0, 0, null, 0],
+  ["StockMovement", 13, "saleExchangeId", "text", "text", 0, 0, null, 0],
+  ["StockMovement", 14, "saleExchangeLineId", "text", "text", 0, 0, null, 0],
   ["StockReservation", 1, "id", "text", "text", 1, 0, null, 1],
   ["StockReservation", 2, "saleId", "text", "text", 1, 0, null, 0],
   ["StockReservation", 3, "variantId", "text", "text", 1, 0, null, 0],
@@ -393,11 +418,11 @@ export const ENUM_TYPES: readonly Readonly<{ name: string; labels: readonly stri
   ["SaleStatus", ["DRAFT","PENDING_PAYMENT","PAID","COMPLETED","CANCELLED"]],
   ["ScopeKind", ["LOCATION","COMPANY"]],
   ["StockAdjustmentReason", ["DAMAGED","LOST","LOAD_ERROR","SURPLUS","OTHER"]],
-  ["StockMovementType", ["SALE","INITIAL_STOCK","ADJUSTMENT","SALE_VOID"]],
+  ["StockMovementType", ["SALE","INITIAL_STOCK","ADJUSTMENT","SALE_VOID","SALE_EXCHANGE_IN","SALE_EXCHANGE_OUT"]],
   ["StockReservationStatus", ["ACTIVE","RELEASED","CONSUMED"]],
   ["TransferInstitution", ["MACRO","BBVA","NACION","GALICIA","MERCADO_PAGO","OTHER"]],
 ].map(([name, labels]) => Object.freeze({ name: name as string, labels: Object.freeze(labels as string[]) })));
-export const PROTECTED_FUNCTION_NAMES: readonly string[] = Object.freeze(['fn_cash_movement_refund_guard', 'fn_checkout_attempt_commit_check', 'fn_checkout_attempt_declaration_guard', 'fn_checkout_attempt_guard', 'fn_checkout_attempt_tender_guard', 'fn_checkout_declaration_commit_check', 'fn_external_collection_guard', 'fn_sale_payment_history', 'fn_sale_payment_refund_frozen', 'fn_sale_payment_truncate_guard', 'fn_sale_wholesale_frozen_after_payment']);
+export const PROTECTED_FUNCTION_NAMES: readonly string[] = Object.freeze(['fn_cash_movement_refund_guard', 'fn_checkout_attempt_commit_check', 'fn_checkout_attempt_declaration_guard', 'fn_checkout_attempt_guard', 'fn_checkout_attempt_tender_guard', 'fn_checkout_declaration_commit_check', 'fn_external_collection_guard', 'fn_sale_exchange_append_only', 'fn_sale_exchange_has_lines', 'fn_sale_exchange_header_guard', 'fn_sale_exchange_ledger_check', 'fn_sale_exchange_line_remainder', 'fn_sale_exchange_void_guard', 'fn_sale_payment_history', 'fn_sale_payment_refund_frozen', 'fn_sale_payment_truncate_guard', 'fn_sale_post_sale_claim', 'fn_sale_void_exchange_guard', 'fn_sale_wholesale_frozen_after_payment']);
 
 // Canonical text of the protected-domain contract (relations, columns, enum types, functions); its sha256 is bound into witnesses.
 export function protectedDomainContractSha256(): string {

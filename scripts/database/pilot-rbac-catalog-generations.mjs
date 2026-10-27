@@ -1,11 +1,13 @@
-// RBAC catalog GENERATIONS after the G11 -> G14 cut-over (sale void v1). A separate module on purpose:
-// pilot-rbac-catalog.mjs (CATALOG_35 / CATALOG_36, pinned BYTE FOR BYTE by the four PILOT tool manifests) is
-// not modified, so every cut-over tool keeps its exact catalog contract. This module adds the LATEST catalog
-// and a classifier that knows all three. Builtins only (node:crypto), no I/O.
+// RBAC catalog GENERATIONS after the G11 -> G14 cut-over (sale void v1, then sale exchange v1). A separate module
+// on purpose: pilot-rbac-catalog.mjs (CATALOG_35 / CATALOG_36, pinned BYTE FOR BYTE by the four PILOT tool
+// manifests) is not modified, so every cut-over tool keeps its exact catalog contract. This module adds the newer
+// catalogs and a classifier that knows all four. Builtins only (node:crypto), no I/O.
 //
-//   CATALOG_37 — the LATEST canonical catalog: CATALOG_36 + SALE_VOID (canonical id 9400/37) + exactly one
-//                default grant (ADMIN): 5 roles, 37 permissions, 76 grants. OWNER keeps no grants (implicit
+//   CATALOG_38 — the LATEST canonical catalog: CATALOG_37 + SALE_EXCHANGE (canonical id 9400/38) + exactly one
+//                default grant (ADMIN): 5 roles, 38 permissions, 77 grants. OWNER keeps no grants (implicit
 //                authority); CASHIER, SELLER and WAREHOUSE never get it.
+//   CATALOG_37 — HISTORICAL but still valid (a database may legitimately hold it): CATALOG_36 + SALE_VOID
+//                (9400/37) + one ADMIN grant: 37 permissions, 76 grants.
 //   CATALOG_36 — HISTORICAL (the cut-over tools' catalog), CATALOG_35 — older; both reused from the base module.
 //
 // A catalog is the COMPLETE content of "Role", "Permission" and "RolePermission", exactly like the base module:
@@ -16,6 +18,8 @@ import { CATALOG_35, CATALOG_36 } from './pilot-rbac-catalog.mjs';
 
 const SALE_VOID_PERMISSION = Object.freeze(['SALE_VOID', '00000000-0000-4000-9400-000000000037']);
 const SALE_VOID_GRANT = Object.freeze(['ADMIN', 'SALE_VOID']);
+const SALE_EXCHANGE_PERMISSION = Object.freeze(['SALE_EXCHANGE', '00000000-0000-4000-9400-000000000038']);
+const SALE_EXCHANGE_GRANT = Object.freeze(['ADMIN', 'SALE_EXCHANGE']);
 
 // Rows keep the base module's sorted order (default array sort on [code, id] / [role, code]).
 export const CATALOG_37 = Object.freeze({
@@ -26,8 +30,16 @@ export const CATALOG_37 = Object.freeze({
 // What a future OWNER-only 36 -> 37 transition adds to an exact CATALOG_36, and nothing else. NOT executed anywhere here.
 export const UPGRADE_DELTA_37 = Object.freeze({ permission: SALE_VOID_PERMISSION, grants: Object.freeze([SALE_VOID_GRANT]) });
 
-export const LATEST_CATALOG = 'CATALOG_37';
-export const HISTORICAL_CATALOGS = Object.freeze(['CATALOG_35', 'CATALOG_36']);
+export const CATALOG_38 = Object.freeze({
+  roles: CATALOG_37.roles,
+  permissions: Object.freeze([...CATALOG_37.permissions, SALE_EXCHANGE_PERMISSION].sort()),
+  grants: Object.freeze([...CATALOG_37.grants, SALE_EXCHANGE_GRANT].sort()),
+});
+// What a future OWNER-only 37 -> 38 transition adds to an exact CATALOG_37, and nothing else. NOT executed anywhere here.
+export const UPGRADE_DELTA_38 = Object.freeze({ permission: SALE_EXCHANGE_PERMISSION, grants: Object.freeze([SALE_EXCHANGE_GRANT]) });
+
+export const LATEST_CATALOG = 'CATALOG_38';
+export const HISTORICAL_CATALOGS = Object.freeze(['CATALOG_35', 'CATALOG_36', 'CATALOG_37']);
 
 function serialize({ roles, permissions, grants }) {
   const lines = [
@@ -51,10 +63,11 @@ export const CATALOG_GENERATION_DIGESTS = Object.freeze({
   CATALOG_35: digest(rowsOf(CATALOG_35)),
   CATALOG_36: digest(rowsOf(CATALOG_36)),
   CATALOG_37: digest(rowsOf(CATALOG_37)),
+  CATALOG_38: digest(rowsOf(CATALOG_38)),
 });
 
 const isStr = (v) => typeof v === 'string' && v.length > 0;
-// Exactly CATALOG_35, CATALOG_36 or CATALOG_37 (same rows, no duplicates), else unclassified. Never throws.
+// Exactly CATALOG_35, CATALOG_36, CATALOG_37 or CATALOG_38 (same rows, no duplicates), else unclassified. Never throws.
 export function classifyCatalogGeneration(rows) {
   const none = (reason) => ({ ok: false, catalog: null, reason });
   try {
@@ -67,7 +80,7 @@ export function classifyCatalogGeneration(rows) {
     if (new Set(lines).size !== lines.length) return none('the RBAC catalog holds a duplicate row');
     const d = digest({ roles, permissions, grants });
     for (const [name, value] of Object.entries(CATALOG_GENERATION_DIGESTS)) if (d === value) return { ok: true, catalog: name, digest: d };
-    return none('the RBAC catalog is not an exact 35-, 36- or 37-permission catalog');
+    return none('the RBAC catalog is not an exact 35-, 36-, 37- or 38-permission catalog');
   } catch {
     return none('the RBAC catalog could not be classified');
   }

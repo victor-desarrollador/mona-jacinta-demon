@@ -41,7 +41,7 @@ const REASON = 'Error de carga: producto equivocado';
 const EVIDENCE = 'Transferencia devuelta, comprobante 000123';
 
 function world() {
-  const db = createInMemorySalesDb({ withSaleVoid: true });
+  const db = createInMemorySalesDb({ withSaleVoid: true, withSaleExchange: true });
   db.insert('company', { name: 'Mona Jacinta', cuit: '00000000000', address: 'Demo', isActive: true, createdAt: new Date() });
   const L1 = db.insert('location', { isActive: true }).id as string;
   const L2 = db.insert('location', { isActive: true }).id as string;

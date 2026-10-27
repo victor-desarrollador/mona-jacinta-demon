@@ -20,6 +20,7 @@ import {
 import { buildToolingBinding } from './pilot-plan-binding.mjs';
 import { createVerifiedClient, parsePilotUrl, readPrivateUrlFile } from './pilot-marker.mjs';
 import { LEDGER_SQL, MIGRATION_PINS, STATES } from './pilot-migration-states.mjs';
+import { POST_G14_MIGRATION_PINS } from './pilot-migration-generations.mjs';
 import { PROJECTION_SQL, buildProjection, projectionDigest } from './app-schema-projection.mjs';
 
 const MARKER = '2b4d6f81-7a9c-4e0b-8d2f-3c5e7a9b1d0f';
@@ -798,14 +799,14 @@ test('H1/P27: the synthetic G14 fixture verifies against the pinned G14 payload 
   assert.match(real.reason, /does not hold exactly the OWNER-approved migrations/);
 });
 
-test('H1/P27b: the real tree is the G14 payload plus ONLY the two sale void migrations — nothing else extra, nothing missing', () => {
+test('H1/P27b: the real tree is the G14 payload plus ONLY the reviewed post-G14 migrations (sale void, sale exchange) — nothing else extra, nothing missing', () => {
   const dirs = readdirSync(path.join(API_DIR, 'prisma', 'migrations'), { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
     .sort();
   const g14 = APPROVED_MIGRATION_PAYLOAD.migrations.map((m) => m.name);
   assert.deepEqual(dirs.slice(0, g14.length), g14);
-  assert.deepEqual(dirs.slice(g14.length), ['20261024120000_sale_void_enum', '20261024130000_sale_void_schema']);
+  assert.deepEqual(dirs.slice(g14.length), POST_G14_MIGRATION_PINS.map((pin) => pin.name));
 });
 
 test('H1/P1: dry-run validates the payload and prints the names, digests and PASS lines', async () => {

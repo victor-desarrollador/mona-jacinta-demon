@@ -30,6 +30,7 @@
 // Lock order (design §6): Sale -> CheckoutAttempt -> ExternalCollection(id ASC)
 // -> CashSession -> StockReservation(id ASC) -> Inventory(id ASC). The
 // finalizer re-locks the sale, reservations and inventory in the same order.
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import { createHash } from 'node:crypto';
 import {
   Prisma,
@@ -252,13 +253,8 @@ const confirmationHashMismatch = () => new AppError(409, 'CHECKOUT_CONFIRMATION_
 const stockHoldExpired = () => new AppError(409, 'STOCK_HOLD_EXPIRED', 'La reserva de stock de la venta venció.', { observedStatus: 'RESERVED', stockState: 'EXPIRED' });
 const stockHoldReleased = () => new AppError(409, 'STOCK_HOLD_RELEASED', 'La reserva de stock de la venta fue liberada.', { observedStatus: 'RESERVED', stockState: 'RELEASED' });
 
-const transient = (error: unknown) => {
-  const candidate = error as { code?: string; meta?: { code?: string } };
-  const message = error instanceof Error ? error.message : '';
-  return candidate.code === 'P2034' || candidate.meta?.code === '40001'
-    || candidate.meta?.code === '40P01' || message.includes('40001')
-    || message.includes('40P01') || message.includes('TransactionWriteConflict');
-};
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
+const transient = isTransientTransactionError;
 
 // A terminal rejection persists its CODE and DETAILS but not its message. A
 // replay reconstructs the same 409 from the code alone, without ever writing or

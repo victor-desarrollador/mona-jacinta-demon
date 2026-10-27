@@ -8,14 +8,17 @@ import { cancelSaleDto } from './dto/cancel-sale.dto.js';
 import { voidSaleDto } from './dto/void-sale.dto.js';
 import { createCancellationController } from './cancellation.controller.js';
 import { createSaleVoidController } from './sale-void.controller.js';
+import { createSaleExchangeController } from './sale-exchange.controller.js';
+import { exchangeSaleHttpDto } from './dto/exchange-sale.dto.js';
 import type { SaleVoidService } from './sale-void.service.js';
+import type { SaleExchangeService } from './sale-exchange.service.js';
 import type { RealtimeEmitter } from '../../realtime/socket.js';
 
-// `saleVoidService` is a test seam (the HTTP tests inject a recorder); production builds the real service.
+// `saleVoidService` / `saleExchangeService` are test seams (the HTTP tests inject a recorder); production builds the real services.
 export function createCancellationRouter(
   database: PrismaClient,
   realtime?: RealtimeEmitter,
-  options: { saleVoidService?: SaleVoidService } = {},
+  options: { saleVoidService?: SaleVoidService; saleExchangeService?: SaleExchangeService } = {},
 ): Router {
   const router = Router();
   const controller = createCancellationController(database, realtime);
@@ -32,13 +35,23 @@ export function createCancellationRouter(
   // the coarse SALE_VOID gate (an unauthenticated or unauthorized caller learns nothing about the body), then the
   // strict body. The definitive decision (OWNER / COMPANY-scoped ADMIN at the sale's persisted branch) is the
   // service's, not this gate's.
-  const voidController = createSaleVoidController(database, realtime, options);
+  const voidController = createSaleVoidController(database, realtime, { saleVoidService: options.saleVoidService });
   router.post(
     '/:saleId/void',
     validate(saleIdDto, 'params'),
     requirePermission(PRODUCTION_PERMISSIONS.SALE_VOID),
     validate(voidSaleDto),
     voidController.voidSale,
+  );
+  // Sale exchange v1: a COMPLETED sale -> garment swap of equal value. Same order as the void: params, the coarse SALE_EXCHANGE gate, then the
+  // strict body. The definitive decision (OWNER / COMPANY-scoped ADMIN holding SALE_EXCHANGE at the sale's persisted branch) is the service's.
+  const exchangeController = createSaleExchangeController(database, realtime, { saleExchangeService: options.saleExchangeService });
+  router.post(
+    '/:saleId/exchanges',
+    validate(saleIdDto, 'params'),
+    requirePermission(PRODUCTION_PERMISSIONS.SALE_EXCHANGE),
+    validate(exchangeSaleHttpDto),
+    exchangeController.exchangeSale,
   );
   return router;
 }

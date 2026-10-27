@@ -621,36 +621,51 @@ describe('executables: start guard, no restore, no path from the outcome tools t
 });
 
 describe('mirrored constants cannot drift (drift guard)', () => {
-  // G8/G9 added exactly these six relations to the protected domain and G16 (sale void v1) exactly the two sale void ones.
-  // G1-16 is the reviewed backup generation that carries the CURRENT 34: the witness's current PROTECTED_RELATION_NAMES equals
-  // the fingerprint's 34, while G1-11..G1-14 keep the 32 and G1-5..G1-7 the historical sets (G1-6/G1-7 = the 26 without the six).
+  // G8/G9 added exactly these six relations to the protected domain, G16 (sale void v1) exactly the two sale void ones and G19
+  // (sale exchange v1) exactly the two sale exchange ones.
+  // G1-20 is the reviewed backup generation that carries the CURRENT 37: the witness's current PROTECTED_RELATION_NAMES equals
+  // the fingerprint's 37, G1-19 keeps the 36, G1-16 keeps the 34, G1-11..G1-14 keep the 32 and G1-5..G1-7 the historical sets (G1-6/G1-7 = the 26 without the six).
   const NEW_IN_G8_G9 = ['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation'];
   const NEW_IN_G16 = ['SaleVoid', 'SaleVoidExternalRefund'];
+  const NEW_IN_G19 = ['SaleExchange', 'SaleExchangeLine'];
+  const NEW_IN_G20 = ['SalePostSaleGuard'];
   type WitnessModule = {
     PROTECTED_RELATION_NAMES: readonly string[];
     PROTECTED_RELATION_NAMES_G11: readonly string[];
+    PROTECTED_RELATION_NAMES_G16: readonly string[];
+    PROTECTED_RELATION_NAMES_G19: readonly string[];
     BACKUP_SCHEMA_GENERATIONS: readonly { id: string; migrations: readonly (readonly string[])[]; relations: readonly string[] }[];
   };
   const loadWitness = async () => (await import(pathToFileURL(path.join(DB_SCRIPTS, 'local-test-witness.mjs')).href)) as WitnessModule;
-  it('the witness current relations equal the fingerprint PROTECTED_RELATIONS exactly (34, same raw-byte order)', async () => {
+  it('the witness current relations equal the fingerprint PROTECTED_RELATIONS exactly (37, same raw-byte order)', async () => {
     const mod = await loadWitness();
     const { PROTECTED_RELATIONS } = await import('../scripts/local-test-fingerprint.js');
-    expect(PROTECTED_RELATIONS).toHaveLength(34);
+    expect(PROTECTED_RELATIONS).toHaveLength(37);
     expect([...mod.PROTECTED_RELATION_NAMES]).toEqual([...PROTECTED_RELATIONS]);
   });
-  it('G1-16 carries the 34 current relations; G1-11..G1-14 keep the 32 (without the two sale void ones); G1-6/G1-7 keep the historical 26', async () => {
+  it('G1-20 carries the 37 current relations; G1-19 keeps the 36; G1-16 keeps the 34 (without the two sale exchange ones); G1-11..G1-14 keep the 32 (without the sale void ones either); G1-6/G1-7 keep the historical 26', async () => {
     const mod = await loadWitness();
     const { PROTECTED_RELATIONS } = await import('../scripts/local-test-fingerprint.js');
-    expect(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id)).toEqual(['G1-5', 'G1-6', 'G1-7', 'G1-11', 'G1-12', 'G1-13', 'G1-14', 'G1-16']);
+    expect(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id)).toEqual(['G1-5', 'G1-6', 'G1-7', 'G1-11', 'G1-12', 'G1-13', 'G1-14', 'G1-16', 'G1-19', 'G1-20']);
     const byId = new Map(mod.BACKUP_SCHEMA_GENERATIONS.map((g) => [g.id, g]));
-    expect([...byId.get('G1-16')!.relations]).toEqual([...PROTECTED_RELATIONS]);
+    expect([...byId.get('G1-20')!.relations]).toEqual([...PROTECTED_RELATIONS]);
+    expect(byId.get('G1-20')!.migrations).toHaveLength(20);
+    const withoutClaim = [...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G20.includes(r));
+    expect(withoutClaim).toHaveLength(36);
+    expect([...mod.PROTECTED_RELATION_NAMES_G19]).toEqual(withoutClaim);
+    expect([...byId.get('G1-19')!.relations]).toEqual(withoutClaim);
+    expect(byId.get('G1-19')!.migrations).toHaveLength(19);
+    const withoutSaleExchange = [...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G19.includes(r) && !NEW_IN_G20.includes(r));
+    expect(withoutSaleExchange).toHaveLength(34);
+    expect([...mod.PROTECTED_RELATION_NAMES_G16]).toEqual(withoutSaleExchange);
+    expect([...byId.get('G1-16')!.relations]).toEqual(withoutSaleExchange);
     expect(byId.get('G1-16')!.migrations).toHaveLength(16);
-    const withoutSaleVoid = [...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G16.includes(r));
+    const withoutSaleVoid = [...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G16.includes(r) && !NEW_IN_G19.includes(r) && !NEW_IN_G20.includes(r));
     expect(withoutSaleVoid).toHaveLength(32);
     expect([...mod.PROTECTED_RELATION_NAMES_G11]).toEqual(withoutSaleVoid);
     for (const id of ['G1-11', 'G1-12', 'G1-13', 'G1-14']) expect([...byId.get(id)!.relations], id).toEqual(withoutSaleVoid);
     expect(byId.get('G1-11')!.migrations).toHaveLength(11);
-    const historical = [...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G8_G9.includes(r) && !NEW_IN_G16.includes(r));
+    const historical = [...PROTECTED_RELATIONS].filter((r) => !NEW_IN_G8_G9.includes(r) && !NEW_IN_G16.includes(r) && !NEW_IN_G19.includes(r) && !NEW_IN_G20.includes(r));
     expect(historical).toHaveLength(26);
     expect([...byId.get('G1-6')!.relations]).toEqual(historical);
     expect([...byId.get('G1-7')!.relations]).toEqual(historical);

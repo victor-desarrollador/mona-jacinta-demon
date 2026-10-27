@@ -15,9 +15,13 @@ const ENUM_SQL = sql('20261024120000_sale_void_enum');
 const SCHEMA_SQL = sql('20261024130000_sale_void_schema');
 const PINNED_G14_DIGEST = 'eb00d04bc7035723988afa16d34f21e4b07cfcb9bd3f8248159cd58b5d9f1f71';
 
-test('SR-01 the three generations have a reference and probes; G14 is the pinned one, not re-declared', () => {
-  assert.deepEqual(Object.keys(SCHEMA_REFERENCES_POST_G14), Object.keys(GENERATIONS));
-  assert.deepEqual(Object.keys(GENERATION_PROBES), Object.keys(GENERATIONS));
+test('SR-01 the three generations G14..G16 have a reference and probes; G14 is the pinned one, not re-declared', () => {
+  // G17..G19 (sale exchange v1) are deliberately NOT here: a reference is the digest of a disposable PostgreSQL 17 cluster built from the
+  // generation's migrations, and none was authorized or run for them (see the sale exchange rollout runbook).
+  const g14ToG16 = Object.keys(GENERATIONS).slice(0, 3);
+  assert.deepEqual(g14ToG16, ['EXACT_G14', 'EXACT_G15', 'EXACT_G16']);
+  assert.deepEqual(Object.keys(SCHEMA_REFERENCES_POST_G14), g14ToG16);
+  assert.deepEqual(Object.keys(GENERATION_PROBES), g14ToG16);
   assert.equal(SCHEMA_REFERENCES_POST_G14.EXACT_G14, SCHEMA_REFERENCES.EXACT_G14);
   assert.equal(SCHEMA_REFERENCES_POST_G14.EXACT_G14.digest, PINNED_G14_DIGEST);
   const digests = Object.values(SCHEMA_REFERENCES_POST_G14).map((r) => r.digest);

@@ -113,9 +113,14 @@ describe('R3-A4.3 S1 — ninth migration (static)', () => {
     // migration 11, the additive CARD_CREDIT migration 12, the additive warehouse
     // stock-adjustment migration 13 and the additive QR migration 14 follow it. S1's own
     // position and R3-A2's bytes are unchanged by those additive neighbours.
-    // Sale void v1 appends two more additive migrations (enum labels, then the schema) after m14.
-    expect(names).toHaveLength(16);
-    expect(names.slice(14)).toEqual(['20261024120000_sale_void_enum', '20261024130000_sale_void_schema']);
+    // Sale void v1 appends two more additive migrations (enum labels, then the schema) after m14; sale exchange v1 appends G17..G20.
+    expect(names).toHaveLength(20);
+    expect(names.slice(14)).toEqual([
+      '20261024120000_sale_void_enum', '20261024130000_sale_void_schema',
+      '20261026120000_sale_exchange_enum', '20261026130000_sale_exchange_schema',
+      '20261026140000_sale_void_exchange_guard',
+      '20261026150000_sale_post_sale_guard',
+    ]);
     expect(names.slice(7, 14)).toEqual([
       R3_A2_MIGRATION, R3_ATTEMPTS_MIGRATION,
       '20261018120000_cash_movement_withdrawals_expenses', '20261018180000_cash_movement_reversals',

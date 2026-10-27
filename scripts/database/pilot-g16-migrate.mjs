@@ -34,7 +34,7 @@ import {
 } from './pilot-marker.mjs';
 import { PROJECT_REF_PATTERN } from './lib.mjs';
 import { LEDGER_SQL, LOCK_PIN } from './pilot-migration-states.mjs';
-import { LATEST_GENERATION, pinsOf, requireGeneration } from './pilot-migration-generations.mjs';
+import { pinsOf, requireGeneration } from './pilot-migration-generations.mjs';
 import { canonicalJson, projectionDigest, readProjection, runProbes } from './app-schema-projection.mjs';
 import { GENERATION_SCHEMA } from './pilot-g16-schema-references.mjs';
 import {
@@ -52,7 +52,9 @@ const MODES = ['dry-run', 'execute'];
 const VALUE_ARGS = ['target', 'marker-id', 'confirm-project-ref', 'expected-initial-state', 'plan'];
 export const PLAN_FORMAT = 'mona-pilot-g16-migrate-plan/v1';
 export const INITIAL_GENERATIONS = Object.freeze(['EXACT_G14', 'EXACT_G15']);
-export const FINAL_GENERATION = LATEST_GENERATION;
+// This tool's target is G16, whatever the repository's LATEST generation is (sale exchange v1 moved LATEST to G19, then the post-sale claim to G20): the target is a
+// literal on purpose, so a newer generation can never silently retarget it.
+export const FINAL_GENERATION = 'EXACT_G16';
 export const G16_PAYLOAD = Object.freeze({ migrations: pinsOf(FINAL_GENERATION), lock: LOCK_PIN });
 const LOCK_FILE = 'migration_lock.toml';
 const MIGRATION_FILE = 'migration.sql';

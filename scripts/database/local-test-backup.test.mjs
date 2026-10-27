@@ -32,12 +32,18 @@ const ARCHIVE = Buffer.from('PGDMP synthetic custom archive bytes\n');
 const G7_RELATIONS = ['AuditLog', 'Branch', 'Brand', 'CashMovement', 'CashRegister', 'CashSession', 'Category', 'Company', 'CompanyPricingConfig', 'Inventory', 'Location', 'Permission', 'Product', 'ProductVariant', 'Role', 'RolePermission', 'Sale', 'SaleItem', 'SaleNumberCounter', 'SalePayment', 'StockMovement', 'StockReservation', 'User', 'UserBranchRole', 'UserRoleScope', '_prisma_migrations'];
 // G1-11 (migrations 8–11) adds exactly these six protected relations (32 in raw-byte order, kept by G1-11 .. G1-14).
 const G11_NEW_RELATIONS = ['CheckoutAttempt', 'CheckoutAttemptDeclaration', 'CheckoutAttemptTender', 'ExternalCollection', 'SaleCheckout', 'SaleLineAllocation'];
-// G1-16 (sale void v1, migrations 15–16) adds exactly these two; the CURRENT contract is the 34 in raw-byte order.
+// G1-16 (sale void v1, migrations 15–16) adds exactly these two (34 in raw-byte order, kept by G1-16).
 const G16_NEW_RELATIONS = ['SaleVoid', 'SaleVoidExternalRefund'];
+// G1-19 (sale exchange v1, migrations 17–19) adds exactly these two (36 in raw-byte order, kept by G1-19).
+const G19_NEW_RELATIONS = ['SaleExchange', 'SaleExchangeLine'];
+// G1-20 (migration 20, the post-sale claim) adds exactly this one; the CURRENT contract is the 37 in raw-byte order.
+const G20_NEW_RELATIONS = ['SalePostSaleGuard'];
 const rawSort = (names) => [...names].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
 const G11_RELATIONS = rawSort([...G7_RELATIONS, ...G11_NEW_RELATIONS]);
-const R4_RELATIONS = rawSort([...G11_RELATIONS, ...G16_NEW_RELATIONS]);
-// A TOC in the shape pg_restore --list prints, for the 34 current protected relations plus a few allow-listed object kinds (R4 strict contract).
+const G16_RELATIONS = rawSort([...G11_RELATIONS, ...G16_NEW_RELATIONS]);
+const R19_RELATIONS = rawSort([...G16_RELATIONS, ...G19_NEW_RELATIONS]);
+const R4_RELATIONS = rawSort([...R19_RELATIONS, ...G20_NEW_RELATIONS]);
+// A TOC in the shape pg_restore --list prints, for the 37 current protected relations plus a few allow-listed object kinds (R4 strict contract).
 function r4Toc({ tables = R4_RELATIONS, data = tables, extra = [], dbname = 'mona_local_test', declared } = {}) {
   const entries = [
     '6; 2615 2200 SCHEMA - public pg_database_owner',
@@ -84,8 +90,16 @@ const G16_PAIRS = [...G14_PAIRS,
   ['20261024120000_sale_void_enum', '82581170e1d9f5c2d4dd1d347e272f61b13cded2e20d623144ff72894c914c0f'],
   ['20261024130000_sale_void_schema', '0f2841cadaffac4579cf7f096329f899a8b7211a8cb4eb817770b8ee4911182d'],
 ];
-// The current approved payload (G1-16, the LATEST LOCAL_TEST payload): what a real backup binds today.
-const G11_MIGRATIONS = G16_PAIRS.map(([name, sha256]) => ({ name, sha256 }));
+const G19_PAIRS = [...G16_PAIRS,
+  ['20261026120000_sale_exchange_enum', '109881c4e0cb3733949f7a066d8bfe23998fe87ae68037186cc9ee5bba7d9785'],
+  ['20261026130000_sale_exchange_schema', '1817b905585257ad916f2f0cefe271f89d5c7a2455e1383f17546a8389ead796'],
+  ['20261026140000_sale_void_exchange_guard', '65a56d7bf9206d0424447ae8b88dfb0b6342a3a0e2303a0ab774c0a92545344f'],
+];
+const G20_PAIRS = [...G19_PAIRS,
+  ['20261026150000_sale_post_sale_guard', '5924bb722676048489dd930bc1c90a36a8dda193ae77dc0368562989667deef5'],
+];
+// The current approved payload (G1-20, the LATEST LOCAL_TEST payload): what a real backup binds today.
+const G11_MIGRATIONS = G20_PAIRS.map(([name, sha256]) => ({ name, sha256 }));
 // V2.3.2: a backup binds the current prepare checkpoint, read from <home>/.local/state/...;
 // runs get a real owner-only home holding one current checkpoint for the default payload.
 const DEFAULT_PAYLOAD = Object.freeze({ ok: true, migrations: G11_MIGRATIONS, lock: { provider: 'postgresql', sha256: sha('lock') } });
@@ -399,13 +413,13 @@ test('K23/K39/K40/K41 success: exact argv, password only in the child env, verif
   assert.equal(manifest.dump.sha256, sha(ARCHIVE));
   assert.equal(manifest.dump.bytes, ARCHIVE.length);
   assert.equal(manifest.list.sha256, sha(TOC));
-  assert.equal(manifest.list.tables, 34); // G1-16: exactly the 34 current protected relations
+  assert.equal(manifest.list.tables, 37); // G1-20: exactly the 37 current protected relations
   assert.equal(manifest.manifestSha256, backup.manifestSelfHash(manifest));
   assert.equal(manifestText, `${JSON.stringify(manifest, null, 2)}\n`);
   assertNoLeak(manifestText);
   const ok = r.text.split('\n').filter((l) => l.startsWith('[db:local-test-backup] LOCAL_TEST_BACKUP_OK'));
   assert.equal(ok.length, 1);
-  assert.match(ok[0], new RegExp(`^\\[db:local-test-backup\\] LOCAL_TEST_BACKUP_OK run=${dir} dump_sha256=${sha(ARCHIVE)} bytes=${ARCHIVE.length} toc_tables=34 state=POST_BACKFILL checkpoint=cp-\\d{8}T\\d{6}Z-[0-9a-f]{32}$`));
+  assert.match(ok[0], new RegExp(`^\\[db:local-test-backup\\] LOCAL_TEST_BACKUP_OK run=${dir} dump_sha256=${sha(ARCHIVE)} bytes=${ARCHIVE.length} toc_tables=37 state=POST_BACKFILL checkpoint=cp-\\d{8}T\\d{6}Z-[0-9a-f]{32}$`));
   assert.equal(r.counts.SEED_MUST_NEVER_RUN, undefined);
   assert.equal(r.counts.BACKFILL_MUST_NEVER_RUN, undefined);
   assertNoLeak(r.text);
@@ -505,7 +519,7 @@ test('K44/K45/K46 --verify re-checks a finalized set without any database or env
   const ok = await run([`--verify=${runDir}`], { env: {} });
   assert.equal(ok.code, 0, ok.text);
   assert.ok(!ok.order.includes('loadRuntime'));
-  assert.match(ok.text, /^\[db:local-test-backup\] VERIFY OK run=local-test-20261003T120000Z-a1b2c3d4 dump_sha256=[0-9a-f]{64} toc_tables=34$/m);
+  assert.match(ok.text, /^\[db:local-test-backup\] VERIFY OK run=local-test-20261003T120000Z-a1b2c3d4 dump_sha256=[0-9a-f]{64} toc_tables=37$/m);
   const manifestFile = path.join(runDir, 'local-test.dump.manifest.json');
   const original = readFileSync(manifestFile, 'utf8');
   writeFileSync(manifestFile, original.replace('"POST_BACKFILL"', '"EXACT_BASELINE"'));
@@ -528,7 +542,7 @@ test('V231-B1 the manifest (v4 since R4) binds the verified migration payload (n
   assert.equal(r.code, 0, r.text);
   const manifest = JSON.parse(readFileSync(path.join(root, runDirs(root)[0], 'local-test.dump.manifest.json'), 'utf8'));
   assert.equal(manifest.format, 'mona-local-test-backup/v4');
-  assert.deepEqual(manifest.migrations, G16_PAIRS);
+  assert.deepEqual(manifest.migrations, G20_PAIRS);
   assert.deepEqual(manifest.lock, { provider: 'postgresql', sha256: sha('lock') });
   assert.equal(manifest.manifestSha256, backup.manifestSelfHash(manifest));
 });
@@ -812,20 +826,32 @@ test('HG08/HG09/HG10/HG11/HG14 DENY: relation sets that are not exactly the mani
     ['g7 missing CashSession', G7_PAIRS, r4Toc({ tables: dropOne(G7_RELATIONS, 'CashSession') })],
     ['g7 extra relation', G7_PAIRS, r4Toc({ tables: [...G7_RELATIONS, 'ExtraTable'] })],
     ['g7 duplicate CashSession', G7_PAIRS, r4Toc({ tables: [...G7_RELATIONS, 'CashSession'] })],
-    ['g7 with the 34 current relations', G7_PAIRS, TOC],
+    ['g7 with the 37 current relations', G7_PAIRS, TOC],
     ['g11 with only the 26 G7 relations', G11_PAIRS, G7_TOC],
     ['g11 missing SaleCheckout', G11_PAIRS, r4Toc({ tables: dropOne(G11_RELATIONS, 'SaleCheckout') })],
     ['g11 extra relation', G11_PAIRS, r4Toc({ tables: [...G11_RELATIONS, 'ExtraTable'] })],
     ['g11 duplicate CheckoutAttempt', G11_PAIRS, r4Toc({ tables: [...G11_RELATIONS, 'CheckoutAttempt'] })],
     ['g11 renamed ExternalCollection', G11_PAIRS, r4Toc({ tables: G11_RELATIONS.map((n) => (n === 'ExternalCollection' ? 'ExternalCollections' : n)) })],
-    ['g11 with the 34 current relations (the sale void tables are not G1-11)', G11_PAIRS, TOC],
-    ['g14 with the 34 current relations', G14_PAIRS, TOC],
+    ['g11 with the 37 current relations (the sale void and exchange tables are not G1-11)', G11_PAIRS, TOC],
+    ['g14 with the 37 current relations', G14_PAIRS, TOC],
     ['g16 with only the 32 G11 relations (SaleVoid tables missing)', G16_PAIRS, r4Toc({ tables: G11_RELATIONS })],
-    ['g16 missing SaleVoid', G16_PAIRS, r4Toc({ tables: dropOne(R4_RELATIONS, 'SaleVoid') })],
-    ['g16 missing SaleVoidExternalRefund', G16_PAIRS, r4Toc({ tables: dropOne(R4_RELATIONS, 'SaleVoidExternalRefund') })],
-    ['g16 extra relation', G16_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'ExtraTable'] })],
-    ['g16 duplicate SaleVoid', G16_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'SaleVoid'] })],
-    ['g16 renamed SaleVoidExternalRefund', G16_PAIRS, r4Toc({ tables: R4_RELATIONS.map((n) => (n === 'SaleVoidExternalRefund' ? 'SaleVoidExternalRefunds' : n)) })],
+    ['g16 missing SaleVoid', G16_PAIRS, r4Toc({ tables: dropOne(G16_RELATIONS, 'SaleVoid') })],
+    ['g16 missing SaleVoidExternalRefund', G16_PAIRS, r4Toc({ tables: dropOne(G16_RELATIONS, 'SaleVoidExternalRefund') })],
+    ['g16 extra relation', G16_PAIRS, r4Toc({ tables: [...G16_RELATIONS, 'ExtraTable'] })],
+    ['g16 duplicate SaleVoid', G16_PAIRS, r4Toc({ tables: [...G16_RELATIONS, 'SaleVoid'] })],
+    ['g16 renamed SaleVoidExternalRefund', G16_PAIRS, r4Toc({ tables: G16_RELATIONS.map((n) => (n === 'SaleVoidExternalRefund' ? 'SaleVoidExternalRefunds' : n)) })],
+    ['g16 with the 37 current relations (the exchange tables are not G1-16)', G16_PAIRS, TOC],
+    ['g19 with only the 34 G16 relations (SaleExchange tables missing)', G19_PAIRS, r4Toc({ tables: G16_RELATIONS })],
+    ['g19 missing SaleExchange', G19_PAIRS, r4Toc({ tables: dropOne(R19_RELATIONS, 'SaleExchange') })],
+    ['g19 missing SaleExchangeLine', G19_PAIRS, r4Toc({ tables: dropOne(R19_RELATIONS, 'SaleExchangeLine') })],
+    ['g19 extra relation', G19_PAIRS, r4Toc({ tables: [...R19_RELATIONS, 'ExtraTable'] })],
+    ['g19 duplicate SaleExchange', G19_PAIRS, r4Toc({ tables: [...R19_RELATIONS, 'SaleExchange'] })],
+    ['g19 renamed SaleExchangeLine', G19_PAIRS, r4Toc({ tables: R19_RELATIONS.map((n) => (n === 'SaleExchangeLine' ? 'SaleExchangeLines' : n)) })],
+    ['g19 with the 37 current relations (SalePostSaleGuard is not G1-19)', G19_PAIRS, TOC],
+    ['g20 with only the 36 G19 relations (SalePostSaleGuard missing)', G20_PAIRS, r4Toc({ tables: R19_RELATIONS })],
+    ['g20 extra relation', G20_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'ExtraTable'] })],
+    ['g20 duplicate SalePostSaleGuard', G20_PAIRS, r4Toc({ tables: [...R4_RELATIONS, 'SalePostSaleGuard'] })],
+    ['g20 renamed SalePostSaleGuard', G20_PAIRS, r4Toc({ tables: R4_RELATIONS.map((n) => (n === 'SalePostSaleGuard' ? 'SalePostSaleGuards' : n)) })],
   ];
   for (const [label, pairs, toc] of cases) {
     const r = await hgVerify(await hgRun({ pairs, toc }), toc);
@@ -854,7 +880,7 @@ test('HG15 DENY: the expected relation set is never derived from the archive', (
   assert.equal(prepare.checkToc(TOC, G5_RELATIONS).ok, false);
 });
 
-test('HG18 SCOPE: backup creation and the resume contract require the current 34 relations (G1-16)', async () => {
+test('HG18 SCOPE: backup creation and the resume contract require the current 37 relations (G1-20)', async () => {
   const { root } = scratchRoot();
   const made = await execute(root, { payload: HG_PAYLOAD(G7_PAIRS), home: HG_HOME, spawn: { pg_restore: { toc: G5_TOC } } });
   assert.equal(made.code, 1);
@@ -872,13 +898,19 @@ test('HG19 the current generation is pinned to the OWNER-approved payload; a new
   const witness = await import('./local-test-witness.mjs');
   const { APPROVED_MIGRATION_PAYLOAD } = await import('./pilot-migrate.mjs');
   const { LOCAL_TEST_LATEST_PAYLOAD } = await import('./local-test-migration-payload.mjs');
-  const [g5, g6, g7, g11, g12, g13, g14, g16] = witness.BACKUP_SCHEMA_GENERATIONS;
-  assert.deepEqual(witness.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id), ['G1-5', 'G1-6', 'G1-7', 'G1-11', 'G1-12', 'G1-13', 'G1-14', 'G1-16']);
-  // G1-16 is the CURRENT contract and is pinned to the latest LOCAL_TEST payload (sale void v1); the G14 cut-over payload
-  // stays pinned to G1-14 and G1-5..G1-13 stay pinned to their historical pins and relation sets (G1-15 is intermediate, no generation).
-  assert.deepEqual(g16.migrations, LOCAL_TEST_LATEST_PAYLOAD.migrations.map((m) => [m.name, m.sha256]));
-  assert.equal(witness.resolveBackupGeneration(LOCAL_TEST_LATEST_PAYLOAD.migrations.map((m) => [m.name, m.sha256]))?.id, 'G1-16');
-  assert.equal(witness.resolveBackupGeneration(LOCAL_TEST_LATEST_PAYLOAD.migrations.slice(0, 15).map((m) => [m.name, m.sha256])), null, 'G15 (the enum labels alone) is not a generation');
+  const [g5, g6, g7, g11, g12, g13, g14, g16, g19, g20] = witness.BACKUP_SCHEMA_GENERATIONS;
+  assert.deepEqual(witness.BACKUP_SCHEMA_GENERATIONS.map((g) => g.id), ['G1-5', 'G1-6', 'G1-7', 'G1-11', 'G1-12', 'G1-13', 'G1-14', 'G1-16', 'G1-19', 'G1-20']);
+  // G1-20 is the CURRENT contract and is pinned to the latest LOCAL_TEST payload (the post-sale claim); G1-19 (sale exchange v1) and G1-16 (sale void v1) is the previous
+  // contract and stays pinned to the first sixteen migrations and its 34 relations; the G14 cut-over payload stays pinned to G1-14 and
+  // G1-5..G1-13 stay pinned to their historical pins and relation sets (G1-15, G1-17 and G1-18 are intermediate, no generation).
+  const latest = LOCAL_TEST_LATEST_PAYLOAD.migrations.map((m) => [m.name, m.sha256]);
+  assert.deepEqual(g20.migrations, latest);
+  assert.deepEqual(g19.migrations, latest.slice(0, 19));
+  assert.deepEqual(g16.migrations, latest.slice(0, 16));
+  assert.equal(witness.resolveBackupGeneration(latest)?.id, 'G1-20');
+  assert.equal(witness.resolveBackupGeneration(latest.slice(0, 19))?.id, 'G1-19');
+  assert.equal(witness.resolveBackupGeneration(latest.slice(0, 16))?.id, 'G1-16');
+  for (const count of [15, 17, 18]) assert.equal(witness.resolveBackupGeneration(latest.slice(0, count)), null, `${count} migrations (an intermediate state) is not a generation`);
   assert.deepEqual(g14.migrations, G14_PAIRS);
   assert.deepEqual(g11.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.slice(0, 11).map((m) => [m.name, m.sha256]));
   assert.deepEqual(g12.migrations, APPROVED_MIGRATION_PAYLOAD.migrations.slice(0, 12).map((m) => [m.name, m.sha256]));
@@ -895,8 +927,14 @@ test('HG19 the current generation is pinned to the OWNER-approved payload; a new
   assert.deepEqual(g5.migrations, g6.migrations.slice(0, 5));
   assert.deepEqual(g5.migrations, G5_PAIRS);
   for (const g of [g11, g12, g13, g14]) assert.deepEqual([...g.relations], [...witness.PROTECTED_RELATION_NAMES_G11], g.id);
-  assert.deepEqual([...g16.relations], [...witness.PROTECTED_RELATION_NAMES]);
+  assert.deepEqual([...g16.relations], [...witness.PROTECTED_RELATION_NAMES_G16]);
+  assert.deepEqual([...g16.relations], G16_RELATIONS);
   assert.equal(g16.relations.length, 34);
+  assert.deepEqual([...g19.relations], [...witness.PROTECTED_RELATION_NAMES_G19]);
+  assert.deepEqual([...g19.relations], R19_RELATIONS);
+  assert.equal(g19.relations.length, 36);
+  assert.deepEqual([...g20.relations], [...witness.PROTECTED_RELATION_NAMES]);
+  assert.equal(g20.relations.length, 37);
   assert.deepEqual([...g6.relations], G7_RELATIONS);
   assert.deepEqual([...g7.relations], G7_RELATIONS);
   assert.deepEqual([...g5.relations], G5_RELATIONS);
@@ -907,7 +945,7 @@ test('HG19 the current generation is pinned to the OWNER-approved payload; a new
   assert.equal(g12.relations.length, 32);
   assert.equal(g13.relations.length, 32);
   assert.equal(g14.relations.length, 32);
-  for (const g of [g5, g6, g7, g11, g12, g13, g14, g16]) assert.ok(Object.isFrozen(g) && Object.isFrozen(g.migrations) && Object.isFrozen(g.relations));
+  for (const g of [g5, g6, g7, g11, g12, g13, g14, g16, g19, g20]) assert.ok(Object.isFrozen(g) && Object.isFrozen(g.migrations) && Object.isFrozen(g.relations));
   assert.ok(Object.isFrozen(witness.BACKUP_SCHEMA_GENERATIONS) && Object.isFrozen(witness.PROTECTED_RELATION_NAMES));
   assert.equal(witness.resolveBackupGeneration(g5.migrations)?.id, 'G1-5');
   assert.equal(witness.resolveBackupGeneration(g6.migrations)?.id, 'G1-6');
@@ -917,24 +955,28 @@ test('HG19 the current generation is pinned to the OWNER-approved payload; a new
   assert.equal(witness.resolveBackupGeneration(g13.migrations)?.id, 'G1-13');
   assert.equal(witness.resolveBackupGeneration(g14.migrations)?.id, 'G1-14');
   assert.equal(witness.resolveBackupGeneration(g16.migrations)?.id, 'G1-16');
+  assert.equal(witness.resolveBackupGeneration(g19.migrations)?.id, 'G1-19');
+  assert.equal(witness.resolveBackupGeneration(g20.migrations)?.id, 'G1-20');
   assert.equal(witness.resolveBackupGeneration(undefined), null);
   assert.equal(witness.resolveBackupGeneration('G1-6'), null);
 });
 
 // --- HG-G11. the reviewed G1-11 generation (migrations 1–11, 32 protected relations) ------------------------------
-test('HG21 G1-11 is the historical 11 migration directories on disk (m1–m11), with SHA-256 recomputed from each migration.sql; m12, m13 and m14 are the later migrations and m15, m16 the sale void ones', async () => {
+test('HG21 G1-11 is the historical 11 migration directories on disk (m1–m11), with SHA-256 recomputed from each migration.sql; m12, m13 and m14 are the later migrations, m15, m16 the sale void ones, m17, m18, m19 the sale exchange ones and m20 the post-sale claim', async () => {
   const witness = await import('./local-test-witness.mjs');
   const g11 = witness.BACKUP_SCHEMA_GENERATIONS.find((g) => g.id === 'G1-11');
   const dir = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
   const onDisk = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()
     .map((name) => [name, createHash('sha256').update(readFileSync(path.join(dir, name, 'migration.sql'))).digest('hex')]);
-  assert.equal(onDisk.length, 16);
+  assert.equal(onDisk.length, 20);
   assert.deepEqual(onDisk.slice(0, 11), G11_PAIRS);
   assert.deepEqual(onDisk[11], ['20261021120000_r3_card_credit', 'ccec6685120cc9236c5c95a57f2922dc5bbe09cf759ff21b4c9a3635d893f6be']);
   assert.deepEqual(onDisk[12], ['20261021130000_warehouse_stock_adjustment', '819d669933639173e1b21879791c14eb3cced33c0d8417ca30dd07800fb252c0']);
   assert.deepEqual(onDisk[13], ['20261021140000_r3_qr', '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a']);
   assert.deepEqual(onDisk[14], ['20261024120000_sale_void_enum', '82581170e1d9f5c2d4dd1d347e272f61b13cded2e20d623144ff72894c914c0f']);
   assert.deepEqual(onDisk[15], ['20261024130000_sale_void_schema', '0f2841cadaffac4579cf7f096329f899a8b7211a8cb4eb817770b8ee4911182d']);
+  assert.deepEqual(onDisk.slice(16), G20_PAIRS.slice(16));
+  assert.deepEqual(onDisk, G20_PAIRS);
   assert.deepEqual(g11?.migrations, G11_PAIRS);
   assert.deepEqual(G11_PAIRS.slice(0, 7), G7_PAIRS);
 });
@@ -943,7 +985,7 @@ test('HG22 G1-11 protects exactly the 26 G7 relations plus the six R3 relations,
   const witness = await import('./local-test-witness.mjs');
   const g11 = witness.BACKUP_SCHEMA_GENERATIONS.find((g) => g.id === 'G1-11');
   assert.deepEqual([...witness.PROTECTED_RELATION_NAMES_G11], G11_RELATIONS);
-  assert.deepEqual([...witness.PROTECTED_RELATION_NAMES], R4_RELATIONS, 'the CURRENT list is the 34 (32 + the two sale void relations)');
+  assert.deepEqual([...witness.PROTECTED_RELATION_NAMES], R4_RELATIONS, 'the CURRENT list is the 37 (32 + the two sale void relations + the two sale exchange relations + the post-sale claim)');
   assert.deepEqual([...g11.relations], G11_RELATIONS);
   assert.equal(new Set(g11.relations).size, 32);
   assert.deepEqual(rawSort(g11.relations), [...g11.relations]);
@@ -966,10 +1008,24 @@ test('HG23b ALLOW: an exact migration-14 archive still verifies against the 32-r
   assert.match(r.text, /toc_tables=32/);
 });
 
-test('HG23c ALLOW: an exact migration-16 archive verifies against the 34-relation generation G1-16, SaleVoid and SaleVoidExternalRefund included', async () => {
-  const r = await hgVerify(await hgRun({ pairs: G16_PAIRS, toc: TOC }), TOC);
+test('HG23c ALLOW: an exact migration-16 archive still verifies against the 34-relation generation G1-16, SaleVoid and SaleVoidExternalRefund included (history is not rewritten)', async () => {
+  const toc = r4Toc({ tables: G16_RELATIONS });
+  const r = await hgVerify(await hgRun({ pairs: G16_PAIRS, toc }), toc);
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /toc_tables=34/);
+});
+
+test('HG23d ALLOW: an exact migration-19 archive still verifies against the 36-relation generation G1-19, SaleExchange and SaleExchangeLine included (history is not rewritten)', async () => {
+  const toc = r4Toc({ tables: R19_RELATIONS });
+  const r = await hgVerify(await hgRun({ pairs: G19_PAIRS, toc }), toc);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /toc_tables=36/);
+});
+
+test('HG23e ALLOW: an exact migration-20 archive verifies against the 37-relation generation G1-20, SalePostSaleGuard included', async () => {
+  const r = await hgVerify(await hgRun({ pairs: G20_PAIRS, toc: TOC }), TOC);
+  assert.equal(r.code, 0, r.text);
+  assert.match(r.text, /toc_tables=37/);
 });
 
 test('HG24 DENY: a G1-11 set with one altered checksum, a missing, reordered or extra migration is not a generation', async () => {
@@ -996,4 +1052,24 @@ test('HG24 DENY: a G1-11 set with one altered checksum, a missing, reordered or 
     seventeenth: [...G16_PAIRS, ['20261201000000_future', sha('future')]],
   };
   for (const [label, pairs] of Object.entries(g16Cases)) assert.equal(witness.resolveBackupGeneration(pairs), null, label);
+  // a G19 set with one altered / missing / reordered sale exchange migration is not a generation either
+  const g19Cases = {
+    alteredExchangeEnum: G19_PAIRS.map(([n, s], i) => (i === 16 ? [n, sha('tampered exchange enum')] : [n, s])),
+    alteredExchangeSchema: G19_PAIRS.map(([n, s], i) => (i === 17 ? [n, sha('tampered exchange schema')] : [n, s])),
+    alteredVoidGuard: G19_PAIRS.map(([n, s], i) => (i === 18 ? [n, sha('tampered void guard')] : [n, s])),
+    withoutVoidGuard: G19_PAIRS.slice(0, 18),
+    withoutExchangeSchema: G19_PAIRS.filter((_, i) => i !== 17),
+    swappedGuardAndSchema: [...G19_PAIRS.slice(0, 17), G19_PAIRS[18], G19_PAIRS[17]],
+    twentieth: [...G19_PAIRS.slice(0, 19), ['20261201000000_future', sha('future')]],
+  };
+  for (const [label, pairs] of Object.entries(g19Cases)) assert.equal(witness.resolveBackupGeneration(pairs), null, label);
+  // a G20 set with one altered / missing migration is not a generation either
+  const g20Cases = {
+    alteredClaim: G20_PAIRS.map(([n, s], i) => (i === 19 ? [n, sha('tampered claim')] : [n, s])),
+    alteredVoidGuard: G20_PAIRS.map(([n, s], i) => (i === 18 ? [n, sha('tampered void guard')] : [n, s])),
+    withoutVoidGuard: G20_PAIRS.filter((_, i) => i !== 18),
+    swappedGuardAndClaim: [...G20_PAIRS.slice(0, 18), G20_PAIRS[19], G20_PAIRS[18]],
+    twentyFirst: [...G20_PAIRS, ['20261201000000_future', sha('future')]],
+  };
+  for (const [label, pairs] of Object.entries(g20Cases)) assert.equal(witness.resolveBackupGeneration(pairs), null, label);
 });

@@ -126,7 +126,8 @@ type Method = 'CASH' | 'TRANSFER' | 'CARD_DEBIT' | 'CARD_CREDIT' | 'QR';
 type PaymentSpec = { method: Method; amount: bigint };
 
 function setup() {
-  const db = createInMemorySalesDb({ withSaleVoid: true });
+  // withSaleExchange: the void refuses a sale that has exchanges, so it reads the SaleExchange table.
+  const db = createInMemorySalesDb({ withSaleVoid: true, withSaleExchange: true });
   db.insert('company', { name: 'Mona Jacinta', cuit: '00000000000', address: 'Demo', isActive: true, createdAt: new Date() });
   const L1 = db.insert('location', { isActive: true }).id as string;
   const L2 = db.insert('location', { isActive: true }).id as string;
@@ -257,6 +258,10 @@ function setup() {
   return {
     db, client, ids, L1, L2, V1, V2, inv, reqs, S1, S2, STARTING, registerL1, registerL2, openSession, closeSession,
     completedSale, paidSale, plainSale, everything, invRow, rows,
+    // A SaleExchange row as the exchange service leaves it (only its existence matters to the void).
+    exchangeOf: (saleId: string) => db.insert('saleExchange', {
+      saleId, branchId: L1, createdById: ids.admin, reason: 'Cambio de talle', idempotencyKey: randomUUID(), requestHash: 'a'.repeat(64),
+    }),
   };
 }
 type World = ReturnType<typeof setup>;
@@ -999,6 +1004,35 @@ describe('sale void v1 — Serializable transaction and retries', () => {
     expect(w.rows('stockMovement').filter((row) => row.type === 'SALE_VOID')).toHaveLength(2);
   });
 
+  it.each([
+    ['adapter originalCode 40001', { code: 'P2010', meta: { driverAdapterError: { cause: { originalCode: '40001' } } } }],
+    ['adapter originalCode 40P01', { code: 'P2010', meta: { driverAdapterError: { cause: { originalCode: '40P01' } } } }],
+    ['adapter kind TransactionWriteConflict', { meta: { driverAdapterError: { cause: { kind: 'TransactionWriteConflict' } } } }],
+    ['cause chain -> originalCode 40001', { cause: { meta: { driverAdapterError: { cause: { originalCode: '40001' } } } } }],
+  ])('SV50b a transient %s failure (the shapes @prisma/adapter-pg really produces) is retried and the void is applied exactly once', async (_label, failure) => {
+    const w = setup();
+    const { saleId, payments } = w.completedSale();
+    const spy = transactionSpy(w, [failure]);
+    const result = await (await loadService(spy.client)).voidSale(w.reqs.owner, saleId, input({ externalRefunds: evidenceFor(payments, 'TRANSFER', 'CARD_DEBIT') }));
+    expect(result.replayed).toBe(false);
+    expect(spy.calls).toHaveLength(2);
+    expect(w.rows('saleVoid')).toHaveLength(1);
+  });
+
+  it('SV51b exhaustion with adapter-shaped failures -> 409 CONCURRENCY_ERROR, no effect, and no raw driver detail reaches the caller', async () => {
+    const w = setup();
+    const { saleId, payments } = w.completedSale();
+    const before = w.everything();
+    const adapter = { code: 'P2010', meta: { driverAdapterError: { cause: { originalCode: '40001', message: 'SECRET-DRIVER-DETAIL' } } } };
+    const spy = transactionSpy(w, [adapter, adapter, adapter]);
+    const error = await (await loadService(spy.client)).voidSale(w.reqs.owner, saleId, input({ externalRefunds: evidenceFor(payments, 'TRANSFER', 'CARD_DEBIT') })).then(() => null, (cause: unknown) => cause);
+    expect(error).toBeInstanceOf(AppError);
+    expect({ status: (error as AppError).status, code: (error as AppError).code }).toEqual({ status: 409, code: 'CONCURRENCY_ERROR' });
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain('SECRET-DRIVER-DETAIL');
+    expect(spy.calls).toHaveLength(3);
+    expect(w.everything()).toEqual(before);
+  });
+
   it('SV51 three consecutive transient failures -> 409 CONCURRENCY_ERROR and no effect', async () => {
     const w = setup();
     const { saleId, payments } = w.completedSale();
@@ -1058,5 +1092,75 @@ describe('sale void v1 — lock order Sale -> CashSession -> StockReservation ->
     await appError((await loadService(w.client)).voidSale(w.reqs.cashier, saleId, input({ cashSessionId: w.S1 })));
     expect(w.db.rawQueries[0]).toMatch(/FROM "Sale"[\s\S]*FOR UPDATE/);
     expect(w.db.rawQueries.filter((query) => /FOR UPDATE/.test(query))).toHaveLength(1); // a refused void takes no further lock
+  });
+});
+
+// ---- a sale with exchanges cannot be voided (G19) --------------------------------------------------------------------------------
+
+describe('sale void v1 — sale with exchanges', () => {
+  it('SVX1 a COMPLETED sale with at least one SaleExchange -> 409 SALE_HAS_EXCHANGES and NOTHING is written (no stock, cash, void, audit, status)', async () => {
+    const w = setup();
+    const { saleId, payments } = w.completedSale();
+    w.exchangeOf(saleId);
+    const before = w.everything();
+    expect(await appError((await loadService(w.client)).voidSale(w.reqs.owner, saleId, input({ externalRefunds: evidenceFor(payments, 'TRANSFER', 'CARD_DEBIT') }))))
+      .toEqual({ status: 409, code: 'SALE_HAS_EXCHANGES' });
+    expect(w.everything()).toEqual(before);
+    expect(w.rows('saleVoid')).toHaveLength(0);
+    expect(w.rows('sale').find((row) => row.id === saleId)!.status).toBe('COMPLETED');
+  });
+
+  it('SVX2 the exchange guard comes BEFORE payment / evidence / cash-session validation: no evidence still answers SALE_HAS_EXCHANGES', async () => {
+    const w = setup();
+    const { saleId } = w.completedSale({ pricingModel: 'FIXED_TOTAL' }); // CASH sale: would otherwise ask for cashSessionId
+    w.exchangeOf(saleId);
+    expect(await appError((await loadService(w.client)).voidSale(w.reqs.owner, saleId, input())))
+      .toEqual({ status: 409, code: 'SALE_HAS_EXCHANGES' });
+  });
+
+  it('SVX3 several exchanges, same answer; the permission is still checked first (403 for a CASHIER, never a hint about exchanges)', async () => {
+    const w = setup();
+    const { saleId } = w.completedSale();
+    w.exchangeOf(saleId);
+    w.exchangeOf(saleId);
+    const service = await loadService(w.client);
+    expect(await appError(service.voidSale(w.reqs.cashier, saleId, input()))).toEqual({ status: 403, code: 'FORBIDDEN' });
+    expect(await appError(service.voidSale(w.reqs.owner, saleId, input()))).toEqual({ status: 409, code: 'SALE_HAS_EXCHANGES' });
+  });
+
+  it('SVX4 the state still decides first: a non-voidable sale is INVALID_SALE_STATE, whatever rows exist', async () => {
+    const w = setup();
+    const saleId = w.plainSale('CANCELLED');
+    w.exchangeOf(saleId);
+    expect(await appError((await loadService(w.client)).voidSale(w.reqs.owner, saleId, input()))).toEqual({ status: 409, code: 'INVALID_SALE_STATE' });
+  });
+
+  it('SVX5 an exchange of ANOTHER sale does not block this void', async () => {
+    const w = setup();
+    const a = w.completedSale({ pricingModel: 'PROPORTIONAL_V1' });
+    const b = w.completedSale({ pricingModel: 'PROPORTIONAL_V1' });
+    w.exchangeOf(b.saleId);
+    const result = await (await loadService(w.client)).voidSale(w.reqs.owner, a.saleId, input({ externalRefunds: evidenceFor(a.payments, 'TRANSFER', 'CARD_DEBIT') }));
+    expect(result).toMatchObject({ saleId: a.saleId, status: 'CANCELLED', replayed: false });
+  });
+
+  it('SVX6 idempotency is preserved: a void that already exists is replayed before the exchange guard is consulted', async () => {
+    const w = setup();
+    const { saleId, payments } = w.completedSale();
+    const service = await loadService(w.client);
+    const request = input({ externalRefunds: evidenceFor(payments, 'TRANSFER', 'CARD_DEBIT') });
+    const first = await service.voidSale(w.reqs.owner, saleId, request);
+    w.exchangeOf(saleId); // cannot happen (CANCELLED sale), but the replay must not depend on it
+    const second = await service.voidSale(w.reqs.owner, saleId, request);
+    expect(second).toMatchObject({ replayed: true, voidId: first.voidId });
+  });
+
+  it('SVX7 the refused void takes only the Sale lock and reads no stock, payment or cash row', async () => {
+    const w = setup();
+    const { saleId } = w.completedSale();
+    w.exchangeOf(saleId);
+    await appError((await loadService(w.client)).voidSale(w.reqs.owner, saleId, input()));
+    expect(w.db.rawQueries.filter((query) => /FOR UPDATE/.test(query))).toHaveLength(1);
+    expect(w.db.rawQueries[0]).toMatch(/FROM "Sale"[\s\S]*FOR UPDATE/);
   });
 });

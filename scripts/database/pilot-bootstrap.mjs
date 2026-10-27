@@ -6,6 +6,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CA_PATH, PROJECT_REF_PATTERN } from './lib.mjs';
 import { classifyCatalogGeneration } from './pilot-rbac-catalog-generations.mjs';
+
+// Exact historical catalogs a bootstrap recognises as "known, needs an explicit transition" (never repairs).
+const HISTORICAL_UPGRADABLE = new Set(['CATALOG_36', 'CATALOG_37']);
 import {
   PILOT_URL_FILE,
   createVerifiedClient,
@@ -382,11 +385,12 @@ export function classifyPilotState(s, config, canonical) {
     sameSet(s.roles.map((r) => key(r.id, r.code, r.name)), expectedRoles) &&
     sameSet(s.permissions.map((p) => key(p.id, p.code)), expectedPerms) &&
     sameSet(s.grants.map((g) => key(g.roleId, g.permissionId)), expectedGrants);
-  // RBAC generations (sale void v1): the canonical catalog above is CATALOG_37. An EXISTING database holding exactly the
-  // historical CATALOG_36 is a KNOWN state that needs the explicit OWNER-only 36 -> 37 transition: it is neither corruption
-  // nor something a bootstrap repairs. Anything else that is not exactly the canonical catalog stays a CONFLICT.
+  // RBAC generations (sale void v1, sale exchange v1): the canonical catalog above is CATALOG_38. An EXISTING database
+  // holding exactly the historical CATALOG_36 or CATALOG_37 is a KNOWN state that needs the explicit OWNER-only
+  // transition(s) up to 38: it is neither corruption nor something a bootstrap repairs. Anything else that is not
+  // exactly the canonical catalog stays a CONFLICT.
   const knownHistorical = !catalogEmpty && !catalogExact
-    && classifyCatalogGeneration({ roles: s.roles, permissions: s.permissions, grants: s.grants }).catalog === 'CATALOG_36'
+    && HISTORICAL_UPGRADABLE.has(classifyCatalogGeneration({ roles: s.roles, permissions: s.permissions, grants: s.grants }).catalog)
     && sameSet(s.roles.map((r) => key(r.id, r.code, r.name)), expectedRoles);
   // For the anchor a known historical catalog counts as present and exact; the caller stops before any write.
   const catalog = catalogEmpty ? 'ABSENT' : (catalogExact || knownHistorical) ? 'EXACT' : 'CONFLICT';
@@ -599,10 +603,10 @@ async function bootstrapTransaction(tx, { config, passwords, markerId, canonical
   if (before.conflicts.length > 0) {
     throw new Stop('conflict', `${before.conflicts[0]}${before.conflicts.length > 1 ? ` (+${before.conflicts.length - 1} more)` : ''}; nothing was written`);
   }
-  // A known historical CATALOG_36: nothing is written (not the permission, not the grant, no location); the 36 -> 37
-  // transition is a separate, explicit OWNER-only operation, never a side effect of a bootstrap.
+  // A known historical CATALOG_36 / CATALOG_37: nothing is written (not the permission, not the grant, no location); the
+  // transition up to 38 is a separate, explicit OWNER-only operation, never a side effect of a bootstrap.
   if (before.upgradeRequired) {
-    throw new Stop('catalog-upgrade-required', 'CATALOG_37_UPGRADE_REQUIRED: the RBAC catalog is exactly the historical CATALOG_36; run the OWNER-only CATALOG_36 -> CATALOG_37 transition first; nothing was written');
+    throw new Stop('catalog-upgrade-required', 'CATALOG_38_UPGRADE_REQUIRED: the RBAC catalog is exactly a historical CATALOG_36 or CATALOG_37; run the OWNER-only transitions up to CATALOG_38 first; nothing was written');
   }
   const absentGroups = config.locations.filter((l) => before.groups.get(l.code) === 'ABSENT');
   if (before.anchor === 'EXACT' && absentGroups.length === 0) return { action: 'NOOP' };

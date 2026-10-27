@@ -57,6 +57,11 @@ export const PRODUCTION_PERMISSIONS = {
   // service always exercises it through actsAsSupervisorAtLocation (OWNER / COMPANY-scoped
   // ADMIN), never as a plain permission, and it is NOT SALE_CANCEL_PENDING.
   SALE_VOID: 'SALE_VOID',
+  // Sale exchange v1: garment swap on a COMPLETED sale at equal value. Additive catalog row
+  // (9400/38). Default grant: ADMIN only; OWNER only through its implicit authority. The service
+  // exercises it through actsAsSupervisorAtLocation (OWNER / COMPANY-scoped ADMIN), never as a
+  // plain permission, and it is NOT SALE_VOID.
+  SALE_EXCHANGE: 'SALE_EXCHANGE',
 } as const;
 
 export type ProductionPermission =

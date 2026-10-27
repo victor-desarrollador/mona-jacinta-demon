@@ -38,6 +38,7 @@
 // U_origin → seal → CHECKOUT_RESERVED → CHECKOUT_STOCK_RECOVERED IF the stock
 // changed → view. Lock order: Sale → ExternalCollection(id ASC) → CashSession →
 // StockReservation(id ASC) → Inventory(id ASC), never NOWAIT.
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import { randomUUID } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
@@ -94,12 +95,8 @@ const concurrencyError = () => new AppError(409, 'CONCURRENCY_ERROR', 'La operac
 // row is read. Not a malformed plan and not a sale-state problem.
 const paymentMethodNotEnabled = (method: string) => new AppError(409, 'PAYMENT_METHOD_NOT_ENABLED', `El medio de pago ${method} no está habilitado.`);
 
-const transient = (error: unknown) => {
-  const candidate = error as { code?: string; meta?: { code?: string } };
-  const message = error instanceof Error ? error.message : '';
-  return candidate.code === 'P2034' || candidate.meta?.code === '40001' || candidate.meta?.code === '40P01'
-    || message.includes('40001') || message.includes('40P01') || message.includes('TransactionWriteConflict');
-};
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
+const transient = isTransientTransactionError;
 
 // Which CheckoutAttempt unique key collided. Anything else returns null and the
 // original error is rethrown: no cause is ever invented. Exported so the opt-in

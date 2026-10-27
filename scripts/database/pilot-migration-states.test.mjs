@@ -9,6 +9,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as states from './pilot-migration-states.mjs';
+import { POST_G14_MIGRATION_PINS } from './pilot-migration-generations.mjs';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -46,11 +47,11 @@ test('ST-01 the fourteen pins are the exact reviewed metadata, literal, frozen a
 });
 
 test('ST-02 the pins equal the bytes on disk, file by file (recomputed, never trusted)', () => {
-  // The G14 pins are the first fourteen directories on disk; the sale void migrations (G15, G16) that follow are pinned
+  // The G14 pins are the first fourteen directories on disk; the sale void and sale exchange migrations (G15 .. G19) that follow are pinned
   // by pilot-migration-generations.mjs and never enter this frozen cut-over module.
   const onDisk = readdirSync(MIGRATIONS_DIR).filter((d) => /^\d{14}_/.test(d)).sort();
   assert.deepEqual(onDisk.slice(0, NAMES.length), NAMES);
-  assert.deepEqual(onDisk.slice(NAMES.length), ['20261024120000_sale_void_enum', '20261024130000_sale_void_schema']);
+  assert.deepEqual(onDisk.slice(NAMES.length), POST_G14_MIGRATION_PINS.map((pin) => pin.name));
   for (const [name, bytes, digest] of EXPECTED) {
     const file = readFileSync(path.join(MIGRATIONS_DIR, name, 'migration.sql'));
     assert.equal(file.length, bytes, name);

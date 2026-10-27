@@ -326,7 +326,10 @@ test('G16M-12 the tool binds every module it imports, and never imports a LOCAL_
   const { readFileSync } = await import('node:fs');
   const source = readFileSync(path.join(MODULE_DIR, 'pilot-g16-migrate.mjs'), 'utf8');
   assert.doesNotMatch(source, /from '\.\/local-test/);
-  assert.deepEqual(Object.keys(GENERATIONS), ['EXACT_G14', 'EXACT_G15', 'EXACT_G16']);
+  // The tool's generations are the first three of the module; later generations (sale exchange v1: G17..G19) never retarget it.
+  assert.deepEqual(Object.keys(GENERATIONS).slice(0, 3), ['EXACT_G14', 'EXACT_G15', 'EXACT_G16']);
+  assert.equal(M.FINAL_GENERATION, 'EXACT_G16');
+  assert.deepEqual(M.G16_PAYLOAD.migrations.map((m) => m.name), GENERATIONS.EXACT_G16);
 });
 
 const AMBIENT = { DATABASE_URL: 'postgresql://postgres.hostileref00000000x:hostilepw@dev-hostile.invalid:5432/postgres', TEST_DATABASE_URL: 'postgresql://postgres.hostileref00000000x:hostilepw@dev-hostile.invalid:5432/postgres', PGHOST: 'dev-hostile.invalid' };

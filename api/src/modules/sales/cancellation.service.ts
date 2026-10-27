@@ -1,3 +1,4 @@
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { assertPermissionAtLocation } from '../../middleware/authorization.js';
 import { hasPermissionAtLocation } from '../rbac/authorization-policy.js';
@@ -40,12 +41,8 @@ const invalidState = () => new AppError(409, 'INVALID_SALE_STATE', 'La venta no 
 const cancelForbidden = () => new AppError(403, 'FORBIDDEN', 'No cuenta con permisos para cancelar esta venta.');
 const invalidReservation = (message = 'La reserva de la venta no es válida.') => new AppError(409, 'INVALID_RESERVATION', message);
 
-function transient(error: unknown) {
-  const candidate = error as { code?: string; meta?: { code?: string } };
-  const message = error instanceof Error ? error.message : '';
-  return candidate.code === 'P2034' || candidate.meta?.code === '40001'
-    || candidate.meta?.code === '40P01' || message.includes('40001') || message.includes('40P01');
-}
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
+const transient = isTransientTransactionError;
 
 // Also the release the OWNER-only PILOT synthetic retirement reuses (scripts/database/
 // pilot-local1-synthetic-retire.mjs): same locks, same checks, same writes.

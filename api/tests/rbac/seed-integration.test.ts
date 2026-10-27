@@ -68,8 +68,8 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
     expect(await db.prisma.role.count()).toBe(6);
     // Pilot P0.2 + Pilot cash exits: +3 Production permissions; each is granted
     // to CASHIER (and, transitively, to ADMIN via the full-catalogue grant).
-    expect(await db.prisma.permission.count()).toBe(49);
-    expect(await db.prisma.rolePermission.count()).toBe(108);
+    expect(await db.prisma.permission.count()).toBe(50);
+    expect(await db.prisma.rolePermission.count()).toBe(109);
     // D2.2: normal canonical seed creates NO legacy UserBranchRole rows, and
     // every assertion here follows a clean resetDemo (or a seedDemo on top of
     // one), so there is no historical input left either.
@@ -169,7 +169,7 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
     }
   }, 120000);
 
-  it('resetDemo restores OWNER, WAREHOUSE, all 37 Production permissions and all 76 Production grants after a full wipe', async () => {
+  it('resetDemo restores OWNER, WAREHOUSE, all 38 Production permissions and all 77 Production grants after a full wipe', async () => {
     // Sanity precondition: the catalog is fully wiped by clear(), proving the
     // subsequent state is genuinely restored by populate(), not leftover.
     await safely(() => resetDemo(db.prisma));
@@ -190,7 +190,7 @@ describe('Demo seed/reset lifecycle preserves the Production RBAC catalog (Phase
       0,
     );
     expect(productionGrantTotal).toBe(expectedProductionGrantTotal);
-    expect(productionGrantTotal).toBe(76);
+    expect(productionGrantTotal).toBe(77);
   }, 120000);
 
   it('repeated seed/reset cycles converge to the same logical catalog', async () => {

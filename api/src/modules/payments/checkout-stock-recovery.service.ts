@@ -29,6 +29,7 @@
 //   9. the ReservationView, read last with the same `now`.
 // An unchanged coverage (changed:false) writes nothing at all: no hold, no
 // Inventory, no bump, no audit.
+import { isTransientTransactionError } from '../../shared/transient-transaction-error.js';
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
@@ -85,12 +86,8 @@ const insufficientStock = (variantId: string) => new AppError(409, 'INSUFFICIENT
 const concurrencyError = () => new AppError(409, 'CONCURRENCY_ERROR', 'La operación no pudo completarse por concurrencia.');
 
 // Same classification as the other checkout transactions (T-R, T-C).
-const transient = (error: unknown) => {
-  const candidate = error as { code?: string; meta?: { code?: string } };
-  const message = error instanceof Error ? error.message : '';
-  return candidate.code === 'P2034' || candidate.meta?.code === '40001' || candidate.meta?.code === '40P01'
-    || message.includes('40001') || message.includes('40P01') || message.includes('TransactionWriteConflict');
-};
+// Shared classifier (src/shared/transient-transaction-error.ts): P2034, SQLSTATE 40001 / 40P01 in every driver shape, TransactionWriteConflict.
+const transient = isTransientTransactionError;
 
 // One Serializable transaction per attempt; a transient failure re-runs the
 // whole unit from the Sale lock, so every retry re-reads the committed state.

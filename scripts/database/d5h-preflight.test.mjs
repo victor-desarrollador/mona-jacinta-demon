@@ -96,8 +96,33 @@ const SALE_VOID_SCHEMA_TREE_ENTRY = Object.freeze({
   bytes: 11592,
   sha256: '0f2841cadaffac4579cf7f096329f899a8b7211a8cb4eb817770b8ee4911182d',
 });
-const REVIEWED_TREE_ENTRIES = Object.freeze([CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY, CARD_CREDIT_TREE_ENTRY, WAREHOUSE_TREE_ENTRY, QR_TREE_ENTRY, SALE_VOID_ENUM_TREE_ENTRY, SALE_VOID_SCHEMA_TREE_ENTRY]);
-const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11, the card-credit migration 12, the warehouse migration 13, the QR migration 14 and the two sale void migrations 15 and 16';
+// Sale exchange v1 (G17, G18, G19, G20): four more additive migrations, recognized the same way.
+const SALE_EXCHANGE_ENUM_TREE_ENTRY = Object.freeze({
+  name: '20261026120000_sale_exchange_enum',
+  bytes: 670,
+  sha256: '109881c4e0cb3733949f7a066d8bfe23998fe87ae68037186cc9ee5bba7d9785',
+});
+const SALE_EXCHANGE_SCHEMA_TREE_ENTRY = Object.freeze({
+  name: '20261026130000_sale_exchange_schema',
+  bytes: 17418,
+  sha256: '1817b905585257ad916f2f0cefe271f89d5c7a2455e1383f17546a8389ead796',
+});
+const SALE_VOID_EXCHANGE_GUARD_TREE_ENTRY = Object.freeze({
+  name: '20261026140000_sale_void_exchange_guard',
+  bytes: 4050,
+  sha256: '65a56d7bf9206d0424447ae8b88dfb0b6342a3a0e2303a0ab774c0a92545344f',
+});
+const SALE_POST_SALE_GUARD_TREE_ENTRY = Object.freeze({
+  name: '20261026150000_sale_post_sale_guard',
+  bytes: 5396,
+  sha256: '5924bb722676048489dd930bc1c90a36a8dda193ae77dc0368562989667deef5',
+});
+const REVIEWED_TREE_ENTRIES = Object.freeze([
+  CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY, CARD_CREDIT_TREE_ENTRY, WAREHOUSE_TREE_ENTRY, QR_TREE_ENTRY,
+  SALE_VOID_ENUM_TREE_ENTRY, SALE_VOID_SCHEMA_TREE_ENTRY, SALE_EXCHANGE_ENUM_TREE_ENTRY, SALE_EXCHANGE_SCHEMA_TREE_ENTRY, SALE_VOID_EXCHANGE_GUARD_TREE_ENTRY,
+  SALE_POST_SALE_GUARD_TREE_ENTRY,
+]);
+const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11, the card-credit migration 12, the warehouse migration 13, the QR migration 14, the two sale void migrations 15 and 16 and the three sale exchange migrations 17, 18 and 19 and the post-sale claim migration 20';
 const REVIEWED_TREE_NAMES = Object.freeze([...EXPECTED_PINS.map(([name]) => name), ...REVIEWED_TREE_ENTRIES.map((e) => e.name)]);
 const NAMES = EXPECTED_PINS.map(([name]) => name);
 const row = (i, patch = {}) => ({ migration_name: EXPECTED_PINS[i][0], checksum: EXPECTED_PINS[i][1], finished: true, rolled_back: false, ...patch });
@@ -125,7 +150,7 @@ function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSy
   }
 }
 
-test('D5H v1 keeps six independent pins and verifies the reviewed sixteen-directory tree (no drift)', () => {
+test('D5H v1 keeps six independent pins and verifies the reviewed twenty-directory tree (no drift)', () => {
   assert.equal(D5H_MIGRATIONS.length, 6);
   assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
   const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));
