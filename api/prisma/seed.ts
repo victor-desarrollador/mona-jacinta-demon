@@ -496,7 +496,13 @@ async function clear(tx: Prisma.TransactionClient) {
   // Explicit FK order: preserve schema, constraints, and _prisma_migrations.
   await tx.cashMovement.deleteMany();
   await tx.salePayment.deleteMany();
-  await tx.stockMovement.deleteMany();
+  // Post-sale history (sale void G16, sale exchange G17..G20) cannot be removed row by row: the exchange ledger rows of StockMovement are append-only
+  // (trg_sale_exchange_append_only refuses DELETE) and SaleVoid / SaleExchange / SalePostSaleGuard reference Sale with ON DELETE RESTRICT. This is a
+  // full demo reset, so they are truncated, in THIS transaction, with an exact static list: the six tables below are the complete closure of the foreign
+  // keys that point at each other (SaleExchangeLine and SaleVoidExternalRefund reference SaleExchange / SaleVoid; StockMovement references SaleVoid,
+  // SaleExchange and SaleExchangeLine; nothing else references any of them), so no CASCADE is needed. No trigger is disabled or bypassed:
+  // TRUNCATE does not fire the row-level DELETE guards, by design. StockMovement joins the list because its exchange rows live in it.
+  await tx.$executeRaw`TRUNCATE TABLE "SalePostSaleGuard", "SaleExchangeLine", "SaleExchange", "SaleVoidExternalRefund", "SaleVoid", "StockMovement"`;
   await tx.stockReservation.deleteMany();
   await tx.saleItem.deleteMany();
   await tx.sale.deleteMany();
