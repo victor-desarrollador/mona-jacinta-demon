@@ -6,6 +6,7 @@ import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import type { Request } from 'express';
 import type { ProductQuery } from './dto/product.dto.js';
 import type { VariantQuery } from './dto/variant.dto.js';
+import { variantSearchWhere } from './variant-search.js';
 import {
   effectiveAvailability,
   loadReleasableExpiredHolds,
@@ -139,17 +140,7 @@ export async function listVariants(
   const where = {
     isActive: query.isActive,
     ...(query.productId ? { productId: query.productId } : {}),
-    ...(query.search
-      ? {
-          OR: [
-            { sku: { contains: query.search, mode: 'insensitive' as const } },
-            { barcode: { contains: query.search, mode: 'insensitive' as const } },
-            { color: { contains: query.search, mode: 'insensitive' as const } },
-            { size: { contains: query.search, mode: 'insensitive' as const } },
-            { product: { name: { contains: query.search, mode: 'insensitive' as const } } },
-          ],
-        }
-      : {}),
+    ...variantSearchWhere(query.search),
   };
   const [items, total] = await Promise.all([
     database.productVariant.findMany({

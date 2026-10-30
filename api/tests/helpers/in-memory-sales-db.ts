@@ -55,6 +55,7 @@ const RELATIONS: Partial<Record<Model, Record<string, Relation>>> = {
   },
   productVariant: {
     product: { model: 'product', kind: 'one', local: 'productId', foreign: 'id' },
+    inventory: { model: 'inventory', kind: 'many', local: 'id', foreign: 'variantId' },
   },
   stockReservation: {
     sale: { model: 'sale', kind: 'one', local: 'saleId', foreign: 'id' },
@@ -124,6 +125,10 @@ export function createInMemorySalesDb(options: { withSaleVoid?: boolean; withSal
       if (operator === 'in') return (expected as unknown[]).includes(actual);
       if (operator === 'not') return actual !== expected;
       if (operator === 'lte') return (actual as Date | bigint) <= (expected as Date | bigint);
+      // Catalog reads (exchange replacements): a bounded `gt` (null never matches) and a case-insensitive `contains` (`mode` only qualifies it).
+      if (operator === 'gt') return actual !== null && actual !== undefined && (actual as bigint) > (expected as bigint);
+      if (operator === 'contains') return typeof actual === 'string' && actual.toLowerCase().includes(String(expected).toLowerCase());
+      if (operator === 'mode') return expected === 'insensitive' ? true : unsupported(`mode ${String(expected)}`);
       return unsupported(`operator ${operator}`);
     });
   }
@@ -213,7 +218,7 @@ export function createInMemorySalesDb(options: { withSaleVoid?: boolean; withSal
   function delegate(model: Model) {
     const findMany = async (args: Args = {}) =>
       sort(rows(model).filter((row) => matches(model, row, args.where)), args.orderBy)
-        .slice(0, typeof args.take === 'number' ? args.take : undefined)
+        .slice(typeof args.skip === 'number' ? args.skip : 0, typeof args.take === 'number' ? (typeof args.skip === 'number' ? args.skip : 0) + args.take : undefined)
         .map((row) => project(model, row, args));
     const findFirst = async (args: Args = {}) => (await findMany(args))[0] ?? null;
     return {

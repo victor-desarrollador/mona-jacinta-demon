@@ -10,6 +10,8 @@ import { createCancellationController } from './cancellation.controller.js';
 import { createSaleVoidController } from './sale-void.controller.js';
 import { createSaleExchangeReadService } from './sale-exchange-read.service.js';
 import { exchangeableSaleQueryDto } from './dto/exchangeable-sale-query.dto.js';
+import { createSaleExchangeReplacementsService } from './sale-exchange-replacements.service.js';
+import { exchangeReplacementsQueryDto } from './dto/exchange-replacements-query.dto.js';
 import { sendJson } from '../../shared/json-safe.js';
 import { createSaleExchangeController } from './sale-exchange.controller.js';
 import { exchangeSaleHttpDto } from './dto/exchange-sale.dto.js';
@@ -56,6 +58,19 @@ export function createCancellationRouter(
     validate(exchangeableSaleQueryDto, 'query'),
     (async (req, res) => {
       sendJson(res, await exchangeReadService.findExchangeableSale(req, req.query));
+    }) as RequestHandler,
+  );
+  // The replacement candidates for one SaleItem, each with the unit price the exchange would charge (same pricing function as the POST below)
+  // and whether it is EQUAL / CHEAPER / MORE_EXPENSIVE. Same gates as GET /exchangeable: the coarse SALE_EXCHANGE permission, then the
+  // supervisor decision against the requested branch inside the service, BEFORE any lookup. Read-only; the POST stays the authority.
+  const replacementsService = createSaleExchangeReplacementsService(database);
+  router.get(
+    '/:saleId/exchange-replacements',
+    requirePermission(PRODUCTION_PERMISSIONS.SALE_EXCHANGE),
+    validate(saleIdDto, 'params'),
+    validate(exchangeReplacementsQueryDto, 'query'),
+    (async (req, res) => {
+      sendJson(res, await replacementsService.findReplacements(req, String(req.params.saleId), req.query));
     }) as RequestHandler,
   );
   // Sale exchange v1: a COMPLETED sale -> garment swap of equal value. Same order as the void: params, the coarse SALE_EXCHANGE gate, then the
