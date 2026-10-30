@@ -3,6 +3,7 @@
 import { useMemo, useSyncExternalStore } from "react";
 import { CodedApiError, apiRequestCoded } from "../lib/api";
 import { availableLinesFromFreshRead, draftLinesFromFreshRead, validateFreshRead, type AvailableLine, type FreshReadFailure, type Watermark } from "./exchange-fresh-read";
+import type { ExchangeLineDraft } from "./exchange-types";
 
 // Cambios de prenda — estado de módulo que sobrevive a que la pestaña se desmonte, más un registro DURABLE y compartido por todas las
 // pestañas del navegador (localStorage) de todo intento cuyo resultado se desconoce, y del último intento CONFIRMADO hasta que se reconcilia.
@@ -82,14 +83,7 @@ const DEFINITIVE_STATUSES = new Set([400, 403, 404, 409, 410, 422]);
 
 export type { AvailableLine, Watermark };
 
-export type ExchangeLineDraft = {
-  saleItemId: string;
-  replacementVariantId: string | null;
-  replacementLabel: string;
-  returnQuantity: string;
-  // What the read that opened the draft (GET /sales/exchangeable) said was ALREADY exchanged of this item. Never typed by a person.
-  exchangedQuantityBefore: string;
-};
+export type { ExchangeLineDraft };
 
 export type CanonicalLine = { saleItemId: string; replacementVariantId: string; returnQuantity: string };
 export type CanonicalPayload = { reason: string; lines: CanonicalLine[] };

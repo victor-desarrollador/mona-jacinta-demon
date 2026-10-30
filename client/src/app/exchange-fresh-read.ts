@@ -1,4 +1,4 @@
-import type { ExchangeLineDraft } from "./exchange-draft-store";
+import type { ExchangeLineDraft } from "./exchange-types";
 
 // The pure half of reconcileAfterFreshRead: is this body a trustworthy, FRESH read of THIS sale in THIS branch?
 //
