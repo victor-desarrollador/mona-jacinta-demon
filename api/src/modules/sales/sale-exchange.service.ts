@@ -9,6 +9,7 @@ import type { PriceMode } from '../pricing/pricing.js';
 import { createPricingService } from '../pricing/pricing.service.js';
 import { exchangeSaleDto, type ExchangeSaleInput } from './dto/exchange-sale.dto.js';
 import { unitPriceFor } from './wholesale-authorization.service.js';
+import { compareReplacementPrice } from './replacement-price.js';
 
 // Sale exchange v1: a garment swap on a COMPLETED sale, at EQUAL value per line. It moves no money and leaves no debt; the Sale, its
 // SaleItems and its SalePayments are never touched (and neither is any cash row). All in ONE Serializable transaction:
@@ -179,10 +180,11 @@ export function createSaleExchangeService(database: PrismaClient) {
       const priced = input.lines.map((line) => {
         const original = itemById.get(line.saleItemId)!.unitPrice;
         const replacement = unitPriceFor(sale.pricingMode, variantById.get(line.replacementVariantId)!, sale.priceMode, config).unitPrice;
-        if (replacement < original) {
+        const comparison = compareReplacementPrice(original, replacement);
+        if (comparison === 'CHEAPER') {
           throw new AppError(409, 'REPLACEMENT_CHEAPER_NOT_SUPPORTED', 'La prenda de reemplazo es más barata: este cambio solo admite igual valor.');
         }
-        if (replacement > original) {
+        if (comparison === 'MORE_EXPENSIVE') {
           throw new AppError(409, 'REPLACEMENT_MORE_EXPENSIVE_NOT_SUPPORTED', 'La prenda de reemplazo es más cara: este cambio solo admite igual valor.');
         }
         return { line, item: itemById.get(line.saleItemId)!, original, replacement };
