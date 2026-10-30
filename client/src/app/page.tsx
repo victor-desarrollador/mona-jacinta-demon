@@ -624,7 +624,7 @@ export default function OperationsPage() {
                 required
               />
             </label>
-            {error ? <p className="error-banner">{error}</p> : null}
+            {error ? <p className="error-banner" role="alert">{error}</p> : null}
             <button className="primary-button" disabled={actionLoading}>
               {actionLoading ? "Ingresando..." : "Ingresar"}
             </button>
@@ -647,10 +647,13 @@ export default function OperationsPage() {
           </span>
         </div>
 
-        <div className="mode-tabs" role="tablist" aria-label="Modo de operación">
+        {/* Toggle buttons (aria-pressed), not role="tab": the tab roles would make five existing test files query the controls as "tab" instead
+            of "button", churn with no operational benefit for a three-button mode switch. */}
+        <div className="mode-tabs" role="group" aria-label="Modo de operación">
           {canCashier ? (
             <button
               className={mode === "cashier" ? "mode-tab active" : "mode-tab"}
+              aria-pressed={mode === "cashier"}
               onClick={() => setMode("cashier")}
             >
               Caja
@@ -659,6 +662,7 @@ export default function OperationsPage() {
           {canSeller ? (
             <button
               className={mode === "seller" ? "mode-tab active" : "mode-tab"}
+              aria-pressed={mode === "seller"}
               onClick={() => setMode("seller")}
             >
               Venta
@@ -667,6 +671,7 @@ export default function OperationsPage() {
           {canWarehouse ? (
             <button
               className={mode === "warehouse" ? "mode-tab active" : "mode-tab"}
+              aria-pressed={mode === "warehouse"}
               onClick={() => setMode("warehouse")}
             >
               Depósito
@@ -1022,7 +1027,7 @@ function SellerWorkspace({
           <span>{`${variants.length} de ${Math.max(catalogTotal, variants.length)} variantes visibles para esta sucursal`}</span>
         </div>
 
-        {error ? <p className="error-banner">{error}</p> : null}
+        {error ? <p className="error-banner" role="alert">{error}</p> : null}
 
         {sentSale ? (
           <section className="success-panel">
@@ -2141,8 +2146,8 @@ function CashierWorkspace({
           />
         ) : null}
 
-        {error ? <p className="error-banner">{error}</p> : null}
-        {notice ? <p className="notice-banner">{notice}</p> : null}
+        {error ? <p className="error-banner" role="alert">{error}</p> : null}
+        {notice ? <p className="notice-banner" role="status">{notice}</p> : null}
 
         {closeResult && closeResult.branchId === branchId && closeResult.expectedCash != null && closeResult.countedCash != null && closeResult.difference != null ? (
           <section className="cash-session">
@@ -2649,11 +2654,19 @@ function SaleItemsList({
               <small>Unitario {formatMoney(item.unitPrice)}</small>
             </div>
             <div className="quantity-control" aria-label={`Cantidad ${item.productName}`}>
-              <button onClick={() => onDecrease(item)} disabled={actionLoading}>
+              <button
+                onClick={() => onDecrease(item)}
+                disabled={actionLoading}
+                aria-label={`Disminuir cantidad de ${item.productName}`}
+              >
                 -
               </button>
               <span>{item.quantity}</span>
-              <button onClick={() => onIncrease(item)} disabled={actionLoading}>
+              <button
+                onClick={() => onIncrease(item)}
+                disabled={actionLoading}
+                aria-label={`Aumentar cantidad de ${item.productName}`}
+              >
                 +
               </button>
             </div>
