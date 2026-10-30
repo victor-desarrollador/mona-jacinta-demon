@@ -161,6 +161,15 @@ select:focus {
   box-shadow: 0 0 0 3px rgba(23, 107, 75, 0.14);
 }
 
+/* Keyboard focus must be visible everywhere (mouse clicks do not trigger :focus-visible). */
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
 .primary-button,
 .secondary-button,
 .send-button {

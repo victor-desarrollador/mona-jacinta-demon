@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { toPublicUserContext } from '../../src/modules/auth/user-context.dto.js';
 import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matrix.js';
+import { actsAsSupervisorAtLocation } from '../../src/modules/rbac/authorization-policy.js';
+import { PRODUCTION_PERMISSIONS } from '../../src/modules/rbac/permissions.js';
 
 function assignment(overrides: Partial<Express.ProductionAssignment> = {}): Express.ProductionAssignment {
   return { roleId: 'r1', roleCode: 'ADMIN', scopeKind: 'LOCATION', locationId: 'loc-1', permissions: [], ...overrides };
@@ -30,6 +32,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
       cashMovementLocationIds: [],
       cashSupervisorLocationIds: [],
       inventoryManageLocationIds: [],
+      saleExchangeLocationIds: [],
     });
   });
 
@@ -135,7 +138,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
     );
     expect(company.permissions).toEqual(d3Codes);
     expect(Object.keys(company).sort()).toEqual([
-      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles',
+      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
     ]);
 
     const location = toPublicUserContext(
@@ -356,7 +359,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
       expect(dto.cashMovementLocationIds).toEqual(['loc-1']);
       expect(dto.cashSupervisorLocationIds).toEqual([]);
       expect(Object.keys(dto).sort()).toEqual([
-        'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles',
+        'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
       ]);
     });
   });
@@ -370,7 +373,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
     expect(dto).not.toHaveProperty('legacyPermissions');
     expect(dto).not.toHaveProperty('effectiveLocationIds');
     expect(Object.keys(dto).sort()).toEqual([
-      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles',
+      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
     ]);
   });
 
@@ -413,5 +416,81 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
     it('INV-HINT-05 a location outside the effective universe is never fabricated', () => {
       expect(hintFor([], [assignment({ roleId: 'r-w', roleCode: 'WAREHOUSE', locationId: 'A', permissions: [IM] })])).toEqual([]);
     });
+  });
+});
+
+// Sale exchange v1 UI hint: saleExchangeLocationIds lists where the caller ACTS AS THE EXCHANGE SUPERVISOR, i.e. exactly what
+// sale-exchange.service.ts decides with actsAsSupervisorAtLocation(auth, [SALE_EXCHANGE], saleBranch). Visibility only, never authority.
+describe('saleExchangeLocationIds hint (AUTH-EX-01..)', () => {
+  const EX = PRODUCTION_PERMISSIONS.SALE_EXCHANGE;
+  const dtoFor = (effectiveLocationIds: string[], assignments: Express.ProductionAssignment[]) =>
+    toPublicUserContext({ id: 'u', name: 'U', email: 'u@test.local', branchRoles: [] }, { effectiveLocationIds, assignments });
+
+  it('AUTH-EX-01 a canonical COMPANY OWNER (zero RolePermission rows) projects every effective location', () => {
+    const dto = dtoFor(['A', 'B'], [assignment({ roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] })]);
+    expect(dto.saleExchangeLocationIds).toEqual(['A', 'B']);
+  });
+
+  it('AUTH-EX-02 a COMPANY-scoped ADMIN holding SALE_EXCHANGE projects every effective location', () => {
+    const dto = dtoFor(['A', 'B'], [assignment({ roleCode: 'ADMIN', scopeKind: 'COMPANY', locationId: null, permissions: [EX] })]);
+    expect(dto.saleExchangeLocationIds).toEqual(['A', 'B']);
+  });
+
+  it('AUTH-EX-03 a COMPANY-scoped ADMIN WITHOUT the SALE_EXCHANGE grant projects nothing (catalog not rolled out)', () => {
+    const grants = DEFAULT_ROLE_GRANTS.ADMIN.filter((code) => code !== EX);
+    const dto = dtoFor(['A', 'B'], [assignment({ roleCode: 'ADMIN', scopeKind: 'COMPANY', locationId: null, permissions: grants })]);
+    expect(dto.saleExchangeLocationIds).toEqual([]);
+  });
+
+  it('AUTH-EX-04 a LOCATION-scoped ADMIN holding the grant is a manager there, never the exchange supervisor', () => {
+    const dto = dtoFor(['A'], [assignment({ roleCode: 'ADMIN', scopeKind: 'LOCATION', locationId: 'A', permissions: [EX] })]);
+    expect(dto.saleExchangeLocationIds).toEqual([]);
+  });
+
+  it('AUTH-EX-05 CASHIER, SELLER and WAREHOUSE never project, even if a row carries the code', () => {
+    for (const roleCode of ['CASHIER', 'SELLER', 'WAREHOUSE'] as const) {
+      const dto = dtoFor(['A'], [assignment({ roleCode, scopeKind: 'LOCATION', locationId: 'A', permissions: [...DEFAULT_ROLE_GRANTS[roleCode], EX] })]);
+      expect(dto.saleExchangeLocationIds, roleCode).toEqual([]);
+    }
+  });
+
+  it('AUTH-EX-06 a malformed LOCATION-scoped OWNER never projects', () => {
+    const dto = dtoFor(['A', 'B'], [assignment({ roleCode: 'OWNER', scopeKind: 'LOCATION', locationId: 'A', permissions: [EX] })]);
+    expect(dto.saleExchangeLocationIds).toEqual([]);
+  });
+
+  it('AUTH-EX-07 only effective locations are ever listed: nothing is fabricated for an OWNER with no effective location', () => {
+    const dto = dtoFor([], [assignment({ roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] })]);
+    expect(dto.saleExchangeLocationIds).toEqual([]);
+  });
+
+  it('AUTH-EX-08 a permission held by one assignment never composes with the location of another', () => {
+    const dto = dtoFor(['A', 'B'], [
+      assignment({ roleCode: 'CASHIER', scopeKind: 'LOCATION', locationId: 'A', permissions: [EX] }),
+      assignment({ roleCode: 'SELLER', scopeKind: 'LOCATION', locationId: 'B', permissions: ['SALE_CREATE'] }),
+    ]);
+    expect(dto.saleExchangeLocationIds).toEqual([]);
+  });
+
+  it('AUTH-EX-09 parity: for every actor x location, membership equals actsAsSupervisorAtLocation (the service decision)', () => {
+    const locations = ['A', 'B', 'C'];
+    const effective = ['A', 'B'];
+    const actors: Express.ProductionAssignment[][] = [
+      [assignment({ roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] })],
+      [assignment({ roleCode: 'OWNER', scopeKind: 'LOCATION', locationId: 'A', permissions: [EX] })],
+      [assignment({ roleCode: 'ADMIN', scopeKind: 'COMPANY', locationId: null, permissions: [...DEFAULT_ROLE_GRANTS.ADMIN] })],
+      [assignment({ roleCode: 'ADMIN', scopeKind: 'COMPANY', locationId: null, permissions: ['REPORT_VIEW'] })],
+      [assignment({ roleCode: 'ADMIN', scopeKind: 'LOCATION', locationId: 'A', permissions: [...DEFAULT_ROLE_GRANTS.ADMIN] })],
+      [assignment({ roleCode: 'CASHIER', scopeKind: 'LOCATION', locationId: 'B', permissions: [...DEFAULT_ROLE_GRANTS.CASHIER] })],
+      [],
+    ];
+    for (const assignments of actors) {
+      const hint = dtoFor(effective, assignments).saleExchangeLocationIds;
+      const ctx = { effectiveLocationIds: effective, assignments } as Parameters<typeof actsAsSupervisorAtLocation>[0];
+      for (const location of locations) {
+        const expected = effective.includes(location) && actsAsSupervisorAtLocation(ctx, [EX], location);
+        expect(hint.includes(location), `${JSON.stringify(assignments)} @ ${location}`).toBe(expected);
+      }
+    }
   });
 });

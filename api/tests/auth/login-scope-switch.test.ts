@@ -138,11 +138,12 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     expect(response.body.user.assignments).toBeUndefined();
     expect(response.body.user.legacyPermissions).toBeUndefined();
     expect(response.body.user.effectiveLocationIds).toBeUndefined();
-    // The closed public contract (user-context.dto.ts PublicUserContext): the baseline six plus the three
-    // server-computed, branch-aware UI hints (cash movement, cash supervisor, inventory manage). No other key.
+    // The closed public contract (user-context.dto.ts PublicUserContext): the baseline six plus the four
+    // server-computed, branch-aware UI hints (cash movement, cash supervisor, inventory manage, sale exchange). No other key.
     expect(Object.keys(response.body.user).sort()).toEqual(
       [
         'branchIds',
+        'branches',
         'cashMovementLocationIds',
         'cashSupervisorLocationIds',
         'email',
@@ -151,10 +152,11 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
         'name',
         'permissions',
         'roles',
+        'saleExchangeLocationIds',
       ].sort(),
     );
     // The hints are plain location-id lists, never raw scopes or assignment objects.
-    for (const hint of ['cashMovementLocationIds', 'cashSupervisorLocationIds', 'inventoryManageLocationIds'] as const) {
+    for (const hint of ['cashMovementLocationIds', 'cashSupervisorLocationIds', 'inventoryManageLocationIds', 'saleExchangeLocationIds'] as const) {
       const ids: unknown = response.body.user[hint];
       expect(Array.isArray(ids)).toBe(true);
       expect((ids as unknown[]).every((id) => typeof id === 'string')).toBe(true);

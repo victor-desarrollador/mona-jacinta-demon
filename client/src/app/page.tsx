@@ -4,7 +4,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { catalogCashPrice } from "./catalog-price";
-import ProportionalChargePanel, { CodedApiError } from "./ProportionalChargePanel";
+import ProportionalChargePanel from "./ProportionalChargePanel";
+import { apiRequest, apiRequestCoded } from "../lib/api";
+import { ONE, ZERO, arsToCents, cents, centsToArsInput, formatMoney, formatSignedMoney } from "../lib/money";
+import BranchSelect from "./BranchSelect";
+import { exchangeDrafts } from "./exchange-draft-store";
 import WarehouseWorkspace from "./WarehouseWorkspace";
 import type { ProductionCheckoutAttempt } from "./checkout-quote";
 
@@ -28,6 +32,12 @@ type User = {
   // INVENTORY_MANAGE is effective. Absent on an API that predates it. The
   // endpoints stay authoritative; the client never derives it from the role.
   inventoryManageLocationIds?: string[];
+  // Display labels (id, name, code) for the selector, for the user's effective branches only. Never authority: the options come from
+  // branchIds. Absent on an API that predates it (the selector then shows the short id).
+  branches?: Array<{ id: string; name: string; code: string }>;
+  // Sale exchange v1: where the caller is the exchange supervisor (api user-context.dto.ts). A visibility hint for the future Cambios
+  // tab; POST /sales/:saleId/exchanges stays authoritative. Absent on an API that predates it.
+  saleExchangeLocationIds?: string[];
 };
 
 type Inventory = {
@@ -208,7 +218,6 @@ type CashReversalIntent = {
   idempotencyKey: string;
 };
 
-type ApiError = { message?: string; error?: { message?: string } };
 type PaymentIntent = {
   saleId: string;
   body: {
@@ -222,49 +231,7 @@ type PaymentIntent = {
   saleRef: string;
 };
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api/v1";
 const TOKEN_KEY = "mona-jacinta-token";
-const money = new Intl.NumberFormat("es-AR", {
-  style: "currency",
-  currency: "ARS",
-  maximumFractionDigits: 0,
-});
-const moneyWithCentavos = new Intl.NumberFormat("es-AR", {
-  style: "currency",
-  currency: "ARS",
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-const ZERO = BigInt(0);
-const ONE = BigInt(1);
-const ONE_HUNDRED = BigInt(100);
-
-function cents(value: string) {
-  return BigInt(value);
-}
-
-// H1: exact display of BigInt centavos. Whole pesos keep the "$ 9.500" format; an amount with
-// centavos always shows them ("$ 1.209,40"). The pesos are formatted as a BigInt (never a
-// Number, so no precision loss) and the fraction digits come from the remainder itself.
-function formatMoney(value: string) {
-  const amount = cents(value);
-  const absolute = amount < ZERO ? -amount : amount;
-  const pesos = absolute / ONE_HUNDRED;
-  const centavos = absolute % ONE_HUNDRED;
-  const text =
-    centavos === ZERO
-      ? money.format(pesos)
-      : moneyWithCentavos
-          .formatToParts(pesos)
-          .map((part) => (part.type === "fraction" ? centavos.toString().padStart(2, "0") : part.value))
-          .join("");
-  return amount < ZERO ? `-${text}` : text;
-}
-
-function formatSignedMoney(value: string) {
-  return formatMoney(value);
-}
-
 // R3-A4.2b: las herramientas de dinero y de fecha del POS, pasadas al panel
 // proporcional como valor. El panel no reimplementa ninguna.
 const MONEY_TOOLS = {
@@ -506,112 +473,6 @@ function roleLabel(role: string) {
   return labels[role] ?? role;
 }
 
-function userFacingError(message: string | undefined, fallback: string) {
-  const labels: Record<string, string> = {
-    Unauthorized: "No autorizado.",
-    Forbidden: "No tenés permiso para realizar esta acción.",
-    "Invalid credentials": "Usuario o contraseña incorrectos.",
-  };
-  return message ? (labels[message] ?? message) : fallback;
-}
-
-function arsToCents(input: string) {
-  const normalized = input.trim().replace(/\s/g, "");
-  if (!normalized) return null;
-  if (!/^[0-9.,]+$/.test(normalized)) return null;
-
-  const comma = normalized.lastIndexOf(",");
-  const dot = normalized.lastIndexOf(".");
-  const decimalIndex = comma > dot ? comma : dot;
-  const hasDecimal = decimalIndex >= 0 && normalized.length - decimalIndex - 1 <= 2;
-
-  const wholePart = hasDecimal ? normalized.slice(0, decimalIndex) : normalized;
-  const decimalPart = hasDecimal ? normalized.slice(decimalIndex + 1) : "";
-  const wholeDigits = wholePart.replace(/[.,]/g, "");
-
-  if (!/^\d+$/.test(wholeDigits) || (decimalPart && !/^\d{1,2}$/.test(decimalPart))) {
-    return null;
-  }
-
-  return (BigInt(wholeDigits) * ONE_HUNDRED + BigInt(decimalPart.padEnd(2, "0") || "0")).toString();
-}
-
-// H2: exact prefill for the amount inputs ("1209,40", "0,01"; whole pesos stay "1209"), the
-// inverse of arsToCents, so a prefilled balance is never truncated into a short payment.
-function centsToArsInput(value: string) {
-  const amount = cents(value);
-  const absolute = amount < ZERO ? -amount : amount;
-  const pesos = (absolute / ONE_HUNDRED).toString();
-  const centavos = absolute % ONE_HUNDRED;
-  const text = centavos === ZERO ? pesos : `${pesos},${centavos.toString().padStart(2, "0")}`;
-  return amount < ZERO ? `-${text}` : text;
-}
-
-async function apiRequest<T>(
-  path: string,
-  token: string | null,
-  options: RequestInit = {},
-): Promise<T> {
-  const headers = new Headers(options.headers);
-  headers.set("Content-Type", "application/json");
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
-  const body = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    const apiError = body as ApiError;
-    const fallback =
-      response.status === 401
-        ? "No autorizado."
-        : response.status === 403
-          ? "No tenés permiso para realizar esta acción."
-          : "No se pudo completar la operación.";
-    throw new Error(userFacingError(apiError.message ?? apiError.error?.message, fallback));
-  }
-
-  return body as T;
-}
-
-// R3-A4.2b: el mismo transporte, pero conservando el código y los `details`
-// que la respuesta traiga. Lo usa EXCLUSIVAMENTE el circuito proporcional: sin
-// ellos el POS no puede distinguir una cotización vencida (409
-// CHECKOUT_QUOTE_CHANGED, con el importe vigente) de un fallo de red, y
-// `apiRequest` los descarta a propósito para el resto de las operaciones.
-async function apiRequestCoded(
-  path: string,
-  token: string | null,
-  options: RequestInit = {},
-): Promise<unknown> {
-  const headers = new Headers(options.headers);
-  headers.set("Content-Type", "application/json");
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-
-  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
-  const body = await response.json().catch(() => ({}));
-
-  if (!response.ok) {
-    const failure = body as {
-      error?: { code?: string; message?: string; details?: unknown };
-      message?: string;
-    };
-    const fallback =
-      response.status === 401
-        ? "No autorizado."
-        : response.status === 403
-          ? "No tenés permiso para realizar esta acción."
-          : "No se pudo completar la operación.";
-    throw new CodedApiError(
-      userFacingError(failure.message ?? failure.error?.message, fallback),
-      response.status,
-      failure.error?.code ?? null,
-      failure.error?.details ?? null,
-    );
-  }
-
-  return body;
-}
-
 type PosMode = "seller" | "cashier" | "warehouse" | null;
 
 // D1 (Phase 1 Global Closeout): single, shared POS access policy — owns
@@ -706,13 +567,22 @@ export default function OperationsPage() {
     }
   }
 
-  function logout() {
+  function endSession() {
     window.localStorage.removeItem(TOKEN_KEY);
     setToken(null);
     setUser(null);
     setBranchId("");
     setMode(null);
     setError("");
+  }
+
+  // Logout and session expiry alike: end the session but NEVER destroy a Cambios attempt whose outcome is unknown (SENDING / UNCERTAIN).
+  // If the request committed on the server and the answer was lost, forgetting its idempotencyKey would let the operator send the same
+  // exchange again with a NEW key and, while units remain, exchange twice. The attempt stays in localStorage tied to its userId: only
+  // that user can see and retry it (same payload, same key) after logging in again. Only editable drafts are dropped.
+  function logout() {
+    exchangeDrafts.dropEditable();
+    endSession();
   }
 
   // The API answered 401 mid-operation: end the session and say why on the login screen.
@@ -764,7 +634,7 @@ export default function OperationsPage() {
                 required
               />
             </label>
-            {error ? <p className="error-banner">{error}</p> : null}
+            {error ? <p className="error-banner" role="alert">{error}</p> : null}
             <button className="primary-button" disabled={actionLoading}>
               {actionLoading ? "Ingresando..." : "Ingresar"}
             </button>
@@ -787,10 +657,13 @@ export default function OperationsPage() {
           </span>
         </div>
 
-        <div className="mode-tabs" role="tablist" aria-label="Modo de operación">
+        {/* Toggle buttons (aria-pressed), not role="tab": the tab roles would make five existing test files query the controls as "tab" instead
+            of "button", churn with no operational benefit for a three-button mode switch. */}
+        <div className="mode-tabs" role="group" aria-label="Modo de operación">
           {canCashier ? (
             <button
               className={mode === "cashier" ? "mode-tab active" : "mode-tab"}
+              aria-pressed={mode === "cashier"}
               onClick={() => setMode("cashier")}
             >
               Caja
@@ -799,6 +672,7 @@ export default function OperationsPage() {
           {canSeller ? (
             <button
               className={mode === "seller" ? "mode-tab active" : "mode-tab"}
+              aria-pressed={mode === "seller"}
               onClick={() => setMode("seller")}
             >
               Venta
@@ -807,6 +681,7 @@ export default function OperationsPage() {
           {canWarehouse ? (
             <button
               className={mode === "warehouse" ? "mode-tab active" : "mode-tab"}
+              aria-pressed={mode === "warehouse"}
               onClick={() => setMode("warehouse")}
             >
               Depósito
@@ -1143,6 +1018,7 @@ function SellerWorkspace({
           <BranchSelect
             value={branchId}
             branchIds={user.branchIds}
+            labels={user.branches}
             disabled={actionLoading}
             onChange={changeBranch}
           />
@@ -1161,7 +1037,7 @@ function SellerWorkspace({
           <span>{`${variants.length} de ${Math.max(catalogTotal, variants.length)} variantes visibles para esta sucursal`}</span>
         </div>
 
-        {error ? <p className="error-banner">{error}</p> : null}
+        {error ? <p className="error-banner" role="alert">{error}</p> : null}
 
         {sentSale ? (
           <section className="success-panel">
@@ -2225,6 +2101,7 @@ function CashierWorkspace({
           <BranchSelect
             value={branchId}
             branchIds={user.branchIds}
+            labels={user.branches}
             // R-3: like a payment, an in-flight exit or correction pins the
             // branch, so its intent can never be discarded and re-keyed.
             disabled={loading || paymentLoading || completeLoading || cashMovementLoading}
@@ -2279,8 +2156,8 @@ function CashierWorkspace({
           />
         ) : null}
 
-        {error ? <p className="error-banner">{error}</p> : null}
-        {notice ? <p className="notice-banner">{notice}</p> : null}
+        {error ? <p className="error-banner" role="alert">{error}</p> : null}
+        {notice ? <p className="notice-banner" role="status">{notice}</p> : null}
 
         {closeResult && closeResult.branchId === branchId && closeResult.expectedCash != null && closeResult.countedCash != null && closeResult.difference != null ? (
           <section className="cash-session">
@@ -2759,35 +2636,6 @@ function CashierWorkspace({
   );
 }
 
-function BranchSelect({
-  value,
-  branchIds,
-  disabled,
-  onChange,
-}: {
-  value: string;
-  branchIds: string[];
-  disabled: boolean;
-  onChange: (branchId: string) => void;
-}) {
-  return (
-    <label className="branch-select">
-      Sucursal autorizada
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        disabled={branchIds.length === 0 || disabled}
-      >
-        {branchIds.map((id) => (
-          <option key={id} value={id}>
-            {shortId(id)}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
-
 function SaleItemsList({
   items,
   actionLoading,
@@ -2816,11 +2664,19 @@ function SaleItemsList({
               <small>Unitario {formatMoney(item.unitPrice)}</small>
             </div>
             <div className="quantity-control" aria-label={`Cantidad ${item.productName}`}>
-              <button onClick={() => onDecrease(item)} disabled={actionLoading}>
+              <button
+                onClick={() => onDecrease(item)}
+                disabled={actionLoading}
+                aria-label={`Disminuir cantidad de ${item.productName}`}
+              >
                 -
               </button>
               <span>{item.quantity}</span>
-              <button onClick={() => onIncrease(item)} disabled={actionLoading}>
+              <button
+                onClick={() => onIncrease(item)}
+                disabled={actionLoading}
+                aria-label={`Aumentar cantidad de ${item.productName}`}
+              >
                 +
               </button>
             </div>

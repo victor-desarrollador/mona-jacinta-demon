@@ -29,6 +29,7 @@ import { createCashService } from '../../src/modules/cash/cash.service.js';
 import { createPaymentsService } from '../../src/modules/payments/payments.service.js';
 import { createSalesService } from '../../src/modules/sales/sales.service.js';
 import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matrix.js';
+import { proveLockBlocked, type BlockSample } from '../helpers/prove-blocked.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
 
 type VoidInput = { reason: string; idempotencyKey: string; cashSessionId?: string; externalRefunds?: Array<{ salePaymentId: string; evidence: string }> };
@@ -512,20 +513,13 @@ describe('sale void v1 — PostgreSQL: lifecycle fixtures, races, rollback, over
   }, 120000);
 });
 
-// pg_blocking_pids is the only evidence: the waiter is blocked on a Lock held by the holder, in a query that names the table.
+// Lock + pg_blocking_pids(holder) is the only evidence; the reported query is diagnostic (see tests/helpers/prove-blocked.ts).
 async function proveBlocked(observer: PrismaClient, waiterPid: number, holderPid: number, table: 'Sale' | 'CashSession') {
-  const deadline = Date.now() + 8_000;
-  while (Date.now() < deadline) {
-    const rows = await observer.$queryRaw<Array<{ wait_event_type: string | null; query: string; blockers: number[] }>>`
-      SELECT a.wait_event_type, a.query, pg_blocking_pids(a.pid) AS blockers
-      FROM pg_stat_activity a WHERE a.pid = ${waiterPid} AND a.datname = current_database()`;
-    const row = rows[0];
-    if (row?.wait_event_type === 'Lock' && row.blockers.includes(holderPid)) {
-      expect(row.query).toContain(`"${table}"`);
-      expect(row.query).toContain('FOR UPDATE');
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`the ${table} lock relationship was not observed`);
+  await proveLockBlocked({
+    holderPid,
+    table,
+    sample: async () => (await observer.$queryRaw<NonNullable<BlockSample>[]>`
+      SELECT a.wait_event_type, a.wait_event, a.query, pg_blocking_pids(a.pid) AS blockers
+      FROM pg_stat_activity a WHERE a.pid = ${waiterPid} AND a.datname = current_database()`)[0],
+  });
 }

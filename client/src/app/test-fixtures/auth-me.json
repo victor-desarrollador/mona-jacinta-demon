@@ -8,7 +8,8 @@
     ],
     "cashMovementLocationIds": ["branch-1"],
     "cashSupervisorLocationIds": ["branch-1"],
-    "inventoryManageLocationIds": ["branch-1"]
+    "inventoryManageLocationIds": ["branch-1"],
+    "saleExchangeLocationIds": ["branch-1"]
   },
   "ADMIN_COMPANY": {
     "roles": ["ADMIN"],
@@ -19,7 +20,8 @@
     ],
     "cashMovementLocationIds": ["branch-1"],
     "cashSupervisorLocationIds": ["branch-1"],
-    "inventoryManageLocationIds": ["branch-1"]
+    "inventoryManageLocationIds": ["branch-1"],
+    "saleExchangeLocationIds": ["branch-1"]
   },
   "ADMIN_LOCATION": {
     "roles": ["ADMIN"],
@@ -30,7 +32,8 @@
     ],
     "cashMovementLocationIds": ["branch-1"],
     "cashSupervisorLocationIds": [],
-    "inventoryManageLocationIds": ["branch-1"]
+    "inventoryManageLocationIds": ["branch-1"],
+    "saleExchangeLocationIds": []
   },
   "CASHIER": {
     "roles": ["CASHIER"],
@@ -40,20 +43,23 @@
     ],
     "cashMovementLocationIds": ["branch-1"],
     "cashSupervisorLocationIds": [],
-    "inventoryManageLocationIds": []
+    "inventoryManageLocationIds": [],
+    "saleExchangeLocationIds": []
   },
   "SELLER": {
     "roles": ["SELLER"],
     "permissions": ["sale.create", "sale.view", "inventory.view"],
     "cashMovementLocationIds": [],
     "cashSupervisorLocationIds": [],
-    "inventoryManageLocationIds": []
+    "inventoryManageLocationIds": [],
+    "saleExchangeLocationIds": []
   },
   "WAREHOUSE": {
     "roles": ["WAREHOUSE"],
     "permissions": ["inventory.manage"],
     "cashMovementLocationIds": [],
     "cashSupervisorLocationIds": [],
-    "inventoryManageLocationIds": ["branch-1"]
+    "inventoryManageLocationIds": ["branch-1"],
+    "saleExchangeLocationIds": []
   }
 }
