@@ -69,8 +69,8 @@ function parseRead(raw: unknown): FreshRead | null {
 }
 
 // Order of the verdicts: shape, identity, watermark (a read that is not about this sale, or that predates the exchange, says nothing else
-// worth trusting), then whether anything can be exchanged at all.
-export function validateFreshRead(raw: unknown, expected: FreshReadExpectation): FreshReadVerdict {
+// worth trusting), then whether the sale can be exchanged at all. This is the part both modes share: it never looks at the remainder.
+export function validateFreshReadIdentity(raw: unknown, expected: FreshReadExpectation): FreshReadVerdict {
   const read = parseRead(raw);
   if (!read) return { ok: false, reason: "READ_INVALID" };
   if ((expected.saleId !== null && read.sale.id.toLowerCase() !== expected.saleId.toLowerCase()) || read.sale.branchId !== expected.branchId || read.sale.saleNumber !== expected.saleNumber) {
@@ -84,8 +84,23 @@ export function validateFreshRead(raw: unknown, expected: FreshReadExpectation):
     if (stale) return { ok: false, reason: "READ_STALE" };
   }
   if (!read.exchangeable || read.sale.status !== "COMPLETED") return { ok: false, reason: "NOT_EXCHANGEABLE" };
-  if (!read.lines.some((row) => BigInt(row.remainingQuantity) > ZERO)) return { ok: false, reason: "NOTHING_LEFT_TO_EXCHANGE" };
   return { ok: true, read };
+}
+
+export const hasRemainingQuantity = (read: FreshRead) => read.lines.some((row) => BigInt(row.remainingQuantity) > ZERO);
+
+// OPEN_DRAFT          a read that defines a NEW draft: there must be something left to exchange.
+// RECONCILE_CONFIRMED a read that closes a CONFIRMED tombstone. What proves the exchange is the watermarks (every watermarked line present and
+//                     at least expectedExchangedQuantityAfter) plus identity, not the remainder: the exchange that was confirmed may well have
+//                     spent the last unit. Without at least one watermark there is no proof, so a read with nothing left is still refused.
+export type FreshReadMode = "OPEN_DRAFT" | "RECONCILE_CONFIRMED";
+
+export function validateFreshRead(raw: unknown, expected: FreshReadExpectation, mode: FreshReadMode = "OPEN_DRAFT"): FreshReadVerdict {
+  const verdict = validateFreshReadIdentity(raw, expected);
+  if (!verdict.ok) return verdict;
+  const provenByWatermark = mode === "RECONCILE_CONFIRMED" && expected.watermarks !== null && expected.watermarks.length > 0;
+  if (!provenByWatermark && !hasRemainingQuantity(verdict.read)) return { ok: false, reason: "NOTHING_LEFT_TO_EXCHANGE" };
+  return verdict;
 }
 
 // The lines of a new draft, built from the read itself: only items with something left, the baseline being what the read says is already

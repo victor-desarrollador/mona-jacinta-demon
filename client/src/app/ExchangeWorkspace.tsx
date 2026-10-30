@@ -434,7 +434,7 @@ export default function ExchangeWorkspace({
     });
 
   // After a reconciliation the store holds a fresh draft (new baseline and remainders): the table follows it, the old selection is dropped.
-  function adopt(fresh: ExchangeDraft) {
+  function adopt(fresh: { saleId: string; available: ExchangeDraft["available"] }) {
     setRead((current) =>
       current && current.sale.id.toLowerCase() === fresh.saleId.toLowerCase()
         ? {
@@ -465,7 +465,7 @@ export default function ExchangeWorkspace({
     setNote(target.saleId, null);
     try {
       const result = await exchangeDrafts.reconcileAfterFreshRead({ userId, ...target, token });
-      if (result.ok) adopt(result.draft);
+      if (result.ok) adopt(result.draft ?? result); // no draft: nothing left, the sale is closed and only the table is refreshed
       else if (result.detail && /^401\b/.test(result.detail)) onSessionExpired(); // the evidence stays: dropEditable never touches it
       else setNote(target.saleId, { tone: "error", text: refreshFailureText(result.reason) });
     } catch (cause) {

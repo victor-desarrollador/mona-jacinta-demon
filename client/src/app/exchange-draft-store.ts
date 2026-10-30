@@ -2,7 +2,7 @@
 
 import { useMemo, useSyncExternalStore } from "react";
 import { CodedApiError, apiRequestCoded } from "../lib/api";
-import { availableLinesFromFreshRead, draftLinesFromFreshRead, validateFreshRead, type AvailableLine, type FreshReadFailure, type Watermark } from "./exchange-fresh-read";
+import { availableLinesFromFreshRead, draftLinesFromFreshRead, hasRemainingQuantity, validateFreshRead, validateFreshReadIdentity, type AvailableLine, type FreshReadFailure, type Watermark } from "./exchange-fresh-read";
 import type { ExchangeLineDraft } from "./exchange-types";
 
 // Cambios de prenda — estado de módulo que sobrevive a que la pestaña se desmonte, más un registro DURABLE y compartido por todas las
@@ -137,7 +137,12 @@ export type SendOutcome =
 
 export type ReconcileFailure = FreshReadFailure | "READ_FAILED" | "STATE_CHANGED" | "NOT_BLOCKED_BY_REFRESH" | "PERSIST_FAILED";
 export type OpenFromReadResult = { ok: true; draft: ExchangeDraft } | { ok: false; reason: FreshReadFailure | "PERSIST_FAILED" };
-export type ReconcileResult = { ok: true; draft: ExchangeDraft } | { ok: false; reason: ReconcileFailure; detail?: string | null };
+// A reconciliation that finds something left yields the fresh draft. One that finds NOTHING left (the confirmed exchange spent the last
+// unit) is complete and yields no draft at all: the sale is reconciled and closed, and `available` is what the read showed, for the screen.
+export type ReconcileResult =
+  | { ok: true; draft: ExchangeDraft }
+  | { ok: true; draft: null; saleId: string; available: AvailableLine[] }
+  | { ok: false; reason: ReconcileFailure; detail?: string | null };
 
 // Codes the UI can switch on:
 //   CONCURRENCY_GUARD_UNAVAILABLE  no navigator.locks: Exchange is unavailable in this browser or context (open the system over HTTPS)
@@ -608,21 +613,29 @@ function buildExchangeDraftStore(deps: StoreDeps) {
     if (!resolveLocks()) throw guardUnavailable();
     ensureLoaded();
     const { userId, branchId, saleNumber } = input;
-    const verdict = validateFreshRead(input.read, { saleId: null, branchId, saleNumber, watermarks: null });
+    // Identity first, remainder later: a sale whose last unit a CONFIRMED exchange took shows nothing left, and that read must still find
+    // its tombstone. A read with nothing left opens a draft for nobody: only an existing CONFIRMED record may answer it, and it answers with
+    // the blocked draft, never with the read as proof (reconcileAfterFreshRead does its own GET).
+    const verdict = validateFreshReadIdentity(input.read, { saleId: null, branchId, saleNumber, watermarks: null });
     if (!verdict.ok) return verdict;
     const read = verdict.read;
     const saleId = read.sale.id;
+    const nothingLeft = !hasRemainingQuantity(read);
+    const nothingLeftFor = (draft: ExchangeDraft) => nothingLeft && draft.attempt?.status !== "CONFIRMED";
+    const NOTHING_LEFT: OpenFromReadResult = { ok: false, reason: "NOTHING_LEFT_TO_EXCHANGE" };
     const existing = drafts.get(keyOf(userId, saleId));
-    if (existing) return { ok: true, draft: existing };
+    if (existing) return nothingLeftFor(existing) ? NOTHING_LEFT : { ok: true, draft: existing };
     return exclusive(exchangeLockName(userId, saleId), (): OpenFromReadResult => {
       const again = drafts.get(keyOf(userId, saleId));
-      if (again) return { ok: true, draft: again };
+      if (again) return nothingLeftFor(again) ? NOTHING_LEFT : { ok: true, draft: again };
       const durable = readDurable(userId, saleId);
       if (durable.kind === "attempt") {
+        if (nothingLeft && durable.record.status !== "CONFIRMED") return NOTHING_LEFT;
         const draft = { ...draftFromRecord(durable.record, durable.record.status), saleNumber };
         put(draft);
         return { ok: true, draft };
       }
+      if (nothingLeft) return NOTHING_LEFT;
       const blockedBy = durable.kind === "unreadable" ? durable.reason : null;
       const mark = blockedBy ? null : readMark(userId, saleId);
       const markBlock = mark?.kind === "unreadable" ? mark.reason : null;
@@ -924,7 +937,8 @@ function buildExchangeDraftStore(deps: StoreDeps) {
     } catch (cause) {
       return { ok: false, reason: "READ_FAILED", detail: cause instanceof CodedApiError ? `${cause.status ?? ""} ${cause.code ?? ""}`.trim() : null };
     }
-    const verdict = validateFreshRead(raw, { saleId, branchId, saleNumber, watermarks });
+    // Only a CONFIRMED basis (the tombstone, or the watermarks a CONFIRMED draft still holds) may be closed by a read with nothing left.
+    const verdict = validateFreshRead(raw, { saleId, branchId, saleNumber, watermarks }, watermarks && watermarks.length > 0 ? "RECONCILE_CONFIRMED" : "OPEN_DRAFT");
     if (!verdict.ok) return verdict;
 
     return exclusive(lockName, (): ReconcileResult => {
@@ -946,6 +960,13 @@ function buildExchangeDraftStore(deps: StoreDeps) {
         if (readDurable(userId, saleId).kind !== "none") return { ok: false, reason: "STATE_CHANGED" };
       }
       if (second.draft.attempt) owned.delete(second.draft.attempt.idempotencyKey);
+      // Order matters: the read was proven (identity, watermarks, mark) and the mark raised BEFORE the tombstone went; only now is it decided
+      // whether anything is left to exchange.
+      if (!hasRemainingQuantity(verdict.read)) {
+        drafts.delete(keyOf(userId, saleId));
+        notify();
+        return { ok: true, draft: null, saleId: second.draft.saleId, available: availableLinesFromFreshRead(verdict.read) };
+      }
       const draft: ExchangeDraft = {
         userId, branchId, saleId: second.draft.saleId, saleNumber, reason: "", lines: draftLinesFromFreshRead(verdict.read), available: availableLinesFromFreshRead(verdict.read), attempt: null, recovery: null,
       };

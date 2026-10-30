@@ -102,11 +102,21 @@ describe("exchange store — a stale tab cannot start another exchange (STALE)",
     expect((record!.watermarks as Array<Record<string, string>>).find((w) => w.saleItemId === ITEM_A)).toEqual({ saleItemId: ITEM_A, exchangedQuantityBefore: "4", expectedExchangedQuantityAfter: "5" });
   });
 
-  it("STALE-06 a fresh read with nothing left to exchange enables no draft and keeps the tombstone", async () => {
+  it("STALE-06 a fresh read with nothing left that SHOWS the confirmed exchange (watermarks met) closes the tombstone: the last remainder was spent by that very exchange", async () => {
     const { storage, locks } = await confirmedWith();
     const tab = build({ storage, locks, read: () => freshRead({ quantity: { a: "4", b: "1" } }) });
     const result = await tab.store.reconcileAfterFreshRead(reconcileArgs);
-    expect(result).toEqual({ ok: false, reason: "NOTHING_LEFT_TO_EXCHANGE" });
+    expect(result).toMatchObject({ ok: true, draft: null }); // reconciled and closed: nothing left, so no draft at all
+    expect(storage.records()).toHaveLength(0);
+    expect(tab.store.getDraft(USER, SALE)).toBeNull();
+    await expect(tab.store.send(sendArgs)).rejects.toThrow();
+    expect(tab.calls).toHaveLength(0);
+  });
+
+  it("STALE-06c a fresh read with nothing left that does NOT show the confirmed exchange (watermark unmet) keeps the tombstone", async () => {
+    const { storage, locks } = await confirmedWith();
+    const tab = build({ storage, locks, read: () => freshRead({ quantity: { a: "4", b: "1" }, exchanged: { a: "4", b: "0" } }) });
+    expect(await tab.store.reconcileAfterFreshRead(reconcileArgs)).toEqual({ ok: false, reason: "READ_STALE" });
     expect(storage.records()[0]!.status).toBe("CONFIRMED");
     expect(tab.store.getDraft(USER, SALE)!.recovery).toEqual({ reason: "CONFIRMED" });
     await expect(tab.store.send(sendArgs)).rejects.toThrow(/CONFIRMED_REQUIRES_REFRESH/);

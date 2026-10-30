@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { draftLinesFromFreshRead, validateFreshRead, type Watermark } from "./exchange-fresh-read";
+import { draftLinesFromFreshRead, validateFreshRead, validateFreshReadIdentity, type Watermark } from "./exchange-fresh-read";
 import { BRANCH, ITEM_A, ITEM_B, SALE, freshRead } from "./exchange-store-test-harness";
 
 const ZERO = BigInt(0);
@@ -70,5 +70,33 @@ describe("validateFreshRead", () => {
         { saleItemId: ITEM_B, replacementVariantId: null, replacementLabel: "", returnQuantity: "", exchangedQuantityBefore: "1" },
       ]);
     }
+  });
+});
+
+describe("validateFreshRead — OPEN_DRAFT vs RECONCILE_CONFIRMED (F01)", () => {
+  const spent = () => freshRead({ quantity: { a: "4", b: "1" } });
+
+  it("F01-P1 OPEN_DRAFT requires something left; RECONCILE_CONFIRMED does not when the watermarks are met", () => {
+    expect(validateFreshRead(spent(), expected(marks("4", "1")))).toEqual({ ok: false, reason: "NOTHING_LEFT_TO_EXCHANGE" });
+    expect(validateFreshRead(spent(), expected(marks("4", "1")), "OPEN_DRAFT")).toEqual({ ok: false, reason: "NOTHING_LEFT_TO_EXCHANGE" });
+    expect(validateFreshRead(spent(), expected(marks("4", "1")), "RECONCILE_CONFIRMED").ok).toBe(true);
+  });
+
+  it("F01-P2 RECONCILE_CONFIRMED with no watermark proves nothing: zero remaining alone is NOTHING_LEFT", () => {
+    expect(validateFreshRead(spent(), expected(null), "RECONCILE_CONFIRMED")).toEqual({ ok: false, reason: "NOTHING_LEFT_TO_EXCHANGE" });
+    expect(validateFreshRead(spent(), expected([]), "RECONCILE_CONFIRMED")).toEqual({ ok: false, reason: "NOTHING_LEFT_TO_EXCHANGE" });
+  });
+
+  it("F01-P3 RECONCILE_CONFIRMED still fails on a short watermark, a missing line, identity and eligibility", () => {
+    expect(validateFreshRead(spent(), expected(marks("5", "1")), "RECONCILE_CONFIRMED")).toEqual({ ok: false, reason: "READ_STALE" });
+    expect(validateFreshRead(freshRead({ quantity: { a: "4", b: "1" }, items: [ITEM_A] }), expected(marks("4", "1")), "RECONCILE_CONFIRMED")).toEqual({ ok: false, reason: "READ_MISMATCH" });
+    expect(validateFreshRead(freshRead({ quantity: { a: "4", b: "1" }, saleNumber: "T-9" }), expected(marks("4", "1")), "RECONCILE_CONFIRMED")).toEqual({ ok: false, reason: "READ_MISMATCH" });
+    expect(validateFreshRead(freshRead({ quantity: { a: "4", b: "1" }, exchangeable: false }), expected(marks("4", "1")), "RECONCILE_CONFIRMED")).toEqual({ ok: false, reason: "NOT_EXCHANGEABLE" });
+  });
+
+  it("F01-P4 validateFreshReadIdentity checks shape, identity and eligibility but never asks for a remainder", () => {
+    expect(validateFreshReadIdentity(spent(), expected()).ok).toBe(true);
+    expect(validateFreshReadIdentity(freshRead({ exchangeable: false }), expected())).toEqual({ ok: false, reason: "NOT_EXCHANGEABLE" });
+    expect(validateFreshReadIdentity(freshRead({ saleNumber: "T-9" }), expected())).toEqual({ ok: false, reason: "READ_MISMATCH" });
   });
 });
