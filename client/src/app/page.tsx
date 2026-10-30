@@ -8,6 +8,7 @@ import ProportionalChargePanel from "./ProportionalChargePanel";
 import { apiRequest, apiRequestCoded } from "../lib/api";
 import { ONE, ZERO, arsToCents, cents, centsToArsInput, formatMoney, formatSignedMoney } from "../lib/money";
 import BranchSelect from "./BranchSelect";
+import { exchangeDrafts } from "./exchange-draft-store";
 import WarehouseWorkspace from "./WarehouseWorkspace";
 import type { ProductionCheckoutAttempt } from "./checkout-quote";
 
@@ -566,13 +567,22 @@ export default function OperationsPage() {
     }
   }
 
-  function logout() {
+  function endSession() {
     window.localStorage.removeItem(TOKEN_KEY);
     setToken(null);
     setUser(null);
     setBranchId("");
     setMode(null);
     setError("");
+  }
+
+  // Logout and session expiry alike: end the session but NEVER destroy a Cambios attempt whose outcome is unknown (SENDING / UNCERTAIN).
+  // If the request committed on the server and the answer was lost, forgetting its idempotencyKey would let the operator send the same
+  // exchange again with a NEW key and, while units remain, exchange twice. The attempt stays in localStorage tied to its userId: only
+  // that user can see and retry it (same payload, same key) after logging in again. Only editable drafts are dropped.
+  function logout() {
+    exchangeDrafts.dropEditable();
+    endSession();
   }
 
   // The API answered 401 mid-operation: end the session and say why on the login screen.
