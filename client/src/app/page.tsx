@@ -8,6 +8,7 @@ import ProportionalChargePanel from "./ProportionalChargePanel";
 import { apiRequest, apiRequestCoded } from "../lib/api";
 import { ONE, ZERO, arsToCents, cents, centsToArsInput, formatMoney, formatSignedMoney } from "../lib/money";
 import BranchSelect from "./BranchSelect";
+import ExchangeWorkspace, { exchangeAuthorizedBranchIds } from "./ExchangeWorkspace";
 import { exchangeDrafts } from "./exchange-draft-store";
 import WarehouseWorkspace from "./WarehouseWorkspace";
 import type { ProductionCheckoutAttempt } from "./checkout-quote";
@@ -473,7 +474,7 @@ function roleLabel(role: string) {
   return labels[role] ?? role;
 }
 
-type PosMode = "seller" | "cashier" | "warehouse" | null;
+type PosMode = "seller" | "cashier" | "warehouse" | "exchange" | null;
 
 // D1 (Phase 1 Global Closeout): single, shared POS access policy — owns
 // canSeller/canCashier/initialMode for BOTH the restored-session (/auth/me)
@@ -488,10 +489,12 @@ type PosMode = "seller" | "cashier" | "warehouse" | null;
 // user.inventoryManageLocationIds (INVENTORY_MANAGE effective at a location),
 // NOT by a role name: a pure WAREHOUSE starts there, OWNER/ADMIN/CASHIER/SELLER
 // keep their own default and only get the extra tab when the hint is non-empty.
-function resolvePosAccess(user: Pick<User, "roles" | "inventoryManageLocationIds">): {
+function resolvePosAccess(user: Pick<User, "roles" | "inventoryManageLocationIds" | "branchIds" | "saleExchangeLocationIds">): {
   canSeller: boolean;
   canCashier: boolean;
   canWarehouse: boolean;
+  canExchange: boolean;
+  exchangeBranchIds: string[];
   initialMode: PosMode;
 } {
   const roles = user.roles;
@@ -502,6 +505,9 @@ function resolvePosAccess(user: Pick<User, "roles" | "inventoryManageLocationIds
   const canSeller = isPrivileged || hasSeller;
   const canCashier = isPrivileged || hasCashier;
   const canWarehouse = (user.inventoryManageLocationIds ?? []).length > 0;
+  // Cambios: the branches where the caller is the exchange supervisor AND that are among its own. Never initial: it is chosen.
+  const exchangeBranchIds = exchangeAuthorizedBranchIds(user);
+  const canExchange = exchangeBranchIds.length > 0;
 
   let initialMode: PosMode;
   if (isPrivileged) initialMode = "seller";
@@ -510,7 +516,7 @@ function resolvePosAccess(user: Pick<User, "roles" | "inventoryManageLocationIds
   else if (canWarehouse) initialMode = "warehouse";
   else initialMode = null;
 
-  return { canSeller, canCashier, canWarehouse, initialMode };
+  return { canSeller, canCashier, canWarehouse, canExchange, exchangeBranchIds, initialMode };
 }
 
 export default function OperationsPage() {
@@ -644,7 +650,7 @@ export default function OperationsPage() {
     );
   }
 
-  const { canSeller, canCashier, canWarehouse } = resolvePosAccess(user);
+  const { canSeller, canCashier, canWarehouse, canExchange, exchangeBranchIds } = resolvePosAccess(user);
 
   return (
     <main className="pos-shell">
@@ -687,6 +693,15 @@ export default function OperationsPage() {
               Depósito
             </button>
           ) : null}
+          {canExchange ? (
+            <button
+              className={mode === "exchange" ? "mode-tab active" : "mode-tab"}
+              aria-pressed={mode === "exchange"}
+              onClick={() => setMode("exchange")}
+            >
+              Cambios
+            </button>
+          ) : null}
         </div>
 
         <div className="user-menu">
@@ -716,6 +731,8 @@ export default function OperationsPage() {
           branchIds={user.inventoryManageLocationIds ?? []}
           onSessionExpired={sessionExpired}
         />
+      ) : mode === "exchange" ? (
+        <ExchangeWorkspace token={token} userId={user.id} branchIds={exchangeBranchIds} labels={user.branches} onSessionExpired={sessionExpired} />
       ) : (
         <section className="empty-card">
           <h1>Sin acceso al punto de venta</h1>
