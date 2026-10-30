@@ -89,6 +89,21 @@ export function buildTestPrismaAdapter(config: PoolConfig, attributedPool: Pool 
   return new PrismaPg(config, { onPoolError, onConnectionError });
 }
 
+// Hosted TEST pools wait up to 30 s for a connection (HOSTED_TEST_CONNECTION_TIMEOUT_MS)
+// while Prisma abandons starting a transaction after its default maxWait of 2 s, and every
+// test client opens a fresh pool, so its first transaction is a cold pooler connect. 10 s
+// follows the LOCAL_TEST runtime precedent (scripts/local-test-runtime.ts). Only maxWait is
+// set: timeout and isolationLevel stay per-call, and nothing here queries the database.
+export const TEST_TRANSACTION_MAX_WAIT_MS = 10_000;
+
+export function buildTestPrismaClient(adapter: PrismaPg): PrismaClient {
+  return new PrismaClient({
+    adapter,
+    log: [],
+    transactionOptions: { maxWait: TEST_TRANSACTION_MAX_WAIT_MS },
+  });
+}
+
 // Diagnostics OFF: the adapter owns/creates its pool on connect and ends it on
 // every $disconnect() (a repeat $disconnect is a no-op). Diagnostics ON: the
 // helper owns an attributed pool with the same config (same max/SSL/timeouts)
@@ -104,10 +119,7 @@ export async function createTestPrismaClient(): Promise<PrismaClient> {
   const attributedPool = attributionAllowed ? createAttributedPool(config, diagnosticOwner) : null;
   let prisma: PrismaClient;
   try {
-    prisma = new PrismaClient({
-      adapter: buildTestPrismaAdapter(config, attributedPool),
-      log: [],
-    });
+    prisma = buildTestPrismaClient(buildTestPrismaAdapter(config, attributedPool));
   } catch (error) {
     throw fail('client-create', error);
   }

@@ -14,10 +14,15 @@ import { buildAuthorizationContext } from '../../src/modules/rbac/authorization-
 import { createSaleExchangeService } from '../../src/modules/sales/sale-exchange.service.js';
 import { createSaleVoidService } from '../../src/modules/sales/sale-void.service.js';
 import {
-  BRANCH_KEYS, FIXTURE_BRANCHES, FIXTURE_USERS, PRICE, USER_KEYS, loadSaleExchangeLocalTestFixture, removeSaleExchangeLocalTestLocations,
+  BRANCH_KEYS, FIXTURE_BRANCHES, FIXTURE_USERS, PRICE, USER_KEYS, assertDisposableLocalTest, loadSaleExchangeLocalTestFixture, removeSaleExchangeLocalTestLocations,
   type FixtureManifest, type UserKey, type VariantKey, type SaleKey,
 } from '../../scripts/sale-exchange-local-test-fixture.js';
+import { prepareLocalTestFixtureDatabase } from '../helpers/localtest-fixture-setup.js';
 import { createTestPrismaClient, truncateAllTables } from '../helpers/test-db.js';
+
+// LOCAL_TEST-only, like sale-exchange-read.pg.test.ts: on the default hosted-TEST target this suite is SKIPPED. Independently, the setup proves the
+// disposable LOCAL_TEST identity BEFORE its first write (see prepareLocalTestFixtureDatabase), so a bypassed skip still cannot truncate hosted TEST.
+const ON_LOCAL_TEST = process.env.MONA_TEST_DATABASE_TARGET === 'local';
 
 const CHECK = '23514';
 function sqlState(error: unknown): string {
@@ -28,7 +33,7 @@ function sqlState(error: unknown): string {
   return fromMessage ? fromMessage[1]! : `UNKNOWN(${e.code ?? 'no-code'})`;
 }
 
-describe('sale exchange on the synthetic multi-branch LOCAL_TEST fixture (PostgreSQL)', () => {
+describe.skipIf(!ON_LOCAL_TEST)('sale exchange on the synthetic multi-branch LOCAL_TEST fixture (PostgreSQL)', () => {
   let db: PrismaClient;
   let fx: FixtureManifest;
   const req = {} as Record<UserKey, Request>;
@@ -50,10 +55,13 @@ describe('sale exchange on the synthetic multi-branch LOCAL_TEST fixture (Postgr
 
   beforeAll(async () => {
     db = await createTestPrismaClient();
-    await truncateAllTables(db);
-    await removeSaleExchangeLocalTestLocations(db);
-    await seedDemo(db);
-    fx = await loadSaleExchangeLocalTestFixture(db);
+    fx = await prepareLocalTestFixtureDatabase(db, {
+      assertDisposableLocalTest,
+      truncateAllTables,
+      removeLocalTestLocations: removeSaleExchangeLocalTestLocations,
+      seedDemo,
+      loadFixture: loadSaleExchangeLocalTestFixture,
+    });
     // the REAL authorization context, built from the roles / scopes / grants of the seeded catalog (the same function the API middleware uses)
     for (const key of USER_KEYS) {
       const user = await db.user.findUniqueOrThrow({
