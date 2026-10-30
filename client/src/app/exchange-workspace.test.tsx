@@ -1045,6 +1045,30 @@ describe("ExchangeWorkspace UI-4 — reason, send, draft states and reconciliati
     expect(reasonInput()).toBeEnabled();
   });
 
+  it("F01-12/14 confirming the LAST remainder: Cambio confirmado, the reconcile ends well, no error, no pending CONFIRMED, no draft, no summary, no Confirmar, one POST; a new search still works", async () => {
+    stubExchangeFlow({ rows: [row(ITEM_A, "1", "0", "1", "SKU-A")] });
+    await readyToConfirm();
+    fireEvent.click(confirmButton()!);
+    await waitFor(() => expect(exchangeDrafts.getDraft("u1", SALE_ID)).toBeNull());
+    await settled();
+    expect(screen.getByText(/Cambio confirmado/).closest("[role=status]")).toHaveTextContent(/La venta ya está actualizada/);
+    expect(screen.queryByText(/no pudimos actualizar la venta/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Actualizar venta/ })).toBeNull();
+    expect(screen.queryByText("Resumen del cambio")).toBeNull();
+    expect(confirmButton()).toBeNull();
+    expect(within(rowOf(ITEM_A)).queryByRole("button", { name: /Elegir prenda/ })).toBeNull();
+    expect(within(rowOf(ITEM_A)).getByText("Agotada: sin cambio posible")).toBeInTheDocument();
+    expect(durableKeys()).toEqual([]);
+    expect(posts).toHaveLength(1);
+    // the operator can search again as usual
+    const readsBefore = exchangeableReads;
+    expect(searchButton()).toBeEnabled();
+    fireEvent.click(searchButton());
+    await waitFor(() => expect(exchangeableReads).toBe(readsBefore + 1));
+    expect(posts).toHaveLength(1);
+  });
+
   it("EW62 if the refresh fails AFTER CONFIRMED the screen still says it was confirmed, never 'failed', and never posts again", async () => {
     stubExchangeFlow({ reads: (n) => (n === 1 ? { status: 200, body: readBody([row(ITEM_A, "5", "0", "5", "SKU-A")]) } : err(500, "INTERNAL")) });
     await readyToConfirm();

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ExchangeWorkspace from "./ExchangeWorkspace";
 import { CodedApiError } from "../lib/api";
 import { createExchangeDraftStoreForTests, exchangeDrafts } from "./exchange-draft-store";
@@ -65,5 +65,26 @@ describe("ExchangeWorkspace UI-4 — restore after reload", () => {
     expect(within(box).queryByRole("button", { name: /Confirmar cambio|Verificar el cambio/ })).toBeNull();
     expect(box).toHaveTextContent(/Buscá la venta/); // a reloaded tombstone does not know the sale number: it is refreshed by looking the sale up
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("F01-10-UI after a reload, searching the sale whose last remainder the CONFIRMED exchange spent recovers the tombstone (no editable draft); 'Actualizar venta' then closes it with its own GET", async () => {
+    const body = {
+      sale: { id: SALE_C, saleNumber: "T-C", branchId: "b1", status: "COMPLETED", pricingMode: "RETAIL", priceMode: "LIST", total: "1000" },
+      exchangeable: true,
+      lines: [{ saleItemId: ITEM, variantId: "v", productName: "Buzo", variantName: "M", sku: "SKU", quantity: "1", unitPrice: "1000", exchangedQuantity: "1", remainingQuantity: "0" }],
+    };
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => body }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ExchangeWorkspace {...WHO} />);
+    fireEvent.change(screen.getByLabelText(/Número de venta/), { target: { value: "T-C" } });
+    fireEvent.click(screen.getByRole("button", { name: /Buscar venta/ }));
+    await waitFor(() => expect(document.querySelector("[data-phase]")!.getAttribute("data-phase")).toBe("SALE_LOADED"));
+    expect(fetchMock).toHaveBeenCalledTimes(1); // the search read is not the proof
+    expect(exchangeDrafts.getDraft("u1", SALE_C)!.recovery).toEqual({ reason: "CONFIRMED" });
+    expect(screen.queryByRole("button", { name: /Confirmar cambio/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Actualizar venta/ }));
+    await waitFor(() => expect(exchangeDrafts.getDraft("u1", SALE_C)).toBeNull()); // reconciled and closed: nothing left, no draft
+    expect(fetchMock).toHaveBeenCalledTimes(2); // reconcileAfterFreshRead's own GET
+    expect(screen.queryByText(/no pudimos actualizar la venta/)).toBeNull();
   });
 });
