@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import OperationsPage from "./page";
 
 const TOKEN_KEY = "mona-jacinta-token";
@@ -155,5 +155,26 @@ describe("OperationsPage POS role access (D1)", () => {
     expect(screen.queryByText("Productos y variantes")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Caja" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Venta" })).toBeInTheDocument();
+  });
+
+  // Branch selector labels: the real name and code (from /auth/me `branches`) replace the truncated UUID in BOTH workspaces, and only
+  // branchIds ever produce options.
+  it("shows the branch name and code in the Venta and Caja selectors, and only for the user's own branches", async () => {
+    const user = {
+      ...buildUser({ roles: ["CASHIER", "SELLER"], branchIds: ["branch-1"], permissions: ["sale.charge", "sale.create"] }),
+      branches: [
+        { id: "branch-1", name: "Sucursal Centro", code: "CEN" },
+        { id: "branch-9", name: "Sucursal Ajena", code: "AJE" },
+      ],
+    };
+    await renderAuthenticated(user);
+
+    const cashier = await screen.findByRole("combobox", { name: /Sucursal autorizada/ });
+    expect(Array.from((cashier as HTMLSelectElement).options).map((option) => option.textContent)).toEqual(["Sucursal Centro (CEN)"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Venta" }));
+    const seller = await screen.findByRole("combobox", { name: /Sucursal autorizada/ });
+    expect(Array.from((seller as HTMLSelectElement).options).map((option) => option.textContent)).toEqual(["Sucursal Centro (CEN)"]);
+    expect(screen.queryByText(/Sucursal Ajena/)).not.toBeInTheDocument();
   });
 });

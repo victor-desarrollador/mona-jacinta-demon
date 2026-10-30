@@ -50,7 +50,19 @@ export type PublicUserContext = {
   // cashMovementLocationIds). UI hint for the Depósito module only; GET
   // /inventory/stock and POST /inventory/adjustments enforce it server-side.
   inventoryManageLocationIds: string[];
+  // Sale exchange v1: where the caller ACTS AS THE EXCHANGE SUPERVISOR — the exact decision sale-exchange.service.ts takes with
+  // actsAsSupervisorAtLocation(auth, [SALE_EXCHANGE], saleBranch): OWNER, or a COMPANY-scoped ADMIN holding SALE_EXCHANGE. UI hint for the
+  // future Cambios tab only (visibility, never authority); POST /sales/:saleId/exchanges re-authorizes against the sale's persisted branch.
+  saleExchangeLocationIds: string[];
 };
+
+// Display label of one of the caller's effective branches (the BranchSelect text). Display only, never authority: the selector's options
+// come from `branchIds`.
+export type PublicBranchLabel = { id: string; name: string; code: string };
+
+// What /auth/me and login actually return: the pure authority projection plus the display labels. auth.service.ts is the only place that
+// builds it (the labels need the database), and its public functions are typed with this, so the contract cannot drift from the response.
+export type PublicSessionUser = PublicUserContext & { branches: PublicBranchLabel[] };
 
 type LegacyBranchRoleRow = { role: { code: string } };
 
@@ -152,5 +164,6 @@ export function toPublicUserContext(
     cashMovementLocationIds: authorizedLocationIds(context, PRODUCTION_PERMISSIONS.CASH_MOVEMENT_MANAGE),
     cashSupervisorLocationIds: supervisorLocationIds(context, [PRODUCTION_PERMISSIONS.CASH_MOVEMENT_MANAGE]),
     inventoryManageLocationIds: authorizedLocationIds(context, PRODUCTION_PERMISSIONS.INVENTORY_MANAGE),
+    saleExchangeLocationIds: supervisorLocationIds(context, [PRODUCTION_PERMISSIONS.SALE_EXCHANGE]),
   };
 }

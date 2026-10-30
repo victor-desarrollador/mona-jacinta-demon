@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { requireAnyPermission, requirePermission } from '../../middleware/authorization.js';
 import { validate } from '../../middleware/validation.js';
@@ -8,6 +8,9 @@ import { cancelSaleDto } from './dto/cancel-sale.dto.js';
 import { voidSaleDto } from './dto/void-sale.dto.js';
 import { createCancellationController } from './cancellation.controller.js';
 import { createSaleVoidController } from './sale-void.controller.js';
+import { createSaleExchangeReadService } from './sale-exchange-read.service.js';
+import { exchangeableSaleQueryDto } from './dto/exchangeable-sale-query.dto.js';
+import { sendJson } from '../../shared/json-safe.js';
 import { createSaleExchangeController } from './sale-exchange.controller.js';
 import { exchangeSaleHttpDto } from './dto/exchange-sale.dto.js';
 import type { SaleVoidService } from './sale-void.service.js';
@@ -42,6 +45,18 @@ export function createCancellationRouter(
     requirePermission(PRODUCTION_PERMISSIONS.SALE_VOID),
     validate(voidSaleDto),
     voidController.voidSale,
+  );
+  // The read the Cambios UI needs (sold / exchanged / remaining per item). Registered here, i.e. BEFORE GET /:saleId in the sales router,
+  // so `exchangeable` is never parsed as a sale id. Same two gates as the POST: the coarse SALE_EXCHANGE permission, then the supervisor
+  // decision against the requested branch inside the service. Read-only.
+  const exchangeReadService = createSaleExchangeReadService(database);
+  router.get(
+    '/exchangeable',
+    requirePermission(PRODUCTION_PERMISSIONS.SALE_EXCHANGE),
+    validate(exchangeableSaleQueryDto, 'query'),
+    (async (req, res) => {
+      sendJson(res, await exchangeReadService.findExchangeableSale(req, req.query));
+    }) as RequestHandler,
   );
   // Sale exchange v1: a COMPLETED sale -> garment swap of equal value. Same order as the void: params, the coarse SALE_EXCHANGE gate, then the
   // strict body. The definitive decision (OWNER / COMPANY-scoped ADMIN holding SALE_EXCHANGE at the sale's persisted branch) is the service's.

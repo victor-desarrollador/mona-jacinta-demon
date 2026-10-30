@@ -7,9 +7,9 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-import { toPublicUserContext } from '../../src/modules/auth/user-context.dto.js';
-import { resolveUserContext } from '../../src/modules/auth/auth.service.js';
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import { toPublicUserContext, type PublicBranchLabel, type PublicSessionUser } from '../../src/modules/auth/user-context.dto.js';
+import { login, resolveUserContext } from '../../src/modules/auth/auth.service.js';
 import { DEFAULT_ROLE_GRANTS } from '../../src/modules/rbac/role-permission-matrix.js';
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'client', 'src', 'app', 'test-fixtures', 'auth-me.json');
@@ -47,13 +47,14 @@ function projected({ roleCode, scopeKind }: Actor) {
     cashMovementLocationIds: dto.cashMovementLocationIds,
     cashSupervisorLocationIds: dto.cashSupervisorLocationIds,
     inventoryManageLocationIds: dto.inventoryManageLocationIds,
+    saleExchangeLocationIds: dto.saleExchangeLocationIds,
   };
 }
 
 describe('client /auth/me fixture = the real public projection', () => {
   it('AMF-01 every canonical actor in the client fixture equals toPublicUserContext output', () => {
     const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, {
-      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[];
+      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[]; saleExchangeLocationIds: string[];
     }>;
     expect(Object.keys(fixture).sort()).toEqual(Object.keys(ACTORS).sort());
     for (const [name, actor] of Object.entries(ACTORS)) {
@@ -70,7 +71,7 @@ describe('client /auth/me fixture = the real public projection', () => {
   // as Prisma returns them -> buildAuthorizationContext -> toPublicUserContext.
   it('AMF-03 resolveUserContext over persisted role-scope rows returns exactly the fixture for every actor', async () => {
     const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, {
-      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[];
+      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[]; saleExchangeLocationIds: string[];
     }>;
     for (const [name, { roleCode, scopeKind }] of Object.entries(ACTORS)) {
       const location = scopeKind === 'LOCATION';
@@ -92,6 +93,7 @@ describe('client /auth/me fixture = the real public projection', () => {
         cashMovementLocationIds: dto.cashMovementLocationIds,
         cashSupervisorLocationIds: dto.cashSupervisorLocationIds,
         inventoryManageLocationIds: dto.inventoryManageLocationIds,
+        saleExchangeLocationIds: dto.saleExchangeLocationIds,
       }, name).toEqual(fixture[name]);
     }
   });
@@ -120,5 +122,67 @@ describe('client /auth/me fixture = the real public projection', () => {
       expect(projected(ACTORS[name]!).inventoryManageLocationIds, name).toContain('branch-1');
     }
     for (const name of ['SELLER', 'CASHIER']) expect(projected(ACTORS[name]!).inventoryManageLocationIds, name).toEqual([]);
+  });
+
+  // Sale exchange: the hint reaches the supervisor audience only.
+  it('AMF-06 the sale exchange hint reaches OWNER and COMPANY ADMIN, and never a LOCATION ADMIN, CASHIER, SELLER or WAREHOUSE', () => {
+    for (const name of ['OWNER', 'ADMIN_COMPANY']) expect(projected(ACTORS[name]!).saleExchangeLocationIds, name).toContain('branch-1');
+    for (const name of ['ADMIN_LOCATION', 'CASHIER', 'SELLER', 'WAREHOUSE']) expect(projected(ACTORS[name]!).saleExchangeLocationIds, name).toEqual([]);
+  });
+
+  // BranchSelect labels: `branches` carries display data (id, name, code) ONLY for the caller's effective locations. It is never
+  // authority: the selector options still come from branchIds.
+  describe('branches (display labels for the selector)', () => {
+    const LOCATIONS = [
+      { id: 'branch-1', name: 'Sucursal Centro', code: 'CEN' },
+      { id: 'branch-2', name: 'Sucursal Norte', code: 'NOR' },
+      { id: 'branch-3', name: 'Sucursal Sur', code: 'SUR' },
+    ];
+    type Where = { id?: { in: string[] }; isActive?: boolean };
+    function resolveFor(roleCode: Actor['roleCode'], scopeKind: Actor['scopeKind'], locationId: string | null) {
+      const row = {
+        id: 'user-x', name: 'X', email: 'x@test.local', isActive: true, passwordHash: 'unused', branchRoles: [],
+        roleScopes: [{
+          roleId: `role-${roleCode}`, scopeKind, locationId,
+          role: { code: roleCode, permissions: (roleCode === 'OWNER' ? [] : [...DEFAULT_ROLE_GRANTS[roleCode]]).map((code) => ({ permission: { code } })) },
+        }],
+      };
+      const findMany = async ({ where }: { where?: Where } = {}) => {
+        const wanted = where?.id?.in;
+        return LOCATIONS.filter((location) => !wanted || wanted.includes(location.id));
+      };
+      const database = { user: { findUnique: async () => row }, location: { findMany } } as unknown as Parameters<typeof resolveUserContext>[0];
+      return resolveUserContext(database, row.id);
+    }
+
+    // The public contract DECLARES `branches` (no cast, no widening): what /auth/me and login return is exactly PublicSessionUser.
+    it('AMF-07a the public /auth/me and login results are typed as PublicSessionUser, which declares branches', () => {
+      expectTypeOf<Awaited<ReturnType<typeof resolveUserContext>>>().toEqualTypeOf<PublicSessionUser>();
+      expectTypeOf<Awaited<ReturnType<typeof login>>['user']>().toEqualTypeOf<PublicSessionUser>();
+      expectTypeOf<PublicSessionUser['branches']>().toEqualTypeOf<PublicBranchLabel[]>();
+      expectTypeOf<PublicBranchLabel>().toEqualTypeOf<{ id: string; name: string; code: string }>();
+      expect(true).toBe(true);
+    });
+
+    it('AMF-07 a LOCATION-scoped user gets the label of its own location only', async () => {
+      const dto = await resolveFor('CASHIER', 'LOCATION', 'branch-1');
+      expect(dto.branchIds).toEqual(['branch-1']);
+      expect(dto.branches).toEqual([{ id: 'branch-1', name: 'Sucursal Centro', code: 'CEN' }]);
+    });
+
+    it('AMF-08 a COMPANY-scoped user gets one label per effective location, in branchIds order', async () => {
+      const dto = await resolveFor('OWNER', 'COMPANY', null);
+      expect(dto.branches.map((branch) => branch.id)).toEqual(dto.branchIds);
+      expect(dto.branches).toHaveLength(3);
+    });
+
+    it('AMF-09 labels never name a location outside branchIds, and carry exactly {id, name, code}', async () => {
+      const dto = await resolveFor('SELLER', 'LOCATION', 'branch-2');
+      for (const branch of dto.branches) {
+        expect(dto.branchIds).toContain(branch.id);
+        expect(Object.keys(branch).sort()).toEqual(['code', 'id', 'name']);
+      }
+      expect(dto.branches.map((branch) => branch.id)).not.toContain('branch-1');
+    });
   });
 });
