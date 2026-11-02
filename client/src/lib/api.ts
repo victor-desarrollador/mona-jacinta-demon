@@ -4,7 +4,17 @@
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api/v1";
 
-type ApiError = { message?: string; error?: { message?: string } };
+type ApiError = { message?: string; error?: { code?: string; message?: string } };
+
+// USER-MGMT-01 U5 — answers that mean "this SESSION cannot continue as it is", whichever request raised them. They are broadcast once from the
+// transport so the page reacts in one place (page.tsx) instead of every workspace handling them. Only for requests made WITH a token.
+export const SESSION_SIGNAL_EVENT = "mona-pos:session-signal";
+export type SessionSignalCode = "PASSWORD_CHANGE_REQUIRED" | "INACTIVE_USER";
+function signalSessionState(token: string | null, code: string | undefined) {
+  if (token && (code === "PASSWORD_CHANGE_REQUIRED" || code === "INACTIVE_USER")) {
+    window.dispatchEvent(new CustomEvent<SessionSignalCode>(SESSION_SIGNAL_EVENT, { detail: code }));
+  }
+}
 
 // El error de transporte del circuito proporcional: conserva el status, el
 // código y los `details` de la respuesta, porque son lo único que permite
@@ -47,6 +57,7 @@ export async function apiRequest<T>(
 
   if (!response.ok) {
     const apiError = body as ApiError;
+    signalSessionState(token, apiError.error?.code);
     const fallback =
       response.status === 401
         ? "No autorizado."
@@ -81,6 +92,7 @@ export async function apiRequestCoded(
       error?: { code?: string; message?: string; details?: unknown };
       message?: string;
     };
+    signalSessionState(token, failure.error?.code);
     const fallback =
       response.status === 401
         ? "No autorizado."

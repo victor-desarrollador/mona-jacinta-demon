@@ -5,7 +5,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { catalogCashPrice } from "./catalog-price";
 import ProportionalChargePanel from "./ProportionalChargePanel";
-import { apiRequest, apiRequestCoded } from "../lib/api";
+import { SESSION_SIGNAL_EVENT, apiRequest, apiRequestCoded, type SessionSignalCode } from "../lib/api";
+import ForcedPasswordChange from "./ForcedPasswordChange";
 import { ONE, ZERO, arsToCents, cents, centsToArsInput, formatMoney, formatSignedMoney } from "../lib/money";
 import BranchSelect from "./BranchSelect";
 import ExchangeWorkspace, { exchangeAuthorizedBranchIds } from "./ExchangeWorkspace";
@@ -39,6 +40,9 @@ type User = {
   // Sale exchange v1: where the caller is the exchange supervisor (api user-context.dto.ts). A visibility hint for the future Cambios
   // tab; POST /sales/:saleId/exchanges stays authoritative. Absent on an API that predates it.
   saleExchangeLocationIds?: string[];
+  // USER-MGMT-01 U1: the account must change its password before it can use anything else (the API enforces it with 403
+  // PASSWORD_CHANGE_REQUIRED). Absent on an API that predates it. U5: the POS shows only the forced-change screen while it is true.
+  mustChangePassword?: boolean;
 };
 
 type Inventory = {
@@ -530,6 +534,26 @@ export default function OperationsPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // USER-MGMT-01 U5: the session-state answers of ANY request (see lib/api.ts), handled once here. PASSWORD_CHANGE_REQUIRED only flips the flag (the forced
+  // screen takes over and makes no further data request: no loop); INACTIVE_USER ends the session and says why. The ref keeps the listener on the
+  // latest closures without re-subscribing.
+  const sessionSignalRef = useRef<(code: SessionSignalCode) => void>(() => undefined);
+  useEffect(() => {
+    sessionSignalRef.current = (code) => {
+      if (code === "INACTIVE_USER") {
+        logout();
+        setError("Tu usuario fue desactivado. Consultá con un administrador.");
+      } else {
+        setUser((current) => (current && !current.mustChangePassword ? { ...current, mustChangePassword: true } : current));
+      }
+    };
+  });
+  useEffect(() => {
+    const onSignal = (event: Event) => sessionSignalRef.current((event as CustomEvent<SessionSignalCode>).detail);
+    window.addEventListener(SESSION_SIGNAL_EVENT, onSignal);
+    return () => window.removeEventListener(SESSION_SIGNAL_EVENT, onSignal);
+  }, []);
+
   useEffect(() => {
     const savedToken = window.localStorage.getItem(TOKEN_KEY);
     if (!savedToken) {
@@ -571,6 +595,16 @@ export default function OperationsPage() {
     } finally {
       setActionLoading(false);
     }
+  }
+
+  // The password was changed: the NEW token replaces the old one (storage first), and /auth/me with it is the source of truth for the context.
+  async function adoptNewToken(accessToken: string) {
+    window.localStorage.setItem(TOKEN_KEY, accessToken);
+    setToken(accessToken);
+    const { user: fresh } = await apiRequest<{ user: User }>("/auth/me", accessToken);
+    setUser(fresh);
+    setBranchId(fresh.branchIds[0] ?? "");
+    setMode(resolvePosAccess(fresh).initialMode);
   }
 
   function endSession() {
@@ -648,6 +682,11 @@ export default function OperationsPage() {
         </section>
       </main>
     );
+  }
+
+  // USER-MGMT-01 U5: a pending password change blocks the whole POS (the API refuses every other route too).
+  if (user.mustChangePassword) {
+    return <ForcedPasswordChange token={token} onChanged={adoptNewToken} onLogout={logout} />;
   }
 
   const { canSeller, canCashier, canWarehouse, canExchange, exchangeBranchIds } = resolvePosAccess(user);
