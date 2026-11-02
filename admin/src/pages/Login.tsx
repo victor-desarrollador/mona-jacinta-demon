@@ -3,7 +3,7 @@ import { Navigate, useLocation } from 'react-router';
 import { useAuth } from '../hooks/useAuth';
 
 export function Login() {
-  const { user, loading, login } = useAuth();
+  const { user, loading, login, sessionMessage } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -60,6 +60,7 @@ export function Login() {
               required
             />
           </label>
+          {sessionMessage && !error ? <p className="error-banner" role="alert">{sessionMessage}</p> : null}
           {error ? <p className="error-banner">{error}</p> : null}
           <button type="submit" className="primary-button" disabled={submitting}>
             {submitting ? 'Ingresando...' : 'Ingresar'}

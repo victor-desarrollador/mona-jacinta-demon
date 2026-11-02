@@ -694,3 +694,16 @@ a.secondary-button {
     grid-template-columns: 1fr;
   }
 }
+
+/* USER-MGMT-01 U5: users administration dialogs */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(20, 28, 24, 0.45); display: grid; place-items: center; padding: 16px; z-index: 50; }
+.modal-card { background: var(--surface, #fff); color: inherit; border-radius: 12px; padding: 24px; width: min(520px, 100%); max-height: 90vh; overflow: auto; display: grid; gap: 12px; }
+.modal-card:focus { outline: none; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.stack-form { display: grid; gap: 12px; }
+.stack-form label { display: grid; gap: 4px; }
+.stack-form fieldset { border: 1px solid var(--line, #d8dfda); border-radius: 8px; padding: 8px 12px; }
+.check-row { display: flex !important; align-items: center; gap: 8px; }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.plain-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.temporary-password { font-size: 1.25rem; letter-spacing: 0.04em; user-select: all; }

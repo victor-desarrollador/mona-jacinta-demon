@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { ForcedPasswordChange } from './components/ForcedPasswordChange';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { useAuth } from './hooks/useAuth';
@@ -30,6 +31,8 @@ function ProtectedLayout() {
   }
 
   if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
+  // USER-MGMT-01 U5: a pending password change blocks everything else (the backend refuses it too: 403 PASSWORD_CHANGE_REQUIRED)
+  if (user.mustChangePassword) return <ForcedPasswordChange />;
   if (!canUseBackoffice(user)) {
     return (
       <main className="screen-center">

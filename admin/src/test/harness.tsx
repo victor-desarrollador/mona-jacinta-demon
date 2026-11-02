@@ -18,6 +18,8 @@ export const adminUser: UserContext = {
   cashSupervisorLocationIds: [BRANCH_ID],
 };
 
+export const ownerUser: UserContext = { ...adminUser, id: 'u-owner', name: 'Dueña Piloto', email: 'propietario01@pilot.local', roles: ['OWNER'] };
+
 type Reply = { status?: number; body?: unknown } | Promise<{ status?: number; body?: unknown }>;
 type Handler = (request: { url: URL; init: RequestInit }) => Reply;
 

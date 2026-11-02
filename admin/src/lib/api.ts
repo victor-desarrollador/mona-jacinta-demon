@@ -8,6 +8,8 @@ export type UserContext = {
   // UI hint projected by /auth/me: locations where the caller acts as supervisor
   // (OWNER or COMPANY ADMIN). Visibility only — the backend re-checks every write.
   cashSupervisorLocationIds?: string[];
+  // USER-MGMT-01 U1: a pending password change (the API answers 403 PASSWORD_CHANGE_REQUIRED elsewhere). Absent on an API that predates it.
+  mustChangePassword?: boolean;
 };
 
 export type Branch = {
@@ -177,6 +179,8 @@ export type BackofficeUser = {
   name: string;
   email: string;
   isActive: boolean;
+  // USER-MGMT-01 U5: a pending password change (read-only; the API never exposes the hash or the credentials epoch).
+  mustChangePassword: boolean;
   // GET /backoffice/users contract: one entry per role scope; `location` is null for COMPANY scope.
   assignments: Array<{ roleCode: string; scopeKind: 'COMPANY' | 'LOCATION'; location: Branch | null }>;
 };
@@ -239,6 +243,33 @@ export type InitialStockResult = {
   movement: { id: string; type: string; quantityDelta: string };
 };
 
+// USER-MGMT-01 U5 — responses of the identity lifecycle. The temporary password exists ONLY in these response bodies: the UI shows it once and keeps
+// it nowhere else (no storage, no URL, no log).
+export type IdentityOperationResult = {
+  replayed: boolean;
+  user: { id: string; name?: string };
+  temporaryPassword?: string | null;
+  message?: string;
+};
+export type CreateUserBody = {
+  name: string;
+  email: string;
+  roleCode: string;
+  scopeKind: 'COMPANY' | 'LOCATION';
+  locationIds?: string[];
+  idempotencyKey: string;
+};
+// POST /backoffice/users/:id/scope: an atomic REPLACE of ONE role's scope for the account (LOCATION needs locationIds; COMPANY must not carry them).
+export type AssignScopeBody =
+  | { roleCode: string; scopeKind: 'COMPANY' }
+  | { roleCode: string; scopeKind: 'LOCATION'; locationIds: string[] };
+export type ChangePasswordBody = { currentPassword: string; newPassword: string };
+
+// Codes that mean "this session cannot continue as it is" whichever request raised them. They are broadcast (see request()) so the auth layer reacts
+// once, in one place, instead of every screen handling them.
+export const SESSION_SIGNAL_EVENT = 'mona-admin:session-signal';
+export type SessionSignalCode = 'PASSWORD_CHANGE_REQUIRED' | 'INACTIVE_USER';
+
 export class ApiError extends Error {
   status: number;
   code?: string;
@@ -270,6 +301,15 @@ const allowedBackoffice = [
   /^\/backoffice\/branches$/,
   /^\/backoffice\/users$/,
 ];
+// USER-MGMT-01 U5: the identity lifecycle. Explicit method + path pairs; the backend decides every one of them.
+const allowedUserAdmin: Array<[string, RegExp]> = [
+  ['POST', /^\/backoffice\/users$/],
+  ['PATCH', new RegExp(`^/backoffice/users/${UUID}$`)],
+  ['POST', new RegExp(`^/backoffice/users/${UUID}/(?:deactivate|reactivate|reset-password)$`)],
+  // U5.1: role / scope management on the existing scope endpoints
+  ['POST', new RegExp(`^/backoffice/users/${UUID}/scope$`)],
+  ['DELETE', new RegExp(`^/backoffice/users/${UUID}/scope/(?:OWNER|ADMIN|CASHIER|SELLER|WAREHOUSE)$`)],
+];
 // D3 admin catalogue / initial stock. Explicit method + path pairs only;
 // the backend remains the authority for every one of them.
 const allowedCatalogue: Array<[string, RegExp]> = [
@@ -295,11 +335,13 @@ const allowedExternalCollections: Array<[string, RegExp]> = [
 function assertAllowed(method: string, path: string) {
   const authAllowed =
     (method === 'POST' && path === '/auth/login') ||
+    (method === 'POST' && path === '/auth/change-password') ||
     (method === 'GET' && path === '/auth/me');
   const backofficeAllowed = method === 'GET' && allowedBackoffice.some((rule) => rule.test(path));
   const catalogueAllowed = allowedCatalogue.some(([allowedMethod, rule]) => allowedMethod === method && rule.test(path));
   const externalCollectionsAllowed = allowedExternalCollections.some(([allowedMethod, rule]) => allowedMethod === method && rule.test(path));
-  if (!authAllowed && !backofficeAllowed && !catalogueAllowed && !externalCollectionsAllowed) {
+  const userAdminAllowed = allowedUserAdmin.some(([allowedMethod, rule]) => allowedMethod === method && rule.test(path));
+  if (!authAllowed && !backofficeAllowed && !catalogueAllowed && !externalCollectionsAllowed && !userAdminAllowed) {
     throw new Error(`Endpoint no permitido: ${method} ${path}`);
   }
 }
@@ -335,10 +377,15 @@ async function request<T>(
         : response.status === 403
           ? 'No tenés permiso para realizar esta acción.'
           : 'Error de API.';
+    const code = candidate.error?.code;
+    // A request made WITH a session that the API refuses because of the session's state: tell the auth layer (it flips a flag or ends the session).
+    if (options.token && (code === 'PASSWORD_CHANGE_REQUIRED' || code === 'INACTIVE_USER')) {
+      window.dispatchEvent(new CustomEvent<SessionSignalCode>(SESSION_SIGNAL_EVENT, { detail: code }));
+    }
     throw new ApiError(
       response.status,
       userFacingError(candidate.message ?? candidate.error?.message, fallback),
-      candidate.error?.code,
+      code,
     );
   }
   return body as T;
@@ -405,6 +452,22 @@ export const api = {
     request<{ config: PricingConfig }>('/pricing/config', { token, onUnauthorized }),
   updatePricingConfig: (token: string, body: Partial<Record<Exclude<PriceMode, 'CASH'>, number>>, onUnauthorized: () => void) =>
     send<{ config: PricingConfig }>('PATCH', '/pricing/config', token, body, onUnauthorized),
+  createUser: (token: string, body: CreateUserBody, onUnauthorized: () => void) =>
+    send<IdentityOperationResult>('POST', '/backoffice/users', token, body, onUnauthorized),
+  updateUser: (token: string, id: string, body: { name?: string; email?: string }, onUnauthorized: () => void) =>
+    send<{ user: { id: string } }>('PATCH', `/backoffice/users/${id}`, token, body, onUnauthorized),
+  deactivateUser: (token: string, id: string, idempotencyKey: string, onUnauthorized: () => void) =>
+    send<IdentityOperationResult>('POST', `/backoffice/users/${id}/deactivate`, token, { idempotencyKey }, onUnauthorized),
+  reactivateUser: (token: string, id: string, idempotencyKey: string, onUnauthorized: () => void) =>
+    send<IdentityOperationResult>('POST', `/backoffice/users/${id}/reactivate`, token, { idempotencyKey }, onUnauthorized),
+  resetUserPassword: (token: string, id: string, idempotencyKey: string, onUnauthorized: () => void) =>
+    send<IdentityOperationResult>('POST', `/backoffice/users/${id}/reset-password`, token, { idempotencyKey }, onUnauthorized),
+  assignScope: (token: string, id: string, body: AssignScopeBody, onUnauthorized: () => void) =>
+    send<{ userId: string; roleCode: string; scopeKind: string }>('POST', `/backoffice/users/${id}/scope`, token, body, onUnauthorized),
+  revokeScope: (token: string, id: string, roleCode: string, onUnauthorized: () => void) =>
+    request<{ userId: string; roleCode: string; revoked: boolean }>(`/backoffice/users/${id}/scope/${roleCode}`, { method: 'DELETE', token, onUnauthorized }),
+  changePassword: (token: string, body: ChangePasswordBody, onUnauthorized: () => void) =>
+    send<{ accessToken: string; user: UserContext }>('POST', '/auth/change-password', token, body, onUnauthorized),
   loadInitialStock: (token: string, body: InitialStockBody, onUnauthorized: () => void) =>
     send<InitialStockResult>('POST', '/inventory/initial-stock', token, body, onUnauthorized),
   externalCollections: (token: string, params: URLSearchParams, onUnauthorized: () => void) => {
