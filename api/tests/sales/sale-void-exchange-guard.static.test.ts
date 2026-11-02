@@ -14,9 +14,9 @@ let code = '';
 beforeAll(() => { code = stripComments(readFileSync(new URL(`../../prisma/migrations/${NAME}/migration.sql`, import.meta.url), 'utf8')); });
 
 describe('sale void exchange guard — G19 migration (static)', () => {
-  it('GD01 sorts right after the G18 exchange schema (only the G20 post-sale guard follows it)', () => {
+  it('GD01 sorts right after the G18 exchange schema (only the G20 post-sale guard, the G21 credentials epoch and the G22 admin lifecycle follow it)', () => {
     const names = readdirSync(new URL('../../prisma/migrations/', import.meta.url)).filter((entry) => /^\d{14}_/.test(entry)).sort();
-    expect(names.slice(-3)).toEqual(['20261026130000_sale_exchange_schema', NAME, '20261026150000_sale_post_sale_guard']);
+    expect(names.slice(-5)).toEqual(['20261026130000_sale_exchange_schema', NAME, '20261026150000_sale_post_sale_guard', '20261101120000_user_credentials_epoch', '20261101130000_user_admin_lifecycle']);
   });
 
   it('GD02 is additive: no table, column, constraint, type or row is created, altered, dropped or written', () => {

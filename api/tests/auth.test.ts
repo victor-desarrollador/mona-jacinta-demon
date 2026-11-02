@@ -16,6 +16,9 @@ const testDatabase = {
     findUnique: async () => ({
       id: 'test-user',
       isActive: true,
+      // USER-MGMT-01 U1 (G21): the columns the middleware now selects (a real row always carries them).
+      mustChangePassword: false,
+      credentialsChangedAt: null,
       branchRoles: [],
       // Phase 1C: middleware/auth.ts now resolves branchIds via
       // resolveEffectiveBranchIds, fed by this same findUnique's `roleScopes`

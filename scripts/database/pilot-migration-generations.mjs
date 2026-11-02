@@ -1,4 +1,4 @@
-// Migration GENERATIONS after the G14 cut-over (sale void v1, then sale exchange v1). A separate module on
+// Migration GENERATIONS after the G14 cut-over (sale void v1, then sale exchange v1, then the user credentials epoch, then the user admin lifecycle). A separate module on
 // purpose: pilot-migration-states.mjs, the G11 -> G14 cut-over state machine pinned by the OWNER-reviewed tool
 // manifests, stays untouched, so every cut-over tool keeps its exact G14 target and code identity. This
 // module only EXTENDS the G14 pins with the sale void and sale exchange migrations and classifies the generations.
@@ -13,7 +13,12 @@
 //                                          the void guard (never a target)
 //   EXACT_G19 = G18 + sale_void_exchange_guard   a sale with exchanges cannot be voided (G19 tools still target it, literally)
 //   EXACT_G20 = G19 + sale_post_sale_guard       the snapshot-independent claim table that closes the mixed-isolation race of the
-//                                          void / exchange exclusion (audit H3): the LATEST generation
+//                                          void / exchange exclusion (audit H3): the previous LATEST, still a valid historical
+//                                          generation (the PILOT database sits at G20 until G21 is rolled out)
+//   EXACT_G21 = G20 + user_credentials_epoch     USER-MGMT-01 U1: User.mustChangePassword + User.credentialsChangedAt (two additive
+//                                          columns, nothing else): the previous LATEST, still a valid historical generation
+//   EXACT_G22 = G21 + user_admin_lifecycle       USER-MGMT-01 U2: the lower(email) unique index and the UserAdminOperation table
+//                                          (idempotency of the administrative identity operations): the LATEST generation
 //
 // The enum labels ship in their own migration because a label added by ALTER TYPE ... ADD VALUE cannot be used in
 // the transaction that adds it. The SHA-256 is that of migration.sql, like every other pin (it is also what
@@ -27,6 +32,8 @@ export const POST_G14_MIGRATION_PINS = Object.freeze([
   Object.freeze({ name: '20261026130000_sale_exchange_schema', bytes: 17418, sha256: '1817b905585257ad916f2f0cefe271f89d5c7a2455e1383f17546a8389ead796' }),
   Object.freeze({ name: '20261026140000_sale_void_exchange_guard', bytes: 4050, sha256: '65a56d7bf9206d0424447ae8b88dfb0b6342a3a0e2303a0ab774c0a92545344f' }),
   Object.freeze({ name: '20261026150000_sale_post_sale_guard', bytes: 5396, sha256: '5924bb722676048489dd930bc1c90a36a8dda193ae77dc0368562989667deef5' }),
+  Object.freeze({ name: '20261101120000_user_credentials_epoch', bytes: 881, sha256: '4f8e10245e858e062de7f377771a670f2dedb3f68b1bf56ebbf80c55b958138f' }),
+  Object.freeze({ name: '20261101130000_user_admin_lifecycle', bytes: 2644, sha256: 'a418a7dbd845d6e97866915d090a98ed1bc67ed19b87720ef70400c67f23f28f' }),
 ]);
 export const GENERATION_MIGRATION_PINS = Object.freeze([...MIGRATION_PINS, ...POST_G14_MIGRATION_PINS]);
 
@@ -39,11 +46,13 @@ export const GENERATIONS = Object.freeze({
   EXACT_G17: Object.freeze(NAMES.slice(0, 17)),
   EXACT_G18: Object.freeze(NAMES.slice(0, 18)),
   EXACT_G19: Object.freeze(NAMES.slice(0, 19)),
-  EXACT_G20: Object.freeze(NAMES.slice()),
+  EXACT_G20: Object.freeze(NAMES.slice(0, 20)),
+  EXACT_G21: Object.freeze(NAMES.slice(0, 21)),
+  EXACT_G22: Object.freeze(NAMES.slice()),
 });
 
 export const CUTOVER_TARGET_GENERATION = 'EXACT_G14';
-export const LATEST_GENERATION = 'EXACT_G20';
+export const LATEST_GENERATION = 'EXACT_G22';
 export const INTERMEDIATE_GENERATIONS = Object.freeze(['EXACT_G15', 'EXACT_G17', 'EXACT_G18', 'EXACT_G19']);
 
 // The pins of one generation, in order (a fresh frozen array each call is unnecessary: they are frozen already).
@@ -53,7 +62,7 @@ export function pinsOf(generation) {
 }
 
 // Classifies ledger rows (the LEDGER_SQL shape of pilot-migration-states.mjs) into EXACT_G14, EXACT_G15 or
-// EXACT_G16 .. EXACT_G20, or refuses (fail-closed): a gap (a schema migration without its enum one), an unknown
+// EXACT_G16 .. EXACT_G22, or refuses (fail-closed): a gap (a schema migration without its enum one), an unknown
 // migration, a checksum drift, a duplicate, a rolled-back or unfinished attempt, any malformed row, or any
 // older prefix. Never throws on rows; the reason never contains a row value. Same row rules as classifyLedger.
 export function classifyGenerationLedger(rows) {
@@ -76,7 +85,7 @@ export function classifyGenerationLedger(rows) {
   for (const [state, names] of Object.entries(GENERATIONS)) {
     if (names.length === seen.size && names.every((name) => seen.has(name))) return { ok: true, state };
   }
-  return refuse('the ledger is not an exact G14 .. G20 ledger');
+  return refuse('the ledger is not an exact G14 .. G22 ledger');
 }
 
 // The ledger must be exactly the ONE generation the caller names; another valid generation is a refusal.

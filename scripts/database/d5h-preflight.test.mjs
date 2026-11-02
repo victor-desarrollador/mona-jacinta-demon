@@ -117,12 +117,22 @@ const SALE_POST_SALE_GUARD_TREE_ENTRY = Object.freeze({
   bytes: 5396,
   sha256: '5924bb722676048489dd930bc1c90a36a8dda193ae77dc0368562989667deef5',
 });
+const USER_CREDENTIALS_EPOCH_TREE_ENTRY = Object.freeze({
+  name: '20261101120000_user_credentials_epoch',
+  bytes: 881,
+  sha256: '4f8e10245e858e062de7f377771a670f2dedb3f68b1bf56ebbf80c55b958138f',
+});
+const USER_ADMIN_LIFECYCLE_TREE_ENTRY = Object.freeze({
+  name: '20261101130000_user_admin_lifecycle',
+  bytes: 2644,
+  sha256: 'a418a7dbd845d6e97866915d090a98ed1bc67ed19b87720ef70400c67f23f28f',
+});
 const REVIEWED_TREE_ENTRIES = Object.freeze([
   CASH1_TREE_ENTRY, ...R3_TREE_ENTRIES, CASH_MOVEMENT_TREE_ENTRY, CASH_REVERSAL_TREE_ENTRY, CARD_CREDIT_TREE_ENTRY, WAREHOUSE_TREE_ENTRY, QR_TREE_ENTRY,
   SALE_VOID_ENUM_TREE_ENTRY, SALE_VOID_SCHEMA_TREE_ENTRY, SALE_EXCHANGE_ENUM_TREE_ENTRY, SALE_EXCHANGE_SCHEMA_TREE_ENTRY, SALE_VOID_EXCHANGE_GUARD_TREE_ENTRY,
-  SALE_POST_SALE_GUARD_TREE_ENTRY,
+  SALE_POST_SALE_GUARD_TREE_ENTRY, USER_CREDENTIALS_EPOCH_TREE_ENTRY, USER_ADMIN_LIFECYCLE_TREE_ENTRY,
 ]);
-const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11, the card-credit migration 12, the warehouse migration 13, the QR migration 14, the two sale void migrations 15 and 16 and the three sale exchange migrations 17, 18 and 19 and the post-sale claim migration 20';
+const REVIEWED_TREE_MESSAGE = 'the migrations directory holds exactly the six D5H pins, CASH-1, the two R3 migrations, the cash-exit migration 10, the cash-reversal migration 11, the card-credit migration 12, the warehouse migration 13, the QR migration 14, the two sale void migrations 15 and 16 and the three sale exchange migrations 17, 18 and 19 and the post-sale claim migration 20 and the user credentials epoch migration 21 and the user admin lifecycle migration 22';
 const REVIEWED_TREE_NAMES = Object.freeze([...EXPECTED_PINS.map(([name]) => name), ...REVIEWED_TREE_ENTRIES.map((e) => e.name)]);
 const NAMES = EXPECTED_PINS.map(([name]) => name);
 const row = (i, patch = {}) => ({ migration_name: EXPECTED_PINS[i][0], checksum: EXPECTED_PINS[i][1], finished: true, rolled_back: false, ...patch });
@@ -150,7 +160,7 @@ function assertReviewedMigrationTree(root, list = readdirSync, read = readFileSy
   }
 }
 
-test('D5H v1 keeps six independent pins and verifies the reviewed twenty-directory tree (no drift)', () => {
+test('D5H v1 keeps six independent pins and verifies the reviewed twenty-two-directory tree (no drift)', () => {
   assert.equal(D5H_MIGRATIONS.length, 6);
   assert.deepEqual(D5H_MIGRATIONS.map((m) => [m.name, m.sha256]), EXPECTED_PINS);
   const root = fileURLToPath(new URL('../../api/prisma/migrations/', import.meta.url));

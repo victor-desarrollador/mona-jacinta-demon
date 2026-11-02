@@ -221,20 +221,6 @@
   {
     "type": "dependency",
     "from": "api/src/modules/backoffice/scope-assignment.service.ts",
-    "to": "api/src/modules/rbac/authorization-policy.ts",
-    "unresolvedTo": "../rbac/authorization-policy.js",
-    "dependencyTypes": [
-      "local",
-      "import"
-    ],
-    "rule": {
-      "severity": "warn",
-      "name": "modules-via-public-index"
-    }
-  },
-  {
-    "type": "dependency",
-    "from": "api/src/modules/backoffice/scope-assignment.service.ts",
     "to": "api/src/modules/rbac/roles.ts",
     "unresolvedTo": "../rbac/roles.js",
     "dependencyTypes": [

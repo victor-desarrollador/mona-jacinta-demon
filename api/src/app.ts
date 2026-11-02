@@ -29,8 +29,14 @@ import { createReservationAdminRouter } from './modules/sales/cancellation.route
 import { createAuditRouter } from './modules/audit/audit.routes.js';
 import { createBackofficeRouter } from './modules/backoffice/backoffice.routes.js';
 import { createNoopRealtimeEmitter, type RealtimeEmitter } from './realtime/socket.js';
+import { createNoopSessionRevoker, type SessionRevoker } from './realtime/session-revoker.js';
 
-export function createApp(database: PrismaClient = defaultPrisma, realtime: RealtimeEmitter = createNoopRealtimeEmitter()) {
+// `sessionRevoker` (U4) is how the identity mutations drop a user's live sockets after their commit; the default is a no-op (tests, scripts).
+export function createApp(
+  database: PrismaClient = defaultPrisma,
+  realtime: RealtimeEmitter = createNoopRealtimeEmitter(),
+  sessionRevoker: SessionRevoker = createNoopSessionRevoker(),
+) {
   const app = express();
   app.disable('x-powered-by');
   app.use(helmet());
@@ -53,7 +59,7 @@ export function createApp(database: PrismaClient = defaultPrisma, realtime: Real
   app.get('/health', (_req, res) => {
     sendJson(res, { status: 'ok' });
   });
-  app.use('/api/v1/auth', createAuthRouter(database));
+  app.use('/api/v1/auth', createAuthRouter(database, sessionRevoker));
   // Every future API route is private by default; login remains public above.
   app.use('/api/v1', createRequireAuth(database));
   app.use('/api/v1/products', createProductsRouter(database));
@@ -75,7 +81,7 @@ export function createApp(database: PrismaClient = defaultPrisma, realtime: Real
   // (refund + branch listing). The service decides scope and location.
   app.use('/api/v1/external-collections', createExternalCollectionsRouter(database));
   app.use('/api/v1/cash', createCashRouter(database));
-  app.use('/api/v1/backoffice', createBackofficeRouter(database));
+  app.use('/api/v1/backoffice', createBackofficeRouter(database, sessionRevoker));
   app.use('/api/v1/admin', createReservationAdminRouter(database, realtime));
   app.use('/api/v1/audit', createAuditRouter(database));
   app.use((_req, _res, next) => {

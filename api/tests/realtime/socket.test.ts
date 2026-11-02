@@ -32,6 +32,8 @@ function userWithBranches(branchIds: string[], scopeBranchIds: string[] = branch
   return {
     id: userId,
     isActive: true,
+    mustChangePassword: false, // the real row always carries the U1 columns (G21)
+    credentialsChangedAt: null,
     branchRoles: branchIds.map((branchId) => ({
       branchId,
       role: { code: 'CASHIER', permissions: [{ permission: { code: 'sale.view' } }] },
@@ -109,7 +111,8 @@ describe('Socket.IO realtime', () => {
     database.user.findUnique.mockResolvedValue(userWithBranches([]));
     await connected(client);
     const serverSocket = realtime.io.sockets.sockets.get(client.id!);
-    expect([...serverSocket?.rooms ?? []]).toEqual([client.id]);
+    // U4: every socket is also in its own `user:<id>` room; it holds NO branch room
+    expect([...serverSocket?.rooms ?? []].sort()).toEqual([client.id, `user:${userId}`].sort());
   });
 
   it('deriva las branch rooms desde UserRoleScope, no desde UserBranchRole legado', async () => {
@@ -129,7 +132,8 @@ describe('Socket.IO realtime', () => {
     const client = connectClient(token);
     await connected(client);
     const serverSocket = realtime.io.sockets.sockets.get(client.id!);
-    expect([...serverSocket?.rooms ?? []]).toEqual([client.id]);
+    // U4: every socket is also in its own `user:<id>` room; it holds NO branch room
+    expect([...serverSocket?.rooms ?? []].sort()).toEqual([client.id, `user:${userId}`].sort());
   });
 
   it('expone socket.data.assignments con la forma de asignación, nunca aplanada (Phase 1D.1)', async () => {
@@ -153,6 +157,8 @@ describe('Socket.IO realtime', () => {
     database.user.findUnique.mockResolvedValue({
       id: userId,
       isActive: true,
+      mustChangePassword: false, // the real row always carries the U1 columns (G21)
+      credentialsChangedAt: null,
       branchRoles: [],
       roleScopes: [
         {
@@ -179,6 +185,8 @@ describe('Socket.IO realtime', () => {
     database.user.findUnique.mockResolvedValue({
       id: userId,
       isActive: true,
+      mustChangePassword: false, // the real row always carries the U1 columns (G21)
+      credentialsChangedAt: null,
       branchRoles: [],
       roleScopes: [
         {

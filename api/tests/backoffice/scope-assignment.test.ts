@@ -117,15 +117,23 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
     const branch = await createBranch(db);
     const admin = await createTestUser(db, (await findRole('ADMIN')).id, branch.id);
     const owner = await createOwnerUser('owner-target-1@test.local');
+    // USER-MGMT-01 U3 (deliberate change): granting the ADMIN role is now refused on its own (only an OWNER grants ADMIN/OWNER), BEFORE the target is
+    // looked at, so the OWNER-target rule is exercised with an operational role — which any ADMIN may otherwise grant.
     await expect(
       service.assign(adminCtx(admin.id), owner.id, { roleCode: 'ADMIN', scopeKind: 'COMPANY' }),
+    ).rejects.toThrow(/Sólo OWNER puede asignar el rol ADMIN/);
+    await expect(
+      service.assign(adminCtx(admin.id), owner.id, { roleCode: 'CASHIER', scopeKind: 'LOCATION', locationIds: [branch.id] }),
     ).rejects.toThrow(/Sólo OWNER puede modificar el alcance de otro OWNER/);
   });
 
   it('rejects an ADMIN caller revoking ANY role from a user who currently holds OWNER', async () => {
     const admin = await createTestUser(db, (await findRole('ADMIN')).id, (await createBranch(db)).id);
     const owner = await createOwnerUser('owner-target-2@test.local');
-    await expect(service.revoke(adminCtx(admin.id), owner.id, 'OWNER')).rejects.toThrow(
+    // USER-MGMT-01 U3 (deliberate change): revoking the OWNER role is refused on its own (only an OWNER revokes ADMIN/OWNER); an operational role on an
+    // OWNER target still hits the target rule.
+    await expect(service.revoke(adminCtx(admin.id), owner.id, 'OWNER')).rejects.toThrow(/Sólo OWNER puede revocar el rol OWNER/);
+    await expect(service.revoke(adminCtx(admin.id), owner.id, 'CASHIER')).rejects.toThrow(
       /Sólo OWNER puede modificar el alcance de otro OWNER/,
     );
   });
@@ -198,10 +206,11 @@ describe('scope-assignment.service (Phase 1D.4.3)', () => {
   it('rejects scopeKind LOCATION for roleCode ADMIN', async () => {
     const branch = await createBranch(db);
     await ensureTestLocation(db, branch.id);
-    const admin = await createTestUser(db, (await findRole('ADMIN')).id, branch.id);
+    // USER-MGMT-01 U3 (deliberate change): an ADMIN caller can no longer grant ADMIN at all, so the role/scope compatibility rule is exercised by an OWNER.
+    const owner = await createOwnerUser('owner-compat-admin-location@test.local');
     const target = await createTestUser(db, (await findRole('CASHIER')).id, branch.id);
     await expect(
-      service.assign(adminCtx(admin.id), target.id, {
+      service.assign(ownerCtx(owner.id, (await findRole('OWNER')).id), target.id, {
         roleCode: 'ADMIN',
         scopeKind: 'LOCATION',
         locationIds: [branch.id],

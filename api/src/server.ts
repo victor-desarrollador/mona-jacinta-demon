@@ -1,8 +1,9 @@
-import { createServer } from 'node:http';
+import { createServer, type RequestListener, type Server as HttpServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 import { createApp } from './app.js';
 import { env, type Env } from './config/env.js';
 import { prisma } from './config/prisma.js';
+import type { PrismaClient } from './generated/prisma/client.js';
 import { logger } from './shared/logger.js';
 import { createRealtime, REALTIME_EVENTS } from './realtime/socket.js';
 import { createCancellationService } from './modules/sales/cancellation.service.js';
@@ -92,12 +93,36 @@ export function startupFailureEntry(error: unknown): Record<string, unknown> {
   return { event: 'startup_failed' };
 }
 
+// U4.1 — the ONE place the HTTP server, Express and Socket.IO are put together.
+//
+// ORDER MATTERS. Engine.IO's attach() snapshots the 'request' listeners that exist AT THAT MOMENT, removes them, and installs a single dispatcher: a
+// request under /socket.io/ goes to Engine.IO ONLY, every other request is replayed to the snapshotted listeners. A listener added AFTER attach() is
+// not in the snapshot: it is a sibling that receives EVERY request, /socket.io/ polling included, so Express answered (404) requests Engine.IO was
+// already answering — ERR_HTTP_HEADERS_SENT, and a 404 racing the long-poll. Hence the request listener is installed BEFORE Socket.IO attaches. Express
+// itself needs the emitter and the session revoker that Socket.IO creates, so the listener installed first is a thin late-bound delegate to the app.
+// (WebSocket upgrades never use the 'request' event: Engine.IO's own 'upgrade' listener serves /socket.io/ and closes foreign upgrades.)
+export function assembleServer(
+  database: PrismaClient,
+  makeApp: typeof createApp = createApp,
+): { server: HttpServer; realtime: ReturnType<typeof createRealtime> } {
+  const late: { app?: RequestListener } = {};
+  const server = createServer((req, res) => {
+    if (late.app) {
+      late.app(req, res);
+      return;
+    }
+    res.statusCode = 503; // only reachable if a request arrives between createServer and the line below: both run synchronously in one tick
+    res.end();
+  });
+  const realtime = createRealtime(server, database);
+  late.app = makeApp(database, realtime.emitter, realtime.sessionRevoker);
+  return { server, realtime };
+}
+
 async function main(): Promise<void> {
-  const server = createServer();
-  const realtime = createRealtime(server, prisma);
+  const { server, realtime } = assembleServer(prisma);
   io = realtime.io;
   emitter = realtime.emitter;
-  server.on('request', createApp(prisma, realtime.emitter));
   server.once('error', () => {
     logger.error({ event: 'server_error' });
     void shutdown(1);

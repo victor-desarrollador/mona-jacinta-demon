@@ -36,6 +36,11 @@ const RELATIONS_ADDED_G16 = Object.freeze(['SaleVoid', 'SaleVoidExternalRefund']
 const RELATIONS_ADDED_G19 = Object.freeze(['SaleExchange', 'SaleExchangeLine']);
 // G1-20 (post-sale guard): migration 20 adds exactly this protected relation.
 const RELATIONS_ADDED_G20 = Object.freeze(['SalePostSaleGuard']);
+// G1-21 (user credentials epoch, USER-MGMT-01 U1): migration 21 adds two COLUMNS to User and NO relation, so the protected relation set of G1-21
+// is the one of G1-20 (the 37).
+// G1-22 (user admin lifecycle, USER-MGMT-01 U2): migration 22 adds exactly this protected relation (the idempotency record of the administrative
+// identity operations; the lower(email) unique index is an index, not a relation).
+const RELATIONS_ADDED_G22 = Object.freeze(['UserAdminOperation']);
 const rawCompare = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b));
 // The 32 protected relations of G1-11 .. G1-14 (raw-byte order). Frozen as reviewed: the generations G1-11..G1-14 keep recognising
 // the archives of exactly that schema.
@@ -46,15 +51,17 @@ export const PROTECTED_RELATION_NAMES_G16 = Object.freeze([...RELATIONS_G7, ...R
 // The 36 protected relations of G1-19 (raw-byte order). Frozen as reviewed: the generation G1-19 keeps recognising the archives of exactly that
 // schema (sale exchange v1 + the void guard, before the post-sale claim).
 export const PROTECTED_RELATION_NAMES_G19 = Object.freeze([...RELATIONS_G7, ...RELATIONS_ADDED_G11, ...RELATIONS_ADDED_G16, ...RELATIONS_ADDED_G19].sort(rawCompare));
-// The CURRENT 37 protected relations (raw-byte order), mirrored from api/scripts/local-test-fingerprint.ts PROTECTED_RELATIONS; a vitest
+// The 37 protected relations of G1-20 AND G1-21 (raw-byte order). Frozen as reviewed: those generations keep recognising the archives of exactly that schema.
+export const PROTECTED_RELATION_NAMES_G20 = Object.freeze([...RELATIONS_G7, ...RELATIONS_ADDED_G11, ...RELATIONS_ADDED_G16, ...RELATIONS_ADDED_G19, ...RELATIONS_ADDED_G20].sort(rawCompare));
+// The CURRENT 38 protected relations (raw-byte order; G1-22), mirrored from api/scripts/local-test-fingerprint.ts PROTECTED_RELATIONS; a vitest
 // test (protected-capability-static.test.ts, drift guard) pins the two lists against each other so they cannot drift.
-export const PROTECTED_RELATION_NAMES = Object.freeze([...RELATIONS_G7, ...RELATIONS_ADDED_G11, ...RELATIONS_ADDED_G16, ...RELATIONS_ADDED_G19, ...RELATIONS_ADDED_G20].sort(rawCompare));
+export const PROTECTED_RELATION_NAMES = Object.freeze([...RELATIONS_G7, ...RELATIONS_ADDED_G11, ...RELATIONS_ADDED_G16, ...RELATIONS_ADDED_G19, ...RELATIONS_ADDED_G20, ...RELATIONS_ADDED_G22].sort(rawCompare));
 
 // Historical backup verification contract: an EXPLICIT, versioned list of the schema generations whose backups
 // `local-test-backup.mjs --verify` still recognises. A generation is the exact ordered (name, sha256) migration set a manifest
 // binds, paired with the exact protected relation set that schema archived. Nothing here is derived from an archive, a
 // manifest or the migrations directory; an unlisted migration set (unknown, future, partial, reordered, altered) has no
-// generation and is refused. G1-20 is the current contract; adding a migration requires a new reviewed generation here (a test
+// generation and is refused. G1-22 is the current contract; adding a migration requires a new reviewed generation here (a test
 // pins the generations to the reviewed migration payloads). Backup creation and the resume always use the current contract only.
 const pairs = (list) => Object.freeze(list.map((pair) => Object.freeze([...pair])));
 const RELATIONS_G5 = Object.freeze(RELATIONS_G7.filter((name) => name !== 'CompanyPricingConfig'));
@@ -154,15 +161,32 @@ const GENERATION_G19 = Object.freeze({
   ]),
   relations: PROTECTED_RELATION_NAMES_G19,
 });
-// G1-20 (sale exchange v1 + the post-sale claim) is the CURRENT contract: the G1-19 migrations plus sale_post_sale_guard and the 37 protected relations.
+// G1-20 (sale exchange v1 + the post-sale claim) is the PREVIOUS contract, still recognised (the PILOT schema until G21 is rolled out): the G1-19 migrations
+// plus sale_post_sale_guard and the 37 protected relations. A backup taken at G20 keeps verifying.
 const GENERATION_G20 = Object.freeze({
   id: 'G1-20',
   migrations: pairs([...GENERATION_G19.migrations,
     ['20261026150000_sale_post_sale_guard', '5924bb722676048489dd930bc1c90a36a8dda193ae77dc0368562989667deef5'],
   ]),
+  relations: PROTECTED_RELATION_NAMES_G20,
+});
+// G1-21 (user credentials epoch) is the PREVIOUS contract, still recognised: the G1-20 migrations plus user_credentials_epoch (two User columns) and the SAME 37 protected relations.
+const GENERATION_G21 = Object.freeze({
+  id: 'G1-21',
+  migrations: pairs([...GENERATION_G20.migrations,
+    ['20261101120000_user_credentials_epoch', '4f8e10245e858e062de7f377771a670f2dedb3f68b1bf56ebbf80c55b958138f'],
+  ]),
+  relations: PROTECTED_RELATION_NAMES_G20,
+});
+// G1-22 (user admin lifecycle) is the CURRENT contract: the G1-21 migrations plus user_admin_lifecycle and the 38 protected relations (UserAdminOperation added).
+const GENERATION_G22 = Object.freeze({
+  id: 'G1-22',
+  migrations: pairs([...GENERATION_G21.migrations,
+    ['20261101130000_user_admin_lifecycle', 'a418a7dbd845d6e97866915d090a98ed1bc67ed19b87720ef70400c67f23f28f'],
+  ]),
   relations: PROTECTED_RELATION_NAMES,
 });
-export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([...GENERATIONS_UP_TO_G16, GENERATION_G19, GENERATION_G20]);
+export const BACKUP_SCHEMA_GENERATIONS = Object.freeze([...GENERATIONS_UP_TO_G16, GENERATION_G19, GENERATION_G20, GENERATION_G21, GENERATION_G22]);
 const sameList = (a, b) => Array.isArray(a) && a.length === b.length && a.every((x, i) => x === b[i]);
 // The generation whose migration set EXACTLY equals `migrations` ([name, sha256] pairs, order included), or null.
 export function resolveBackupGeneration(migrations) {

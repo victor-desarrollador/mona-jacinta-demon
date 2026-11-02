@@ -30,8 +30,8 @@ export const DIGEST_SCHEME = 'MONA/V233/STATE-DIGEST/SD1';
 export const PROTECTED_SEARCH_PATH = 'pg_catalog, pg_temp';
 export const DEFAULT_MAX_RELATION_BYTES = 64 * 1024 * 1024; // UNPINNED parameter: pin from real LOCAL_TEST sizes (design SCOPE risk)
 
-// GENERATED from the R3-A4.3 mechanical derivation of the twenty migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
-// by digest in tests/local-test-fingerprint.test.ts AC-150b): 351 columns of the 37 protected relations (36 Prisma models plus
+// GENERATED from the R3-A4.3 mechanical derivation of the twenty-two migration files in the reviewed tree (prisma/migrations, pinned name-by-name and
+// by digest in tests/local-test-fingerprint.test.ts AC-150b): 360 columns of the 38 protected relations (36 Prisma models plus
 // the Prisma-internal _prisma_migrations), by (relation, attnum). Pinned against schema.prisma and the migration set by
 // tests/local-test-fingerprint.test.ts. G16 (sale void v1) added SaleVoid and SaleVoidExternalRefund, CashMovement.refundOfSalePaymentId
 // and StockMovement.saleVoidId (appended: ADD COLUMN takes the next attnum), the SALE_REFUND and SALE_VOID enum labels and the
@@ -39,6 +39,8 @@ export const DEFAULT_MAX_RELATION_BYTES = 64 * 1024 * 1024; // UNPINNED paramete
 // G19 (sale exchange v1) added SaleExchange and SaleExchangeLine, StockMovement.saleExchangeId / saleExchangeLineId (attnums 13, 14), the
 // SALE_EXCHANGE_IN and SALE_EXCHANGE_OUT labels and the functions fn_sale_exchange_* (five), fn_sale_void_exchange_guard and fn_sale_exchange_void_guard (the second side of the exclusion, listed from G20 on).
 // G20 (sale post-sale guard) added SalePostSaleGuard (the central VOID / EXCHANGE claim, written only by the trigger function fn_sale_post_sale_claim).
+// G21 (user credentials epoch, USER-MGMT-01 U1) added User.mustChangePassword and User.credentialsChangedAt (appended: attnums 8 and 9); no relation, enum or function.
+// G22 (user admin lifecycle, USER-MGMT-01 U2) added UserAdminOperation (the idempotency record of the administrative identity operations) and the lower(email) unique index (not a column).
 // Row: relation, attnum, column, field type, live format_type, notNull, hasDefault, enum type, primary-key position.
 type ContractRow = readonly [string, number, string, FieldType, string, 0 | 1, 0 | 1, string | null, number];
 const CONTRACT_ROWS: readonly ContractRow[] = [
@@ -376,6 +378,15 @@ const CONTRACT_ROWS: readonly ContractRow[] = [
   ["User", 5, "isActive", "bool", "boolean", 1, 1, null, 0],
   ["User", 6, "createdAt", "tstz", "timestamp(3) with time zone", 1, 1, null, 0],
   ["User", 7, "updatedAt", "tstz", "timestamp(3) with time zone", 1, 0, null, 0],
+  ["User", 8, "mustChangePassword", "bool", "boolean", 1, 1, null, 0],
+  ["User", 9, "credentialsChangedAt", "tstz", "timestamp(3) with time zone", 0, 0, null, 0],
+  ["UserAdminOperation", 1, "id", "text", "text", 1, 0, null, 1],
+  ["UserAdminOperation", 2, "actorId", "text", "text", 1, 0, null, 0],
+  ["UserAdminOperation", 3, "targetUserId", "text", "text", 1, 0, null, 0],
+  ["UserAdminOperation", 4, "operation", "text", "text", 1, 0, null, 0],
+  ["UserAdminOperation", 5, "idempotencyKey", "text", "text", 1, 0, null, 0],
+  ["UserAdminOperation", 6, "requestHash", "text", "text", 1, 0, null, 0],
+  ["UserAdminOperation", 7, "createdAt", "tstz", "timestamp(3) with time zone", 1, 1, null, 0],
   ["UserBranchRole", 1, "id", "text", "text", 1, 0, null, 1],
   ["UserBranchRole", 2, "userId", "text", "text", 1, 0, null, 0],
   ["UserBranchRole", 3, "branchId", "text", "text", 1, 0, null, 0],

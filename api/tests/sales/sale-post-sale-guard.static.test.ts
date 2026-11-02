@@ -11,9 +11,9 @@ const schema = readFileSync(new URL('../../prisma/schema.prisma', import.meta.ur
 const at = (needle: string) => code.indexOf(needle);
 
 describe('G20 sale_post_sale_guard — migration content', () => {
-  it('PG01 is the LAST migration, after the G19 guard, and its bytes are pinned', () => {
+  it('PG01 follows the G19 guard, is followed only by the G21 credentials epoch and the G22 admin lifecycle, and its bytes are pinned', () => {
     const names = readdirSync(new URL('../../prisma/migrations/', import.meta.url)).filter((entry) => /^\d{14}_/.test(entry)).sort();
-    expect(names.slice(-2)).toEqual(['20261026140000_sale_void_exchange_guard', NAME]);
+    expect(names.slice(-4)).toEqual(['20261026140000_sale_void_exchange_guard', NAME, '20261101120000_user_credentials_epoch', '20261101130000_user_admin_lifecycle']);
     expect(createHash('sha256').update(sql).digest('hex')).toBe('5924bb722676048489dd930bc1c90a36a8dda193ae77dc0368562989667deef5');
   });
 

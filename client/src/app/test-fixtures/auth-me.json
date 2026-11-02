@@ -9,7 +9,8 @@
     "cashMovementLocationIds": ["branch-1"],
     "cashSupervisorLocationIds": ["branch-1"],
     "inventoryManageLocationIds": ["branch-1"],
-    "saleExchangeLocationIds": ["branch-1"]
+    "saleExchangeLocationIds": ["branch-1"],
+    "mustChangePassword": false
   },
   "ADMIN_COMPANY": {
     "roles": ["ADMIN"],
@@ -21,7 +22,8 @@
     "cashMovementLocationIds": ["branch-1"],
     "cashSupervisorLocationIds": ["branch-1"],
     "inventoryManageLocationIds": ["branch-1"],
-    "saleExchangeLocationIds": ["branch-1"]
+    "saleExchangeLocationIds": ["branch-1"],
+    "mustChangePassword": false
   },
   "ADMIN_LOCATION": {
     "roles": ["ADMIN"],
@@ -33,7 +35,8 @@
     "cashMovementLocationIds": ["branch-1"],
     "cashSupervisorLocationIds": [],
     "inventoryManageLocationIds": ["branch-1"],
-    "saleExchangeLocationIds": []
+    "saleExchangeLocationIds": [],
+    "mustChangePassword": false
   },
   "CASHIER": {
     "roles": ["CASHIER"],
@@ -44,7 +47,8 @@
     "cashMovementLocationIds": ["branch-1"],
     "cashSupervisorLocationIds": [],
     "inventoryManageLocationIds": [],
-    "saleExchangeLocationIds": []
+    "saleExchangeLocationIds": [],
+    "mustChangePassword": false
   },
   "SELLER": {
     "roles": ["SELLER"],
@@ -52,7 +56,8 @@
     "cashMovementLocationIds": [],
     "cashSupervisorLocationIds": [],
     "inventoryManageLocationIds": [],
-    "saleExchangeLocationIds": []
+    "saleExchangeLocationIds": [],
+    "mustChangePassword": false
   },
   "WAREHOUSE": {
     "roles": ["WAREHOUSE"],
@@ -60,6 +65,7 @@
     "cashMovementLocationIds": [],
     "cashSupervisorLocationIds": [],
     "inventoryManageLocationIds": ["branch-1"],
-    "saleExchangeLocationIds": []
+    "saleExchangeLocationIds": [],
+    "mustChangePassword": false
   }
 }

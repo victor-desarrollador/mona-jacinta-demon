@@ -230,6 +230,13 @@ model User {
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now()) @db.Timestamptz(3)
   updatedAt    DateTime @updatedAt @db.Timestamptz(3)
+  // USER-MGMT-01 U1 (G21). mustChangePassword: the account may only read /auth/me and change its password until it does.
+  // credentialsChangedAt: the credentials EPOCH (NULL = never changed) that the access token's `cc` claim must equal.
+  mustChangePassword   Boolean   @default(false)
+  credentialsChangedAt DateTime? @db.Timestamptz(3)
+  // USER-MGMT-01 U2 (G22): the administrative operations this user performed / that targeted this user (history, never deleted with it).
+  adminOperationsAsActor  UserAdminOperation[] @relation("UserAdminOperationActor")
+  adminOperationsAsTarget UserAdminOperation[] @relation("UserAdminOperationTarget")
 
   branchRoles        UserBranchRole[]
   roleScopes         UserRoleScope[]
@@ -1234,4 +1241,23 @@ model CheckoutAttemptDeclaration {
   declaredBy         User                  @relation(fields: [declaredById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "CheckoutAttemptDeclaration_declaredById_fkey")
 
   @@unique([attemptId, method], map: "CheckoutAttemptDeclaration_attempt_method_key")
+}
+
+// USER-MGMT-01 U2 (G22). One row per administrative identity operation (CREATE_USER, RESET_PASSWORD, DEACTIVATE_USER, REACTIVATE_USER): it binds
+// (actorId, idempotencyKey) to the canonical hash of the request, so a retry is a replay and never a second effect. It never stores a password,
+// a password hash or a token (the temporary password is shown once and only its bcrypt hash lives on User). operation / requestHash /
+// idempotencyKey are CHECKed in SQL (the migration), not by a Prisma enum.
+model UserAdminOperation {
+  id             String   @id @default(uuid())
+  actorId        String
+  targetUserId   String
+  operation      String
+  idempotencyKey String
+  requestHash    String
+  createdAt      DateTime @default(now()) @db.Timestamptz(3)
+  actor          User     @relation("UserAdminOperationActor", fields: [actorId], references: [id], onDelete: Restrict)
+  target         User     @relation("UserAdminOperationTarget", fields: [targetUserId], references: [id], onDelete: Restrict)
+
+  @@unique([actorId, idempotencyKey])
+  @@index([targetUserId, createdAt])
 }

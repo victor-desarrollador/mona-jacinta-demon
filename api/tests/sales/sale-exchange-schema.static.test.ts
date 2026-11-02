@@ -96,9 +96,9 @@ describe('sale exchange v1 — N-1 safety of schema.prisma', () => {
 });
 
 describe('sale exchange v1 — G17 migration (enum only)', () => {
-  it('MG01 the two migrations follow the sale void pair, in this order, and only the G19 void guard and the G20 post-sale guard come after them', () => {
+  it('MG01 the two migrations follow the sale void pair, in this order, and only the G19 void guard, the G20 post-sale guard, the G21 credentials epoch and the G22 admin lifecycle come after them', () => {
     const names = readdirSync(new URL('../../prisma/migrations/', import.meta.url)).filter((entry) => /^\d{14}_/.test(entry)).sort();
-    expect(names.slice(-6)).toEqual(['20261024120000_sale_void_enum', '20261024130000_sale_void_schema', ENUM, SCHEMA, '20261026140000_sale_void_exchange_guard', '20261026150000_sale_post_sale_guard']);
+    expect(names.slice(-8)).toEqual(['20261024120000_sale_void_enum', '20261024130000_sale_void_schema', ENUM, SCHEMA, '20261026140000_sale_void_exchange_guard', '20261026150000_sale_post_sale_guard', '20261101120000_user_credentials_epoch', '20261101130000_user_admin_lifecycle']);
   });
 
   it('MG02 contains ONLY the two ADD VALUE statements (a new label cannot be used in the transaction that adds it)', () => {

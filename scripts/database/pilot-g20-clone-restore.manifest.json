@@ -13,7 +13,7 @@
     },
     {
       "path": "scripts/database/pilot-migration-generations.mjs",
-      "sha256": "663dfe2fa01c69e561c7696edf5f4d4fad06eeafec2361bff4f4a12bafaaabb2"
+      "sha256": "27f302ab8c1e9fa8cf818e2272105d20524c8f1dd7ee18d4b861e8bc98165f6f"
     },
     {
       "path": "scripts/database/pilot-g20-schema-references.mjs",

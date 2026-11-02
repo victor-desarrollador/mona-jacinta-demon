@@ -372,6 +372,8 @@ export function createBackofficeService(database: BackofficeDatabase) {
         name: true,
         email: true,
         isActive: true,
+        // USER-MGMT-01 U5: whether a password change is pending (read-only; never the hash, the credentials epoch or any token claim)
+        mustChangePassword: true,
         roleScopes: {
           select: {
             scopeKind: true,
@@ -390,6 +392,7 @@ export function createBackofficeService(database: BackofficeDatabase) {
         name: user.name,
         email: user.email,
         isActive: user.isActive,
+        mustChangePassword: user.mustChangePassword,
         assignments: user.roleScopes.map((scope) => ({
           roleCode: scope.role.code,
           scopeKind: scope.scopeKind,

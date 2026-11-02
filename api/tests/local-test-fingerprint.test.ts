@@ -156,15 +156,15 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(new Set(variants).size).toBe(variants.length);
   });
 
-  it('AC-150 TYPE_CONTRACT_V3 is the 351-column / 37-relation / 3-jsonb / 18-enum contract and equals an independent derivation from schema.prisma', () => {
-    expect(TYPE_CONTRACT_V3).toHaveLength(351);
-    expect(PROTECTED_RELATIONS).toHaveLength(37);
+  it('AC-150 TYPE_CONTRACT_V3 is the 360-column / 38-relation / 3-jsonb / 18-enum contract and equals an independent derivation from schema.prisma', () => {
+    expect(TYPE_CONTRACT_V3).toHaveLength(360);
+    expect(PROTECTED_RELATIONS).toHaveLength(38);
     expect(TYPE_CONTRACT_V3.filter((c) => c.type === 'jsonb')).toHaveLength(3);
     expect(ENUM_TYPES).toHaveLength(18);
     expect(PROTECTED_FUNCTION_NAMES).toHaveLength(19); // 17 + fn_sale_exchange_void_guard (G19, listed from G20 on) + fn_sale_post_sale_claim (G20)
     const counts: Record<string, number> = {};
     for (const c of TYPE_CONTRACT_V3) counts[c.type] = (counts[c.type] ?? 0) + 1;
-    expect(counts).toEqual({ text: 200, int4: 21, int8: 52, bool: 6, tstz: 36, enum: 33, jsonb: 3 });
+    expect(counts).toEqual({ text: 206, int4: 21, int8: 52, bool: 7, tstz: 38, enum: 33, jsonb: 3 }); // G21: +1 bool (mustChangePassword), +1 tstz (credentialsChangedAt); G22: UserAdminOperation = +6 text, +1 tstz
     // relations sorted by raw bytes, attnums contiguous from 1, exactly one PK column set per relation
     expect([...PROTECTED_RELATIONS].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)))).toEqual([...PROTECTED_RELATIONS]);
     for (const r of PROTECTED_RELATIONS) {
@@ -195,7 +195,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
         checked += 1;
       }
     }
-    expect(checked).toBe(351 - 8); // every contract column except the 8 Prisma-internal _prisma_migrations columns is a schema.prisma field
+    expect(checked).toBe(360 - 8); // every contract column except the 8 Prisma-internal _prisma_migrations columns is a schema.prisma field
   });
 
   it('AC-150b the migrations the contract was derived from are pinned: a new/changed migration must update the contract and its review', () => {
@@ -216,12 +216,20 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
       '20261026120000_sale_exchange_enum', '20261026130000_sale_exchange_schema', '20261026140000_sale_void_exchange_guard',
       // G20 (the post-sale claim): SalePostSaleGuard
       '20261026150000_sale_post_sale_guard',
+      // G21 (the user credentials epoch): User.mustChangePassword and User.credentialsChangedAt (no relation, enum or function)
+      '20261101120000_user_credentials_epoch',
+      // G22 (the user admin lifecycle): UserAdminOperation and the lower(email) unique index (no enum or function)
+      '20261101130000_user_admin_lifecycle',
     ]);
     const digestOf = (list: string[]) => sha(list.map((n) => `${n}:${sha(readFileSync(path.join(dir, n, 'migration.sql')))}`).join('\n'));
     // history is not rewritten: the first fourteen directories still hash to the digest the G14 contract was derived from ...
     expect(digestOf(names.slice(0, 14))).toBe('a7c98a3f160c2fa54118c7cddb61230ad5f003186cf23c8975a2ba188adde63e');
+    // ... the first twenty (the contract before the credentials epoch) hash to the digest the 351-column contract was derived from ...
+    expect(digestOf(names.slice(0, 20))).toBe('49a0290bf68f6a7e23f27ddf19cd2b74475edcfe2d85621f8d9e766de83c7f3b');
+    // ... the first twenty-one (the 353-column contract of the credentials epoch) hash to the digest it was derived from ...
+    expect(digestOf(names.slice(0, 21))).toBe('af38a5a6e8f3202a0080fcd731f0824a49bc659a1efd2776cf9c33dee89a0690');
     // ... and the whole reviewed tree is pinned for the current contract
-    expect(digestOf(names)).toBe('49a0290bf68f6a7e23f27ddf19cd2b74475edcfe2d85621f8d9e766de83c7f3b');
+    expect(digestOf(names)).toBe('32408f168ceb70f9f1536976ce730ef718d09343090e1de001c2c101c29e139e');
   });
 
   it('CASH-1 pins the three physical nullable bigint columns after CashSession.status', () => {
@@ -340,7 +348,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
     expect(() => new DigestSink('MID' as never)).toThrow();
   });
 
-  it('AC-144 mutating any single one of the 351 columns changes both digests', () => {
+  it('AC-144 mutating any single one of the 360 columns changes both digests', () => {
     const base = run(buildState());
     let n = 0;
     for (const col of TYPE_CONTRACT_V3) {
@@ -349,7 +357,7 @@ describe('type contract and stream encoding (G01–G07, G46, G49, G51)', () => {
       expect(mutated.POST, `${col.relation}.${col.name} POST`).not.toBe(base.POST);
       n += 1;
     }
-    expect(n).toBe(351);
+    expect(n).toBe(360);
   });
 
   it('AC-145 every header field changes both digests; a wrong search_path or encoding is refused', () => {
@@ -605,7 +613,7 @@ describe('SQL readers (G08 qualification, G05, G20, G42, G53)', () => {
     expect(post.end()).toBe(oDigest('POST', oStream(state)));
     expect(result.serverVersionNum).toBe('170004');
     expect(result.markerId).toBe(header0.markerId);
-    expect(result.rows?.size).toBe(37);
+    expect(result.rows?.size).toBe(38);
     expect(result.schemaDigest).toBe(oSchemaDigest(state));
     expect(result.rows?.get('User')).toEqual(state.relations.find((r) => r.facts.relation === 'User')?.rows);
     const none = await readStateOnTransaction(asTx(fakeReaderTx(state)), [new DigestSink('PRE')], false);

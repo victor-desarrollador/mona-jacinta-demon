@@ -139,7 +139,8 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
     expect(response.body.user.legacyPermissions).toBeUndefined();
     expect(response.body.user.effectiveLocationIds).toBeUndefined();
     // The closed public contract (user-context.dto.ts PublicUserContext): the baseline six plus the four
-    // server-computed, branch-aware UI hints (cash movement, cash supervisor, inventory manage, sale exchange). No other key.
+    // server-computed, branch-aware UI hints (cash movement, cash supervisor, inventory manage, sale exchange) and the pending
+    // password change flag (USER-MGMT-01 U1). No other key: never the credentials epoch, never a hash.
     expect(Object.keys(response.body.user).sort()).toEqual(
       [
         'branchIds',
@@ -149,6 +150,7 @@ describe('POST /api/v1/auth/login branchIds (Phase 1C SWITCH)', () => {
         'email',
         'id',
         'inventoryManageLocationIds',
+        'mustChangePassword',
         'name',
         'permissions',
         'roles',

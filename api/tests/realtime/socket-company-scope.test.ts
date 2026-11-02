@@ -61,6 +61,8 @@ describe('Socket.IO rooms — COMPANY only for OWNER/ADMIN (SECURITY-RBAC-01a)',
     database.user.findUnique.mockResolvedValue({
       id: userId,
       isActive: true,
+      mustChangePassword: false, // the real row always carries the U1 columns (G21)
+      credentialsChangedAt: null,
       branchRoles: [],
       roleScopes: [
         { roleId: 'role-cashier', scopeKind: 'LOCATION', locationId: centroId, role: { code: 'CASHIER', permissions: [{ permission: { code: 'SALE_CHARGE' } }] } },
@@ -71,7 +73,7 @@ describe('Socket.IO rooms — COMPANY only for OWNER/ADMIN (SECURITY-RBAC-01a)',
     clients.push(client);
     await connected(client);
     const serverSocket = realtime.io.sockets.sockets.get(client.id!);
-    expect([...serverSocket?.rooms ?? []].sort()).toEqual([`branch:${centroId}`, client.id].sort());
+    expect([...serverSocket?.rooms ?? []].sort()).toEqual([`branch:${centroId}`, client.id, `user:${userId}`].sort()); // U4: + the user room
     expect(database.location.findMany).not.toHaveBeenCalled();
 
     const error = new Promise<unknown>((resolve) => client.once('realtime.error', resolve));

@@ -350,7 +350,8 @@ test('G20M-12 the tool binds every module it imports, and never imports a LOCAL_
   const source = readFileSync(path.join(MODULE_DIR, 'pilot-g20-migrate.mjs'), 'utf8');
   assert.doesNotMatch(source, /from '\.\/local-test/);
   // The tool's target is the literal EXACT_G20; a later generation never retargets it.
-  assert.deepEqual(Object.keys(GENERATIONS), ['EXACT_G14', 'EXACT_G15', 'EXACT_G16', 'EXACT_G17', 'EXACT_G18', 'EXACT_G19', 'EXACT_G20']);
+  // EXACT_G21 (user credentials epoch) and EXACT_G22 (user admin lifecycle) are registered in the shared module AFTER this tool: it never retargets it (FINAL_GENERATION below).
+  assert.deepEqual(Object.keys(GENERATIONS), ['EXACT_G14', 'EXACT_G15', 'EXACT_G16', 'EXACT_G17', 'EXACT_G18', 'EXACT_G19', 'EXACT_G20', 'EXACT_G21', 'EXACT_G22']);
   assert.equal(M.FINAL_GENERATION, 'EXACT_G20');
   assert.deepEqual(M.INITIAL_GENERATIONS, ['EXACT_G16', 'EXACT_G17', 'EXACT_G18', 'EXACT_G19']);
   assert.deepEqual(M.G20_PAYLOAD.migrations.map((m) => m.name), GENERATIONS.EXACT_G20);

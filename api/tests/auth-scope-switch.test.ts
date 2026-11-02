@@ -42,6 +42,9 @@ function stubUser(branchIds: string[], roleScopes: StubRoleScope[] = []) {
   return {
     id: 'test-user',
     isActive: true,
+    // USER-MGMT-01 U1 (G21): the columns the middleware now selects (a real row always carries them).
+    mustChangePassword: false,
+    credentialsChangedAt: null,
     branchRoles: branchIds.map((branchId) => ({
       branchId,
       role: { code: 'SELLER', permissions: [] },

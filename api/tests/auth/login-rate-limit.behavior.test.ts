@@ -1,7 +1,7 @@
 // Pre-pilot fix 2A: dedicated login failure limiter (10 failed logins per
 // normalized email per 15 minutes, in-memory, per app instance). DB-free:
 // the real app/router/service run against a minimal stub database exposing
-// only the two calls login needs (user.findUnique, location.findMany).
+// only the calls login needs (the case-insensitive e-mail lookup, user.findUnique by id, location.findMany).
 //
 // Preregistered cases (A01-A15, B01-B10) were written before the first run.
 import { hash } from 'bcryptjs';
@@ -38,6 +38,8 @@ function stubDatabase() {
       },
     },
     location: { findMany: async () => [] },
+    // USER-MGMT-01 U2 (G22): login looks the account up by lower(email) (unique index) and then reads it by id.
+    $queryRaw: async (_strings: TemplateStringsArray, ...values: unknown[]) => users.filter((u) => u.email.toLowerCase() === String(values[0]).toLowerCase()).map((u) => ({ id: u.id })),
   } as unknown as PrismaClient;
 }
 

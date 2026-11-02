@@ -54,6 +54,10 @@ export type PublicUserContext = {
   // actsAsSupervisorAtLocation(auth, [SALE_EXCHANGE], saleBranch): OWNER, or a COMPANY-scoped ADMIN holding SALE_EXCHANGE. UI hint for the
   // future Cambios tab only (visibility, never authority); POST /sales/:saleId/exchanges re-authorizes against the sale's persisted branch.
   saleExchangeLocationIds: string[];
+  // USER-MGMT-01 U1: the account must change its password before it can do anything else (the BACKEND enforces it: every authenticated
+  // endpoint except /auth/me and /auth/change-password answers 403 PASSWORD_CHANGE_REQUIRED). The client only routes its UX on this flag.
+  // The credentials epoch (credentialsChangedAt / the `cc` claim) is deliberately NOT part of the public contract.
+  mustChangePassword: boolean;
 };
 
 // Display label of one of the caller's effective branches (the BranchSelect text). Display only, never authority: the selector's options
@@ -70,6 +74,8 @@ export type PublicUserContextSource = {
   id: string;
   name: string;
   email: string;
+  // Always present on a real User row (auth.service.ts selects it); optional here so a fixture without it projects `false`, never `undefined`.
+  mustChangePassword?: boolean;
   branchRoles: LegacyBranchRoleRow[];
 };
 
@@ -165,5 +171,6 @@ export function toPublicUserContext(
     cashSupervisorLocationIds: supervisorLocationIds(context, [PRODUCTION_PERMISSIONS.CASH_MOVEMENT_MANAGE]),
     inventoryManageLocationIds: authorizedLocationIds(context, PRODUCTION_PERMISSIONS.INVENTORY_MANAGE),
     saleExchangeLocationIds: supervisorLocationIds(context, [PRODUCTION_PERMISSIONS.SALE_EXCHANGE]),
+    mustChangePassword: user.mustChangePassword === true,
   };
 }

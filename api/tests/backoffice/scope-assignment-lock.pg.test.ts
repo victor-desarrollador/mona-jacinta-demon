@@ -109,6 +109,10 @@ describe.skipIf(!enabled)('scope-assignment target lock on PostgreSQL (disposabl
   }
 
   const makeAdmin = (label: string) => makeUser(label, [{ role: 'ADMIN', locationId: null }]);
+  const makeOwner = (label: string) => makeUser(label, [{ role: 'OWNER', locationId: null }]);
+  const owner = (userId: string): Req => ({
+    auth: { userId, roles: ['OWNER'], effectiveLocationIds: [], assignments: [{ roleId: 'OWNER', roleCode: 'OWNER', scopeKind: 'COMPANY', locationId: null, permissions: [] }] },
+  }) as Req;
 
   async function locationsOf(userId: string, role: string): Promise<string[]> {
     const rows = await db.userRoleScope.findMany({ where: { userId, roleId: roleIds[role]! }, select: { locationId: true } });
@@ -127,17 +131,19 @@ describe.skipIf(!enabled)('scope-assignment target lock on PostgreSQL (disposabl
 
   // --- PG-SCOPE-C1 / C2 ---------------------------------------------------------
 
-  it('PG-SCOPE-C1 crossed admins (A -> B while B -> A) both commit without 40P01 — FOR UPDATE caused cross-target FK deadlock C1', async () => {
+  it('PG-SCOPE-C1 crossed OWNERs (A -> B while B -> A) both commit without 40P01 — FOR UPDATE caused cross-target FK deadlock C1', async () => {
     const location = await makeLocation();
-    const adminA = await makeAdmin('a');
-    const adminB = await makeAdmin('b');
+    // USER-MGMT-01 U3: an ADMIN no longer administers another ADMIN (403 before any lock), so the crossed-actors scenario uses two OWNERs, who may
+    // administer each other: the lock-order / FK KEY SHARE cycle this test guards is exactly the same.
+    const adminA = await makeOwner('a');
+    const adminB = await makeOwner('b');
     const serviceA = createScopeAssignmentService(racerA);
     const serviceB = createScopeAssignmentService(racerB);
 
     const coordinator = await holdRowLock(pools[0]!, 'Location', location);
     try {
-      const aToB = serviceA.assign(admin(adminA), adminB, { roleCode: 'CASHIER', scopeKind: 'LOCATION', locationIds: [location] });
-      const bToA = serviceB.assign(admin(adminB), adminA, { roleCode: 'CASHIER', scopeKind: 'LOCATION', locationIds: [location] });
+      const aToB = serviceA.assign(owner(adminA), adminB, { roleCode: 'CASHIER', scopeKind: 'LOCATION', locationIds: [location] });
+      const bToA = serviceB.assign(owner(adminB), adminA, { roleCode: 'CASHIER', scopeKind: 'LOCATION', locationIds: [location] });
       aToB.catch(() => undefined);
       bToA.catch(() => undefined);
       // Both now hold their target lock (the other admin) and wait on the

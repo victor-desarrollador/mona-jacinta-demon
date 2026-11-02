@@ -1,6 +1,7 @@
 // Zero-database unit tests for scripts/database/pilot-migration-generations.mjs: the migration generations
-// G14 (frozen cut-over target), G15 (intermediate), G16 (sale void v1), G17/G18/G19 (intermediate) and G20 (latest,
-// sale exchange v1 + the void guard + the post-sale claim). Every older generation stays recognised: a database may legitimately sit at G16.
+// G14 (frozen cut-over target), G15 (intermediate), G16 (sale void v1), G17/G18/G19 (intermediate), G20 (sale exchange v1 + the void
+// guard + the post-sale claim: the PILOT schema until G21 is rolled out), G21 (USER-MGMT-01 U1 credentials epoch) and G22 (latest, U2 user admin lifecycle).
+// Every older generation stays recognised: a database may legitimately sit at G16 or G20.
 // Run with: node --test scripts/database/pilot-migration-generations.test.mjs
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -23,10 +24,12 @@ const X_ENUM = '20261026120000_sale_exchange_enum';
 const X_SCHEMA = '20261026130000_sale_exchange_schema';
 const X_GUARD = '20261026140000_sale_void_exchange_guard';
 const X_CLAIM = '20261026150000_sale_post_sale_guard';
-const GENERATION_NAMES = ['EXACT_G14', 'EXACT_G15', 'EXACT_G16', 'EXACT_G17', 'EXACT_G18', 'EXACT_G19', 'EXACT_G20'];
+const U_CRED = '20261101120000_user_credentials_epoch';
+const U_ADMIN = '20261101130000_user_admin_lifecycle';
+const GENERATION_NAMES = ['EXACT_G14', 'EXACT_G15', 'EXACT_G16', 'EXACT_G17', 'EXACT_G18', 'EXACT_G19', 'EXACT_G20', 'EXACT_G21', 'EXACT_G22'];
 
-test('GN-01 the six post-G14 pins are the exact bytes on disk (size and SHA-256), file by file', () => {
-  assert.deepEqual(generations.POST_G14_MIGRATION_PINS.map((p) => p.name), [ENUM, SCHEMA, X_ENUM, X_SCHEMA, X_GUARD, X_CLAIM]);
+test('GN-01 the eight post-G14 pins are the exact bytes on disk (size and SHA-256), file by file', () => {
+  assert.deepEqual(generations.POST_G14_MIGRATION_PINS.map((p) => p.name), [ENUM, SCHEMA, X_ENUM, X_SCHEMA, X_GUARD, X_CLAIM, U_CRED, U_ADMIN]);
   for (const pin of generations.POST_G14_MIGRATION_PINS) {
     assert.ok(Object.isFrozen(pin), pin.name);
     const bytes = readFileSync(path.join(MIGRATIONS_DIR, pin.name, 'migration.sql'));
@@ -45,9 +48,14 @@ test('GN-02 G14 is the frozen set of the cut-over module, untouched and a strict
   assert.deepEqual(generations.GENERATIONS.EXACT_G18, [...generations.GENERATIONS.EXACT_G17, X_SCHEMA]);
   assert.deepEqual(generations.GENERATIONS.EXACT_G19, [...generations.GENERATIONS.EXACT_G18, X_GUARD]);
   assert.deepEqual(generations.GENERATIONS.EXACT_G20, [...generations.GENERATIONS.EXACT_G19, X_CLAIM]);
+  assert.deepEqual(generations.GENERATIONS.EXACT_G21, [...generations.GENERATIONS.EXACT_G20, U_CRED]);
+  assert.equal(generations.GENERATIONS.EXACT_G20.length, 20); // G20 stays a complete, recognised generation of exactly twenty migrations
+  assert.deepEqual(generations.GENERATIONS.EXACT_G22, [...generations.GENERATIONS.EXACT_G21, U_ADMIN]);
+  assert.equal(generations.GENERATIONS.EXACT_G21.length, 21); // G21 stays a complete, recognised generation of exactly twenty-one migrations
+  assert.equal(generations.GENERATIONS.EXACT_G22.length, 22);
   assert.deepEqual(Object.keys(generations.GENERATIONS), GENERATION_NAMES);
   assert.equal(generations.CUTOVER_TARGET_GENERATION, states.FINAL_STATE);
-  assert.equal(generations.LATEST_GENERATION, 'EXACT_G20');
+  assert.equal(generations.LATEST_GENERATION, 'EXACT_G22');
   assert.deepEqual(generations.INTERMEDIATE_GENERATIONS, ['EXACT_G15', 'EXACT_G17', 'EXACT_G18', 'EXACT_G19']);
   assert.ok(Object.isFrozen(generations.GENERATIONS) && Object.isFrozen(generations.GENERATION_MIGRATION_PINS));
 });
@@ -59,7 +67,7 @@ test('GN-03 the cut-over module is NOT extended: its final state, its pins and i
   assert.equal(states.classifyLedger(ledger('EXACT_G14')).state, 'EXACT_G14');
 });
 
-test('GN-04 the ledgers of G14 .. G20 classify as exactly themselves (the historical G16 included)', () => {
+test('GN-04 the ledgers of G14 .. G22 classify as exactly themselves (the historical G16 included)', () => {
   for (const generation of GENERATION_NAMES) {
     assert.deepEqual(generations.classifyGenerationLedger(ledger(generation)), { ok: true, state: generation }, generation);
   }
@@ -69,6 +77,8 @@ test('GN-05 row order does not matter', () => {
   assert.equal(generations.classifyGenerationLedger(ledger('EXACT_G16').reverse()).state, 'EXACT_G16');
   assert.equal(generations.classifyGenerationLedger(ledger('EXACT_G19').reverse()).state, 'EXACT_G19');
   assert.equal(generations.classifyGenerationLedger(ledger('EXACT_G20').reverse()).state, 'EXACT_G20');
+  assert.equal(generations.classifyGenerationLedger(ledger('EXACT_G21').reverse()).state, 'EXACT_G21');
+  assert.equal(generations.classifyGenerationLedger(ledger('EXACT_G22').reverse()).state, 'EXACT_G22');
 });
 
 test('GN-06 fail closed: older prefixes, a gap, an unknown migration, a missing one and the empty ledger are refused', () => {
@@ -85,6 +95,10 @@ test('GN-06 fail closed: older prefixes, a gap, an unknown migration, a missing 
   refused(g20.filter((r) => r.migration_name !== X_GUARD)); // the post-sale claim without the G19 guard it complements
   refused(g20.filter((r) => r.migration_name !== X_ENUM)); // the exchange schema without its enum migration
   refused([...g20, row({ name: '20261030000000_unreviewed', sha256: 'a'.repeat(64) })]);
+  const g21 = ledger('EXACT_G21');
+  refused(g21.filter((r) => r.migration_name !== X_CLAIM)); // the credentials epoch without the post-sale claim it follows
+  refused(g21.filter((r) => r.migration_name !== X_GUARD)); // a G21 ledger with a hole is neither G20 nor G21
+  refused([...g21, row({ name: '20261102000000_unreviewed', sha256: 'a'.repeat(64) })]); // a 22nd, unregistered migration
   refused([]);
 });
 
@@ -98,6 +112,7 @@ test('GN-07 fail closed: a changed checksum, a duplicate, a rolled-back or unfin
   refused(g16.map((r) => (r.migration_name === SCHEMA ? { ...r, checksum: 'b'.repeat(64) } : r)), /checksum differs/);
   refused(g16.map((r) => (r.migration_name === X_GUARD ? { ...r, checksum: 'b'.repeat(64) } : r)), /checksum differs/);
   refused(ledger('EXACT_G20').map((r) => (r.migration_name === X_CLAIM ? { ...r, checksum: 'b'.repeat(64) } : r)), /checksum differs/);
+  refused(ledger('EXACT_G21').map((r) => (r.migration_name === U_CRED ? { ...r, checksum: 'b'.repeat(64) } : r)), /checksum differs/);
   refused([...g16, g16[0]], /more than one row/);
   refused(g16.map((r) => (r.migration_name === ENUM ? { ...r, rolled_back: true } : r)), /rolled-back/);
   refused(g16.map((r) => (r.migration_name === ENUM ? { ...r, finished: false } : r)), /unfinished/);
@@ -111,6 +126,8 @@ test('GN-08 requireGeneration names exactly one generation: another valid one is
   assert.equal(generations.requireGeneration(ledger('EXACT_G16'), 'EXACT_G16').ok, true);
   assert.equal(generations.requireGeneration(ledger('EXACT_G19'), 'EXACT_G19').ok, true);
   assert.equal(generations.requireGeneration(ledger('EXACT_G20'), 'EXACT_G20').ok, true);
+  assert.equal(generations.requireGeneration(ledger('EXACT_G21'), 'EXACT_G21').ok, true);
+  assert.equal(generations.requireGeneration(ledger('EXACT_G22'), 'EXACT_G22').ok, true);
   const mismatch = generations.requireGeneration(ledger('EXACT_G15'), 'EXACT_G16');
   assert.equal(mismatch.ok, false);
   assert.match(mismatch.reason, /ledger is EXACT_G15, expected EXACT_G16/);
@@ -118,19 +135,48 @@ test('GN-08 requireGeneration names exactly one generation: another valid one is
   assert.equal(old.ok, false);
   assert.match(old.reason, /ledger is EXACT_G16, expected EXACT_G19/);
   assert.match(generations.requireGeneration(ledger('EXACT_G19'), 'EXACT_G20').reason, /ledger is EXACT_G19, expected EXACT_G20/);
-  assert.throws(() => generations.requireGeneration([], 'EXACT_G21'), /unknown expected generation/);
+  assert.match(generations.requireGeneration(ledger('EXACT_G20'), 'EXACT_G21').reason, /ledger is EXACT_G20, expected EXACT_G21/); // G20 is a valid state, never HALF_APPLIED G21
+  assert.match(generations.requireGeneration(ledger('EXACT_G21'), 'EXACT_G20').reason, /ledger is EXACT_G21, expected EXACT_G20/);
+  assert.throws(() => generations.requireGeneration([], 'EXACT_G23'), /unknown expected generation/);
   assert.throws(() => generations.pinsOf('G16'), /unknown generation/);
 });
 
-test('GN-09 the real migration tree is exactly G20 on disk (the latest), and its first fourteen directories are the G14 pins', () => {
+test('GN-09 the real migration tree is exactly G22 on disk (the latest), and its first twenty-one directories are the G21 pins', () => {
   const onDisk = readdirSync(MIGRATIONS_DIR).filter((d) => /^\d{14}_/.test(d)).sort();
-  assert.deepEqual(onDisk, generations.GENERATIONS.EXACT_G20);
+  assert.deepEqual(onDisk, generations.GENERATIONS.EXACT_G22);
+  assert.deepEqual(onDisk.slice(0, 21), generations.GENERATIONS.EXACT_G21); // G21 is a strict prefix of the tree
+  assert.deepEqual(onDisk.slice(0, 20), generations.GENERATIONS.EXACT_G20); // G20 is a strict prefix of the tree
   assert.deepEqual(onDisk.slice(0, 19), generations.GENERATIONS.EXACT_G19); // G19 is a strict prefix of the tree
   assert.deepEqual(onDisk.slice(0, 16), generations.GENERATIONS.EXACT_G16); // G16 is a strict prefix of the tree
   assert.deepEqual(onDisk.slice(0, 14), generations.GENERATIONS.EXACT_G14);
   for (const pin of generations.GENERATION_MIGRATION_PINS) {
     assert.equal(sha(readFileSync(path.join(MIGRATIONS_DIR, pin.name, 'migration.sql'))), pin.sha256, pin.name);
   }
+});
+
+test('GN-11 a partial G21 is never classified as G20 or G21: the credentials epoch row unfinished or rolled back (HALF_APPLIED) is refused; a complete G20 stays EXACT_G20', () => {
+  const g21 = ledger('EXACT_G21');
+  for (const patch of [{ finished: false }, { rolled_back: true }]) {
+    const r = generations.classifyGenerationLedger(g21.map((x) => (x.migration_name === U_CRED ? { ...x, ...patch } : x)));
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /unfinished|rolled-back/);
+  }
+  assert.deepEqual(generations.classifyGenerationLedger(ledger('EXACT_G20')), { ok: true, state: 'EXACT_G20' });
+  assert.deepEqual(generations.classifyGenerationLedger(g21), { ok: true, state: 'EXACT_G21' });
+  // the G20 -> G21 transition is exactly one reviewed migration
+  assert.deepEqual(generations.GENERATIONS.EXACT_G21.filter((n) => !generations.GENERATIONS.EXACT_G20.includes(n)), [U_CRED]);
+});
+
+test('GN-12 a partial G22 is never classified as G21 or G22: the admin lifecycle row unfinished or rolled back is refused; a complete G21 stays EXACT_G21', () => {
+  const g22 = ledger('EXACT_G22');
+  for (const patch of [{ finished: false }, { rolled_back: true }]) {
+    const r = generations.classifyGenerationLedger(g22.map((x) => (x.migration_name === U_ADMIN ? { ...x, ...patch } : x)));
+    assert.equal(r.ok, false);
+    assert.match(r.reason, /unfinished|rolled-back/);
+  }
+  assert.deepEqual(generations.classifyGenerationLedger(ledger('EXACT_G21')), { ok: true, state: 'EXACT_G21' });
+  assert.deepEqual(generations.classifyGenerationLedger(g22), { ok: true, state: 'EXACT_G22' });
+  assert.deepEqual(generations.GENERATIONS.EXACT_G22.filter((n) => !generations.GENERATIONS.EXACT_G21.includes(n)), [U_ADMIN]);
 });
 
 test('GN-10 literals only: the module reads no disk, environment or process and imports only the cut-over pins', () => {

@@ -509,8 +509,10 @@ export class TransformationViolation extends Error {
   }
 }
 
+// UserAdminOperation (G22, USER-MGMT-01 U2) is operational history (the idempotency record of administrative identity operations): seed #2 writes
+// none of it, so across the resume Q == P exactly. Classified EXPLICITLY as PRESERVED_FROM_BACKUP.
 const PRESERVED_RELATIONS = new Set([
-  'Company', 'CompanyPricingConfig', 'Location', 'UserBranchRole', 'AuditLog', 'Sale', 'SaleItem', 'SalePayment', 'CashSession', 'CashMovement', 'StockMovement', 'StockReservation', '_prisma_migrations',
+  'Company', 'CompanyPricingConfig', 'Location', 'UserBranchRole', 'UserAdminOperation', 'AuditLog', 'Sale', 'SaleItem', 'SalePayment', 'CashSession', 'CashMovement', 'StockMovement', 'StockReservation', '_prisma_migrations',
 ]);
 // R3-A4.3 (G8/G9): the six relations the ninth migration adds are operational checkout evidence, not seed
 // content — seed #2 writes none of them, so across the resume Q == P exactly. Classified EXPLICITLY (never

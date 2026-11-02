@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma/client.js';
 import { requirePermission } from '../../middleware/authorization.js';
@@ -6,6 +6,8 @@ import { validate } from '../../middleware/validation.js';
 import { PRODUCTION_PERMISSIONS } from '../rbac/permissions.js';
 import { createBackofficeController } from './backoffice.controller.js';
 import { assignScopeDto, userIdParamsDto, userRoleParamsDto } from './scope-assignment.dto.js';
+import { createNoopSessionRevoker, type SessionRevoker } from '../../realtime/session-revoker.js';
+import { adminOperationDto, createUserDto, updateUserDto } from './user-admin.dto.js';
 
 const limit = z.coerce.number().int().min(1).max(100).default(50);
 const offset = z.coerce.number().int().min(0).default(0);
@@ -31,9 +33,16 @@ const inventoryQuery = z.object({
 
 const saleParams = z.object({ id: z.uuid() }).strict();
 
-export function createBackofficeRouter(database: PrismaClient): Router {
+// The identity lifecycle answers carry a temporary password (once) and account data: never cached by the browser or any proxy. Set BEFORE the
+// permission gate, the validation and the handler, so the header is also on every refusal.
+const noStore: RequestHandler = (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+};
+
+export function createBackofficeRouter(database: PrismaClient, sessionRevoker: SessionRevoker = createNoopSessionRevoker()): Router {
   const router = Router();
-  const controller = createBackofficeController(database);
+  const controller = createBackofficeController(database, sessionRevoker);
   const reportView = requirePermission(PRODUCTION_PERMISSIONS.REPORT_VIEW);
   const userManage = requirePermission(PRODUCTION_PERMISSIONS.USER_MANAGE);
 
@@ -54,6 +63,13 @@ export function createBackofficeRouter(database: PrismaClient): Router {
     userManage,
     controller.assignScope,
   );
+  // USER-MGMT-01 U2 — identity lifecycle. The permission gate (USER_MANAGE at COMPANY scope) runs BEFORE validation so an unauthorised caller learns
+  // nothing about the request schema; the body is strict (no password, no isActive, no unknown field ever reaches the service).
+  router.post('/users', noStore, userManage, validate(createUserDto), controller.createUser);
+  router.patch('/users/:userId', noStore, userManage, validate(userIdParamsDto, 'params'), validate(updateUserDto), controller.updateUser);
+  router.post('/users/:userId/deactivate', noStore, userManage, validate(userIdParamsDto, 'params'), validate(adminOperationDto), controller.deactivateUser);
+  router.post('/users/:userId/reactivate', noStore, userManage, validate(userIdParamsDto, 'params'), validate(adminOperationDto), controller.reactivateUser);
+  router.post('/users/:userId/reset-password', noStore, userManage, validate(userIdParamsDto, 'params'), validate(adminOperationDto), controller.resetUserPassword);
   router.delete(
     '/users/:userId/scope/:roleCode',
     validate(userRoleParamsDto, 'params'),

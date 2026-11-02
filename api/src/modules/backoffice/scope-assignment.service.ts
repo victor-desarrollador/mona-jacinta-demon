@@ -1,9 +1,10 @@
 import { Prisma, type PrismaClient } from '../../generated/prisma/client.js';
 import { AppError } from '../../shared/errors.js';
 import { createAuditLog } from '../../shared/audit.js';
-import { isOwner } from '../rbac/authorization-policy.js';
 import { ROLE_CODES, isProductionRoleCode, type RoleCode } from '../rbac/roles.js';
 import type { AssignScopeInput } from './scope-assignment.dto.js';
+import { createNoopSessionRevoker, revokeUserSessions, type SessionRevoker } from '../../realtime/session-revoker.js';
+import { assertAnotherOperativeOwner, assertCanAssignRoleCode, assertCanManageTarget, lockLastOwnerGuard, type ScopeRoleRow } from './user-admin-policy.js';
 
 // Phase 1D.4.3 (docs/superpowers/plans/2026-09-14-phase-1d-production-
 // authorization.md). DTO/service only — no route/controller wiring here
@@ -17,7 +18,7 @@ type RequestLike = { auth?: Express.AuthContext };
 // an unlocked, non-authoritative fast path to the target's User row.
 type ScopeAssignmentDatabase = Pick<PrismaClient, 'role' | 'userRoleScope' | '$transaction'>;
 
-type LockedUser = { id: string };
+type LockedUser = { id: string; isActive: boolean };
 
 function forbidden(message: string) {
   return new AppError(403, 'FORBIDDEN', message);
@@ -34,7 +35,7 @@ function forbidden(message: string) {
 // (AGENTS.md "Roles — Production V1"; rbac/roles.ts) and must never become a
 // Production UserRoleScope assignment through this service, regardless of
 // how the caller obtained that string.
-function assertProductionRoleCode(roleCode: string): asserts roleCode is RoleCode {
+export function assertProductionRoleCode(roleCode: string): asserts roleCode is RoleCode {
   if (!isProductionRoleCode(roleCode)) {
     throw new AppError(400, 'INVALID_ROLE_CODE', `${roleCode} no es un rol Production válido.`);
   }
@@ -77,22 +78,28 @@ function assertNotSelf(caller: Express.AuthContext, targetUserId: string) {
 // the cycle cannot form. It still conflicts with `FOR UPDATE` and
 // `FOR SHARE`, so a concurrent User UPDATE or DELETE of the target remains
 // blocked.
+//
+// USER-MGMT-01 U3: the decision itself is the shared identity policy (user-admin-policy.ts): a non-OWNER caller never modifies the scope of an account
+// that holds ANY OWNER or ADMIN scope row (a former ADMIN kept while inactive, a mixed-role account and a malformed ADMIN @ LOCATION row included), and
+// the caller needs a valid COMPANY authority at all. Returns the locked row's `isActive` (the LAST_OWNER guard needs it).
 async function lockTargetAndAssertMutable(
   tx: Prisma.TransactionClient,
   caller: Express.AuthContext,
   targetUserId: string,
-) {
-  const locked = await tx.$queryRaw<LockedUser[]>`SELECT id FROM "User" WHERE id = ${targetUserId} FOR NO KEY UPDATE`;
-  if (locked.length === 0) throw new AppError(404, 'NOT_FOUND', 'No se encontró el usuario.');
+): Promise<{ isActive: boolean }> {
+  const [locked] = await tx.$queryRaw<LockedUser[]>`SELECT id, "isActive" FROM "User" WHERE id = ${targetUserId} FOR NO KEY UPDATE`;
+  if (!locked) throw new AppError(404, 'NOT_FOUND', 'No se encontró el usuario.');
 
   const currentScopes = await tx.userRoleScope.findMany({
     where: { userId: targetUserId },
     select: { role: { select: { code: true } } },
   });
-  const targetIsCurrentlyOwner = currentScopes.some((scope) => scope.role.code === ROLE_CODES.OWNER);
-  if (targetIsCurrentlyOwner && !isOwner(caller)) {
-    throw forbidden('Sólo OWNER puede modificar el alcance de otro OWNER.');
-  }
+  assertCanManageTarget(caller, targetUserId, currentScopes, {
+    privileged: (scopes: readonly ScopeRoleRow[]) => (scopes.some((scope) => scope.role.code === ROLE_CODES.OWNER)
+      ? 'Sólo OWNER puede modificar el alcance de otro OWNER.'
+      : 'Sólo OWNER puede modificar el alcance de un ADMIN.'),
+  });
+  return { isActive: locked.isActive };
 }
 
 // SEC-A (MJ-ADMIN-ADM-02-SEC-A-IMPLEMENT-01, owner-approved 2026-10-17):
@@ -204,7 +211,7 @@ function isLogicallyIdenticalAssign(input: AssignScopeInput, priorRows: ScopeRow
 // Ids that match no Location row are deliberately not flagged here — they
 // keep failing later on the locationId FK (P2003 -> 409 DATABASE_CONFLICT),
 // preserving the documented nonexistent-location semantics.
-async function lockAndAssertLocationsActive(
+export async function lockAndAssertLocationsActive(
   tx: Prisma.TransactionClient,
   locationIds: readonly string[],
 ): Promise<void> {
@@ -220,7 +227,26 @@ async function lockAndAssertLocationsActive(
   }
 }
 
-export function createScopeAssignmentService(database: ScopeAssignmentDatabase) {
+// Role/scope compatibility, shared with the identity lifecycle (user-admin.service.ts): OWNER and ADMIN are COMPANY roles, the three operational
+// roles are LOCATION roles. Extracted verbatim from assign (same messages, same order); no behavior change.
+export function assertRoleScopeCompatible(roleCode: RoleCode, scopeKind: 'LOCATION' | 'COMPANY'): void {
+  if ((roleCode === ROLE_CODES.OWNER || roleCode === ROLE_CODES.ADMIN) && scopeKind !== 'COMPANY') {
+    throw forbidden(`El rol ${roleCode} requiere alcance COMPANY.`);
+  }
+  if (
+    (roleCode === ROLE_CODES.CASHIER ||
+      roleCode === ROLE_CODES.SELLER ||
+      roleCode === ROLE_CODES.WAREHOUSE) &&
+    scopeKind !== 'LOCATION'
+  ) {
+    throw forbidden(`El rol ${roleCode} requiere alcance LOCATION.`);
+  }
+}
+
+// `sessionRevoker` (U4): an EFFECTIVE assign/revoke drops the target's live sockets AFTER the commit, so a reconnect rebuilds rooms and
+// permissions from the current scopes (a revoked branch room is never kept). A logically identical assign and a revoke that removes nothing change no
+// state and disconnect nobody.
+export function createScopeAssignmentService(database: ScopeAssignmentDatabase, sessionRevoker: SessionRevoker = createNoopSessionRevoker()) {
   // Creates/replaces exactly the (targetUserId, roleCode) assignment — every
   // OTHER assignment this user independently holds (a different roleCode) is
   // never read or written by this function. This is what makes "SELLER @ A
@@ -241,20 +267,8 @@ export function createScopeAssignmentService(database: ScopeAssignmentDatabase) 
     // parameter) and the narrowed const is what the closure reads.
     const roleCode = input.roleCode;
     assertProductionRoleCode(roleCode);
-    if (roleCode === ROLE_CODES.OWNER && !isOwner(caller)) {
-      throw forbidden('Sólo OWNER puede asignar el rol OWNER.');
-    }
-    if ((roleCode === ROLE_CODES.OWNER || roleCode === ROLE_CODES.ADMIN) && input.scopeKind !== 'COMPANY') {
-      throw forbidden(`El rol ${roleCode} requiere alcance COMPANY.`);
-    }
-    if (
-      (roleCode === ROLE_CODES.CASHIER ||
-        roleCode === ROLE_CODES.SELLER ||
-        roleCode === ROLE_CODES.WAREHOUSE) &&
-      input.scopeKind !== 'LOCATION'
-    ) {
-      throw forbidden(`El rol ${roleCode} requiere alcance LOCATION.`);
-    }
+    assertCanAssignRoleCode(caller, roleCode);
+    assertRoleScopeCompatible(roleCode, input.scopeKind);
 
     const role = await database.role.findUnique({ where: { code: roleCode } });
     if (!role) throw new AppError(500, 'ROLE_NOT_FOUND', `El rol Production ${roleCode} no existe en el catálogo.`);
@@ -266,7 +280,8 @@ export function createScopeAssignmentService(database: ScopeAssignmentDatabase) 
     // or neither does, so a LOCATION create failing (e.g. a nonexistent
     // Location id, FK-enforced) can never leave the target without their
     // prior assignment for this role.
-    return database.$transaction(async (tx) => {
+    let effective = false;
+    const outcome = await database.$transaction(async (tx) => {
       await lockTargetAndAssertMutable(tx, caller, targetUserId);
 
       // Before-snapshot read under the same target lock the mutation uses,
@@ -294,6 +309,7 @@ export function createScopeAssignmentService(database: ScopeAssignmentDatabase) 
       if (input.scopeKind === 'LOCATION') {
         await lockAndAssertLocationsActive(tx, input.locationIds);
       }
+      effective = true;
 
       const before = snapshotRows(priorRows, roleCode);
 
@@ -332,6 +348,8 @@ export function createScopeAssignmentService(database: ScopeAssignmentDatabase) 
 
       return { userId: targetUserId, roleCode, scopeKind: input.scopeKind };
     });
+    if (effective) await revokeUserSessions(sessionRevoker, targetUserId, 'USER_SCOPE_ASSIGNED');
+    return outcome;
   }
 
   // Revokes exactly the (targetUserId, roleCode) assignment. Any other
@@ -343,12 +361,16 @@ export function createScopeAssignmentService(database: ScopeAssignmentDatabase) 
     if (!caller) throw new AppError(401, 'UNAUTHORIZED', 'Se requiere autenticación.');
     assertNotSelf(caller, targetUserId);
     assertProductionRoleCode(roleCode);
+    assertCanAssignRoleCode(caller, roleCode, 'revocar');
 
     const role = await database.role.findUnique({ where: { code: roleCode } });
     if (!role) throw new AppError(500, 'ROLE_NOT_FOUND', `El rol Production ${roleCode} no existe en el catálogo.`);
 
-    return database.$transaction(async (tx) => {
-      await lockTargetAndAssertMutable(tx, caller, targetUserId);
+    let effective = false;
+    const outcome = await database.$transaction(async (tx) => {
+      // LAST_OWNER guard (U3): revoking OWNER takes the advisory lock FIRST, then the target row lock (fixed order, see user-admin-policy.ts).
+      if (roleCode === ROLE_CODES.OWNER) await lockLastOwnerGuard(tx);
+      const { isActive } = await lockTargetAndAssertMutable(tx, caller, targetUserId);
 
       // Before-snapshot read under the same target lock the mutation uses.
       const priorRows = await tx.userRoleScope.findMany({
@@ -360,6 +382,11 @@ export function createScopeAssignmentService(database: ScopeAssignmentDatabase) 
       // capable of destroying a COMPANY+LOCATION anomaly as assign is — the
       // same fail-closed guard runs here, before the delete.
       assertNotMixedScopeState(priorRows, roleCode);
+
+      // Only an OPERATIVE OWNER (active, OWNER at COMPANY kind) leaving that condition can drop the system to zero.
+      if (roleCode === ROLE_CODES.OWNER && isActive && priorRows.some((row) => row.scopeKind === 'COMPANY')) {
+        await assertAnotherOperativeOwner(tx, targetUserId);
+      }
 
       const removed = await tx.userRoleScope.deleteMany({ where: { userId: targetUserId, roleId: role.id } });
 
@@ -378,8 +405,11 @@ export function createScopeAssignmentService(database: ScopeAssignmentDatabase) 
         });
       }
 
+      effective = removed.count > 0;
       return { userId: targetUserId, roleCode, revoked: true };
     });
+    if (effective) await revokeUserSessions(sessionRevoker, targetUserId, 'USER_SCOPE_REVOKED');
+    return outcome;
   }
 
   return { assign, revoke };

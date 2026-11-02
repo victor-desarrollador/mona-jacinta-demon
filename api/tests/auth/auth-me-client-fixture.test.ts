@@ -48,13 +48,14 @@ function projected({ roleCode, scopeKind }: Actor) {
     cashSupervisorLocationIds: dto.cashSupervisorLocationIds,
     inventoryManageLocationIds: dto.inventoryManageLocationIds,
     saleExchangeLocationIds: dto.saleExchangeLocationIds,
+    mustChangePassword: dto.mustChangePassword,
   };
 }
 
 describe('client /auth/me fixture = the real public projection', () => {
   it('AMF-01 every canonical actor in the client fixture equals toPublicUserContext output', () => {
     const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, {
-      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[]; saleExchangeLocationIds: string[];
+      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[]; saleExchangeLocationIds: string[]; mustChangePassword: boolean;
     }>;
     expect(Object.keys(fixture).sort()).toEqual(Object.keys(ACTORS).sort());
     for (const [name, actor] of Object.entries(ACTORS)) {
@@ -71,12 +72,12 @@ describe('client /auth/me fixture = the real public projection', () => {
   // as Prisma returns them -> buildAuthorizationContext -> toPublicUserContext.
   it('AMF-03 resolveUserContext over persisted role-scope rows returns exactly the fixture for every actor', async () => {
     const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8')) as Record<string, {
-      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[]; saleExchangeLocationIds: string[];
+      roles: string[]; permissions: string[]; cashMovementLocationIds: string[]; cashSupervisorLocationIds: string[]; inventoryManageLocationIds: string[]; saleExchangeLocationIds: string[]; mustChangePassword: boolean;
     }>;
     for (const [name, { roleCode, scopeKind }] of Object.entries(ACTORS)) {
       const location = scopeKind === 'LOCATION';
       const row = {
-        id: `user-${name}`, name, email: `${name}@test.local`, isActive: true, passwordHash: 'unused', branchRoles: [],
+        id: `user-${name}`, name, email: `${name}@test.local`, isActive: true, passwordHash: 'unused', mustChangePassword: false, credentialsChangedAt: null, branchRoles: [],
         roleScopes: [{
           roleId: `role-${roleCode}`, scopeKind, locationId: location ? 'branch-1' : null,
           role: { code: roleCode, permissions: (roleCode === 'OWNER' ? [] : [...DEFAULT_ROLE_GRANTS[roleCode]]).map((code) => ({ permission: { code } })) },
@@ -94,6 +95,7 @@ describe('client /auth/me fixture = the real public projection', () => {
         cashSupervisorLocationIds: dto.cashSupervisorLocationIds,
         inventoryManageLocationIds: dto.inventoryManageLocationIds,
         saleExchangeLocationIds: dto.saleExchangeLocationIds,
+        mustChangePassword: dto.mustChangePassword,
       }, name).toEqual(fixture[name]);
     }
   });

@@ -4,14 +4,14 @@
 // LOCAL_TEST_MIGRATION_PAYLOAD (G14) IS that shared payload object (the fourteen literal pins of
 // pilot-migration-states.mjs); nothing is re-typed here. It stays the HISTORICAL G14 payload.
 //
-// Generations after G14 (sale void v1, sale exchange v1; pilot-migration-generations.mjs holds their literal pins):
+// Generations after G14 (sale void v1, sale exchange v1, user credentials epoch, user admin lifecycle; pilot-migration-generations.mjs holds their literal pins):
 //   G14 = m1..m14 (above), G15 = G14 + sale_void_enum (intermediate), G16 = G15 + sale_void_schema,
 //   G17 = G16 + sale_exchange_enum (intermediate), G18 = G17 + sale_exchange_schema (intermediate),
-//   G19 = G18 + sale_void_exchange_guard, G20 = G19 + sale_post_sale_guard (LATEST).
+//   G19 = G18 + sale_void_exchange_guard, G20 = G19 + sale_post_sale_guard, G21 = G20 + user_credentials_epoch, G22 = G21 + user_admin_lifecycle (LATEST).
 // What the LOCAL_TEST tooling APPLIES and VERIFIES is the LATEST generation: LOCAL_TEST_LATEST_PAYLOAD and
-// verifyLocalTestMigrationPayload (= exact G20). The older generations stay verifiable on their own
-// (verifyLocalTestG14Payload .. verifyLocalTestG19Payload; G16 is a complete historical schema a database may sit
-// at), each exact-tree and fail-closed: a G20 tree is drift for every older verifier and the other way round.
+// verifyLocalTestMigrationPayload (= exact G22). The older generations stay verifiable on their own
+// (verifyLocalTestG14Payload .. verifyLocalTestG21Payload; G16, G20 and G21 are complete historical schemas a database may sit
+// at), each exact-tree and fail-closed: a G22 tree is drift for every older verifier and the other way round.
 //
 // Only the disposable LOCAL_TEST tooling (local-test-prepare.mjs, ci-local-test-fixture.mjs) uses this module; it
 // imports nothing PILOT-capable. The per-group pin lists below are views of the shared pins by name.
@@ -41,7 +41,7 @@ export const QR_MIGRATION_PINS = pinsNamed('20261021140000_r3_qr');
 export const LOCAL_TEST_MIGRATION_PAYLOAD = APPROVED_MIGRATION_PAYLOAD;
 export const LOCAL_TEST_G14_PAYLOAD = LOCAL_TEST_MIGRATION_PAYLOAD;
 // G15, G17, G18 and G19 are intermediate (enum labels alone / exchange schema before the guards / before the post-sale claim), G16 is the previous
-// complete schema and G20 is the latest; same lock, same exact-tree rules.
+// complete schema, G20 is the PILOT schema until G21/G22 are rolled out, G21 the previous latest and G22 the latest; same lock, same exact-tree rules.
 const generationPayload = (generation) => Object.freeze({ migrations: pinsOf(generation), lock: LOCAL_TEST_MIGRATION_PAYLOAD.lock });
 export const LOCAL_TEST_G15_PAYLOAD = generationPayload('EXACT_G15');
 export const LOCAL_TEST_G16_PAYLOAD = generationPayload('EXACT_G16');
@@ -49,8 +49,10 @@ export const LOCAL_TEST_G17_PAYLOAD = generationPayload('EXACT_G17');
 export const LOCAL_TEST_G18_PAYLOAD = generationPayload('EXACT_G18');
 export const LOCAL_TEST_G19_PAYLOAD = generationPayload('EXACT_G19');
 export const LOCAL_TEST_G20_PAYLOAD = generationPayload('EXACT_G20');
+export const LOCAL_TEST_G21_PAYLOAD = generationPayload('EXACT_G21');
+export const LOCAL_TEST_G22_PAYLOAD = generationPayload('EXACT_G22');
 // What the LOCAL_TEST tooling applies today.
-export const LOCAL_TEST_LATEST_PAYLOAD = LOCAL_TEST_G20_PAYLOAD;
+export const LOCAL_TEST_LATEST_PAYLOAD = LOCAL_TEST_G22_PAYLOAD;
 
 export const LOCAL_TEST_P21_BASE_PAYLOAD = Object.freeze({
   migrations: Object.freeze(LOCAL_TEST_MIGRATION_PAYLOAD.migrations.slice(0, 8)),
@@ -122,7 +124,7 @@ export function verifyMigrationTree(apiDir, payload) {
   }
 }
 
-// The LOCAL_TEST payload the tooling applies: the real reviewed tree must be exactly the LATEST generation (G20).
+// The LOCAL_TEST payload the tooling applies: the real reviewed tree must be exactly the LATEST generation (G22).
 export function verifyLocalTestMigrationPayload(apiDir) {
   return verifyMigrationTree(apiDir, LOCAL_TEST_LATEST_PAYLOAD);
 }
@@ -145,6 +147,12 @@ export function verifyLocalTestG18Payload(apiDir) {
 }
 export function verifyLocalTestG19Payload(apiDir) {
   return verifyMigrationTree(apiDir, LOCAL_TEST_G19_PAYLOAD);
+}
+export function verifyLocalTestG20Payload(apiDir) {
+  return verifyMigrationTree(apiDir, LOCAL_TEST_G20_PAYLOAD);
+}
+export function verifyLocalTestG21Payload(apiDir) {
+  return verifyMigrationTree(apiDir, LOCAL_TEST_G21_PAYLOAD);
 }
 
 // The P21 base: the WHOLE real tree must still be exactly the latest generation (drift anywhere, migration 9 and the

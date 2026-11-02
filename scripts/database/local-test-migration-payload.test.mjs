@@ -1,7 +1,8 @@
 // Zero-database unit tests for scripts/database/local-test-migration-payload.mjs
 // (U1 / R3-T): the LOCAL_TEST-only migration payloads — the historical G14 (the shared
 // PILOT-approved pins of pilot-migrate.mjs), the generations G15..G18 (sale void v1 / sale exchange v1, G16 a complete
-// historical schema) and the LATEST G20 (sale exchange v1 + the void guard + the post-sale claim) the tooling applies — their exact-tree verifiers, the P21 base projection G8 (migrations 1–8)
+// historical schema), G20 (sale exchange v1 + the void guard + the post-sale claim: the previous latest, kept verifiable) and the LATEST G21
+// (USER-MGMT-01 U1 credentials epoch) the tooling applies — their exact-tree verifiers, the P21 base projection G8 (migrations 1–8)
 // and the private staged copy of G8 that prisma.local-test-p21.config.ts points Prisma at.
 // Run with: node --test scripts/database/local-test-migration-payload.test.mjs
 import assert from 'node:assert/strict';
@@ -42,7 +43,9 @@ const SALE_EXCHANGE_ENUM = '20261026120000_sale_exchange_enum';
 const SALE_EXCHANGE_SCHEMA = '20261026130000_sale_exchange_schema';
 const SALE_VOID_EXCHANGE_GUARD = '20261026140000_sale_void_exchange_guard';
 const SALE_POST_SALE_GUARD = '20261026150000_sale_post_sale_guard';
-const POST_G14 = [SALE_VOID_ENUM, SALE_VOID_SCHEMA, SALE_EXCHANGE_ENUM, SALE_EXCHANGE_SCHEMA, SALE_VOID_EXCHANGE_GUARD, SALE_POST_SALE_GUARD];
+const USER_CREDENTIALS_EPOCH = '20261101120000_user_credentials_epoch';
+const USER_ADMIN_LIFECYCLE = '20261101130000_user_admin_lifecycle';
+const POST_G14 = [SALE_VOID_ENUM, SALE_VOID_SCHEMA, SALE_EXCHANGE_ENUM, SALE_EXCHANGE_SCHEMA, SALE_VOID_EXCHANGE_GUARD, SALE_POST_SALE_GUARD, USER_CREDENTIALS_EPOCH, USER_ADMIN_LIFECYCLE];
 const MIG14 = { name: QR, bytes: 13048, sha256: '32ad30fc0b0aa847d1393ba1fb77419a286470e616973c6bd48de97e6192104a' };
 
 const fn = (name) => {
@@ -54,7 +57,7 @@ const G11 = () => {
   assert.ok(payloadModule.LOCAL_TEST_MIGRATION_PAYLOAD, 'LOCAL_TEST_MIGRATION_PAYLOAD must be exported');
   return payloadModule.LOCAL_TEST_MIGRATION_PAYLOAD;
 };
-// The LATEST generation (G20): what the LOCAL_TEST tooling applies and verifies.
+// The LATEST generation (G22): what the LOCAL_TEST tooling applies and verifies.
 const G19 = () => {
   assert.ok(payloadModule.LOCAL_TEST_LATEST_PAYLOAD, 'LOCAL_TEST_LATEST_PAYLOAD must be exported');
   return payloadModule.LOCAL_TEST_LATEST_PAYLOAD;
@@ -185,24 +188,24 @@ test('U1-PILOT-02 pilot-migrate.mjs never imports or names the LOCAL_TEST payloa
 
 // --- the exact-tree verifier (A + D) ----------------------------------------------------------
 
-test('U1-VER-01 the real reviewed tree verifies as the LATEST generation G20: twenty migrations with their pinned digests and the pinned lock', () => {
+test('U1-VER-01 the real reviewed tree verifies as the LATEST generation G22: twenty-two migrations with their pinned digests and the pinned lock', () => {
   const r = fn('verifyLocalTestMigrationPayload')(API_DIR);
   assert.equal(r.ok, true, r.reason);
-  assert.equal(r.migrations.length, 20);
+  assert.equal(r.migrations.length, 22);
   assert.deepEqual(r.migrations.map((m) => [m.name, m.sha256]), G19().migrations.map((m) => [m.name, m.sha256]));
   assert.deepEqual(r.migrations.slice(0, 14).map((m) => [m.name, m.sha256]), G11().migrations.map((m) => [m.name, m.sha256]), 'the first fourteen are the frozen G14 pins');
   assert.deepEqual(r.lock, { sha256: APPROVED_MIGRATION_PAYLOAD.lock.sha256, provider: 'postgresql' });
 });
 
-// --- generations: G14 historical, G15 intermediate, G16 historical, G17/G18/G19 intermediate, G20 latest ------------------------------------
+// --- generations: G14 historical, G15 intermediate, G16 historical, G17/G18/G19 intermediate, G20/G21 historical, G22 latest ------------------------------------
 
-test('U1-GEN-01 the payloads: G14 is the shared historical object, each later generation adds exactly one reviewed migration, the latest is G20, same lock', () => {
+test('U1-GEN-01 the payloads: G14 is the shared historical object, each later generation adds exactly one reviewed migration, the latest is G22, same lock', () => {
   const m = payloadModule;
   assert.equal(m.LOCAL_TEST_G14_PAYLOAD, APPROVED_MIGRATION_PAYLOAD);
   const g14 = APPROVED_MIGRATION_PAYLOAD.migrations.map((p) => p.name);
-  const payloads = [m.LOCAL_TEST_G15_PAYLOAD, m.LOCAL_TEST_G16_PAYLOAD, m.LOCAL_TEST_G17_PAYLOAD, m.LOCAL_TEST_G18_PAYLOAD, m.LOCAL_TEST_G19_PAYLOAD, m.LOCAL_TEST_G20_PAYLOAD];
+  const payloads = [m.LOCAL_TEST_G15_PAYLOAD, m.LOCAL_TEST_G16_PAYLOAD, m.LOCAL_TEST_G17_PAYLOAD, m.LOCAL_TEST_G18_PAYLOAD, m.LOCAL_TEST_G19_PAYLOAD, m.LOCAL_TEST_G20_PAYLOAD, m.LOCAL_TEST_G21_PAYLOAD, m.LOCAL_TEST_G22_PAYLOAD];
   payloads.forEach((payload, index) => assert.deepEqual(payload.migrations.map((p) => p.name), [...g14, ...POST_G14.slice(0, index + 1)], `G${15 + index}`));
-  assert.equal(m.LOCAL_TEST_LATEST_PAYLOAD, m.LOCAL_TEST_G20_PAYLOAD);
+  assert.equal(m.LOCAL_TEST_LATEST_PAYLOAD, m.LOCAL_TEST_G22_PAYLOAD);
   for (const payload of payloads) {
     assert.ok(Object.isFrozen(payload) && Object.isFrozen(payload.migrations));
     assert.equal(payload.lock, APPROVED_MIGRATION_PAYLOAD.lock);
@@ -210,10 +213,10 @@ test('U1-GEN-01 the payloads: G14 is the shared historical object, each later ge
 });
 
 test('U1-GEN-02 each generation verifies ITS OWN tree and refuses every other one (exact-tree, fail-closed)', () => {
-  const trees = { G14: generationTree(14), G15: generationTree(15), G16: generationTree(16), G17: generationTree(17), G18: generationTree(18), G19: generationTree(19), G20: API_DIR };
+  const trees = { G14: generationTree(14), G15: generationTree(15), G16: generationTree(16), G17: generationTree(17), G18: generationTree(18), G19: generationTree(19), G20: generationTree(20), G21: generationTree(21), G22: API_DIR };
   const verifiers = {
     G14: 'verifyLocalTestG14Payload', G15: 'verifyLocalTestG15Payload', G16: 'verifyLocalTestG16Payload', G17: 'verifyLocalTestG17Payload',
-    G18: 'verifyLocalTestG18Payload', G19: 'verifyLocalTestG19Payload', G20: 'verifyLocalTestMigrationPayload',
+    G18: 'verifyLocalTestG18Payload', G19: 'verifyLocalTestG19Payload', G20: 'verifyLocalTestG20Payload', G21: 'verifyLocalTestG21Payload', G22: 'verifyLocalTestMigrationPayload',
   };
   for (const [tree, api] of Object.entries(trees)) {
     for (const [generation, name] of Object.entries(verifiers)) {

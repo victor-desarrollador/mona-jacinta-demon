@@ -33,6 +33,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
       cashSupervisorLocationIds: [],
       inventoryManageLocationIds: [],
       saleExchangeLocationIds: [],
+      mustChangePassword: false,
     });
   });
 
@@ -138,7 +139,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
     );
     expect(company.permissions).toEqual(d3Codes);
     expect(Object.keys(company).sort()).toEqual([
-      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
+      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'mustChangePassword', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
     ]);
 
     const location = toPublicUserContext(
@@ -359,7 +360,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
       expect(dto.cashMovementLocationIds).toEqual(['loc-1']);
       expect(dto.cashSupervisorLocationIds).toEqual([]);
       expect(Object.keys(dto).sort()).toEqual([
-        'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
+        'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'mustChangePassword', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
       ]);
     });
   });
@@ -373,7 +374,7 @@ describe('toPublicUserContext (Production authority projection, Phase 1D.3.6)', 
     expect(dto).not.toHaveProperty('legacyPermissions');
     expect(dto).not.toHaveProperty('effectiveLocationIds');
     expect(Object.keys(dto).sort()).toEqual([
-      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
+      'branchIds', 'cashMovementLocationIds', 'cashSupervisorLocationIds', 'email', 'id', 'inventoryManageLocationIds', 'mustChangePassword', 'name', 'permissions', 'roles', 'saleExchangeLocationIds',
     ]);
   });
 
@@ -492,5 +493,26 @@ describe('saleExchangeLocationIds hint (AUTH-EX-01..)', () => {
         expect(hint.includes(location), `${JSON.stringify(assignments)} @ ${location}`).toBe(expected);
       }
     }
+  });
+});
+
+// USER-MGMT-01 U1 (G21): the pending-password-change flag is part of the public contract; the credentials epoch is not.
+describe('toPublicUserContext — mustChangePassword (U1)', () => {
+  const source = { id: 'u1', name: 'Maria', email: 'maria@example.com', branchRoles: [] };
+  const context = { effectiveLocationIds: [], assignments: [] };
+
+  it('UC-01 projects the flag when it is set', () => {
+    expect(toPublicUserContext({ ...source, mustChangePassword: true }, context).mustChangePassword).toBe(true);
+  });
+
+  it('UC-02 projects false when it is false or absent (never undefined)', () => {
+    expect(toPublicUserContext({ ...source, mustChangePassword: false }, context).mustChangePassword).toBe(false);
+    expect(toPublicUserContext(source, context).mustChangePassword).toBe(false);
+  });
+
+  it('UC-03 never projects the credentials epoch, even when the source row carries it', () => {
+    const projected = toPublicUserContext({ ...source, mustChangePassword: false, credentialsChangedAt: new Date(1), passwordHash: 'x' } as never, context);
+    expect(Object.keys(projected)).not.toContain('credentialsChangedAt');
+    expect(JSON.stringify(projected)).not.toMatch(/credentialsChangedAt|passwordHash|"cc"/);
   });
 });
