@@ -76,6 +76,12 @@ async function renderCashier(server: Server) {
 const money = (text: string) => new RegExp(text.replace("$", "\\$\\s*").replace(/\./g, "\\.").replace(/\s+/g, "\\s*"));
 const paymentPosts = (calls: Call[]) => calls.filter((c) => c.method === "POST" && c.url.includes("/payments"));
 const registerButton = () => screen.getByRole("button", { name: /Registrar pago/ });
+// The CASH register button stays disabled until GET /cash/current resolves (a fetch separate
+// from the queue), and fireEvent.click on a disabled button is a silent no-op: wait for it.
+const readyRegisterButton = async () => {
+  await waitFor(() => expect(registerButton()).toBeEnabled());
+  return registerButton();
+};
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("cashier money display is exact (H1)", () => {
@@ -150,7 +156,7 @@ describe("cashier payment prefill is exact (H2)", () => {
     // The prefill is written by a passive effect after the sale is selected, which may not
     // have run yet when the heading appears: wait for it, the exact value stays asserted.
     await waitFor(() => expect(received.value).toBe("1209,40"));
-    fireEvent.click(registerButton());
+    fireEvent.click(await readyRegisterButton());
     await waitFor(() => expect(paymentPosts(calls)).toHaveLength(1));
     expect(paymentPosts(calls)[0]!.body).toMatchObject({ method: "CASH", amount: "120940", receivedAmount: "120940" });
     expect(view.container.querySelector(".error-banner")).toBeNull();
@@ -162,7 +168,7 @@ describe("cashier payment prefill is exact (H2)", () => {
     const amount = screen.getByRole("textbox", { name: /Importe ARS/ }) as HTMLInputElement;
     expect(amount.value).toBe("1209,40");
     fireEvent.change(amount, { target: { value: "500,25" } });
-    fireEvent.click(registerButton());
+    fireEvent.click(await readyRegisterButton());
     await waitFor(() => expect(paymentPosts(calls)).toHaveLength(1));
     expect(paymentPosts(calls)[0]!.body).toMatchObject({ method: "CASH", amount: "50025" });
   });
@@ -195,7 +201,8 @@ describe("cashier payment prefill is exact (H2)", () => {
 
   it("M14 the close notice shows the counted amount with centavos", async () => {
     await renderCashier({ queue: [row()], closingCash: "200050" });
-    fireEvent.change(screen.getByRole("textbox", { name: /Cierre ARS/ }), { target: { value: "2000,50" } });
+    // The close form only exists once the open session has been read.
+    fireEvent.change(await screen.findByRole("textbox", { name: /Cierre ARS/ }), { target: { value: "2000,50" } });
     fireEvent.click(screen.getByRole("button", { name: "Cerrar caja" }));
     // M2: the close is only sent after the explicit confirmation.
     fireEvent.click(screen.getByRole("button", { name: "Confirmar cierre" }));

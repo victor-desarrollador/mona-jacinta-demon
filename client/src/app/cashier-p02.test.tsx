@@ -134,10 +134,21 @@ async function renderCashier(partial: Partial<ServerState> & { queue: QueueRow[]
   render(<OperationsPage />);
   expect(await screen.findByText("Ventas pendientes")).toBeInTheDocument();
   await screen.findByRole("heading", { name: "CEN-V-000001" });
+  // Selecting the sale triggers a passive effect that prefills the payment entry and resets the
+  // correction/cancel editors. A click made before it runs would be wiped by it, so wait for the
+  // observable prefill (the amount input is empty until it has run).
+  await waitFor(() => expect(amountInput()).not.toHaveValue(""));
   return state;
 }
 
 const button = (name: RegExp) => screen.queryByRole("button", { name });
+// The CASH "Registrar pago" button stays disabled until GET /cash/current resolves (a fetch
+// separate from the queue), and fireEvent.click on a disabled button is a silent no-op.
+// Wait for the button to exist AND be enabled before clicking it.
+const payButton = async () => {
+  await waitFor(() => expect(button(/Registrar pago/)).toBeEnabled());
+  return button(/Registrar pago/)!;
+};
 const amountInput = () => screen.getByRole("textbox", { name: /Importe ARS/ });
 const remainingCard = () => screen.getByText("Saldo pendiente").parentElement as HTMLElement;
 const posted = (state: ServerState, suffix: string) => state.requests.filter((request) => request.url.endsWith(suffix));
@@ -198,7 +209,7 @@ describe("cashier correction (Pilot P0.2-C)", () => {
     expect(screen.getByRole("heading", { name: "CEN-V-000001" })).toBeInTheDocument();
     expect(amountInput()).toHaveValue("5000");
     expect(received()).toHaveValue("5000");
-    fireEvent.click(button(/Registrar pago/)!);
+    fireEvent.click(await payButton());
     await waitFor(() => expect(posted(state, "/payments")).toHaveLength(1));
     expect(posted(state, "/payments")[0]!.body).toMatchObject({ method: "CASH", amount: "500000", receivedAmount: "500000" });
   });
@@ -302,8 +313,7 @@ describe("cashier payment UX (Pilot P0.2-C)", () => {
     expect(screen.getByRole("checkbox", { name: /Pago parcial/ })).not.toBeChecked();
     expect(amountInput()).toHaveAttribute("readonly");
     expect(amountInput()).toHaveValue("6000");
-    await waitFor(() => expect(button(/Registrar pago/)!).toBeEnabled());
-    fireEvent.click(button(/Registrar pago/)!);
+    fireEvent.click(await payButton());
     await waitFor(() => expect(posted(state, "/payments")).toHaveLength(1));
     expect(posted(state, "/payments")[0]!.body).toMatchObject({ method: "CASH", amount: "600000" });
   });
@@ -313,7 +323,7 @@ describe("cashier payment UX (Pilot P0.2-C)", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /Pago parcial/ }));
     expect(amountInput()).not.toHaveAttribute("readonly");
     fireEvent.change(amountInput(), { target: { value: "2500" } });
-    fireEvent.click(button(/Registrar pago/)!);
+    fireEvent.click(await payButton());
     await waitFor(() => expect(posted(state, "/payments")).toHaveLength(1));
     expect(posted(state, "/payments")[0]!.body).toMatchObject({ amount: "250000" });
     await waitFor(() => expect(within(remainingCard()).getByText(/7\.500/)).toBeInTheDocument());
@@ -323,18 +333,17 @@ describe("cashier payment UX (Pilot P0.2-C)", () => {
     const state = await renderCashier({ queue: [row()] });
     fireEvent.click(screen.getByRole("checkbox", { name: /Pago parcial/ }));
     fireEvent.change(amountInput(), { target: { value: "0" } });
-    fireEvent.click(button(/Registrar pago/)!);
+    fireEvent.click(await payButton());
     expect(await screen.findByText(/importe de pago válido/i)).toBeInTheDocument();
     fireEvent.change(amountInput(), { target: { value: "10001" } });
-    fireEvent.click(button(/Registrar pago/)!);
+    fireEvent.click(await payButton());
     expect(await screen.findByText(/supera el saldo pendiente/i)).toBeInTheDocument();
     expect(posted(state, "/payments")).toHaveLength(0);
   });
 
   it("keeps the backend as final authority when it rejects a payment", async () => {
     await renderCashier({ queue: [row()], fail: { payment: "El pago excede el saldo pendiente." } });
-    await waitFor(() => expect(button(/Registrar pago/)!).toBeEnabled());
-    fireEvent.click(button(/Registrar pago/)!);
+    fireEvent.click(await payButton());
     expect(await screen.findByText(/El pago excede el saldo pendiente/)).toBeInTheDocument();
     expect(within(remainingCard()).getByText(/10\.000/)).toBeInTheDocument();
     expect(button(/Reintentar mismo pago/)).toBeInTheDocument();
